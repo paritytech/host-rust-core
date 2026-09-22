@@ -1,24 +1,33 @@
-// ============================================================================
-// TrUAPI mode lockdown. Runs AFTER LocalhostBridgeBootstrap (native injects
-// the bootstrap first), which publishes the bridge endpoint on
-// window.__truapi_localhost and exposes __HOST_API_PORT__ /
-// __HOST_WEBVIEW_MARK__.
-// The bootstrap dials its WebSocket lazily (inside port.start()), so
-// window.WebSocket must remain constructible for exactly the bridge URL.
-//
-// Hosts must inject this script into EVERY frame, not just the main frame. A
-// realm without it has pristine fetch/WebSocket/RTCPeerConnection, and a
-// product can reach one through any iframe path that skips
-// `document.createElement` (innerHTML, document.write, createElementNS,
-// srcdoc). Only the bootstrap is main-frame-only: a subframe with no bridge
-// endpoint fails closed on every gate below.
-// ============================================================================
-
-// =============================================================================
-// Isolation: Lock down globals so product scripts cannot access platform APIs.
-// =============================================================================
-
+// Subframes need the same gates even though only the main frame has an endpoint.
 import { installContainer } from './container.js';
+import { createHostConnection } from '@parity/truapi/internal';
+import { freezeAndDelete, freezeValue } from './freeze.js';
 import { createPermissionAuthorization } from './network-transport.js';
+import { freezePermissionRuntime } from './permission-runtime.js';
 
-installContainer(createPermissionAuthorization(window));
+freezePermissionRuntime();
+
+const config = (window as Window & {
+  __truapi_localhost?: { url?: string; nativeHttp?: boolean };
+}).__truapi_localhost;
+freezeAndDelete(window, '__truapi_localhost');
+const connection = typeof config?.url === 'string'
+  ? createHostConnection(config.url)
+  : undefined;
+if (connection) {
+  freezeValue(window, '__HOST_WEBVIEW_MARK__', true);
+  freezeValue(window, '__HOST_API_CLIENT__', Object.freeze({
+    get client() { return connection.client; },
+    subscribeConnectionStatus: connection.subscribeConnectionStatus,
+  }));
+  // TODO: Remove the port once deployed products adopt the injected client.
+  Object.defineProperty(window, '__HOST_API_PORT__', {
+    get: () => connection.legacyPort,
+    set() {},
+    configurable: false,
+  });
+  window.addEventListener('pagehide', () => connection.dispose());
+}
+installContainer(createPermissionAuthorization(window, connection?.internal), {
+  nativeHttp: config?.nativeHttp === true,
+});

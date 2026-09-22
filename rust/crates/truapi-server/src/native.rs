@@ -421,6 +421,16 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
 }
 
+/// The bridge script a host injects into a product's web view, for the `port`
+/// and `token` a `WsBridgeEndpoint` carries.
+///
+/// Inject it at document start, before the product's own scripts and before the
+/// lockdown container, which reads the endpoint this publishes.
+#[uniffi::export]
+pub fn localhost_bridge_bootstrap_script(port: u16, token: String) -> String {
+    crate::bootstrap::script(&format!("ws://127.0.0.1:{port}/?t={token}"))
+}
+
 /// Read what a pairing deeplink offers: the peer it advertises, and how that
 /// peer describes itself.
 ///
@@ -1511,6 +1521,38 @@ impl NativeProductExecution {
 
 #[uniffi::export]
 impl NativeProductExecution {
+    /// Authorize one native operation using this execution's saved and one-use permissions.
+    pub async fn authorize_remote_permission(
+        &self,
+        request: truapi::latest::RemotePermissionRequest,
+    ) -> Result<bool, HostRejection> {
+        use truapi::api::Permissions;
+        use truapi::versioned::IntoLatest;
+
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostRejection::Rejected {
+                reason: "product execution is closed".to_string(),
+            });
+        }
+        let response = self
+            .admin()
+            .product_runtime()
+            .authorize_remote_permission(
+                &truapi::CallContext::default(),
+                truapi::versioned::permissions::RemotePermissionRequest::V1(request),
+            )
+            .await
+            .map_err(|error| HostRejection::Rejected {
+                reason: format!("{error:?}"),
+            })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostRejection::Rejected {
+                reason: "product execution is closed".to_string(),
+            });
+        }
+        Ok(response.into_latest().granted)
+    }
+
     /// Read a product-scoped permission authorization without prompting.
     ///
     /// A device capability resolves the host application's OS gate as well as
@@ -1806,11 +1848,17 @@ struct NativeEventBus {
         Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostLocaleSubscribeItem, v01::GenericError>>>>,
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
     storage_changes: Mutex<Vec<StorageSubscription>>,
-    chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
+    chain_events: Mutex<NativeChainEvents>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
     pocket_card_changes: Mutex<
         Vec<mpsc::UnboundedSender<Result<v01::HostPocketListSubscribeItem, v01::GenericError>>>,
     >,
+}
+
+#[derive(Default)]
+struct NativeChainEvents {
+    responses: HashMap<u32, mpsc::UnboundedSender<String>>,
+    early_close_generation: u64,
 }
 
 struct PreimageSubscription {
@@ -1911,32 +1959,59 @@ impl NativeEventBus {
             });
     }
 
-    fn register_chain(&self, connection_id: u32) -> mpsc::UnboundedReceiver<String> {
-        let (tx, rx) = mpsc::unbounded();
-        self.chain_responses
+    fn chain_close_generation(&self) -> u64 {
+        self.chain_events
             .lock()
             .expect("native chain subscribers mutex poisoned")
-            .insert(connection_id, tx);
-        rx
+            .early_close_generation
+    }
+
+    fn register_chain(
+        &self,
+        connection_id: u32,
+        close_generation: u64,
+    ) -> Option<mpsc::UnboundedReceiver<String>> {
+        let mut events = self
+            .chain_events
+            .lock()
+            .expect("native chain subscribers mutex poisoned");
+        if events.early_close_generation != close_generation {
+            return None;
+        }
+        let (tx, rx) = mpsc::unbounded();
+        events.responses.insert(connection_id, tx);
+        Some(rx)
     }
 
     fn notify_chain_response(&self, connection_id: u32, json: String) {
-        let mut responses = self
-            .chain_responses
+        let mut events = self
+            .chain_events
             .lock()
             .expect("native chain subscribers mutex poisoned");
-        let Some(tx) = responses.get(&connection_id) else {
+        let Some(tx) = events.responses.get(&connection_id) else {
             return;
         };
         if tx.unbounded_send(json).is_err() {
-            responses.remove(&connection_id);
+            events.responses.remove(&connection_id);
         }
     }
 
     fn notify_chain_closed(&self, connection_id: u32) {
-        self.chain_responses
+        let mut events = self
+            .chain_events
+            .lock()
+            .expect("native chain subscribers mutex poisoned");
+        if events.responses.remove(&connection_id).is_none() {
+            // Native callbacks can close a connection before returning its ID.
+            events.early_close_generation = events.early_close_generation.wrapping_add(1);
+        }
+    }
+
+    fn unregister_chain(&self, connection_id: u32) {
+        self.chain_events
             .lock()
             .expect("native chain subscribers mutex poisoned")
+            .responses
             .remove(&connection_id);
     }
 
@@ -2276,7 +2351,7 @@ impl JsonRpcConnection for NativeJsonRpcConnection {
         if self.closed.swap(true, Ordering::Relaxed) {
             return;
         }
-        self.events.notify_chain_closed(self.id);
+        self.events.unregister_chain(self.id);
         if let Err(err) = self.callbacks.chain_close(self.id) {
             self.callbacks.on_core_log(
                 "truapi.native.callback.chain_close_failed".to_string(),
@@ -2298,6 +2373,7 @@ impl ChainProvider for CallbackPlatform {
         &self,
         genesis_hash: [u8; 32],
     ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+        let close_generation = self.events.chain_close_generation();
         let Some(connection_id) = self
             .callbacks
             .chain_connect(genesis_hash.to_vec())
@@ -2307,14 +2383,21 @@ impl ChainProvider for CallbackPlatform {
                 reason: "chain provider unavailable".to_string(),
             });
         };
-        let response_rx = self.events.register_chain(connection_id);
-        Ok(Box::new(NativeJsonRpcConnection {
+        let response_rx = self.events.register_chain(connection_id, close_generation);
+        let registered = response_rx.is_some();
+        let connection = NativeJsonRpcConnection {
             id: connection_id,
             callbacks: self.callbacks.clone(),
             events: self.events.clone(),
-            response_rx: Mutex::new(Some(response_rx)),
+            response_rx: Mutex::new(response_rx),
             closed: AtomicBool::new(false),
-        }))
+        };
+        if !registered {
+            return Err(v01::GenericError {
+                reason: "chain connection closed during setup".to_string(),
+            });
+        }
+        Ok(Box::new(connection))
     }
 }
 
@@ -2838,6 +2921,7 @@ mod tests {
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
+        on_chain_connect: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         chain_connects: Mutex<Vec<Vec<u8>>>,
         chain_sends: Mutex<Vec<(u32, String)>>,
         chain_closes: Mutex<Vec<u32>>,
@@ -2849,6 +2933,14 @@ mod tests {
         os_refused: Option<v01::HostDevicePermissionRequest>,
         /// Configurable prompt outcome for grant, denial, and callback failure tests.
         remote_permission_result: Result<NativePermissionDecision, HostRejection>,
+        remote_permission_reply: Mutex<
+            Option<
+                futures::channel::oneshot::Receiver<
+                    Result<NativePermissionDecision, HostRejection>,
+                >,
+            >,
+        >,
+        core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
         /// Disclosure consent is distinct from boolean action confirmation.
         permission_confirmation_result: NativePermissionDecision,
         /// Counts prompts across the execution's separate connections.
@@ -2886,6 +2978,7 @@ mod tests {
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
                 chain_id: Mutex::new(None),
+                on_chain_connect: Mutex::new(None),
                 chain_connects: Mutex::new(Vec::new()),
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
@@ -2893,6 +2986,8 @@ mod tests {
                 paired_devices: Mutex::new(Vec::new()),
                 os_refused: None,
                 remote_permission_result: Ok(NativePermissionDecision::Deny),
+                remote_permission_reply: Mutex::new(None),
+                core_storage: Mutex::default(),
                 permission_confirmation_result: NativePermissionDecision::Deny,
                 remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
             }
@@ -2950,7 +3045,11 @@ mod tests {
             _request: v01::RemotePermission,
         ) -> Result<NativePermissionDecision, HostRejection> {
             self.remote_permission_calls.fetch_add(1, Ordering::SeqCst);
-            self.remote_permission_result.clone()
+            let reply = self.remote_permission_reply.lock().unwrap().take();
+            match reply {
+                Some(reply) => reply.await.unwrap(),
+                None => self.remote_permission_result.clone(),
+            }
         }
         fn auth_state_changed(&self, state: AuthState) {
             self.auth_states
@@ -2958,13 +3057,15 @@ mod tests {
                 .expect("auth state mutex poisoned")
                 .push(state);
         }
-        fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
-            Ok(None)
+        fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            Ok(self.core_storage.lock().unwrap().get(&key).cloned())
         }
-        fn core_storage_write(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<(), HostRejection> {
+        fn core_storage_write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), HostRejection> {
+            self.core_storage.lock().unwrap().insert(key, value);
             Ok(())
         }
-        fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
+        fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection> {
+            self.core_storage.lock().unwrap().remove(&key);
             Ok(())
         }
         fn chain_connect(&self, genesis_hash: Vec<u8>) -> Result<Option<u32>, HostRejection> {
@@ -2972,6 +3073,10 @@ mod tests {
                 .lock()
                 .expect("chain connects mutex poisoned")
                 .push(genesis_hash);
+            let on_connect = self.on_chain_connect.lock().unwrap().take();
+            if let Some(on_connect) = on_connect {
+                on_connect();
+            }
             Ok(*self.chain_id.lock().expect("chain id mutex poisoned"))
         }
         fn chain_send(&self, connection_id: u32, request: String) -> Result<(), HostRejection> {
@@ -4421,6 +4526,68 @@ mod tests {
     }
 
     #[test]
+    fn native_chain_provider_rejects_an_early_close_and_allows_a_later_retry() {
+        let (callbacks, events, platform) = event_platform();
+        *callbacks.chain_id.lock().unwrap() = Some(42);
+        let closing_events = events.clone();
+        *callbacks.on_chain_connect.lock().unwrap() = Some(Box::new(move || {
+            closing_events.notify_chain_closed(42);
+        }));
+
+        let closed = futures::executor::block_on(ChainProvider::connect(&platform, [9; 32]));
+        assert_eq!(
+            closed.map(|_| ()),
+            Err(v01::GenericError {
+                reason: "chain connection closed during setup".to_string(),
+            })
+        );
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![42]);
+
+        *callbacks.chain_id.lock().unwrap() = Some(43);
+        let connection =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut responses = connection.responses();
+        events.notify_chain_response(43, "after retry".to_string());
+        assert_eq!(
+            futures::executor::block_on(responses.next()),
+            Some("after retry".to_string())
+        );
+        events.notify_chain_closed(43);
+        assert_eq!(futures::executor::block_on(responses.next()), None);
+        drop(connection);
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![42, 43]);
+    }
+
+    #[test]
+    fn native_chain_provider_keeps_new_setup_when_an_active_connection_closes() {
+        let (callbacks, events, platform) = event_platform();
+        *callbacks.chain_id.lock().unwrap() = Some(41);
+        let previous =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut previous_responses = previous.responses();
+        *callbacks.chain_id.lock().unwrap() = Some(42);
+        let closing_events = events.clone();
+        *callbacks.on_chain_connect.lock().unwrap() = Some(Box::new(move || {
+            closing_events.notify_chain_closed(41);
+            previous.close();
+        }));
+
+        let connection =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut responses = connection.responses();
+        events.notify_chain_response(42, "new connection".to_string());
+        assert_eq!(
+            (
+                futures::executor::block_on(previous_responses.next()),
+                futures::executor::block_on(responses.next()),
+            ),
+            (None, Some("new connection".to_string()))
+        );
+        drop(connection);
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![41, 42]);
+    }
+
+    #[test]
     fn native_chain_provider_forwards_send_response_and_close() {
         let (callbacks, events, platform) = event_platform();
         *callbacks.chain_id.lock().expect("chain id mutex poisoned") = Some(42);
@@ -4477,8 +4644,8 @@ mod tests {
                 native_execution_config("chain.dot", ProductExecutionKind::App),
             )
             .expect("App execution should open");
-        let mut shared_responses = host.events.register_chain(41);
-        let mut scoped_responses = execution.events.register_chain(41);
+        let mut shared_responses = host.events.register_chain(41, 0).unwrap();
+        let mut scoped_responses = execution.events.register_chain(41, 0).unwrap();
         let response = r#"{"jsonrpc":"2.0","id":"truapi:1","result":true}"#.to_string();
 
         execution.notify_chain_response(41, response.clone());
@@ -5460,9 +5627,6 @@ mod tests {
 
     #[test]
     fn native_remote_authorization_uses_the_execution_permission_callback() {
-        use truapi::api::Permissions;
-        use truapi::versioned::permissions;
-
         for (answer, granted) in [
             (Ok(NativePermissionDecision::AllowAlways), true),
             (Ok(NativePermissionDecision::Deny), false),
@@ -5490,32 +5654,20 @@ mod tests {
                     native_execution_config("fetch.dot", ProductExecutionKind::App),
                 )
                 .unwrap();
-            let request = v01::RemotePermissionRequest {
-                permission: v01::RemotePermission::Remote {
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
                     domains: vec!["api.example.com".to_string()],
                 },
             };
-            let response = futures::executor::block_on(
-                execution
-                    .admin()
-                    .product_runtime()
-                    .authorize_remote_permission(
-                        &truapi::CallContext::default(),
-                        permissions::RemotePermissionRequest::V1(request),
-                    ),
-            )
-            .unwrap();
+            let response =
+                futures::executor::block_on(execution.authorize_remote_permission(request))
+                    .unwrap();
             assert_eq!(
                 (
                     response,
                     callbacks.remote_permission_calls.load(Ordering::SeqCst)
                 ),
-                (
-                    permissions::RemotePermissionResponse::V1(v01::RemotePermissionResponse {
-                        granted
-                    }),
-                    1,
-                ),
+                (granted, 1),
             );
         }
     }
@@ -5578,8 +5730,8 @@ mod tests {
         let other = open();
         futures::executor::block_on(async {
             let admin = execution.admin();
-            let request = v01::RemotePermissionRequest {
-                permission: v01::RemotePermission::Remote {
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
                     domains: vec!["api.example.com".to_string()],
                 },
             };
@@ -5597,12 +5749,7 @@ mod tests {
                 .await
                 .unwrap();
             let consumed = execution
-                .admin()
-                .product_runtime()
-                .authorize_remote_permission(
-                    &context,
-                    truapi::versioned::permissions::RemotePermissionRequest::V1(request.clone()),
-                )
+                .authorize_remote_permission(request.clone())
                 .await
                 .unwrap();
             let after_use = execution
@@ -5610,6 +5757,15 @@ mod tests {
                 .await
                 .unwrap();
             let prompts_after_use = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+            let next_operation = execution
+                .authorize_remote_permission(request.clone())
+                .await
+                .unwrap();
+            let other_operation = other
+                .authorize_remote_permission(request.clone())
+                .await
+                .unwrap();
+            let prompts_after_operations = callbacks.remote_permission_calls.load(Ordering::SeqCst);
             sdk_request().await.unwrap();
             execution.shutdown();
             let after_shutdown = admin
@@ -5623,22 +5779,135 @@ mod tests {
                     consumed,
                     after_use,
                     prompts_after_use,
+                    next_operation,
+                    other_operation,
+                    prompts_after_operations,
                     after_shutdown
                 ),
                 (
                     truapi::versioned::permissions::RemotePermissionResponse::V1(
-                        v01::RemotePermissionResponse { granted: true },
+                        truapi::latest::RemotePermissionResponse { granted: true },
                     ),
                     PermissionAuthorizationStatus::NotDetermined,
-                    truapi::versioned::permissions::RemotePermissionResponse::V1(
-                        v01::RemotePermissionResponse { granted: true },
-                    ),
+                    true,
                     PermissionAuthorizationStatus::NotDetermined,
                     1,
+                    true,
+                    true,
+                    3,
                     PermissionAuthorizationStatus::NotDetermined,
                 )
             );
         });
+    }
+
+    #[test]
+    fn native_remote_authorization_reuses_stored_product_decisions() {
+        for (decision, granted) in [
+            (NativePermissionDecision::AllowAlways, true),
+            (NativePermissionDecision::Deny, false),
+        ] {
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_result: Ok(decision),
+                ..EventCallbacks::new()
+            });
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                callbacks.clone(),
+                native_host_runtime_config(),
+            )
+            .unwrap();
+            let open = |product_id| {
+                host.open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config(product_id, ProductExecutionKind::App),
+                )
+                .unwrap()
+            };
+            let first_execution = open("fetch.dot");
+            let next_execution = open("fetch.dot");
+            let other_product = open("other.dot");
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            futures::executor::block_on(async {
+                let first = first_execution
+                    .authorize_remote_permission(request.clone())
+                    .await
+                    .unwrap();
+                let next = next_execution
+                    .authorize_remote_permission(request.clone())
+                    .await
+                    .unwrap();
+                let prompts_for_product = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+                let other = other_product
+                    .authorize_remote_permission(request)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (
+                        first,
+                        next,
+                        prompts_for_product,
+                        other,
+                        callbacks.remote_permission_calls.load(Ordering::SeqCst),
+                    ),
+                    (granted, granted, 1, granted, 2),
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn native_remote_authorization_rejects_closed_and_closing_executions() {
+        for pending in [false, true] {
+            let (reply, response) = futures::channel::oneshot::channel();
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_reply: Mutex::new(Some(response)),
+                ..EventCallbacks::new()
+            });
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                callbacks.clone(),
+                native_host_runtime_config(),
+            )
+            .unwrap();
+            let execution = host
+                .open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config("fetch.dot", ProductExecutionKind::App),
+                )
+                .unwrap();
+            futures::executor::block_on(async {
+                let request = execution.authorize_remote_permission(
+                    truapi::latest::RemotePermissionRequest {
+                        permission: truapi::latest::RemotePermission::Remote {
+                            domains: vec!["api.example.com".to_string()],
+                        },
+                    },
+                );
+                futures::pin_mut!(request);
+                if pending {
+                    assert!(futures::poll!(&mut request).is_pending());
+                }
+                execution.shutdown();
+                reply.send(Ok(NativePermissionDecision::AllowOnce)).unwrap();
+                assert_eq!(
+                    (
+                        request.await.err().map(|error| error.to_string()),
+                        callbacks.remote_permission_calls.load(Ordering::SeqCst),
+                    ),
+                    (
+                        Some("product execution is closed".to_string()),
+                        usize::from(pending)
+                    ),
+                );
+            });
+        }
     }
 
     /// Drives the whole native chain for a status read: foreign callback,

@@ -120,6 +120,7 @@ class TrUAPIWorkerSupervisor @Inject constructor(
             )
             .flatMap { execution ->
                 runCatching {
+                    provider.useTrUAPIPermissions(execution)
                     webViewRuntime.loadInitialPage()
                     // A page that never reports ready would otherwise hold the boot open forever,
                     // and with it the execution, the WebView and the card's static face.

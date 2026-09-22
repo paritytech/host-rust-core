@@ -2,7 +2,7 @@
 
 *Kotlin wrapper around the TrUAPI Rust core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge.*
 
-Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature), the UniFFI Kotlin bindings (`uniffi.truapi_server.*`), and the Kotlin host adapter (`io.parity.truapi.*`). Consumers need no Rust toolchain or NDK.
+Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature), the UniFFI Kotlin bindings (`uniffi.truapi_server.*`), the Kotlin host adapter (`io.parity.truapi.*`), and the browser container asset. Consumers need no Rust toolchain or NDK.
 
 ## Consume
 
@@ -66,7 +66,8 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `HostBridge` - callback bundle the embedding app implements. Splits device permissions, remote permissions, navigation, push, feature support, action and permission confirmations, and both storage backends.
 - `HostStorage` - product-scoped read/write/clear interface the host backs with its own persistence.
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
-- `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
+- `LocalhostBridgeBootstrap` - supplies the private WebSocket endpoint to the container.
+- `ContainerScriptBundle` - loads the bundled browser container for installation at document start.
 - `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` holding its own token on the runtime's shared WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
 - `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
 - `PocketHostBridge` - the host's Pocket card collection, implemented by hosts with a Pocket surface and passed as `pocket` to `openProductExecution`. The execution then offers `notifyPocketCardsChanged`. `removeCard` decides and removes together, returning `NativePocketRemoval.Removed`, `Absent` or `Privileged`, so a card cannot be pinned between the check and the removal. Like Chat, Pocket is reachable only from a Worker execution with an active session, so without `activateLocalSession` every Pocket call answers `Denied`. Hosts without the bridge pass nothing and Pocket calls answer unsupported.
@@ -125,11 +126,10 @@ val execution = runtime.openProductExecution(
     chat = MyChatBridge(store),
 )
 val endpoint = execution.startWsBridge()
-webView.evaluateJavascript(
-    LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token),
-    null,
-)
+val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token)
 ```
+
+Install `bootstrap` and `ContainerScriptBundle` at document start before loading the product, as in the example below.
 
 Chat requires an active session: `openProductExecution` succeeds without one,
 but every Chat call then answers `Denied` until `activateLocalSession` or SSO
@@ -159,7 +159,9 @@ On the execution: `publishChatAction` delivers a user's action back to the produ
 
 ```text
 product app in WebView
-  Uint8Array frames via @parity/truapi createWebSocketProvider
+  Public calls + private permission checks
+           |
+  One injected SDK client and transport
            |
            v   ws://127.0.0.1:<port>/?t=<token>
 TrUAPIProductExecution.startWsBridge()
@@ -167,7 +169,13 @@ TrUAPIProductExecution.startWsBridge()
   → Rust dispatcher
 ```
 
-The product running in the `WebView` opens a `WebSocket` to the localhost port + token returned by `startWsBridge`. From there the Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, `confirmUserAction`, `confirmPermission`, preimage lookup, theme, `featureSupported`, `storage`) reach the embedder through `HostBridge`. Bulletin preimage build/sign/submit now happens inside the core, so the host only serves `lookupPreimage`.
+The container consumes the bootstrap endpoint before product scripts run and creates one SDK connection for public calls and private permission checks. The updated SDK adopts the injected `window.__HOST_API_CLIENT__` client and keeps it across socket replacement. Interrupted calls and subscriptions fail without replay. Older SDKs use a small `window.__HOST_API_PORT__` adapter and require a page reload after a disconnect.
+
+Android intercepts HTTP requests natively, including scripts and images, and calls `execution.authorizeRemotePermission` on the same Rust permission service used by the SDK. This shares grants and consumes “Allow once” only once. Approval covers the initial URL and any redirects it follows; redirect destinations are intentionally not checked separately. The container uses `nativeHttp: true` to avoid checking fetch and XHR again in JavaScript. Both product pages and hidden worker WebViews use this path.
+
+The main frame retains `window.__HOST_WEBVIEW_MARK__` for deployed products that use it to select native navigation or storage. New products should use the SDK's container detection.
+
+The Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, `confirmUserAction`, `confirmPermission`, preimage lookup, theme, `featureSupported`, `storage`) reach the embedder through `HostBridge`. Bulletin preimage build/sign/submit now happens inside the core, so the host only serves `lookupPreimage`.
 
 ## Permissions split
 
@@ -177,6 +185,12 @@ The core's `Permissions` platform trait has two methods, and so does the bridge:
 - `remotePermission(request)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
 Both return `PermissionDecision` (`ALLOW_ONCE`, `ALLOW_ALWAYS`, or `DENY`). Preserve the choice so the core can consume one-use grants without persisting them. OS refusal after app consent should throw rather than record a product denial. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+
+The browser container checks product consent before opening WebSockets or requesting camera and microphone access. After installing it, the WebChromeClient media callback should check only the Android OS permission, so it does not consume product consent twice.
+
+To disable WebRTC, call `execution.setPermissionAuthorizationStatus` with a remote `WebRtc` request and `DENIED` before loading each product. This overrides saved grants and trusted-product auto-grants, which otherwise skip `remotePermission` callbacks.
+
+The vendored Android host retains its native HTTP checks for fetch, XHR and subresources. Its installer adds `nativeHttp: true` to the private bootstrap configuration in every frame before the container runs, disabling duplicate JavaScript HTTP checks. Embedders without native HTTP enforcement must leave this flag unset.
 
 Identity and account access reviews use `confirmPermission(review)`, which also returns `PermissionDecision`. Override it to preserve Allow once. Its compatibility default maps `confirmUserAction`'s Boolean approval to `ALLOW_ALWAYS`; signing and other single-action reviews continue to use that Boolean callback.
 
@@ -261,6 +275,7 @@ import android.os.Looper
 import android.webkit.WebView
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import io.parity.truapi.ContainerScriptBundle
 import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
@@ -382,6 +397,10 @@ val runtimeConfig = HostRuntimeConfig(
     localSessionSecret = null,
 )
 val runtime = TrUAPIHostRuntime(bridge, runtimeConfig)
+check(WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+    "WebView lacks DOCUMENT_START_SCRIPT"
+}
+val container = ContainerScriptBundle.load(webView.context)
 val execution = runtime.openProductExecution(
     bridge = bridge,
     configuration = ProductExecutionConfig("my-product.dot", ProductExecutionKind.APP),
@@ -395,25 +414,18 @@ execution.notifyPreimageChanged(preimageKey, preimageBytesOrNull)
 runtime.notifyChainResponse(chainConnectionId, jsonRpcResponse)
 runtime.notifyChainClosed(chainConnectionId)
 
-// Publish the bridge endpoint to the product page. Install the bootstrap as a
-// DOCUMENT-START script so it runs in the destination document before the page
-// scripts — `evaluateJavascript` runs in the CURRENT document, which the
-// following `loadUrl` replaces, so the product would lose the endpoint. Scope
-// it to the product origin. The page reads `window.__truapi_localhost.url` and
-// passes it to `@parity/truapi`'s `createWebSocketProvider`.
-// This publishes the endpoint only. Android's current embedding does not
-// install the shared container, so it does not yet enforce its per-fetch or
-// per-peer-connection Rust permission checks.
+// Install before loading: evaluateJavascript targets the current document,
+// which loadUrl replaces. Only the product main frame receives its endpoint;
+// every frame needs the container so child frames cannot bypass its gates.
 val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token)
 main.post {
     val productUrl = "https://your-product.example/"
-    if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-        WebViewCompat.addDocumentStartJavaScript(
-            webView,
-            bootstrap,
-            setOf("https://your-product.example"), // origin allowlist
-        )
-    }
+    WebViewCompat.addDocumentStartJavaScript(
+        webView,
+        "if (window === window.top) {\n$bootstrap\n}",
+        setOf("https://your-product.example"),
+    )
+    WebViewCompat.addDocumentStartJavaScript(webView, container, setOf("*"))
     webView.loadUrl(productUrl)
 }
 

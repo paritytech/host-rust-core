@@ -71,6 +71,7 @@ jobs:
       - name: Generate the TypeScript client
         run: |
           npm ci --ignore-scripts
+          npm ci --prefix js/container --ignore-scripts
           ./scripts/codegen.sh
 
       - name: Bundle and test the runner

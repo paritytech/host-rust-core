@@ -70,11 +70,13 @@ checks permissions for the calling product execution. A direct product call
 can consume that execution's one-use grant. `ProductExecutionKind` describes
 App, Widget or Worker entrypoints, not whether the caller is the container.
 
-The shared container in [#828](https://github.com/paritytech/host-rust-core/pull/828)
-captures its authorization transport before product code runs and keeps the
-response handler private. Its wrappers trust replies from that channel,
-separate from public SDK replies. This browser enforcement lands with the
-container change, separately from the Rust authorization methods in #827.
+The shared container authorizes operations through generated internal SDK
+methods, using the SDK's codecs, request handling and cancellation. Internal
+methods and their transport references are protected; public product methods
+remain replaceable. Before product code runs, the container freezes the shared
+constructors and prototypes used by authorization and prevents extensions to
+`Object.prototype`. Products cannot monkey-patch these shared dependencies.
+Approved fetches retain native redirect behavior.
 
 ### Updated Type Definitions
 

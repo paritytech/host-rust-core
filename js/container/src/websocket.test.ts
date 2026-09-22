@@ -110,7 +110,6 @@ function gated(factory?: (win: any) => any) {
         cancelled++;
       };
     },
-    'ws://127.0.0.1:9000/?t=secret',
     factory?.(context.win),
   );
   return { ...context, requests, cancellations: () => cancelled };
@@ -245,15 +244,19 @@ describe('WebSocket connection permission', () => {
     expect(order).toEqual(['first', 'replacement', 'last', 'first', 'last']);
   });
 
-  it('permits only the exact bridge URL without authorization and closes constructor recovery', () => {
+  it('requires permission even for the known bridge URL and keeps constructors gated', () => {
     const { win, requests, connections, NativeSocket } = gated();
     const internal = new win.WebSocket('ws://127.0.0.1:9000/?t=secret');
-    expect([requests.length, connections.length]).toEqual([0, 1]);
+    expect([requests.length, connections.length]).toEqual([1, 0]);
     expect(internal.constructor).toBe(win.WebSocket);
     new internal.constructor('wss://api.example');
     new win.WebSocket.prototype.constructor('wss://second.example');
     new win.WebSocket('ws://127.0.0.1:9000/?t=other');
-    expect([requests.length, connections.length]).toEqual([3, 1]);
+    expect([requests.length, connections.length]).toEqual([4, 0]);
+    requests[0]!.decide(true);
+    expect(connections.map(connection => connection.url)).toEqual([
+      'ws://127.0.0.1:9000/?t=secret',
+    ]);
     expect(Object.getPrototypeOf(win.WebSocket)).not.toBe(NativeSocket);
     expect([
       win.WebSocket.CONNECTING,

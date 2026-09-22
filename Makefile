@@ -395,7 +395,7 @@ dev-link-check: dotli-link ## Verify dotli can resolve the local @parity/truapi-
 	@node -e 'const fs = require("node:fs"); const checks = [["$(DOTLI_TRUAPI_LINK)/package.json", "@parity/truapi"], ["$(DOTLI_HOST_WASM_LINK)/package.json", "@parity/truapi-host"]]; for (const [path, name] of checks) { const pkg = JSON.parse(fs.readFileSync(path, "utf8")); if (pkg.name !== name) { console.error(path + " resolves " + pkg.name + ", expected local " + name + ". Run: make dotli-link"); process.exit(1); } }'
 	cd $(DOTLI_UI) && bun -e 'await import("@parity/truapi-host"); await import("@parity/truapi-host/web");'
 
-dev-cli: ## Start the playground (:3000) against the local signing-host CLI; open http://localhost:3000
+dev-cli: cli-runner ## Start the playground (:3000) against the local signing-host CLI; open http://localhost:3000
 	cargo build --release -p truapi-host-cli
 	cd $(PLAYGROUND) && "$(abspath target/release/truapi-host)" dev -- yarn dev
 
@@ -411,7 +411,7 @@ e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local s
 	cargo build -p truapi-host-cli
 	cd $(PLAYGROUND) && bun tests/e2e/dotli-diagnosis.ts
 
-e2e-cli-diagnosis: ## Full playground diagnosis in a plain browser tab, hosted by `truapi-host dev`.
+e2e-cli-diagnosis: cli-runner ## Full playground diagnosis in a plain browser tab, hosted by `truapi-host dev`.
 	cargo build --release -p truapi-host-cli
 	cd $(PLAYGROUND) && TRUAPI_HOST_BIN="$(abspath target/release/truapi-host)" bun tests/e2e/cli-diagnosis.ts
 

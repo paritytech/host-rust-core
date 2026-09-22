@@ -14,14 +14,14 @@
 //     key-value backends the host persists.
 //   * `TrUAPIHostRuntime` / `TrUAPIProductExecution` - process-owned host state
 //     and independently scoped product connections.
-//   * `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge
-//     endpoint to the product page so it can dial back in.
+//   * `LocalhostBridgeBootstrap` - private endpoint configuration consumed by
+//     the shared browser container before product scripts run.
 //
 // Products running inside a `WebView` connect to the Rust core via the
 // localhost WebSocket bridge. Start it with `execution.startWsBridge()` and load
-// the product page with a `LocalhostBridgeBootstrap.script(...)` snippet
-// injected at document start so the page's `@parity/truapi`
-// `createWebSocketProvider` can dial `ws://127.0.0.1:<port>/?t=<token>`.
+// the product page after injecting `LocalhostBridgeBootstrap.script(...)` and
+// `ContainerScriptBundle.load(...)` at document start. The container publishes
+// `window.__HOST_API_CLIENT__` and a compatibility MessagePort for older SDKs.
 
 package io.parity.truapi
 
@@ -47,6 +47,7 @@ import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.HostRendererActionSubscribeItem
 import uniffi.truapi.ProductRendererRenderRequest
 import uniffi.truapi.RemotePermission
+import uniffi.truapi.RemotePermissionRequest
 import uniffi.truapi.RendererNode
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.ThemeName
@@ -75,6 +76,7 @@ import uniffi.truapi_server.ProductRuntimeException
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
+import uniffi.truapi_server.localhostBridgeBootstrapScript
 import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
@@ -704,123 +706,11 @@ private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : Nati
  */
 object LocalhostBridgeBootstrap {
     /**
-     * Returns a `<script>`-injectable snippet that publishes the endpoint
-     * metadata on `window.__truapi_localhost`, exposes the legacy
-     * `window.__HOST_API_PORT__` webview transport shape, and fires a
-     * `truapi-native-ready` event. Inject at document start (before the product
-     * page scripts run) so the page can dial the bridge immediately.
+     * Supplies the WebSocket endpoint to the shared browser container.
+     * Inject at document start, before the container and product scripts.
      */
-    fun script(port: UShort, token: String): String {
-        val url = "ws://127.0.0.1:$port/?t=$token"
-        val safeUrl = jsStringLiteral(url)
-        val safeToken = jsStringLiteral(token)
-        return """
-        (function() {
-          var endpoint = { url: $safeUrl, token: $safeToken };
-
-          function createWebSocketMessagePort(url) {
-            var socket = null;
-            var started = false;
-            var queue = [];
-
-            var port = {
-              onmessage: null,
-              onmessageerror: null,
-
-              postMessage: function(message) {
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                  socket.send(message);
-                } else {
-                  queue.push(message);
-                }
-              },
-
-              start: function() {
-                if (started) return;
-                started = true;
-
-                socket = new WebSocket(url);
-                socket.binaryType = "arraybuffer";
-
-                socket.onopen = function() {
-                  var pending = queue;
-                  queue = [];
-                  pending.forEach(function(message) {
-                    socket.send(message);
-                  });
-                };
-
-                socket.onmessage = function(event) {
-                  if (typeof port.onmessage === "function") {
-                    port.onmessage({ data: new Uint8Array(event.data) });
-                  }
-                };
-
-                socket.onerror = function() {
-                  if (typeof port.onmessageerror === "function") {
-                    port.onmessageerror();
-                  }
-                };
-
-                socket.onclose = function() {
-                  if (typeof port.onmessageerror === "function") {
-                    port.onmessageerror();
-                  }
-                };
-              },
-
-              close: function() {
-                queue = [];
-                if (socket) {
-                  socket.close();
-                }
-              }
-            };
-
-            return port;
-          }
-
-          window.__truapi_localhost = endpoint;
-          window.__HOST_WEBVIEW_MARK__ = true;
-          window.__HOST_API_PORT__ = createWebSocketMessagePort(endpoint.url);
-          window.dispatchEvent(new Event('truapi-native-ready'));
-        })();
-        """.trimIndent()
-    }
-
-    /**
-     * Encodes [value] as a complete double-quoted JavaScript string literal,
-     * safe to embed inside a `<script>` body. Escapes quotes, backslashes,
-     * control characters, `/` (closing `</script` tags), and the U+2028 /
-     * U+2029 line terminators that JS treats as newlines.
-     */
-    private fun jsStringLiteral(value: String): String {
-        val sb = StringBuilder(value.length + 2)
-        sb.append('"')
-        for (ch in value) {
-            when (ch.code) {
-                '"'.code -> sb.append("\\\"")
-                '\\'.code -> sb.append("\\\\")
-                '/'.code -> sb.append("\\/")
-                0x0A -> sb.append("\\n")
-                0x0D -> sb.append("\\r")
-                0x09 -> sb.append("\\t")
-                0x08 -> sb.append("\\b")
-                0x0C -> sb.append("\\f")
-                0x2028 -> sb.append("\\u2028")
-                0x2029 -> sb.append("\\u2029")
-                else ->
-                    if (ch.code < 0x20) {
-                        sb.append("\\u")
-                        sb.append(ch.code.toString(16).padStart(4, '0'))
-                    } else {
-                        sb.append(ch)
-                    }
-            }
-        }
-        sb.append('"')
-        return sb.toString()
-    }
+    fun script(port: UShort, token: String): String =
+        localhostBridgeBootstrapScript(port = port, token = token)
 }
 
 /**
@@ -1168,6 +1058,11 @@ class TrUAPIProductExecution internal constructor(
     suspend fun permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
     ): PermissionAuthorizationStatus = inner.permissionAuthorizationStatus(request)
+
+    /** Authorize one native network operation, consuming an existing Allow once grant. */
+    @Throws(HostRejection::class)
+    suspend fun authorizeRemotePermission(request: RemotePermissionRequest): Boolean =
+        inner.authorizeRemotePermission(request)
 
     /**
      * Update a stored permission authorization status. Passing `NotDetermined`

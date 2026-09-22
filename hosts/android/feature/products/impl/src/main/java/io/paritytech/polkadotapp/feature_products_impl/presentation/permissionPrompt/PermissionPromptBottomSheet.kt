@@ -18,6 +18,15 @@ class PermissionPromptBottomSheet : BaseComposeBottomSheet<PermissionPromptViewM
         bottomSheetBehavior?.isDraggable = false
     }
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.onResume()
+    }
+
     @Composable
     override fun Screen() = PermissionPromptScreen(viewModel)
+
+    companion object {
+        const val REQUEST_ID = "permissionRequestId"
+    }
 }

@@ -11,6 +11,60 @@ import WebKit
 @MainActor
 struct ProductNetworkAccessTests {
     @Test(.timeLimit(.minutes(1)))
+    func retainedClientAndFetchRecoverWithoutLifecycleCallbacks() async throws {
+        let product = try await NetworkTestProduct.open(initialScripts: ["""
+            const NativeSocket = WebSocket;
+            const closeSocket = NativeSocket.prototype.close;
+            window.WebSocket = new Proxy(NativeSocket, {
+              construct(target, args) {
+                const socket = Reflect.construct(target, args);
+                window.__testDisconnectHost = () => closeSocket.call(socket);
+                return socket;
+              }
+            });
+            """])
+        defer { product.close() }
+        try product.execution.setPermissionAuthorizationStatus(
+            request: .remote(RemotePermissionRequest(permission: .remote(domains: ["127.0.0.1"]))),
+            status: .authorized
+        )
+        let remote = product.server.url(host: "127.0.0.1", path: "/allowed")
+        let result = try await withNetworkTestTimeout("retained client recovery") {
+            try await product.webView.callAsyncJavaScript("""
+                const host = window.__HOST_API_CLIENT__;
+                const client = host.client;
+                const statuses = [];
+                host.subscribeConnectionStatus(status => statuses.push(status));
+                (await client.system.handshake())._unsafeUnwrap();
+                const results = [];
+                let interrupted = 0;
+                for (let cycle = 0; cycle < 2; cycle++) {
+                  client.theme.subscribe().subscribe({ error() { interrupted++; } });
+                  const disconnected = new Promise(resolve => {
+                    const unsubscribe = host.subscribeConnectionStatus(status => {
+                      if (status === 'disconnected') { unsubscribe(); resolve(); }
+                    });
+                  });
+                  window.__testDisconnectHost();
+                  await disconnected;
+                  (await client.system.handshake())._unsafeUnwrap();
+                  results.push(await (await fetch(url)).text());
+                }
+                return JSON.stringify({
+                  sameClient: host.client === client,
+                  interrupted,
+                  resets: statuses.filter(status => status === 'disconnected').length,
+                  results,
+                });
+                """, arguments: ["url": remote.absoluteString], in: nil, contentWorld: .page) as? String
+        }
+        #expect(result == """
+            {"sameClient":true,"interrupted":2,"resets":2,"results":["allowed","allowed"]}
+            """)
+        #expect(product.server.requests(path: "/allowed") == 2)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func fetchUsesRustPermissionsAndPreservesNativeRedirects() async throws {
         let product = try await NetworkTestProduct.open()
         defer { product.close() }
@@ -226,6 +280,8 @@ private struct NetworkTestProduct {
             )
             let ready = ProductPageReady()
             let configuration = WKWebViewConfiguration()
+            // Local fixtures must not wait for Safari's Safe Browsing database.
+            configuration.preferences.isFraudulentWebsiteWarningEnabled = false
             configuration.userContentController.add(ready, name: "testReady")
             for source in initialScripts {
                 configuration.userContentController.addUserScript(WKUserScript(
