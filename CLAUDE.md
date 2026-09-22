@@ -21,8 +21,15 @@ js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
   truapi-host/            @parity/truapi-host: WASM-backed host runtime. Subpath entries:
                           `.` (shared host types), `/web` (iframe + Web
-                          Worker), `/worker-runtime` (Worker entry).
-                          WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
+                          Worker), `/worker-runtime` (Worker entry), and the
+                          test host `/testing` (createMockHost),
+                          `/testing/playwright` (fixture), `/testing/server`
+                          (node server), `/testing/client` (no-iframe client),
+                          `/testing/dev-accounts`, `/testing/host-page`.
+                          Two WASM bundles (gitignored) under dist/wasm/, built
+                          via `make wasm`: `web/` is the production browser host
+                          and `testing/` adds the `wasm-signing-host` and
+                          `test-host` Cargo features the test host needs
   truapi-debugger/        @parity/truapi-debugger (published to npm): the debugger.
                           Owns all decoding of the wire frames the Rust host tap
                           (truapi-server's DebugSink) streams out, and decodes

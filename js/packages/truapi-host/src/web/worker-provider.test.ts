@@ -1871,3 +1871,54 @@ describe("worker demand", () => {
     runtime.dispose();
   });
 });
+
+// The worker gained an optional host role so a test host can run a signing
+// host in it. The property that makes that safe is that it is additive: a host
+// that does not ask for a role must put exactly the same thing on the wire as
+// it did before, and the worker must read an absent role as "pairing". These
+// assert that rather than trusting it.
+describe("worker host role", () => {
+  it("omits the role for a host that does not ask for one", async () => {
+    const worker = new FakeWorker();
+    const config = runtimeConfig();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      { logLevel: "debug", runtimeConfig: config },
+    );
+
+    worker.emit({ kind: "loaded" });
+    const init = worker.messages[0] as { kind: string; role?: unknown };
+    expect(init.kind).toBe("init");
+    // Not merely "not signing": absent, so the message a pairing host sends is
+    // byte-for-byte what it sent before the field existed.
+    expect(init.role).toBeUndefined();
+    expect(Object.hasOwn(init, "role") ? init.role : undefined).toBeUndefined();
+
+    worker.emit({ kind: "ready" });
+    await settle();
+    await finishProviderReady(worker, providerPromise).catch(() => {});
+  });
+
+  it("carries the role through when a host asks for a signing host", async () => {
+    const worker = new FakeWorker();
+    const config = runtimeConfig();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        logLevel: "debug",
+        runtimeConfig: config,
+        createWebWorkerPairingHostRuntime: (w, h, o) =>
+          createWebWorkerPairingHostRuntime(w, h, { ...o, role: "signing" }),
+      },
+    );
+
+    worker.emit({ kind: "loaded" });
+    expect((worker.messages[0] as { role?: unknown }).role).toBe("signing");
+
+    worker.emit({ kind: "ready" });
+    await settle();
+    await finishProviderReady(worker, providerPromise).catch(() => {});
+  });
+});
