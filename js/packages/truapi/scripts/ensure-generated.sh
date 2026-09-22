@@ -9,6 +9,7 @@ codegen_required=(
   "js/packages/truapi/src/generated/client.ts"
   "js/packages/truapi/src/generated/types.ts"
   "js/packages/truapi/src/generated/internal.ts"
+  "js/packages/truapi/src/generated/internal-client.ts"
   "js/packages/truapi/src/generated/wire-table.ts"
   "js/packages/truapi/src/generated/wire-decode.ts"
   "js/packages/truapi/src/playground/codegen/services.ts"

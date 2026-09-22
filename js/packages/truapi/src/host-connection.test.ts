@@ -3,10 +3,12 @@ import { createHostConnection } from "./host-connection.js";
 import { createClient } from "./generated/client.js";
 import { createTransport } from "./client.js";
 import {
+    ConnectionResetError,
     createMessagePortProvider,
     createWebSocketProviderFactory,
     decodeWireMessage,
     encodeWireMessage,
+    MESSAGE_TYPE_RECEIVE,
     type ProtocolMessage,
     type WebSocketWireProvider,
 } from "./transport.js";
@@ -373,42 +375,46 @@ describe("shared SDK connection failure timing", () => {
         expect(condition()).toBe(true);
     }
 
-    it("checks a stale OPEN socket before sending a side effect and bounds an unanswered check", async () => {
-        const fixture = controlledHost();
-        const client = fixture.connection.client;
-        const stale = fixture.sockets[0]!;
-        const initial = client.permissions.requestRemotePermission(permission);
-        stale.open();
-        await untilPrepared(() => stale.sent.length === 2);
-        stale.reply(stale.sent[1]!, Uint8Array.of(0, 0, 0));
-        expect((await initial)._unsafeUnwrap()).toEqual({ granted: false });
-        fixture.advance(10_001);
-        fixture.respond(false);
-        const navigation = Promise.resolve(
-            client.system.navigateTo({ url: "https://example.com" }),
-        ).catch((error) => error);
-        await untilPrepared(() => stale.sent.length === 3);
-        expect([stale.sent[2]!.payload.traitId, stale.sent[2]!.payload.methodId]).toEqual([
-            W.SYSTEM_HANDSHAKE.trait,
-            W.SYSTEM_HANDSHAKE.method,
-        ]);
-        expect(stale.readyState).toBe(WebSocket.OPEN);
-        fixture.advance(10_000);
-        expect((await navigation).name).toBe("ConnectionResetError");
-        fixture.respond(true);
-        fixture.advance(0);
-        fixture.sockets[1]!.open();
-        await untilPrepared(() => fixture.statuses.at(-1) === "connected");
-        expect(
-            fixture.sockets
-                .flatMap((socket) => socket.sent)
-                .filter(
-                    (message) =>
-                        message.payload.traitId === W.SYSTEM_NAVIGATE_TO.trait &&
-                        message.payload.methodId === W.SYSTEM_NAVIGATE_TO.method,
-                ),
-        ).toEqual([]);
-    });
+    it.each([0, -60_000])(
+        "checks a stale OPEN socket before sending a side effect after a %i ms clock adjustment",
+        async (clockAdjustment) => {
+            const fixture = controlledHost();
+            const client = fixture.connection.client;
+            const stale = fixture.sockets[0]!;
+            const initial = client.permissions.requestRemotePermission(permission);
+            stale.open();
+            await untilPrepared(() => stale.sent.length === 2);
+            stale.reply(stale.sent[1]!, Uint8Array.of(0, 0, 0));
+            expect((await initial)._unsafeUnwrap()).toEqual({ granted: false });
+            jest.setSystemTime(Date.now() + clockAdjustment);
+            fixture.advance(10_001);
+            fixture.respond(false);
+            const navigation = Promise.resolve(
+                client.system.navigateTo({ url: "https://example.com" }),
+            ).catch((error) => error);
+            await untilPrepared(() => stale.sent.length === 3);
+            expect([stale.sent[2]!.payload.traitId, stale.sent[2]!.payload.methodId]).toEqual([
+                W.SYSTEM_HANDSHAKE.trait,
+                W.SYSTEM_HANDSHAKE.method,
+            ]);
+            expect(stale.readyState).toBe(WebSocket.OPEN);
+            fixture.advance(10_000);
+            expect((await navigation).name).toBe("ConnectionResetError");
+            fixture.respond(true);
+            fixture.advance(0);
+            fixture.sockets[1]!.open();
+            await untilPrepared(() => fixture.statuses.at(-1) === "connected");
+            expect(
+                fixture.sockets
+                    .flatMap((socket) => socket.sent)
+                    .filter(
+                        (message) =>
+                            message.payload.traitId === W.SYSTEM_NAVIGATE_TO.trait &&
+                            message.payload.methodId === W.SYSTEM_NAVIGATE_TO.method,
+                    ),
+            ).toEqual([]);
+        },
+    );
 
     it("bounds a failed opening without a retry loop and leaves a later call free to reconnect", async () => {
         const fixture = controlledHost();
@@ -443,6 +449,151 @@ describe("shared SDK connection failure timing", () => {
         fixture.advance(120_000);
         expect(fixture.sockets).toHaveLength(2);
     });
+
+    it("wakes existing subscription listeners when a failed background replacement becomes visible", async () => {
+        const previousDocument = globalThis.document;
+        const document = Object.assign(new EventTarget(), { visibilityState: "visible" });
+        globalThis.document = document as unknown as Document;
+        cleanup.push(() => {
+            if (previousDocument) globalThis.document = previousDocument;
+            else delete (globalThis as { document?: Document }).document;
+        });
+        const fixture = controlledHost();
+        const client = fixture.connection.client;
+        const items: T.HostAccountConnectionStatusSubscribeItem[] = [];
+        let waiting = false;
+        function watch() {
+            waiting = false;
+            client.account.connectionStatusSubscribe().subscribe({
+                next: (item) => items.push(item),
+                error: (error) => {
+                    waiting = error.cause instanceof ConnectionResetError;
+                },
+            });
+        }
+        fixture.connection.subscribeConnectionStatus((status) => {
+            if (status === "connected" && waiting) watch();
+        });
+        watch();
+        fixture.sockets[0]!.open();
+        await untilPrepared(() => fixture.sockets[0]!.sent.length === 2);
+        document.visibilityState = "hidden";
+        document.dispatchEvent(new Event("visibilitychange"));
+        fixture.sockets[0]!.close();
+        fixture.advance(0);
+        fixture.sockets[1]!.close();
+        await untilPrepared(() => fixture.statuses.at(-1) === "disconnected");
+        fixture.advance(120_000);
+        expect(fixture.sockets).toHaveLength(2);
+
+        document.visibilityState = "visible";
+        document.dispatchEvent(new Event("visibilitychange"));
+        expect(fixture.sockets).toHaveLength(3);
+        const replacement = fixture.sockets[2]!;
+        replacement.open();
+        await untilPrepared(() => replacement.sent.length === 2);
+        const subscription = replacement.sent[1]!;
+        replacement.receive({
+            ...subscription,
+            payload: {
+                ...subscription.payload,
+                messageType: MESSAGE_TYPE_RECEIVE,
+                value: T.VersionedHostAccountConnectionStatusSubscribeItem.enc({
+                    tag: "V1",
+                    value: "Connected",
+                }),
+            },
+        });
+        expect({ items, waiting, client: fixture.connection.client }).toEqual({
+            items: ["Connected"],
+            waiting: false,
+            client,
+        });
+
+        fixture.connection.dispose();
+        document.dispatchEvent(new Event("visibilitychange"));
+        fixture.advance(120_000);
+        expect({ sockets: fixture.sockets.length, status: fixture.statuses.at(-1) }).toEqual({
+            sockets: 3,
+            status: "disconnected",
+        });
+    });
+
+    it("preserves a rejected handshake as the cause of interrupted calls", async () => {
+        const fixture = controlledHost();
+        fixture.respond(false);
+        const client = fixture.connection.client;
+        const pending = Promise.resolve(
+            client.permissions.requestRemotePermission(permission),
+        ).catch((error) => error);
+        fixture.sockets[0]!.open();
+        await untilPrepared(() => fixture.sockets[0]!.sent.length === 1);
+        const cause = {
+            tag: "Domain",
+            value: { tag: "V1", value: { tag: "UnsupportedProtocolVersion" } },
+        } as const;
+        fixture.sockets[0]!.reply(
+            fixture.sockets[0]!.sent[0]!,
+            S.Result(
+                T.VersionedHostHandshakeResponse,
+                S.CallError(T.VersionedHostHandshakeError),
+            ).enc({ success: false, value: cause }),
+        );
+        const error = await pending;
+        expect(error).toBeInstanceOf(ConnectionResetError);
+        expect(error.cause).toEqual(cause);
+    });
+
+    const malformedFrames = [
+        ["wire envelope", new Uint8Array()],
+        [
+            "protocol-error payload",
+            encodeWireMessage({
+                requestId: "host:malformed",
+                payload: { traitId: 255, methodId: 255, messageType: 1, value: new Uint8Array() },
+            })._unsafeUnwrap(),
+        ],
+    ] as const;
+    it.each(
+        malformedFrames.flatMap(([name, frame]) =>
+            [false, true].map((legacyPort) => [name, legacyPort, frame] as const),
+        ),
+    )(
+        "recovers from a malformed %s without approving permissions (legacy port: %s)",
+        async (_name, legacyPort, frame) => {
+            const fixture = controlledHost();
+            const client = fixture.connection.client;
+            if (legacyPort) {
+                const port = fixture.connection.legacyPort;
+                cleanup.push(() => port.close());
+            }
+            fixture.sockets[0]!.open();
+            await untilPrepared(() => fixture.statuses.at(-1) === "connected");
+            const pending = Promise.resolve(
+                fixture.connection.internal.permissions.authorizeRemotePermission(permission),
+            ).catch((error) => error);
+            await untilPrepared(() => fixture.sockets[0]!.sent.length === 2);
+            fixture.sockets[0]!.dispatchEvent(new MessageEvent("message", { data: frame.buffer }));
+            const error = await pending;
+            expect(error).toBeInstanceOf(ConnectionResetError);
+            expect(error.cause).toBeInstanceOf(Error);
+            fixture.advance(0);
+            const replacement = fixture.sockets[1]!;
+            replacement.open();
+            await untilPrepared(() => fixture.statuses.at(-1) === "connected");
+            const fresh =
+                fixture.connection.internal.permissions.authorizeRemotePermission(permission);
+            await untilPrepared(() => replacement.sent.length === 2);
+            replacement.reply(replacement.sent[1]!, Uint8Array.of(0, 0, 0));
+            expect({
+                decision: (await fresh)._unsafeUnwrap(),
+                client: fixture.connection.client,
+            }).toEqual({
+                decision: { granted: false },
+                client,
+            });
+        },
+    );
 
     it("ignores replies and errors from retired sockets through repeated resets", async () => {
         const fixture = controlledHost();

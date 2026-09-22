@@ -138,8 +138,8 @@ dependency. The UniFFI bindings and the container bundle are gitignored build
 outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
-The native bootstrap's temporary port adapter supports deployed products using
-older SDKs. Its removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
+The container publishes the shared client and a temporary MessagePort adapter for
+older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
 CLI and iframe MessagePort transports remain supported.
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
@@ -271,11 +271,14 @@ reaches it through a development-only `<script>` tag:
 )}
 ```
 
-The host serves that script itself, so the page needs no SDK update, no imports,
-and no environment variables. It installs the SDK bridge and the shared browser
-container before product code runs. Keep the tag before application scripts, without `async` or `defer`.
-The container shares one connection for SDK calls and permission checks. Reload
-the page after a disconnect. It routes fetch, XHR and WebSocket permission checks to Rust.
+The host serves that script itself, with no imports or environment variables
+needed. It installs the shared client and browser container before product code
+runs. Keep the tag before application scripts, without `async` or `defer`.
+SDK calls and permission checks share one connection. Updated SDKs reuse the
+injected client across reconnects; older SDKs can still start through the
+MessagePort adapter but require a page reload after a disconnect.
+After a failed reconnect, the next API call or return to a visible page tries again.
+The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission
 checks support development testing; product code can deliberately bypass them.

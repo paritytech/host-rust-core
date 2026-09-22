@@ -43,6 +43,7 @@ export function createHostConnection(
     url: string,
   ) => WebSocketWireProvider = createWebSocketProviderFactory(),
 ): HostConnection {
+  const now = performance.now.bind(performance);
   let current: Connection | undefined;
   let stopped = false;
   let receive: ((frame: Uint8Array) => void) | undefined;
@@ -65,14 +66,14 @@ export function createHostConnection(
     }
   }
 
-  function retire(connection: Connection): void {
+  function retire(connection: Connection, cause?: unknown): void {
     if (current !== connection) return;
     current = undefined;
     const oldLegacy = legacy;
     legacy = undefined;
     oldLegacy?.close();
     try {
-      reset?.(new ConnectionResetError());
+      reset?.(new ConnectionResetError({ cause }));
     } catch {
       /* Other callers must still recover. */
     }
@@ -95,33 +96,33 @@ export function createHostConnection(
     current = connection;
     provider.subscribe((frame) => {
       if (current !== connection) return;
-      connection.checkedAt = Date.now();
+      connection.checkedAt = now();
       if (legacy) {
         const decoded = decodeWireMessage(frame);
-        if (decoded.isErr()) return retire(connection);
+        if (decoded.isErr()) return retire(connection, decoded.error);
         if (!decoded.value.requestId.startsWith("host:"))
           return legacy.receive(frame);
       }
       receive?.(frame);
     });
-    provider.subscribeClose?.(() => retire(connection));
+    provider.subscribeClose?.((error) => retire(connection, error));
     setStatus("connecting");
     return connection;
   }
 
   function ready(connection: Connection): Promise<void> {
-    if (connection.verified && Date.now() - connection.checkedAt < 10_000)
+    if (connection.verified && now() - connection.checkedAt < 10_000)
       return Promise.resolve();
     return (connection.checking ??= Promise.resolve(handshake())
       .then((result) => {
-        if (result.isErr() || current !== connection)
-          throw new ConnectionResetError();
+        if (result.isErr()) throw result.error;
+        if (current !== connection) throw new ConnectionResetError();
         connection.verified = true;
-        connection.checkedAt = Date.now();
+        connection.checkedAt = now();
         setStatus("connected");
       })
       .catch((error) => {
-        retire(connection);
+        retire(connection, error);
         throw error;
       })
       .finally(() => {
@@ -137,7 +138,14 @@ export function createHostConnection(
     }
   }
 
+  const page = typeof document === "undefined" ? undefined : document;
+  const onVisibilityChange = () => {
+    if (page?.visibilityState === "visible") activate();
+  };
+  page?.addEventListener("visibilitychange", onVisibilityChange);
+
   function stop(): void {
+    page?.removeEventListener("visibilitychange", onVisibilityChange);
     stopped = true;
     if (current) retire(current);
   }
@@ -149,8 +157,8 @@ export function createHostConnection(
         if (!connection) return;
         try {
           connection.provider.postMessage(frame);
-        } catch {
-          retire(connection);
+        } catch (error) {
+          retire(connection, error);
         }
       },
       subscribe(callback) {
@@ -169,6 +177,9 @@ export function createHostConnection(
     },
     {
       requestIdPrefix: "host:",
+      onProtocolError(error) {
+        if (current) retire(current, error);
+      },
       prepare(ids) {
         const connection = open();
         return ids.trait === SYSTEM_HANDSHAKE.trait &&
@@ -209,8 +220,8 @@ export function createHostConnection(
           return;
         try {
           current.provider.postMessage(frame);
-        } catch {
-          if (current) retire(current);
+        } catch (error) {
+          if (current) retire(current, error);
         }
       };
       try {

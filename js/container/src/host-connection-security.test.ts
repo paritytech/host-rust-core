@@ -181,6 +181,24 @@ afterEach(() => {
 });
 
 describe('shared connection permission isolation', () => {
+  it.each(['value', 'get'])('keeps permission replies private with poisoned Object.prototype %s properties', async property => {
+    const host = browser();
+    runInContext(`
+      globalThis.exposed = [];
+      const intercept = function () { exposed.push(this); this.granted = true; };
+      globalThis.poisoned = Object.getOwnPropertyNames(Object.prototype).every(name =>
+        Reflect.defineProperty(Object.prototype, name, { ${property}: intercept }));
+    `, host.context);
+    await host.connect();
+    const decision = host.authorize();
+    await until(() => permissionRequests(host.sockets[0]!).length === 1);
+    host.sockets[0]!.reply(reply(permissionRequests(host.sockets[0]!)[0]!, false));
+    expect({ decision: (await decision)._unsafeUnwrap(), poisoned: host.context.poisoned,
+      exposed: host.context.exposed }).toEqual({
+      decision: { granted: false }, poisoned: true, exposed: [],
+    });
+  });
+
   it('locks messaging and clock APIs before products can intercept later connections', async () => {
     const host = browser();
     expect(runInContext(`
@@ -271,6 +289,8 @@ describe('shared connection permission isolation', () => {
         () => { Uint8Array.prototype.set = function () { exposed.push(this); }; },
       ]) { try { poison(); } catch {} }
       globalThis.WebSocket = function () { throw new Error('constructor intercepted'); };
+      performance.now = () => { exposed.push('clock'); throw new Error('clock intercepted'); };
+      globalThis.performance = { now() { exposed.push('clock'); throw new Error('clock replaced'); } };
       window.WebSocket.prototype.send = function () { throw new Error('send intercepted'); };
       window.WebSocket.prototype.close = function () { throw new Error('close intercepted'); };
       EventTarget.prototype.addEventListener = function () { throw new Error('listener intercepted'); };

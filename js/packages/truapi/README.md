@@ -125,6 +125,10 @@ old chain handles before resuming work. Registered host-initiated handlers remai
 installed. Older SDKs use a small MessagePort adapter and require a page reload
 after disconnect.
 
+The shared connection attempts one immediate reconnect. If that fails, the next
+API call or return to a visible page tries again. A product that stays visible
+and only waits for connection status will not trigger further retries.
+
 ### Hosts on a WebSocket
 
 For a direct connection to a loopback host such as

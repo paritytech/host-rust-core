@@ -30,8 +30,8 @@ export class UnsupportedMessageError extends Error {
 
 /** The host connection ended; interrupted operations are not retried. */
 export class ConnectionResetError extends Error {
-  constructor() {
-    super("TrUAPI host connection interrupted");
+  constructor(options?: ErrorOptions) {
+    super("TrUAPI host connection interrupted", options);
     this.name = "ConnectionResetError";
   }
 }

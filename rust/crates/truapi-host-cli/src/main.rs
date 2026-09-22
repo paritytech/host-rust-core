@@ -57,8 +57,8 @@ use truapi_server::host_logic::dotns_gateway::{
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
-    AnnouncedPairing, PairedSsoPeer, PairingHostConfig, PairingHostRuntime, ResponderExit,
-    SigningHostConfig, SigningHostRuntime, StatementRenewalTarget,
+    AnnouncedPairing, PairedSsoPeer, PairingHostConfig, PairingHostRuntime, PairingProposal,
+    ResponderExit, SigningHostConfig, SigningHostRuntime, StatementRenewalTarget,
 };
 
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
@@ -1727,45 +1727,18 @@ where
 }
 
 fn paired_host_from_deeplink(deeplink: &str) -> Result<PairedHost> {
-    use truapi_server::host_logic::sso::pairing::{
-        VersionedHandshakeProposal, decode_pairing_deeplink, v2::MetadataKey,
-    };
-
-    let VersionedHandshakeProposal::V2(proposal) =
-        decode_pairing_deeplink(deeplink).map_err(anyhow::Error::msg)?;
-    let mut metadata = PairedHostMetadata::default();
-    for entry in proposal.metadata {
-        let value = safe_display_metadata(entry.1);
-        match entry.0 {
-            MetadataKey::HostName => metadata.host_name = value,
-            MetadataKey::HostVersion => metadata.host_version = value,
-            MetadataKey::HostIcon => metadata.host_icon = value,
-            MetadataKey::PlatformType => metadata.platform_type = value,
-            MetadataKey::PlatformVersion => metadata.platform_version = value,
-            MetadataKey::Custom(_) => {}
-        }
-    }
+    let proposal = PairingProposal::from_deeplink(deeplink).map_err(anyhow::Error::msg)?;
     Ok(PairedHost::new(
-        proposal.device.statement_account_id,
-        proposal.device.encryption_public_key,
-        metadata,
+        proposal.peer.statement_account_id,
+        proposal.peer.encryption_public_key,
+        PairedHostMetadata {
+            host_name: proposal.metadata.host_name,
+            host_version: proposal.metadata.host_version,
+            host_icon: proposal.metadata.host_icon,
+            platform_type: proposal.metadata.platform_type,
+            platform_version: proposal.metadata.platform_version,
+        },
     ))
-}
-
-fn safe_display_metadata(value: String) -> Option<String> {
-    let value = value
-        .trim()
-        .chars()
-        .filter(|character| {
-            !character.is_control()
-                && !matches!(
-                    character,
-                    '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-                )
-        })
-        .take(512)
-        .collect::<String>();
-    (!value.is_empty()).then_some(value)
 }
 
 fn paired_sso_peer(host: &PairedHost) -> PairedSsoPeer {

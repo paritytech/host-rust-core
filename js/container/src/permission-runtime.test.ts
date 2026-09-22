@@ -130,6 +130,19 @@ describe('permission runtime protection', () => {
     expect(await runInContext('authorize()', context)).toEqual({ granted: false });
   });
 
+  it('allows product objects to define their own primitive conversions in strict mode', () => {
+    const context = browser();
+    expect(runInContext(`
+      (() => {
+        'use strict';
+        const amount = {};
+        amount.toString = () => '12 DOT';
+        amount.valueOf = () => 12;
+        return { text: String(amount), value: Number(amount) };
+      })();
+    `, context)).toEqual({ text: '12 DOT', value: 12 });
+  });
+
   it('keeps the shared native call protected when functions may have their own call', async () => {
     const context = browser();
     expect(runInContext(`

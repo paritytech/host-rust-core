@@ -486,14 +486,14 @@ The product includes a development-only blocking tag before product code:
 <script src="http://127.0.0.1:9955/bootstrap.js"></script>
 ```
 
-The script installs the shared browser container and publishes a real
-`window.__HOST_API_PORT__` MessagePort. SDK calls and authorization requests
-share one WebSocket and one Rust execution, so an Allow once grant can be
-consumed by the corresponding network request. The container consumes
-`window.__truapi_localhost` during startup; products use the MessagePort.
-HTTP and WebSocket share the same TCP port. On disconnect the container replaces
-the port. SDKs with managed-port support keep the same client; older SDKs require
-a page reload. Interrupted calls fail, subscriptions end, and neither is replayed.
+The script installs the shared browser container and publishes
+`window.__HOST_API_CLIENT__`. SDK calls and authorization requests use this
+stable client, sharing one WebSocket and one Rust execution. The container
+consumes `window.__truapi_localhost` during startup. HTTP and WebSocket share the
+same TCP port. After a disconnect, the SDK replaces the socket. Interrupted calls
+fail, subscriptions end, and neither is replayed. Older SDKs use the compatibility
+`window.__HOST_API_PORT__` MessagePort, which requires a page reload after a
+disconnect.
 Production builds must omit the tag.
 
 On Unix the wrapped command is the leader of a process group retained by the
@@ -1639,11 +1639,11 @@ consistent. The HTTP response does not grant cross-origin access; browser frame
 access is enforced during the later WebSocket handshake.
 
 The browser SDK and sandbox permission checks share one WebSocket and its
-`ProductRuntime`, as `/script` does. The shared browser container owns the socket
-and reserves private request IDs for permission decisions and health checks.
-Product frames cannot use those IDs, and permission replies never reach product
-listeners. Browser permission callbacks retain captured primitives so changing
-product-side JavaScript objects cannot forge a decision. The CLI remains a local
+`ProductRuntime`, as `/script` does. The shared SDK transport owns the socket
+and uses `host:` request IDs for public calls and internal authorization methods.
+The compatibility MessagePort cannot send or receive frames using those IDs.
+Generated internal methods and their shared JavaScript dependencies are frozen
+before product code runs; public SDK methods remain mutable. The CLI remains a local
 development tool; `/script` retains its Bun/Node capabilities.
 Each page load, reconnect or script run opens a fresh connection with independent
 temporary permissions.

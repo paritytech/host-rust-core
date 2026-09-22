@@ -257,6 +257,7 @@ it("shares web permissions with installed scripts and the injected browser clien
       DOMException,
       Blob,
       fetch,
+      performance,
       setTimeout,
       clearTimeout,
       navigator: {},

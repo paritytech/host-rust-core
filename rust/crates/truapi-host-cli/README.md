@@ -155,9 +155,10 @@ itself:
 
 That script installs the SDK bridge and the shared `js/container` sandbox
 synchronously. Keep it before application scripts, without `async` or `defer`.
-It preserves the SDK's existing `__HOST_API_PORT__` interface, so the product
-does not need to update its SDK dependency.
-The SDK and sandbox share one host WebSocket and its temporary permissions.
+Updated SDKs use the injected `__HOST_API_CLIENT__` across reconnects. Older SDKs
+can still start through the `__HOST_API_PORT__` adapter but require a page reload
+after a disconnect. SDK calls and sandbox permission checks share one host
+WebSocket and its temporary permissions.
 `/script` uses the same fetch and WebSocket permission checks in Bun, and the
 XHR wrapper when that API is available. Dev keeps automatic approvals, and the
 app server handles assets and hot reload. `--app-port` names the development
