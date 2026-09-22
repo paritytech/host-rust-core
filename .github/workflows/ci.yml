@@ -951,10 +951,18 @@ jobs:
 
       # A composite action's shell usually lives inline in its action.yml
       # rather than in a file of its own, where the step above cannot see it.
+      #
+      # The parser is installed rather than assumed: the runner image does not
+      # ship PyYAML, and it imports today only because an unrelated system
+      # package happens to depend on it. Were that to change, every run would
+      # fail on an import error instead of linting.
       - name: Lint the inline composite action shell
         env:
           SHELLCHECK_OPTS: "--exclude=SC2012,SC2129"
-        run: python3 scripts/lint-composite-shell.py
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          python3 scripts/lint-composite-shell.py
   release-guard:
     name: Release guard
     timeout-minutes: 10
