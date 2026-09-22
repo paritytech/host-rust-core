@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
   appendFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -28,80 +29,71 @@ const version = readFileSync(
 ).match(/^version = "(.*)"$/m)[1];
 
 const sdkScript = String.raw`import assert from "node:assert/strict";
-import { createApp } from "@parity/product-sdk";
-import {
-  bindHost,
-  getAccountsProvider,
-  getHostLocalStorage,
-  getTruApi,
-  subscribeConnectionStatus,
-  type HostConnectionStatus,
-  type TruApi,
-} from "@parity/product-sdk/host";
-import type { HostContext } from "./script.types.d.ts";
+import { getAccountsProvider, getHostLocalStorage } from "@parity/product-sdk/host";
+import type { TrUApiClient } from "./script.types.d.ts";
 
-declare const truapi: TruApi;
-declare const host: HostContext;
+declare const truapi: TrUApiClient;
 
-const unbind = bindHost({
-  client: truapi,
-  signal: host.signal,
-  apiVersion: host.apiVersion,
-});
-const statuses: HostConnectionStatus[] = [];
-const unsubscribe = subscribeConnectionStatus((status) => statuses.push(status));
-try {
-  assert(process.cwd() === import.meta.dir, "Managed scripts use their project directory");
-  assert(process.env.TRUAPI_FRAME_URL?.startsWith("ws+unix:"), "Use the default Unix socket");
-  assert(await getTruApi() === truapi, "SDK must borrow the runner's connected client");
-  assert.deepEqual(statuses, ["connected"]);
+assert.equal(process.cwd(), import.meta.dir, "Managed scripts use their project directory");
+assert(process.env.TRUAPI_FRAME_URL?.startsWith("ws+unix:"), "Use the default Unix socket");
+const accounts = await getAccountsProvider();
+assert(accounts, "SDK discovers the host account API without binding");
+const [sdkUser, rawUser] = await Promise.all([
+  accounts.getUserId(),
+  truapi.account.getUserId(),
+]);
+assert(sdkUser.isErr() && rawUser.isErr(), "Fresh pairing host has no account");
+assert.deepEqual(sdkUser.error, rawUser.error);
 
-  const accounts = await getAccountsProvider();
-  assert(accounts, "SDK account API available");
-  const [sdkUser, rawUser] = await Promise.all([
-    accounts.getUserId(),
-    truapi.account.getUserId(),
-  ]);
-  assert(sdkUser.isErr() && rawUser.isErr(), "Fresh pairing host has no account");
-  assert.deepEqual(sdkUser.error, rawUser.error);
-
-  const connection = await new Promise<unknown>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Account subscription timed out")), 5000);
-    const subscription = accounts.subscribeAccountConnectionStatus((status) => {
-      clearTimeout(timeout);
-      subscription.unsubscribe();
-      resolve(status);
-    });
-    subscription.onInterrupt((reason) => {
-      clearTimeout(timeout);
-      reject(new Error("Account subscription interrupted", { cause: reason }));
-    });
+const connection = await new Promise<unknown>((resolve, reject) => {
+  const timeout = setTimeout(() => reject(new Error("Account subscription timed out")), 5000);
+  const subscription = accounts.subscribeAccountConnectionStatus((status) => {
+    clearTimeout(timeout);
+    subscription.unsubscribe();
+    resolve(status);
   });
-  assert.equal(connection, "Disconnected");
+  subscription.onInterrupt((reason) => {
+    clearTimeout(timeout);
+    reject(new Error("Account subscription interrupted", { cause: reason }));
+  });
+});
+assert.equal(connection, "Disconnected");
 
-  const storage = await getHostLocalStorage();
-  assert(storage, "SDK storage API available");
-  await storage.writeString("sdk-e2e", "stored through the shared host");
-  assert.equal(await storage.readString("sdk-e2e"), "stored through the shared host");
-  const rawStored = await truapi.localStorage.read({ key: "sdk-e2e" });
-  assert(rawStored.isOk(), "Raw client reads SDK storage");
-  assert.equal(rawStored.value.value, "0x73746f726564207468726f756768207468652073686172656420686f7374");
-  await storage.clear("sdk-e2e");
-
-  const app = await createApp({ name: host.productId, cloudStorage: false });
-  assert.equal(app.cloudStorage, null);
-  await app.localStorage.set("app-e2e", "created in a script");
-  assert.equal(await app.localStorage.get("app-e2e"), "created in a script");
-  await app.localStorage.remove("app-e2e");
-} finally {
-  unbind();
-  assert.deepEqual(statuses, ["connected", "disconnected"]);
-  unsubscribe();
-}
-assert(!host.signal.aborted, "Unbinding does not close the runner's connection");
-assert(await truapi.account.getUserId().then((result) => result.isErr()));
+const storage = await getHostLocalStorage();
+assert(storage, "SDK discovers host storage without binding");
+await storage.writeString("sdk-e2e", "shared");
+assert.equal(await storage.readString("sdk-e2e"), "shared");
+const rawStored = await truapi.localStorage.read({ key: "sdk-e2e" });
+assert(rawStored.isOk(), "Raw client reads SDK storage from the same product");
+assert.equal(rawStored.value.value, "0x736861726564");
+await storage.clear("sdk-e2e");
 console.log("SDK_E2E_OK");
 `;
+
+function seedSigningAccount(state) {
+  const directory = join(state, "v2");
+  mkdirSync(directory, { recursive: true });
+  // Same public test identity as signing_host_cli.rs; bypasses network onboarding.
+  writeFileSync(
+    join(directory, "accounts.json"),
+    JSON.stringify({
+      version: 1,
+      accounts: [
+        {
+          name: "sdk-e2e",
+          network: "paseo-next-v2",
+          mnemonic:
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+          lite_username: "cachedalice.01",
+          public_key_hex: "0x00",
+          address: "5GrwvaEF5zXb26Fz9rcQpDWSKfwVwqNxyvE9uZunJMtBEw2s",
+          created_at_unix: 1,
+          attested: true,
+        },
+      ],
+    }),
+  );
+}
 
 const ptyRelay = String.raw`
 import errno, fcntl, os, pty, select, signal, struct, sys, termios
@@ -239,19 +231,11 @@ async function main() {
       join(repoRoot, `target/dist/truapi-host-${version}-${target}.tar.gz`),
   );
   assert(existsSync(archive), `Missing ${archive}; run make cli-dist`);
-  const tarballs = ["SDK_TARBALL", "SDK_HOST_TARBALL"].map((name) => {
-    assert(
-      process.env[name],
-      `Set ${name} to the corresponding packed SDK package`,
-    );
-    const path = resolve(process.env[name]);
-    assert(existsSync(path), `Missing ${name}: ${path}`);
-    return `file:${path}`;
-  });
   const tools = join(repoRoot, ".agent/tools");
   mkdirSync(tools, { recursive: true });
   const workspace = mkdtempSync(join(tools, "sdk-e2e-"));
   const project = join(workspace, "project with spaces");
+  const retainedProject = join(workspace, "retained project");
   const state = join(workspace, "state");
   const binary = join(workspace, "bin/truapi-host");
   const release = await startReleaseServer();
@@ -260,14 +244,20 @@ async function main() {
     ...process.env,
     ...installEnvironment(workspace, release.baseUrl),
     TRUAPI_HOST_NO_UPDATE: "1",
-    TRUAPI_SCRIPT_SDK: "0.0.0-script-sdk-e2e-missing",
     BUN_INSTALL_CACHE_DIR: join(workspace, "bun-cache"),
     VISUAL: "true",
     EDITOR: "true",
   };
-  delete environment.TRUAPI_HOST_RUNNER;
-  delete environment.TRUAPI_SCRIPT_SDK_HOST;
-  const args = ["pairing-host", "--base-path", state, "--auto-accept"];
+  for (const name of ["TRUAPI_HOST_RUNNER", "HOST_CLI_SIGNER_MNEMONIC"])
+    delete environment[name];
+  const args = [
+    "pairing-host",
+    "--product-id",
+    "my-app.dot",
+    "--base-path",
+    state,
+    "--auto-accept",
+  ];
   let terminal;
   try {
     await checkedRun(
@@ -279,27 +269,72 @@ async function main() {
         cwd: workspace,
       },
     );
-    terminal = terminalSession(binary, args, environment, workspace);
+    terminal = terminalSession(
+      binary,
+      args,
+      {
+        ...environment,
+        npm_config_registry: "http://127.0.0.1:1",
+        BUN_CONFIG_REGISTRY: "http://127.0.0.1:1",
+      },
+      workspace,
+    );
     await terminal.waitFor("Listening for product frames");
-    terminal.send(`/script --new ${project}\r`);
+    terminal.send(`/script --new ${retainedProject}\r`);
     await terminal.waitFor(
       "Project retained; fix the package or network error",
+      0,
+      180000,
     );
+    const retainedScript = readFileSync(
+      join(retainedProject, "script.ts"),
+      "utf8",
+    );
+    const retainedManifest = readFileSync(
+      join(retainedProject, "package.json"),
+      "utf8",
+    );
+    terminal.send("/quit\r");
+    assert.equal(await terminal.waitForExit(), 0);
+    writeFileSync(join(workspace, "failed-install.log"), terminal.output);
+
+    terminal = terminalSession(binary, args, environment, workspace);
+    await terminal.waitFor("Listening for product frames");
+    terminal.send("/script --edit\r");
+    await terminal.waitFor("Script saved", 0, 180000);
+    assert.equal(
+      readFileSync(join(retainedProject, "script.ts"), "utf8"),
+      retainedScript,
+    );
+    assert.equal(
+      readFileSync(join(retainedProject, "package.json"), "utf8"),
+      retainedManifest,
+    );
+    console.log(
+      "  ok    Failed dependency setup retains the project and retries after reopening",
+    );
+    terminal.send(`/script --new ${project}\r`);
+    await terminal.waitFor("Connected accounts: []", 0, 180000);
+    await terminal.waitFor("Last visit:");
+    await terminal.waitFor("Script finished");
     const scriptPath = join(project, "script.ts");
     const manifestPath = join(project, "package.json");
+    const templates = join(repoRoot, "rust/crates/truapi-host-cli/js");
     const starter = readFileSync(scriptPath, "utf8");
-    assert.match(starter, /bindHost/);
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.dependencies["@parity/product-sdk"] = tarballs[0];
-    manifest.overrides = { "@parity/product-sdk-host": tarballs[1] };
-    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    const retry = terminal.mark();
-    terminal.send("/script --edit\r");
-    await terminal.waitFor("Script saved", retry, 180000);
-    assert.equal(readFileSync(scriptPath, "utf8"), starter);
-    writeFileSync(join(project, "second-script.ts"), starter);
+    const manifest = readFileSync(manifestPath, "utf8");
+    assert.equal(
+      starter,
+      readFileSync(join(templates, "sdk-script.ts"), "utf8"),
+    );
+    assert.deepEqual(
+      JSON.parse(manifest),
+      JSON.parse(readFileSync(join(templates, "script-package.json"), "utf8")),
+    );
+    console.log(
+      "  ok    Unchanged default project installs and runs the exact signed-out quickstart",
+    );
     await checkedRun(
-      "Two generated starters typecheck against packed SDK",
+      "Generated SDK quickstart typechecks",
       "bun",
       ["run", "typecheck"],
       {
@@ -307,7 +342,6 @@ async function main() {
         cwd: project,
       },
     );
-    rmSync(join(project, "second-script.ts"));
     const invalidScript = join(project, "invalid-script.ts");
     writeFileSync(
       invalidScript,
@@ -329,18 +363,6 @@ async function main() {
     );
     rmSync(invalidScript);
     assert(existsSync(join(project, "bun.lock")), "Project has a lockfile");
-    writeFileSync(
-      scriptPath,
-      `${starter}\nexport default async function () {\n  assert(await getHostLocalStorage(), "SDK remains bound for the default function");\n  console.log("SDK_DEFAULT_FUNCTION_OK");\n}\n`,
-    );
-    const starterRun = terminal.mark();
-    terminal.send("/script --run\r");
-    await terminal.waitFor("saved value", starterRun);
-    await terminal.waitFor("SDK_DEFAULT_FUNCTION_OK", starterRun);
-    await terminal.waitFor("Script finished", starterRun);
-    console.log(
-      "  ok    Generated starter and exported default function share the SDK binding",
-    );
     writeFileSync(scriptPath, sdkScript);
     await checkedRun(
       "SDK integration script typechecks",
@@ -356,7 +378,7 @@ async function main() {
     await terminal.waitFor("SDK_E2E_OK", scriptRun);
     await terminal.waitFor("Script finished", scriptRun);
     console.log(
-      "  ok    SDK account, subscription, storage, createApp, and shared connection",
+      "  ok    SDK and raw account errors, subscription, and shared product storage",
     );
     terminal.send("/quit\r");
     assert.equal(await terminal.waitForExit(), 0);
@@ -368,8 +390,6 @@ async function main() {
       npm_config_registry: "http://127.0.0.1:1",
       BUN_CONFIG_REGISTRY: "http://127.0.0.1:1",
       BUN_INSTALL_CACHE_DIR: join(workspace, "empty-cache"),
-      HTTP_PROXY: "http://127.0.0.1:1",
-      HTTPS_PROXY: "http://127.0.0.1:1",
     };
     terminal = terminalSession(binary, args, offline, workspace);
     await terminal.waitFor("Listening for product frames");
@@ -381,6 +401,7 @@ async function main() {
     await terminal.waitFor("SDK_E2E_OK", rerun);
     await terminal.waitFor("Script finished", rerun);
     assert.equal(readFileSync(join(project, "bun.lock"), "utf8"), lock);
+    assert.equal(readFileSync(manifestPath, "utf8"), manifest);
     assert.doesNotMatch(
       terminal.output.replace(/\s/g, ""),
       /Installingscriptdependencies/,
@@ -411,17 +432,68 @@ async function main() {
     writeFileSync(join(workspace, "offline.log"), terminal.output);
     console.log("  ok    Cancellation returns control and permits another run");
 
-    writeFileSync(scriptPath, sdkScript);
-    const relativeRunner = await checkedRun(
-      "Relative runner override resolves before changing to the project directory",
-      binary,
-      [...args, "--script", scriptPath],
+    writeFileSync(scriptPath, starter);
+    const copiedProject = join(workspace, "copied project");
+    cpSync(project, copiedProject, {
+      recursive: true,
+      filter: (path) => path !== join(project, "node_modules"),
+    });
+    await checkedRun(
+      "Copied project installs offline from the package cache",
+      "bun",
+      ["install", "--offline", "--frozen-lockfile"],
       {
-        env: { ...offline, TRUAPI_HOST_RUNNER: "share/current/runner.js" },
+        env: environment,
+        cwd: copiedProject,
+      },
+    );
+    assert.equal(
+      readFileSync(join(copiedProject, "package.json"), "utf8"),
+      manifest,
+    );
+    assert.equal(readFileSync(join(copiedProject, "bun.lock"), "utf8"), lock);
+    const copiedScript = join(copiedProject, "script.ts");
+    const relativeRunner = await checkedRun(
+      "Copied quickstart runs with a relative installed runner override",
+      binary,
+      [...args, "--script", copiedScript],
+      {
+        env: { ...environment, TRUAPI_HOST_RUNNER: "share/current/runner.js" },
         cwd: workspace,
       },
     );
-    assert.match(relativeRunner.stdout + relativeRunner.stderr, /SDK_E2E_OK/);
+    assert.match(relativeRunner.stdout + relativeRunner.stderr, /Last visit:/);
+
+    const signingState = join(workspace, "signing-state");
+    seedSigningAccount(signingState);
+    writeFileSync(
+      copiedScript,
+      `${starter}\nif (accounts.length === 0) throw new Error("SDK_E2E_NO_ACCOUNT");\nconsole.log("SDK_E2E_SIGNED_IN_OK");\n`,
+    );
+    const signedIn = await checkedRun(
+      "Exact quickstart connects a local signing account and persists storage",
+      binary,
+      [
+        "signing-host",
+        "--product-id",
+        "my-app.dot",
+        "--base-path",
+        signingState,
+        "--account",
+        "sdk-e2e",
+        "--auto-accept",
+        "--script",
+        copiedScript,
+      ],
+      { env: environment, cwd: workspace },
+    );
+    writeFileSync(
+      join(workspace, "signed-in.log"),
+      signedIn.stdout + signedIn.stderr,
+    );
+    assert.match(signedIn.stdout + signedIn.stderr, /SDK_E2E_SIGNED_IN_OK/);
+    assert.match(signedIn.stdout + signedIn.stderr, /Last visit:/);
+    writeFileSync(copiedScript, starter);
 
     writeFileSync(
       scriptPath,
@@ -437,10 +509,11 @@ async function main() {
       failure.stdout + failure.stderr,
       /SDK_E2E_INTENTIONAL_FAILURE/,
     );
+    assert.match(failure.stdout + failure.stderr, /SDK_E2E_UNDERLYING_FAILURE/);
     assert.match(failure.stdout + failure.stderr, /script\.ts/);
-    writeFileSync(scriptPath, sdkScript);
+    writeFileSync(scriptPath, starter);
     console.log(
-      "  ok    Script errors preserve nonzero status and source location",
+      "  ok    Script errors preserve nonzero status, source location, and cause",
     );
     console.log(`SDK integration passed. Evidence: ${workspace}`);
     rmSync(join(workspace, "bun-cache"), { recursive: true, force: true });

@@ -4,9 +4,11 @@ import { createClient } from "./generated/client.js";
 import { createTransport } from "./client.js";
 import {
     createMessagePortProvider,
+    createWebSocketProviderFactory,
     decodeWireMessage,
     encodeWireMessage,
     type ProtocolMessage,
+    type WebSocketWireProvider,
 } from "./transport.js";
 import * as W from "./generated/wire-table.js";
 import * as T from "./generated/types.js";
@@ -22,7 +24,7 @@ async function until(condition: () => boolean) {
     expect(condition()).toBe(true);
 }
 
-function host() {
+function host(createProvider?: (url: string) => WebSocketWireProvider) {
     const frames: ProtocolMessage[] = [];
     const sockets: Bun.ServerWebSocket<undefined>[] = [];
     let answer = true;
@@ -69,7 +71,7 @@ function host() {
             },
         },
     });
-    const connection = createHostConnection(`ws://127.0.0.1:${server.port}`);
+    const connection = createHostConnection(`ws://127.0.0.1:${server.port}`, createProvider);
     cleanup.push(() => {
         connection.dispose();
         server.stop(true);
@@ -164,6 +166,41 @@ function controlledHost() {
 }
 
 describe("shared SDK host connection", () => {
+    it("reuses the supplied provider factory for recovery without replacing either client", async () => {
+        const createProvider = jest.fn(createWebSocketProviderFactory());
+        const { connection, sockets } = host(createProvider);
+        const client = connection.client;
+        const internal = connection.internal;
+        const statuses: string[] = [];
+        connection.subscribeConnectionStatus((status) => statuses.push(status));
+        await until(() => statuses.at(-1) === "connected");
+        const port = connection.legacyPort;
+        const transport = createTransport(createMessagePortProvider(port));
+        cleanup.push(() => transport.dispose());
+        const legacy = createClient(transport);
+        expect((await legacy.permissions.requestRemotePermission(permission)).isOk()).toBe(true);
+        expect((await internal.permissions.authorizeRemotePermission(permission)).isOk()).toBe(
+            true,
+        );
+        expect(createProvider).toHaveBeenCalledTimes(1);
+
+        sockets[0]!.close();
+        await until(() => sockets.length === 2 && statuses.at(-1) === "connected");
+        expect((await client.permissions.requestRemotePermission(permission)).isOk()).toBe(true);
+        expect((await internal.permissions.authorizeRemotePermission(permission)).isOk()).toBe(
+            true,
+        );
+        expect({
+            clients: [connection.client, connection.internal],
+            port: connection.legacyPort,
+            providers: createProvider.mock.calls,
+        }).toEqual({
+            clients: [client, internal],
+            port,
+            providers: [createProvider.mock.calls[0], createProvider.mock.calls[0]],
+        });
+    });
+
     it("uses one transport for public calls and internal authorization", async () => {
         const { connection, sockets, frames } = host();
         const client = connection.client;

@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ServerWebSocket } from "bun";
-import { version } from "../../../../js/packages/truapi/package.json";
+import {
+  decodeWireMessage,
+  encodeWireMessage,
+} from "../../../../js/packages/truapi/src/transport.ts";
 
 const runner = fileURLToPath(new URL("./runner.ts", import.meta.url));
 
-test("a script observes its client version and a real connection closing", async () => {
+test("standard host discovery is ready before importing a script", async () => {
   const directory = await mkdtemp(join(tmpdir(), "host-script-lifecycle-"));
   let socket: ServerWebSocket<undefined> | undefined;
   const server = Bun.serve({
@@ -23,18 +26,40 @@ test("a script observes its client version and a real connection closing", async
       open(connection) {
         socket = connection;
       },
-      message() {},
+      message(connection, frame) {
+        const message = decodeWireMessage(
+          new Uint8Array(frame as Uint8Array),
+        )._unsafeUnwrap();
+        if (message.payload.messageType !== 0) return;
+        connection.send(
+          encodeWireMessage({
+            ...message,
+            payload: {
+              ...message.payload,
+              messageType: 1,
+              value: Uint8Array.of(0, 0),
+            },
+          })._unsafeUnwrap(),
+        );
+      },
     },
   });
   const script = join(directory, "script.ts");
   await writeFile(
     script,
-    `assert(host.apiVersion === ${JSON.stringify(version)});
-assert(!host.signal.aborted);
-const closed = new Promise(resolve => host.signal.addEventListener("abort", resolve, { once: true }));
+    `assert(window === window.top);
+assert(window.__HOST_WEBVIEW_MARK__);
+assert(window.__HOST_API_CLIENT__.client === truapi);
+assert(window.__HOST_API_PORT__ instanceof MessagePort);
+let unsubscribe;
+const closed = new Promise(resolve => {
+  unsubscribe = window.__HOST_API_CLIENT__.subscribeConnectionStatus(status => {
+    if (status === "disconnected") resolve();
+  });
+});
 console.log("ready");
 await closed;
-assert(host.signal.reason instanceof Error);
+unsubscribe();
 console.log("disconnected");
 `,
   );

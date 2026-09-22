@@ -1,18 +1,20 @@
 import { pathToFileURL } from "node:url";
 import { inspect } from "node:util";
 import {
-  createClient,
-  createTransport,
   type ProductAccountId,
   type TrUApiClient,
 } from "../../../../js/packages/truapi/src/index.ts";
-import { createCliAuthorization } from "./permissions.ts";
+import { createHostConnection } from "../../../../js/packages/truapi/src/internal.ts";
+import { createPermissionAuthorization } from "../../../../js/container/src/network-transport.ts";
+import { freezePermissionRuntime } from "../../../../js/container/src/permission-runtime.ts";
 import { installFetchGate } from "../../../../js/container/src/network.ts";
 import { installWebSocketGate } from "../../../../js/container/src/websocket.ts";
 import { installXhrGate } from "../../../../js/container/src/xhr.ts";
-import { reportLockdownFailures } from "../../../../js/container/src/freeze.ts";
-import { wsProvider } from "./ws-provider.ts";
-import { version as apiVersion } from "../../../../js/packages/truapi/package.json";
+import {
+  freezeValue,
+  reportLockdownFailures,
+} from "../../../../js/container/src/freeze.ts";
+import { createFrameProviderFactory } from "./ws-provider.ts";
 
 /// The host context injected alongside `truapi`. It only exposes what a script
 /// can't get from `truapi` alone: the product id the host serves, so product
@@ -21,10 +23,6 @@ import { version as apiVersion } from "../../../../js/packages/truapi/package.js
 export interface HostContext {
   /** The product id this host serves (its `--product-id`). */
   productId: string;
-  /** Version of the TrUAPI client supplied by the runner. */
-  apiVersion: string;
-  /** Aborted when the host connection closes or script execution finishes. */
-  signal: AbortSignal;
   /** A product account id for `derivationIndex` (default 0) under this product. */
   productAccount(index?: number): ProductAccountId;
 }
@@ -50,23 +48,18 @@ async function main() {
   const frameUrl = requireEnv("TRUAPI_FRAME_URL");
   const productId = requireEnv("TRUAPI_PRODUCT_ID");
   const scriptPath = requireEnv("TRUAPI_SCRIPT");
-  const provider = wsProvider(frameUrl);
-  const connection = new AbortController();
-  const unsubscribeClose = provider.subscribeClose?.((error) =>
-    connection.abort(error),
+  const connection = createHostConnection(
+    frameUrl,
+    createFrameProviderFactory(),
   );
-
   const context: HostContext = {
     productId,
-    apiVersion,
-    signal: connection.signal,
     productAccount: (index = 0) => ({
       dotNsIdentifier: productId,
       derivationIndex: { tag: "Index", value: index },
     }),
   };
-  const transport = createTransport(provider);
-  globalThis.truapi = createClient(transport);
+  globalThis.truapi = connection.client;
   globalThis.host = context;
   globalThis.assert = (condition: unknown, ...message: unknown[]) => {
     if (condition) return;
@@ -80,7 +73,30 @@ async function main() {
     throw new Error(detail || "assertion failed");
   };
 
-  const authorization = createCliAuthorization(transport);
+  freezePermissionRuntime();
+  freezeValue(globalThis, "window", globalThis);
+  freezeValue(globalThis, "top", globalThis);
+  freezeValue(globalThis, "__HOST_WEBVIEW_MARK__", true);
+  freezeValue(
+    globalThis,
+    "__HOST_API_CLIENT__",
+    Object.freeze({
+      get client() {
+        return connection.client;
+      },
+      subscribeConnectionStatus: connection.subscribeConnectionStatus,
+    }),
+  );
+  Object.defineProperty(globalThis, "__HOST_API_PORT__", {
+    get: () => connection.legacyPort,
+    set() {},
+    configurable: false,
+  });
+
+  const authorization = createPermissionAuthorization(
+    globalThis as Window & typeof globalThis,
+    connection.internal,
+  );
   installFetchGate(globalThis, authorization.network);
   installWebSocketGate(globalThis, authorization.network);
   installXhrGate(globalThis, authorization.network);
@@ -91,7 +107,9 @@ async function main() {
     process.exit(2);
   }, 15_000);
   try {
-    await provider.opened;
+    const handshake = await connection.client.system.handshake();
+    if (handshake.isErr())
+      throw new Error("Host connection failed", { cause: handshake.error });
     clearTimeout(timer);
     if (process.env.TRUAPI_SCRIPT_CWD)
       process.chdir(process.env.TRUAPI_SCRIPT_CWD);
@@ -99,18 +117,17 @@ async function main() {
     if (typeof module.default === "function") await module.default(context);
   } finally {
     clearTimeout(timer);
-    connection.abort(new Error("Script completed"));
-    unsubscribeClose?.();
-    transport.dispose();
-    provider.dispose();
+    connection.dispose();
   }
 }
 
 main().then(
   () => process.exit(0),
   (error) => {
+    const message = String(error);
+    const detail = inspect(error, { colors: false, depth: 5 });
     console.error(
-      `[script error] ${inspect(error, { colors: false, depth: 5 })}`,
+      `[script error] ${detail.includes(message) ? detail : `${message}\n${detail}`}`,
     );
     process.exit(1);
   },

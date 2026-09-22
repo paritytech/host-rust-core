@@ -28,65 +28,12 @@ struct Metadata {
     script: PathBuf,
 }
 
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SdkPackages {
-    sdk: Option<String>,
-    host: Option<String>,
-}
-
 /// Create a new project without replacing an existing directory.
 pub fn create(root: &Path, destination: Option<&Path>) -> Result<PathBuf> {
-    let types = script_runner::script_types()?;
-    let mut packages = SdkPackages {
-        sdk: std::env::var("TRUAPI_SCRIPT_SDK").ok(),
-        host: std::env::var("TRUAPI_SCRIPT_SDK_HOST").ok(),
-    };
-    if packages.sdk.is_none()
-        && packages.host.is_none()
-        && let Some(path) = script_runner::script_sdk_config()
-    {
-        packages = match fs::read(&path) {
-            Ok(contents) => serde_json::from_slice(&contents)
-                .with_context(|| format!("read local SDK configuration {}", path.display()))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SdkPackages::default(),
-            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
-        };
-    }
-    create_with_sdk(
-        root,
-        destination,
-        packages.sdk.as_deref(),
-        packages.host.as_deref(),
-        &types,
-    )
+    create_with_types(root, destination, &script_runner::script_types()?)
 }
 
-fn package_spec(spec: &str, project: &Path, name: &str) -> Result<String> {
-    let path = Path::new(spec.strip_prefix("file:").unwrap_or(spec));
-    if !path.exists() && !path.is_absolute() && !spec.starts_with("file:") {
-        return Ok(spec.to_string());
-    }
-    let contents = fs::read(path).with_context(|| {
-        format!(
-            "read SDK archive {}; pack the SDK before creating a project",
-            path.display()
-        )
-    })?;
-    let digest = hex::encode(Sha256::digest(&contents));
-    let relative = format!("vendor/{name}-{digest}.tgz");
-    fs::create_dir_all(project.join("vendor"))?;
-    fs::write(project.join(&relative), contents)?;
-    Ok(format!("file:./{relative}"))
-}
-
-fn create_with_sdk(
-    root: &Path,
-    destination: Option<&Path>,
-    sdk: Option<&str>,
-    host: Option<&str>,
-    types: &[u8],
-) -> Result<PathBuf> {
+fn create_with_types(root: &Path, destination: Option<&Path>, types: &[u8]) -> Result<PathBuf> {
     let destination = destination
         .map(|path| std::env::current_dir().map(|current| current.join(path)))
         .transpose()?;
@@ -99,26 +46,14 @@ fn create_with_sdk(
     let temporary = tempfile::Builder::new()
         .prefix("script-")
         .tempdir_in(parent)?;
-    let mut manifest: serde_json::Value = serde_json::from_str(MANIFEST)?;
-    if let Some(sdk) = sdk {
-        manifest["dependencies"]["@parity/product-sdk"] =
-            package_spec(sdk, temporary.path(), "product-sdk")?.into();
-    }
-    if let Some(host) = host {
-        manifest["overrides"]["@parity/product-sdk-host"] =
-            package_spec(host, temporary.path(), "product-sdk-host")?.into();
-    }
     for (name, contents) in [
         ("script.ts", SCRIPT.as_bytes()),
+        ("package.json", MANIFEST.as_bytes()),
         ("script.types.d.ts", types),
         ("tsconfig.json", TSCONFIG.as_bytes()),
     ] {
         fs::write(temporary.path().join(name), contents)?;
     }
-    fs::write(
-        temporary.path().join("package.json"),
-        format!("{}\n", serde_json::to_string_pretty(&manifest)?),
-    )?;
     let directory = if let Some(destination) = destination {
         fs::create_dir(&destination).with_context(|| {
             format!(
@@ -284,7 +219,7 @@ mod tests {
     #[test]
     fn new_projects_carry_the_matching_declarations_without_reading_a_checkout() -> Result<()> {
         let root = tempfile::tempdir()?;
-        let script = create_with_sdk(root.path(), None, None, None, b"installed runner types")?;
+        let script = create_with_types(root.path(), None, b"installed runner types")?;
         assert_eq!(
             fs::read(script.with_extension("types.d.ts"))?,
             b"installed runner types"
@@ -310,7 +245,7 @@ mod tests {
         fs::create_dir(&destination)?;
         fs::write(destination.join("script.ts"), "user work")?;
 
-        assert!(create_with_sdk(root.path(), Some(&destination), None, None, b"types").is_err());
+        assert!(create_with_types(root.path(), Some(&destination), b"types").is_err());
         assert_eq!(
             fs::read_to_string(destination.join("script.ts"))?,
             "user work"
@@ -321,50 +256,20 @@ mod tests {
     #[test]
     fn project_manifest_pins_the_sdk_and_can_resolve_a_renamed_entrypoint() -> Result<()> {
         let root = tempfile::tempdir()?;
-        let script = create_with_sdk(root.path(), None, Some("0.30.0"), None, b"types")?;
+        let script = create_with_types(root.path(), None, b"types")?;
         let directory = script.parent().unwrap();
         let manifest_path = directory.join("package.json");
         let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
-        assert_eq!(manifest["dependencies"]["@parity/product-sdk"], "0.30.0");
+        assert_eq!(
+            manifest,
+            serde_json::from_str::<serde_json::Value>(MANIFEST)?
+        );
         manifest["truapiHost"]["script"] = "renamed.ts".into();
         fs::write(manifest_path, serde_json::to_vec(&manifest)?)?;
         let renamed = directory.join("renamed.ts");
         fs::rename(&script, &renamed)?;
 
         assert_eq!(remembered_script(&script)?, Some(renamed));
-        Ok(())
-    }
-
-    #[test]
-    fn packed_dependencies_stay_with_the_project_when_the_source_is_removed() -> Result<()> {
-        let source = tempfile::tempdir()?;
-        let archive = source.path().join("sdk.tgz");
-        fs::write(&archive, b"candidate SDK")?;
-        let root = tempfile::tempdir()?;
-        let host = source.path().join("host.tgz");
-        fs::write(&host, b"candidate host")?;
-        let script = create_with_sdk(root.path(), None, archive.to_str(), host.to_str(), b"types")?;
-        source.close()?;
-        let directory = script.parent().unwrap();
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(directory.join("package.json"))?)?;
-        for (spec, contents) in [
-            (
-                &manifest["dependencies"]["@parity/product-sdk"],
-                b"candidate SDK".as_slice(),
-            ),
-            (
-                &manifest["overrides"]["@parity/product-sdk-host"],
-                b"candidate host".as_slice(),
-            ),
-        ] {
-            let dependency = Path::new(spec.as_str().unwrap().strip_prefix("file:").unwrap());
-            assert!(
-                dependency.is_relative(),
-                "copied projects must keep their SDK"
-            );
-            assert_eq!(fs::read(directory.join(dependency))?, contents);
-        }
         Ok(())
     }
 

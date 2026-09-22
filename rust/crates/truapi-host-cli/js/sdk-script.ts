@@ -1,23 +1,17 @@
-#!/usr/bin/env bun
+import { createApp } from "@parity/product-sdk";
 
-import {
-  bindHost,
-  getHostLocalStorage,
-  type TruApi,
-} from "@parity/product-sdk/host";
-import type { HostContext, ScriptAssert } from "./script.types.d.ts";
-
-declare const truapi: TruApi;
-declare const host: HostContext;
-declare const assert: ScriptAssert;
-
-bindHost({
-  client: truapi,
-  signal: host.signal,
-  apiVersion: host.apiVersion,
+const app = await createApp({
+  name: "my-app",
+  logLevel: "info",
 });
 
-const storage = await getHostLocalStorage();
-assert(storage, "Host storage API unavailable");
-console.log("product", host.productId);
-console.log("saved value", await storage.readString("example"));
+// Connect to host-provided accounts.
+const { accounts } = await app.wallet.connect();
+
+console.log("Connected accounts:", accounts);
+
+// Persist a value. Namespaced under the app name in host storage.
+await app.localStorage.set("lastVisit", new Date().toISOString());
+
+const lastVisit = await app.localStorage.get("lastVisit");
+console.log("Last visit:", lastVisit);

@@ -339,11 +339,12 @@ missing or the session has no script yet, it creates a Bun TypeScript project
 under `<base-path>/scripts/`, outside the versioned session data. Projects
 survive session clearing, including projects created with `--mnemonic`.
 Each contains `script.ts`, host declarations, `package.json`, and `tsconfig.json`.
-The starter reads product-local storage through Product SDK using the host's
-existing connection. The first open installs pinned SDK and editor dependencies
-with Bun. Successful setup saves a lockfile; later opens reuse the installation
-without a network request. Setup errors or cancellation keep the project so
-you can fix the problem and retry `/script`.
+The starter runs the Product SDK quickstart: create an app, connect wallet
+accounts, and write and read local storage. The runner supplies the SDK's host
+connection automatically. The first open installs pinned SDK and editor
+dependencies with Bun. Successful setup saves a lockfile; later opens reuse
+the installation without a network request. Setup errors or cancellation keep
+the project so you can fix the problem and retry `/script`.
 
 `/script --new my examples` creates another project at that relative path;
 the directory must not already exist. `/script --edit` only edits, while
@@ -366,47 +367,22 @@ Configure a waiting editor command: an editor process that returns immediately
 also lets execution start immediately. Editor failure preserves the script
 without running it.
 
-New projects pin Product SDK 0.30.0, whose release must precede deployment of
-this CLI feature. `make check-script-sdk` installs the unchanged template from
-the public registry and checks its types and host binding. CLI releases require
-this check to pass.
+New projects pin published Product SDK 0.29.0 and override its `@parity/truapi`
+dependency to 0.18.0 to match the host's protocol. Existing project dependencies
+are never changed by a host update. `make check-script-sdk` installs the unchanged
+template from the public registry and checks its types and `createApp` export.
+CLI releases require this check to pass.
 
-For local development, build the SDK workspace and run `pnpm pack` in both
-`packages/sdk` and `packages/host`. Put their absolute archive paths in this
-checkout's `.agent/script-sdk.json`:
-
-```json
-{
-  "sdk": "/absolute/path/parity-product-sdk-0.29.0.tgz",
-  "host": "/absolute/path/parity-product-sdk-host-0.21.0.tgz"
-}
-```
-
-A CLI built from this checkout, including `make headless install`, uses this
-selection for new projects. Packaged releases and custom runners do not read
-the checkout's configuration. New projects copy the archives into `vendor/`
-and override the host package across all SDK dependencies, so they can be
-copied or reinstalled independently of the SDK checkout. Repacking the SDK and
-updating the configuration affects only new projects.
-
-Alternatively, set `TRUAPI_SCRIPT_SDK` and `TRUAPI_SCRIPT_SDK_HOST` to archive
-paths or package specs before starting the CLI. These explicit settings take
-precedence over the checkout configuration. Existing project dependencies are
-never changed by a host update or a new SDK selection.
-
-To verify unpublished SDK changes against the packaged CLI, provide both the
-built umbrella and host package tarballs:
+To verify SDK authoring through the packaged CLI:
 
 ```bash
-SDK_TARBALL=/path/to/parity-product-sdk.tgz \
-SDK_HOST_TARBALL=/path/to/parity-product-sdk-host.tgz \
 make e2e-cli-sdk
 ```
 
 This requires Bun and Python 3. The test installs the CLI archive and creates
-isolated projects under `.agent/tools/`, with a dependency override so every SDK
-package uses the packed host binding. It checks setup recovery, editor types,
-real host calls, offline reopening, cancellation, and error output.
+isolated projects under `.agent/tools/` using published dependencies. It checks
+setup recovery, editor types, real host calls, offline reopening, cancellation,
+and error output.
 
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
@@ -565,19 +541,72 @@ patched web APIs. Product code can deliberately bypass these development checks,
 including through native networking in Bun. Native hosts retain their separate
 authorization protection.
 
-The runner injects three globals before running it:
+Start the host with the product id used by the SDK quickstart:
 
-- **`truapi`** — the `@parity/truapi` client connected to the pairing host and
+```bash
+truapi-host pairing-host --product-id my-app.dot
+```
+
+Use `/login` to connect a signing host, then `/script` to open the starter:
+
+```ts
+import { createApp } from "@parity/product-sdk";
+
+const app = await createApp({
+  name: "my-app",
+  logLevel: "info",
+});
+
+// Connect to host-provided accounts.
+const { accounts } = await app.wallet.connect();
+
+console.log("Connected accounts:", accounts);
+
+// Persist a value. Namespaced under the app name in host storage.
+await app.localStorage.set("lastVisit", new Date().toISOString());
+
+const lastVisit = await app.localStorage.get("lastVisit");
+console.log("Last visit:", lastVisit);
+```
+
+The SDK resolves `my-app` to the wallet product `my-app.dot`, so keep the app
+name and host product id aligned. The quickstart uses default cloud storage
+on Paseo, the CLI's default network. When signed out, wallet connection can
+return an empty account list. Existing projects use the same ordinary SDK
+imports and their installed dependencies. Check a managed project with
+`bun run typecheck`.
+
+Await all work, including subscription completion: the script process exits
+when its module and optional default function finish. After losing the host
+connection, rerun the script.
+
+For direct TrUAPI calls, the runner also injects three globals:
+
+- **`truapi`** is the `@parity/truapi` client connected to the host and
   scoped to the host's `--product-id`. Call `truapi.account.requestLogin(...)`,
   `truapi.signing.signRaw(...)`, `truapi.localStorage.write(...)`, etc.
-- **`host`** provides `host.productId`, `host.productAccount(index?)`, the
-  bundled `host.apiVersion`, and a `host.signal` aborted when the connection
-  closes. Product accounts use the host's `--product-id`; a mismatched id
+- **`host`** provides `host.productId` and `host.productAccount(index?)`.
+  Product accounts use the host's `--product-id`; a mismatched id
   fails signing with `PermissionDenied`.
-- **`assert`** — throw when its condition is false, using any following values
+- **`assert`** throws when its condition is false, using any following values
   as the error message.
 
-Write it top-level and `throw` (or reject) to fail the run:
+Declare those globals from the project's generated types when using them in
+TypeScript. The declarations stay local to each script:
+
+```ts
+import type {
+  TrUApiClient,
+  HostContext,
+  ScriptAssert,
+} from "./script.types.d.ts";
+
+declare const truapi: TrUApiClient;
+declare const host: HostContext;
+declare const assert: ScriptAssert;
+```
+
+Write calls at the top level and `throw` (or reject) to fail the run:
 
 ```ts
 const login = await truapi.account.requestLogin({ reason: undefined });
@@ -599,35 +628,12 @@ res.match(
 );
 ```
 
-Existing projects can use the same Product SDK connection as generated projects:
+For product-account signing through the SDK, use the `host` and `assert`
+declarations above with:
 
 ```ts
-import { bindHost } from "@parity/product-sdk/host";
+import { getAccountsProvider } from "@parity/product-sdk/host";
 
-const unbind = bindHost({
-  client: truapi,
-  signal: host.signal,
-  apiVersion: host.apiVersion,
-});
-try {
-  // Await SDK operations here.
-} finally {
-  unbind();
-}
-```
-
-Use the installed SDK's exported `TruApi` type for a TypeScript declaration of
-the injected `truapi`, as the generated starter does. Binding checks that the
-host API version is supported before a call is made. On a version mismatch,
-update the project's SDK deliberately or run a compatible host. Await all
-work, including subscription completion: the script process exits when its
-module and optional default function finish.
-
-The generated starter relies on `host.signal` to release the SDK binding when
-execution finishes. For product-account signing, add `getAccountsProvider` to
-its SDK imports and replace the storage example with:
-
-```ts
 const accounts = await getAccountsProvider();
 assert(accounts, "Host accounts API unavailable");
 const account = await accounts.getProductAccount(host.productId);
@@ -639,11 +645,15 @@ const signature = await signer.signBytes(new TextEncoder().encode("hello"));
 console.log("signature", signature);
 ```
 
-For a subscription, add `getLocaleProvider` and `type HostSubscription` to
-those imports. This example awaits the first locale value and unsubscribes
-before the script exits:
+This subscription example awaits the first locale value and unsubscribes before
+the script exits:
 
 ```ts
+import {
+  getLocaleProvider,
+  type HostSubscription,
+} from "@parity/product-sdk/host";
+
 const locales = await getLocaleProvider();
 assert(locales, "Host locale API unavailable");
 let subscription: HostSubscription | undefined;

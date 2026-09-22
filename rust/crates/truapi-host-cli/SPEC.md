@@ -825,11 +825,13 @@ Before importing it, the runner:
 1. reads its required environment;
 2. opens the product-frame WebSocket over its Unix or TCP endpoint, with a
    15-second connection timeout;
-3. creates the public `@parity/truapi` client;
+3. creates the public `@parity/truapi` client and exposes the standard host
+   discovery interface for SDK imports;
 4. injects the script globals;
 5. installs the shared container's fetch and WebSocket permission wrappers,
    plus its XHR wrapper when that API exists; and
-6. restores the caller's working directory and imports the absolute script URL.
+6. switches to the managed project root, or restores the caller's working
+   directory for an unmanaged script, and imports the absolute script URL.
 
 Top-level module code is awaited. If the module's default export is a function,
 the runner calls and awaits it with the host context.
@@ -838,6 +840,11 @@ Public SDK calls and authorization requests share one transport and Rust
 execution, preserving Allow once, Allow always and Deny semantics. These wrappers
 are also used by the full browser container loaded by dev's first blocking
 bootstrap tag.
+
+The runner exposes `window.__HOST_WEBVIEW_MARK__`, `__HOST_API_CLIENT__`, and
+the legacy `__HOST_API_PORT__` adapter over that same connection. Published Product
+SDK imports discover the host automatically. Scripts using an older SDK's
+legacy port must be rerun after a host disconnect.
 
 Scripts retain Bun/Node filesystem, environment, subprocess and module imports.
 Native networking APIs can bypass the web API wrappers; this is not
@@ -852,8 +859,6 @@ declare const truapi: TrUApiClient;
 declare const host: {
   productId: string;
   productAccount(index?: number): ProductAccountId;
-  apiVersion: string;
-  signal: AbortSignal;
 };
 
 declare function assert(
@@ -864,12 +869,6 @@ declare function assert(
 
 `host.productAccount()` defaults to derivation index `0` and uses the exact
 active product id.
-
-`host.apiVersion` is the bundled TrUAPI package version. `host.signal` aborts
-when the runner's host connection closes. Product SDK's production `bindHost`
-borrows the injected client and observes that signal, without opening another
-connection or taking ownership of its transport. The binding rejects an
-unsupported API version before exposing the client to SDK operations.
 
 `assert` joins string arguments directly and formats other values with
 `node:util.inspect` without color. A false condition throws either the joined
@@ -885,7 +884,7 @@ The Rust parent sets:
 | `TRUAPI_PRODUCT_ID` | Normalized active product id. |
 | `TRUAPI_SCRIPT` | Canonical absolute script path. |
 | `TRUAPI_CLI_HOST_ROLE` | `pairing-host` or `signing-host`. |
-| `TRUAPI_SCRIPT_CWD` | Caller working directory, restored before importing the script. |
+| `TRUAPI_SCRIPT_CWD` | Managed project root, or caller working directory for an unmanaged script, selected before importing it. |
 
 These variables are runner internals, not CLI configuration inputs.
 
@@ -956,13 +955,19 @@ or through remembered state.
 Ordinary package directories without this metadata retain the inherited cwd
 and are never installed or modified by the CLI.
 
-The starter binds Product SDK to the injected client and reads local storage.
-It uses the installed SDK's `TruApi` type and the adjacent host context types;
-declarations remain module-local so multiple scripts compile together.
-The template pins Product SDK 0.30.0, TypeScript, and Bun editor types.
-That SDK version must be released before a registry-based CLI rollout.
-`TRUAPI_SCRIPT_SDK` overrides the SDK dependency only when creating a new
-project, allowing local packed packages during development.
+The starter uses the Product SDK quickstart unchanged: `createApp` with
+`name: "my-app"` and `logLevel: "info"`, `wallet.connect()`, and a local-storage
+write and read of `lastVisit`. The host product id must match `my-app.dot`.
+Default cloud storage uses Paseo, also the CLI's default network. A signed-out
+wallet can return an empty account list.
+
+The template pins published Product SDK 0.29.0, TypeScript, and Bun editor
+types. A top-level package override selects `@parity/truapi` 0.18.0 for the
+host's codec 3 protocol. SDK scripts use the installed package types and
+`bun run typecheck`; raw TrUAPI scripts can import the adjacent declarations
+locally, allowing multiple scripts to compile together. The registry release
+check installs the unchanged template, checks its types, and verifies the SDK's
+`createApp` export.
 
 Dependency setup runs `bun install`, with `--frozen-lockfile` when a Bun
 lockfile exists. Only a successful installation records its manifest and

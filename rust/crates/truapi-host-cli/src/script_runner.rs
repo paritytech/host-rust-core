@@ -60,17 +60,6 @@ pub fn script_types() -> Result<Vec<u8>> {
     fs::read(&path).with_context(|| format!("read host-script types {}", path.display()))
 }
 
-/// Local SDK configuration applies only to this checkout's source runner.
-pub fn script_sdk_config() -> Option<PathBuf> {
-    sdk_config_for_runner(&runner_path())
-}
-
-fn sdk_config_for_runner(runner: &Path) -> Option<PathBuf> {
-    let crate_directory = Path::new(env!("CARGO_MANIFEST_DIR"));
-    (runner == crate_directory.join("js/runner.ts"))
-        .then(|| crate_directory.join("../../../.agent/script-sdk.json"))
-}
-
 /// Locate the host-script runner.
 pub fn runner_path() -> PathBuf {
     resolve_runner(
@@ -466,23 +455,6 @@ console.log(JSON.stringify({
     }
 
     #[test]
-    fn packaged_and_custom_runners_do_not_inherit_checkout_sdk_configuration() {
-        let crate_directory = Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert_eq!(
-            [
-                sdk_config_for_runner(&crate_directory.join("js/runner.ts")),
-                sdk_config_for_runner(Path::new("/release/runner.js")),
-                sdk_config_for_runner(Path::new("/custom/runner.ts")),
-            ],
-            [
-                Some(crate_directory.join("../../../.agent/script-sdk.json")),
-                None,
-                None,
-            ]
-        );
-    }
-
-    #[test]
     fn runner_types_follow_the_selected_runner() {
         assert_eq!(
             [
@@ -590,9 +562,10 @@ console.log(JSON.stringify({
         )?;
 
         assert_eq!(
-            command.as_std().get_envs().find_map(|(key, value)| {
-                (key == "TRUAPI_SCRIPT_CWD").then_some(value)
-            }),
+            command
+                .as_std()
+                .get_envs()
+                .find_map(|(key, value)| { (key == "TRUAPI_SCRIPT_CWD").then_some(value) }),
             Some(Some(project.path().as_os_str()))
         );
         Ok(())

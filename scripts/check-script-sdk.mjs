@@ -50,13 +50,13 @@ try {
   bun(["run", "typecheck"]);
   bun([
     "--eval",
-    'import { bindHost } from "@parity/product-sdk/host"; if (typeof bindHost !== "function") throw new Error("Product SDK does not export bindHost");',
+    'import { createApp } from "@parity/product-sdk"; if (typeof createApp !== "function") throw new Error("Product SDK does not export createApp");',
   ]);
-  console.log("Default script dependencies, types, and SDK binding passed.");
+  console.log("Default script dependencies, types, and SDK exports passed.");
 } catch (error) {
   console.error(error.message);
   console.error(
-    `CLI release blocked: the default script project requires a published, compatible Product SDK ${sdk} with bindHost. Verify dependency availability and compatibility before publishing the CLI.`,
+    `CLI release blocked: the default script project requires a published, compatible Product SDK ${sdk}. Verify dependency availability and compatibility before publishing the CLI.`,
   );
   process.exitCode = 1;
 } finally {
