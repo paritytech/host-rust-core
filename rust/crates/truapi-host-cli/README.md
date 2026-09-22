@@ -368,7 +368,8 @@ restored and the saved script runs through the public frame endpoint. Editor
 settings containing arguments, such as `EDITOR='code --wait'`, are supported.
 Configure a waiting editor command: an editor process that returns immediately
 also lets execution start immediately. Editor failure preserves the script
-without running it.
+without running it. Managed projects open the editor from their project root,
+so editor commands such as `bun run typecheck` use that project's dependencies.
 
 New projects leave SDK dependencies and overrides to you. Missing SDK imports
 use Bun's runtime fallback to fetch the latest version. For editor types and

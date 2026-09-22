@@ -108,9 +108,13 @@ fn packaged_runner(executable: &Path) -> Option<PathBuf> {
 
 /// Open the script in the configured terminal editor and wait for it to exit.
 pub async fn edit(script: &Path) -> Result<ExitStatus> {
+    let script = fs::canonicalize(script).context("resolve script path")?;
     let specification = configured_editor();
     let (program, arguments) = parse_editor(&specification)?;
     let mut command = Command::new(program);
+    if let Some(directory) = script_project::directory(&script)? {
+        command.current_dir(directory);
+    }
     command
         .args(arguments)
         .arg(script)

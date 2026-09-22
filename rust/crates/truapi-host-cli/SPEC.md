@@ -966,7 +966,8 @@ wallet can return an empty account list.
 The template has no SDK dependency or protocol override. Missing SDK imports
 use Bun's runtime fallback to fetch the latest version. Install a chosen SDK
 locally with `bun add @parity/product-sdk` or an explicit version for editor
-types and `bun run typecheck`. TypeScript and Bun editor types use `latest` in
+types and `bun run typecheck`. The editor opens from the managed project root.
+TypeScript and Bun editor types use `latest` in
 the template, with resolved versions recorded in the project's lockfile.
 Raw TrUAPI scripts can import the adjacent declarations locally, allowing
 multiple scripts to compile together.
