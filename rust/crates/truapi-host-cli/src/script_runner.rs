@@ -255,7 +255,7 @@ fn bun_command(entrypoint: &Path, caller_directory: &Path) -> Result<Command> {
             EMPTY_BUN_CONFIG,
             "--no-env-file",
             "--no-macros",
-            "--no-install",
+            "--install=fallback",
         ])
         .arg("run")
         .arg(&entrypoint)

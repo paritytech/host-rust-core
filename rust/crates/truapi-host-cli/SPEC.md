@@ -889,8 +889,10 @@ The Rust parent sets:
 These variables are runner internals, not CLI configuration inputs.
 
 The launcher runs from its trusted directory with automatic Bun config,
-dotenv loading, macros, and package installation disabled. Product-side
-configuration cannot run code before the web API wrappers are installed.
+dotenv loading, and macros disabled. `--install=fallback` uses installed
+packages first, then downloads missing npm imports into Bun's cache.
+Product-side configuration cannot run code before the web API wrappers are
+installed. Editor types still require dependencies installed in the project.
 
 ### 10.4 Script status
 

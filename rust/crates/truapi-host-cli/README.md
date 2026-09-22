@@ -352,8 +352,10 @@ the directory must not already exist. `/script --edit` only edits, while
 `/script --run` reruns without opening an editor. Paths may contain spaces.
 Use `/script -- --run` to select a file literally named `--run`.
 
-Add packages in a managed project's directory with `bun add`, and check types
-with `bun run typecheck`. Its `package.json` entry
+Missing npm imports are installed into Bun's cache at runtime. For editor types
+and locked versions, add packages locally with `bun add`, plus separate types
+when needed (for example, `bun add -d @types/lodash`). Check types with
+`bun run typecheck`. The project's `package.json` entry
 `"truapiHost": { "script": "script.ts" }` identifies its root, which is also
 its execution directory. This remains true when copied or selected through
 an explicit path. Update that entry when renaming the main script. Ordinary
