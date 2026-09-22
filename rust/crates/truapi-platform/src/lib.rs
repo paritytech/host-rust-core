@@ -31,15 +31,16 @@ uniffi::use_remote_type!(truapi::Bytes32);
 use truapi::Bytes32;
 use truapi::latest::{
     AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
-    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
+    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, DerivationIndex, GenericError,
     HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
     HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostFeatureSupportedRequest,
     HostFeatureSupportedResponse, HostLocalStorageChangeItem, HostLocaleSubscribeItem,
-    HostNavigateToError, HostPlatform, HostPocketListSubscribeItem, HostPocketRemoveCardError,
-    HostPocketRemoveCardRequest, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostNativeChatAttachmentMetadata, HostNavigateToError, HostPlatform,
+    HostPocketListSubscribeItem, HostPocketRemoveCardError, HostPocketRemoveCardRequest,
+    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, HostWorkerBeginOperationResponse,
     HostWorkerOperationError, LegacyAccountTxPayload, NotificationId, ProductAccountId,
     ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
@@ -110,6 +111,10 @@ pub struct SigningHostConfig {
     /// ring-VRF keys. Must match the People chain's
     /// `NetworkSuffix.NetworkSuffix` value used for proof contexts.
     pub network_suffix: String,
+    /// Trusted Coinage asset instance for runtimes with instance-scoped assets.
+    /// Required by those runtimes; `None` preserves the legacy Coinage ABI.
+    /// This is not a purse derivation identifier.
+    pub coinage_instance_id: Option<u32>,
 }
 
 /// Product identity attached to one product-facing TrUAPI connection.
@@ -245,6 +250,7 @@ impl SigningHostConfig {
             bulletin_chain_genesis_hash,
             asset_hub_chain_genesis_hash,
             network_suffix,
+            coinage_instance_id: None,
         })
     }
 }
@@ -1185,6 +1191,15 @@ pub enum PermissionAuthorizationRequest {
         /// Product whose account context may be accessed.
         target_product_id: String,
     },
+    /// Product-scoped permission to bind and use wallet-held Chat identity authority.
+    #[codec(index = 4)]
+    ChatAuthority,
+    /// Product-scoped permission to ensure Statement Store quota, not increase it.
+    #[codec(index = 5)]
+    StatementStoreAllowance {
+        /// `None` selects the legacy allowance account; `Some` selects a product account.
+        derivation_index: Option<DerivationIndex>,
+    },
 }
 
 /// Authorization status for a permission request.
@@ -1364,7 +1379,153 @@ pub trait ChainProvider: Send + Sync {
     ) -> Result<Box<dyn JsonRpcConnection>, GenericError>;
 }
 
-/// A live JSON-RPC connection to a chain.
+/// Trusted native Chat selection context; never passed to a product.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct NativeChatFilePickRequest {
+    /// Authenticated product requesting selection.
+    pub product_id: String,
+    /// Host-authenticated recipient identity.
+    pub peer_identity: [u8; 32],
+    /// Host-resolved recipient name, if available.
+    pub peer_username: Option<String>,
+    /// Maximum number of files the Host can accept.
+    pub max_files: u32,
+}
+
+/// Immutable Host-owned source and metadata derived from its actual bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct NativeChatPickedFile {
+    /// Opaque private handle surviving restart until explicitly released.
+    pub source_id: String,
+    /// Actual source size and native media metadata.
+    pub metadata: HostNativeChatAttachmentMetadata,
+}
+
+/// Trusted context for exporting a verified native Chat attachment.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct NativeChatFileExportRequest {
+    /// Authenticated product requesting presentation.
+    pub product_id: String,
+    /// Host-authenticated peer identity.
+    pub peer_identity: [u8; 32],
+    /// Host-resolved peer name, if available.
+    pub peer_username: Option<String>,
+    /// Verified attachment metadata, including the exact export size.
+    pub metadata: HostNativeChatAttachmentMetadata,
+}
+
+/// Host-private native Chat selection, immutable custody and safe export.
+///
+/// Handles, file bytes and destinations must never be exposed to products.
+/// Optional embedders without a backend must fail explicitly as unavailable.
+#[async_trait]
+pub trait NativeChatFilesHost: Send + Sync {
+    /// Present trusted selection and durably snapshot the selected files.
+    /// An empty result denotes user cancellation, not an unavailable backend.
+    async fn pick_chat_files(
+        &self,
+        request: NativeChatFilePickRequest,
+    ) -> Result<Vec<NativeChatPickedFile>, GenericError>;
+
+    /// Read exactly `length` bytes from an immutable source. Reject lengths
+    /// above 2,000,000 and checked ranges extending beyond its actual u32 size.
+    async fn read_chat_file(
+        &self,
+        source_id: String,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, GenericError>;
+
+    /// Release durable source custody. Repeated release is harmless.
+    async fn release_chat_file(&self, source_id: String) -> Result<(), GenericError>;
+
+    /// Present trusted export consent and create a private partial output.
+    /// `None` denotes user cancellation. Never overwrite without consent.
+    async fn begin_chat_file_export(
+        &self,
+        request: NativeChatFileExportRequest,
+    ) -> Result<Option<String>, GenericError>;
+
+    /// Append a bounded chunk at the exact current offset; never allow holes,
+    /// rewrites, or bytes beyond the declared export size.
+    async fn write_chat_file_export(
+        &self,
+        export_id: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<(), GenericError>;
+
+    /// Publish only an exact-size completed output through safe native UI.
+    /// Never automatically execute HTML, SVG, scripts, or other active files.
+    async fn finish_chat_file_export(&self, export_id: String) -> Result<(), GenericError>;
+
+    /// Idempotently discard a partial output, never a completed user export.
+    async fn cancel_chat_file_export(&self, export_id: String) -> Result<(), GenericError>;
+}
+
+/// Host-private HOP transport for the configured Bulletin chain.
+///
+/// Endpoints are trusted host configuration, never product-supplied dialing
+/// instructions. Implementations must re-read their allowlist and enforce exact
+/// URL membership before opening a connection. An unconfigured host is
+/// explicitly unavailable; it must not fall back to a chain RPC endpoint.
+#[async_trait]
+pub trait HopProvider: Send + Sync {
+    /// Current exact WSS endpoints from the host's trusted Bulletin registry.
+    async fn allowed_hop_endpoints(
+        &self,
+        bulletin_genesis_hash: [u8; 32],
+    ) -> Result<Vec<String>, GenericError> {
+        let _ = bulletin_genesis_hash;
+        Ok(Vec::new())
+    }
+
+    /// Open one private HOP connection, sharing the JSON-RPC lifecycle only.
+    /// The caller closes the returned lease when the private operation ends.
+    async fn connect_hop(
+        &self,
+        bulletin_genesis_hash: [u8; 32],
+        endpoint: String,
+    ) -> Result<Box<dyn JsonRpcConnection>, GenericError> {
+        let _ = (bulletin_genesis_hash, endpoint);
+        Err(GenericError {
+            reason: "HOP provider unavailable".to_string(),
+        })
+    }
+}
+
+/// Check an endpoint without normalizing it into a different allowlist entry.
+pub fn ensure_allowed_hop_endpoint(endpoint: &str, allowed: &[String]) -> Result<(), GenericError> {
+    let valid = endpoint.starts_with("wss://")
+        && !endpoint
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+        && !endpoint.contains(['#', '\\'])
+        && !endpoint[6..]
+            .split(['/', '?'])
+            .next()
+            .unwrap_or_default()
+            .contains('@')
+        && url::Url::parse(endpoint).is_ok_and(|url| {
+            url.scheme() == "wss"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none()
+        })
+        && allowed.iter().any(|entry| entry == endpoint);
+    if !valid {
+        return Err(GenericError {
+            reason: "HOP endpoint is not in the trusted Bulletin WSS allowlist".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// A live JSON-RPC connection to a host-selected service.
 pub trait JsonRpcConnection: Send + Sync {
     /// Send a JSON-RPC request string.
     fn send(&self, request: String);
@@ -1469,6 +1630,53 @@ pub enum CoreStorageKey {
         /// Product whose manifest was cached, normalized.
         product_id: String,
     },
+    /// Encrypted main-purse inventory, operation journal, and claim recovery state.
+    ///
+    /// This slot is wallet-owned, not product-owned, and must survive clearing a
+    /// product's data. Writes replace the entire value atomically.
+    #[codec(index = 13)]
+    MainPurseCoinage {
+        /// Root public key identifying the wallet.
+        root_public_key: [u8; 32],
+        /// Chain whose Coinage inventory is recorded.
+        genesis_hash: [u8; 32],
+    },
+    /// Encrypted Host-owned native Chat device, peer roster, and migration state.
+    #[codec(index = 14)]
+    NativeChatDevice {
+        /// Wallet owning the Chat identity.
+        root_public_key: [u8; 32],
+        /// Host-selected Chat network.
+        genesis_hash: [u8; 32],
+        /// Authenticated product using the device.
+        product_id: String,
+    },
+    /// One encrypted, bounded native Chat attachment cache chunk.
+    /// Values use the Chat state's wallet-bound authenticated encryption.
+    #[codec(index = 15)]
+    NativeChatFileChunk {
+        /// Wallet owning the attachment.
+        root_public_key: [u8; 32],
+        /// Host-selected Chat network.
+        genesis_hash: [u8; 32],
+        /// Authenticated product using the device.
+        product_id: String,
+        /// Public opaque attachment identifier, not a source handle or ticket.
+        attachment_id: [u8; 32],
+        /// Exact chunk index within the authenticated file root.
+        chunk_index: u32,
+    },
+    /// Previously initialized Chat products to restore after this wallet unlocks.
+    ///
+    /// This is a host-private wallet-owned index, not a permission grant. The
+    /// core rechecks each product's current grants before restoring reception.
+    #[codec(index = 16)]
+    NativeChatProducts {
+        /// Wallet owning the installed Chat devices.
+        root_public_key: [u8; 32],
+        /// Host-selected Chat network.
+        genesis_hash: [u8; 32],
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1522,6 +1730,12 @@ pub fn describe_core_storage_key(
         CoreStorageKey::DeviceEncryptionKey => ("DeviceEncryptionKey", None),
         CoreStorageKey::SsoResponderRequestLedger { .. } => ("SsoResponderRequestLedger", None),
         CoreStorageKey::ProductManifest { product_id } => ("ProductManifest", Some(product_id)),
+        CoreStorageKey::MainPurseCoinage { .. } => ("MainPurseCoinage", None),
+        CoreStorageKey::NativeChatDevice { .. } => ("NativeChatDevice", None),
+        CoreStorageKey::NativeChatProducts { .. } => ("NativeChatProducts", None),
+        CoreStorageKey::NativeChatFileChunk { product_id, .. } => {
+            ("NativeChatFileChunk", Some(product_id))
+        }
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }
@@ -1585,6 +1799,25 @@ impl CoreStorageKey {
             request: PermissionAuthorizationRequest::AccountAccess {
                 target_product_id: target_product_id.to_string(),
             },
+        }
+    }
+
+    /// Persisted authorization key for wallet-held Chat identity authority.
+    pub fn chat_authority_authorization(product_id: &str) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::ChatAuthority,
+        }
+    }
+
+    /// Persisted authorization for one statement allowance account selector.
+    pub fn statement_store_allowance_authorization(
+        product_id: &str,
+        derivation_index: Option<DerivationIndex>,
+    ) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::StatementStoreAllowance { derivation_index },
         }
     }
 }
@@ -1681,6 +1914,34 @@ fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hop_dialing_requires_exact_secure_endpoint_membership() {
+        let allowed = vec!["wss://hop.example/rpc".to_string()];
+        assert!(ensure_allowed_hop_endpoint(&allowed[0], &allowed).is_ok());
+        for endpoint in [
+            "wss://hop.example/rpc/",
+            "wss://HOP.example/rpc",
+            "wss://hop.example:443/rpc",
+            "wss://hop.example/rpc?other=1",
+            "wss://hop.example.evil/rpc",
+        ] {
+            assert!(ensure_allowed_hop_endpoint(endpoint, &allowed).is_err());
+        }
+        // Even malformed trusted configuration must not weaken the dial policy.
+        for endpoint in [
+            "ws://hop.example/rpc",
+            "https://hop.example/rpc",
+            "wss://user:secret@hop.example/rpc",
+            "wss://@hop.example/rpc",
+            "wss://hop.example\\rpc",
+            "wss://hop.example/rpc#fragment",
+            "wss://hop.example/\nrpc",
+            " wss://hop.example/rpc",
+        ] {
+            assert!(ensure_allowed_hop_endpoint(endpoint, &[endpoint.to_string()]).is_err());
+        }
+    }
 
     fn signing_host_config(
         network_suffix: &str,
@@ -2598,6 +2859,8 @@ mod tests {
         let account_access =
             CoreStorageKey::account_access_authorization("product.dot", "target.dot");
         let other_target = CoreStorageKey::account_access_authorization("product.dot", "other.dot");
+        let chat_authority = CoreStorageKey::chat_authority_authorization("product.dot");
+        let other_product_chat = CoreStorageKey::chat_authority_authorization("other.dot");
 
         assert_ne!(camera, other_product);
         assert_ne!(camera, remote);
@@ -2606,6 +2869,9 @@ mod tests {
         assert_ne!(identity, other_product_identity);
         assert_ne!(account_access, other_target);
         assert_ne!(account_access, camera);
+        assert_ne!(chat_authority, identity);
+        assert_ne!(chat_authority, account_access);
+        assert_ne!(chat_authority, other_product_chat);
     }
 
     #[test]
@@ -2818,10 +3084,10 @@ mod tests {
 /// they accumulate for the life of the install.
 ///
 /// [`describe_core_storage_key`] names the product owning a slot:
-/// [`CoreStorageKeyDescription::product_id`] is `Some` exactly for the
-/// product-indexed variants, which are `PermissionAuthorization`,
-/// `AutoSigningKey`, and `ProductSubtree`. Keying host storage by that value
-/// makes the sweep a prefix delete rather than a scan.
+/// [`CoreStorageKeyDescription::product_id`] is `Some` for product-indexed
+/// slots, including the encrypted attachment chunk cache. Wallet-owned state
+/// remains outside that sweep. Keying host storage by this metadata makes
+/// product removal a prefix delete rather than a scan.
 #[async_trait]
 pub trait CoreStorage: Send + Sync {
     /// Read a core-owned value by typed slot.
@@ -3055,6 +3321,39 @@ pub struct IdentityDisclosureReview {
     pub product_id: String,
 }
 
+/// Review shown before a product binds or uses wallet-held Chat identity authority.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct ChatAuthorityReview {
+    /// Product requesting the Chat identity operation.
+    pub product_id: String,
+}
+
+/// Exact Host-resolved payment reviewed before debiting the user's main purse.
+///
+/// This review never grants a reusable spending permission. Chat authority and
+/// automatic product signing do not authorize it.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct MainPurseChatPaymentReview {
+    /// Authenticated product requesting this payment.
+    pub calling_product_id: String,
+    /// Recipient identity authenticated by the Host's native Chat session.
+    pub recipient_identity: [u8; 32],
+    /// Host-resolved username for that identity, never a product display label.
+    pub recipient_username: Option<String>,
+    /// Exact recipient amount in cents of the selected Coinage asset.
+    pub amount_cents: u64,
+    /// Maximum main-purse debit, including any approved fee, in the same cents.
+    pub max_debit_cents: u64,
+    /// Genesis hash of the Host-selected Coinage chain.
+    pub genesis_hash: [u8; 32],
+    /// Trusted Coinage asset instance; None denotes a legacy single-asset runtime.
+    pub coinage_instance_id: Option<u32>,
+    /// Immutable, wallet-scoped payment operation being authorized.
+    pub operation_id: [u8; 32],
+}
+
 /// Review shown before a product resolves its own account subtree over SSO,
 /// when the value is not cached and the core must ask the Account Holder.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -3101,6 +3400,10 @@ pub enum UserConfirmationReview {
     SignVrf(SignVrfReview),
     /// Resolve a product's own account subtree over SSO.
     ProductSubtree(ProductSubtreeReview),
+    /// Allow a product to bind and use wallet-held Chat identity authority.
+    ChatAuthority(ChatAuthorityReview),
+    /// Confirm this exact main-purse payment; never eligible for auto-approval.
+    MainPurseChatPayment(MainPurseChatPaymentReview),
 }
 
 /// Local user confirmation UI for sensitive core-owned operations.
@@ -3137,6 +3440,21 @@ pub trait LocaleHost: Send + Sync {
     /// Emits the currently selected locale immediately, then future changes.
     fn subscribe_locale(&self)
     -> BoxStream<'static, Result<HostLocaleSubscribeItem, GenericError>>;
+}
+
+/// Optional host-authenticated username candidate source. The host owns backend
+/// configuration and credentials. Candidates are never ownership assertions:
+/// the core checks finalized dotNS ownership and the canonical People Chat key.
+#[async_trait]
+pub trait IdentityBackendHost: Send + Sync {
+    /// Return exact-name candidates on the specified People network. Reject
+    /// unavailable configuration/authentication and incomplete search results.
+    /// Neither a guest URL nor a backend display label crosses this boundary.
+    async fn identity_username_candidates(
+        &self,
+        username: String,
+        people_chain_genesis_hash: [u8; 32],
+    ) -> Result<Vec<[u8; 32]>, GenericError>;
 }
 
 /// Host preimage backend. The core builds, signs, and submits the Bulletin
@@ -3314,6 +3632,8 @@ pub trait Platform:
     + ProductStorage
     + CoreStorage
     + ChainProvider
+    + HopProvider
+    + NativeChatFilesHost
     + AuthPresenter
     + UserConfirmation
     + ThemeHost
@@ -3331,6 +3651,8 @@ impl<T> Platform for T where
         + ProductStorage
         + CoreStorage
         + ChainProvider
+        + HopProvider
+        + NativeChatFilesHost
         + AuthPresenter
         + UserConfirmation
         + ThemeHost
@@ -3344,6 +3666,12 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+pub trait OptionalPlatform:
+    ChatPlatform + PermissionStatusHost + PocketPlatform + IdentityBackendHost
+{
+}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+impl<T> OptionalPlatform for T where
+    T: ChatPlatform + PermissionStatusHost + PocketPlatform + IdentityBackendHost
+{
+}

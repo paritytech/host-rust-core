@@ -25,9 +25,9 @@ use super::allowances::{self, AllowanceCacheKey, AllowanceResource};
 use super::auth_state::AuthStateMachine;
 use super::authority::{
     AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningKey, BulletinAllowanceKey,
-    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
-    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session,
-    require_current_session,
+    CreateTransactionAuthorityRequest, ProductAuthority, ProductDeviceChatAuthorityError,
+    ProductDeviceChatAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    StatementStoreAllowanceKey, authority_session, require_current_session,
 };
 use super::connected_session_ui_info;
 use super::identity::resolve_session_identity_with_chain;
@@ -55,7 +55,7 @@ use crate::subscription::Spawner;
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
-use truapi::{CallContext, CallError, v01};
+use truapi::{CallContext, CallError, latest, v01};
 use truapi_platform::{
     CoreStorageKey, PairingHostConfig, Platform, ProductContext, SignVrfReview,
     UserConfirmationReview, normalize_product_identifier,
@@ -2447,6 +2447,19 @@ impl PairingHost {
             .await
     }
 
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        let private_session = self
+            .current_private_session(session)
+            .map_err(|_| ProductDeviceChatAuthorityError::Disconnected)?;
+        self.remote_product_device_chat(cx, &private_session, request)
+            .await
+    }
+
     async fn allocate_resources(
         &self,
         cx: &CallContext,
@@ -2721,6 +2734,15 @@ impl ProductAuthority for PairingHost {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<Vec<u8>, RingVrfError> {
         PairingHost::ring_vrf_sign(self, cx, session, request).await
+    }
+
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        PairingHost::product_device_chat(self, cx, session, request).await
     }
 
     async fn allocate_resources(

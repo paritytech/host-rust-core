@@ -10,11 +10,11 @@
 //! signing, v4 transaction construction (payload fields and extensions arrive
 //! pre-encoded, so no chain metadata is needed), RFC-0007 product entropy,
 //! bandersnatch ring-VRF aliases and membership proofs, and product-scoped
-//! Statement Store and Bulletin allowance keys (native only).
-
-#[cfg(not(target_arch = "wasm32"))]
+//! Statement Store allowance keys (native and browser), and Bulletin allowance
+//! keys (native only).
 mod allowance_renewal;
 mod local_activation;
+mod local_identity;
 pub(super) mod ring_vrf;
 mod sso_replay;
 mod sso_responder;
@@ -30,6 +30,7 @@ use truapi::latest::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use allowance_renewal::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 pub(crate) use local_activation::LocalActivation;
+pub use local_identity::{LocalIdentity, LocalIdentityContext};
 pub use sso_responder::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
 pub(crate) use sso_responder::{
     disconnect_paired_host, establish_pairing, notify_pairing_allowance_allocation,
@@ -39,9 +40,11 @@ pub(crate) use sso_service::SigningHostSsoService;
 
 use super::authority::{
     AuthorityError, AuthoritySession, AutoSigningGrant, BulletinAllowanceKey,
-    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
-    SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session_validation_id,
+    CreateTransactionAuthorityRequest, ProductAuthority, ProductDeviceChatAuthorityError,
+    ProductDeviceChatAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    StatementStoreAllowanceKey, authority_session_validation_id,
 };
+use super::native_chat::{NativeChatContext, NativeChatRegistry};
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::entropy::derive_product_entropy;
@@ -51,7 +54,6 @@ use crate::host_logic::product_account::{
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
     derive_root_keypair_from_entropy,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
 };
@@ -60,9 +62,7 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::CollectionCandidate;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
@@ -117,6 +117,7 @@ pub(crate) struct SigningHost {
     /// [`truapi_platform::SigningHostConfig::network_suffix`]. Every reserved
     /// RFC-0022 derivation (`uid.<suffix>`, `peopl.<suffix>`) ends in it.
     network_suffix: String,
+    coinage_instance_id: Option<u32>,
     session_state: Arc<SessionState>,
     auth_state: AuthStateMachine,
     ring_resolver: Arc<dyn RingResolver>,
@@ -125,33 +126,45 @@ pub(crate) struct SigningHost {
     /// In-memory grants and the activation generation that owns them. The
     /// lifecycle mutex also makes session replacement and snapshot creation
     /// atomic with respect to generation changes.
-    local_grants: Mutex<LocalGrantState>,
+    local_grants: Arc<Mutex<LocalGrantState>>,
     /// Durable RFC-0024 registry, scoped by the active wallet root.
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
     /// Serializes replay-ledger updates within each wallet and peer scope.
     sso_replay_locks: SsoReplayLocks,
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Wallet/network engine and product-scoped Host-only transport devices.
+    native_chat: NativeChatRegistry,
     renewal: allowance_renewal::RenewalState,
+}
+
+impl Drop for SigningHost {
+    fn drop(&mut self) {
+        self.clear_local_session();
+    }
 }
 
 impl SigningHost {
     /// Build a signing host with no active session, serving the network whose
     /// dotNS TLD is `network_suffix`.
-    pub(crate) fn new(services: Arc<RuntimeServices>, network_suffix: String) -> Arc<Self> {
+    pub(crate) fn new(
+        services: Arc<RuntimeServices>,
+        network_suffix: String,
+        coinage_instance_id: Option<u32>,
+    ) -> Arc<Self> {
         let platform = services.platform.clone();
         let ring_resolver = ChainRingResolver::new(services.chain.clone());
         Arc::new(Self {
             services,
             platform: platform.clone(),
             network_suffix,
+            coinage_instance_id,
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform.clone()),
             ring_resolver,
             root_entropy: Mutex::new(None),
-            local_grants: Mutex::new(LocalGrantState::default()),
+            local_grants: Arc::new(Mutex::new(LocalGrantState::default())),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
-            #[cfg(not(target_arch = "wasm32"))]
+            native_chat: NativeChatRegistry::default(),
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -194,14 +207,15 @@ impl SigningHost {
             services,
             platform: platform.clone(),
             network_suffix: network_suffix.to_string(),
+            coinage_instance_id: None,
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform.clone()),
             ring_resolver,
             root_entropy: Mutex::new(None),
-            local_grants: Mutex::new(LocalGrantState::default()),
+            local_grants: Arc::new(Mutex::new(LocalGrantState::default())),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
-            #[cfg(not(target_arch = "wasm32"))]
+            native_chat: NativeChatRegistry::default(),
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -303,7 +317,7 @@ impl SigningHost {
 
     /// Fence in-flight grant work and revoke this product's grants from the
     /// current local activation while preserving unrelated products.
-    pub(crate) fn clear_product_state(&self, product_id: &str) -> Result<(), AuthorityError> {
+    pub(crate) async fn clear_product_state(&self, product_id: &str) -> Result<(), AuthorityError> {
         let product_id = normalize_product_identifier(product_id).map_err(|error| {
             AuthorityError::Unavailable {
                 reason: error.to_string(),
@@ -313,6 +327,19 @@ impl SigningHost {
             .lock()
             .expect("local AutoSigning grant mutex poisoned")
             .revoke_product(&product_id);
+        if let Some(session) = self.current_local_session() {
+            let context = self.native_chat_context(&session).map_err(|error| {
+                AuthorityError::Unavailable {
+                    reason: format!("native Chat product state unavailable: {error:?}"),
+                }
+            })?;
+            let forgotten = self.native_chat.forget_product(&context, &product_id).await;
+            // The owned forget task rebinds unrelated receivers on every outcome,
+            // including cancellation of this administration call.
+            forgotten.map_err(|_| AuthorityError::Unavailable {
+                reason: "native Chat product state could not be cleared".into(),
+            })?;
+        }
         Ok(())
     }
 
@@ -367,6 +394,13 @@ impl SigningHost {
             .lock()
             .expect("signing host entropy mutex poisoned") = Some(secret);
         self.session_state.set_session(session);
+        drop(state);
+        self.native_chat.release();
+        if let Some(session) = self.current_local_session() {
+            if let Ok(context) = self.native_chat_context(&session) {
+                self.native_chat.resume_receiving(context);
+            }
+        }
     }
 
     fn clear_local_session(&self) {
@@ -380,6 +414,8 @@ impl SigningHost {
             .expect("signing host entropy mutex poisoned")
             .take();
         self.session_state.clear_session();
+        drop(state);
+        self.native_chat.release();
     }
 
     fn current_local_session(&self) -> Option<AuthoritySession> {
@@ -414,6 +450,38 @@ impl SigningHost {
         Ok((current, state.activation_generation))
     }
 
+    fn native_chat_context(
+        &self,
+        session: &AuthoritySession,
+    ) -> Result<NativeChatContext, ProductDeviceChatAuthorityError> {
+        self.require_current_session(session)?;
+        let entropy = self.root_entropy()?;
+        self.require_current_session(session)?;
+        let session_state = self.session_state.clone();
+        let local_grants = self.local_grants.clone();
+        let validation_id = session.validation_id.clone();
+        let session_valid = Arc::new(move || {
+            let grants = local_grants
+                .lock()
+                .expect("local AutoSigning grant mutex poisoned");
+            session_state.current().is_some_and(|current| {
+                local_session_validation_id(&current, grants.activation_generation) == validation_id
+            })
+        });
+        Ok(NativeChatContext {
+            services: self.services.clone(),
+            session: session.clone(),
+            entropy,
+            session_valid,
+            network_suffix: self.network_suffix.clone(),
+            genesis_hash: self.services.people_chain_genesis_hash,
+            coinage_instance_id: self.coinage_instance_id,
+            permission_platform: self.platform.clone(),
+            foreground: None,
+            permission_scope: None,
+        })
+    }
+
     fn ring_vrf_entropy(
         &self,
         session: &AuthoritySession,
@@ -440,7 +508,6 @@ impl SigningHost {
     /// actually a member of is settled on chain by looking for a ring that
     /// includes each member key, not by local state. That keeps the two hosts
     /// from disagreeing about personhood.
-    #[cfg(not(target_arch = "wasm32"))]
     fn reserved_person_collection_candidates(
         &self,
         session: &AuthoritySession,
@@ -650,6 +717,17 @@ impl SigningHost {
 #[async_trait::async_trait]
 impl ProductAuthority for SigningHost {
     fn current_session(&self) -> Option<AuthoritySession> {
+        self.current_local_session()
+    }
+
+    async fn refresh_session_identity(&self) -> Option<AuthoritySession> {
+        let context = self.local_identity_context().ok()?;
+        if let Err(error) = self.refresh_local_identity(&context.activation_id).await {
+            tracing::warn!(reason = %error.reason, "local dotNS identity refresh failed");
+        }
+        if self.local_identity_context().ok()?.activation_id != context.activation_id {
+            return None;
+        }
         self.current_local_session()
     }
 
@@ -1127,6 +1205,37 @@ impl ProductAuthority for SigningHost {
         sign_from_entropy(&entropy, &request.payload.message)
     }
 
+    async fn product_device_chat(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<truapi::latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError>
+    {
+        self.require_current_session(session)?;
+        let calling_product_id = normalize_product_identifier(&request.calling_product_id)
+            .map_err(|_| {
+                ProductDeviceChatAuthorityError::Domain(
+                    truapi::latest::HostProductDeviceChatError::InvalidRequest,
+                )
+            })?;
+        let mut context = self.native_chat_context(session)?;
+        context.permission_platform = request.permission_platform;
+        context.permission_scope = request.permission_scope;
+        context.foreground = Some(super::native_chat::ForegroundChatAuthorization {
+            product: calling_product_id.clone(),
+            statement_submit: super::authority::chat_requires_statement_submit(&request.operation),
+            preimage_submit: matches!(
+                &request.operation,
+                truapi::latest::HostProductDeviceChatRequest::SendAttachments { .. }
+            ),
+        });
+        self.native_chat
+            .execute(context, calling_product_id, request.operation)
+            .await
+            .map_err(ProductDeviceChatAuthorityError::Domain)
+    }
+
     async fn allocate_resources(
         &self,
         _cx: &CallContext,
@@ -1176,6 +1285,18 @@ impl ProductAuthority for SigningHost {
                     .grant_auto_signing(session, &product_id)
                     .map(|_| v01::AllocationOutcome::Allocated)
                     .map_err(sso_responder::AllowanceAllocationError::Authority),
+                v01::AllocatableResource::ProductStatementStoreAllowance(index) => {
+                    sso_responder::allocate_product_statement_store_allowance(
+                        &self.services,
+                        self,
+                        session,
+                        &product_id,
+                        &index,
+                        OnExistingAllowancePolicy::Increase,
+                    )
+                    .await
+                    .map(|()| v01::AllocationOutcome::Allocated)
+                }
             };
             match outcome {
                 Ok(outcome) => outcomes.push(outcome),
@@ -1299,6 +1420,7 @@ mod tests {
 
     use super::super::authority::{
         AuthorityError, AuthoritySession, CreateTransactionAuthorityRequest,
+        ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
         SignPayloadAuthorityRequest, SignRawAuthorityRequest,
     };
     use super::super::{ProductAuthority, ProductRuntimeHost, RuntimeServices, SigningHostRole};
@@ -1306,14 +1428,19 @@ mod tests {
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
     use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
     use crate::host_logic::extrinsic::tests::split_v4;
+    use crate::host_logic::permissions::PermissionsService;
     use crate::host_logic::product_account::{
         derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
         derive_root_keypair_from_entropy, index_bytes,
     };
-    use crate::host_logic::sso::messages::ProductRequest;
+    use crate::host_logic::sso::messages::{
+        ProductDeviceChatResponse, ProductRequest, RemoteMessage, RemoteMessageData,
+        SsoProductDeviceChatOperation, v1,
+    };
     use crate::host_logic::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
     };
+    use crate::runtime::sso_service::Dispatch;
     use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::test_support::{StubPlatform, test_spawner};
     use truapi::api::{Account, Entropy, ResourceAllocation, Signing};
@@ -1321,14 +1448,20 @@ mod tests {
         HostAccountCreateProofRequest, HostAccountGetAliasRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
     };
-    use truapi::versioned::account::{HostAccountGetError, HostAccountGetRequest};
+    use truapi::versioned::account::{
+        HostAccountGetError, HostAccountGetRequest, HostProductDeviceChatError,
+        HostProductDeviceChatRequest, HostProductDeviceChatResponse,
+    };
     use truapi::versioned::entropy::HostDeriveEntropyRequest;
     use truapi::versioned::resource_allocation::{
         HostRequestResourceAllocationRequest, HostRequestResourceAllocationResponse,
     };
     use truapi::versioned::signing::{HostSignRawError, HostSignRawRequest, HostSignRawResponse};
     use truapi::{CallContext, CallError, v01};
-    use truapi_platform::{HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig};
+    use truapi_platform::{
+        HostInfo, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
+        PlatformInfo, ProductContext, SigningHostConfig,
+    };
     use verifiable::ring::RingDomainSize;
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
@@ -1438,7 +1571,11 @@ mod tests {
             config.asset_hub_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);
+        let signing_host = SigningHostRole::new(
+            services.clone(),
+            config.network_suffix,
+            config.coinage_instance_id,
+        );
         (services, signing_host)
     }
 
@@ -1465,6 +1602,489 @@ mod tests {
             authority,
             ProductContext::new(product_id.to_string()).expect("valid product id"),
         )
+    }
+
+    #[test]
+    fn cached_native_chat_does_not_authorize_the_next_foreground_call() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                permission_confirmation_decisions: std::sync::Mutex::new(
+                    [
+                        truapi_platform::PermissionDecision::AllowOnce,
+                        truapi_platform::PermissionDecision::Deny,
+                    ]
+                    .into(),
+                ),
+                ..Default::default()
+            });
+            let (services, authority) = signing_runtime_with_platform(platform.clone());
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let runtime = product_runtime(services, authority.clone());
+            let request = truapi::versioned::account::HostProductDeviceChatRequest::V1(
+                truapi::latest::HostProductDeviceChatRequest::Initialize,
+            );
+            truapi::api::Account::product_device_chat(
+                &runtime,
+                &CallContext::default(),
+                request.clone(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                runtime
+                    .permission_authorization_status(PermissionAuthorizationRequest::ChatAuthority,)
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined
+            );
+            assert!(matches!(
+                truapi::api::Account::product_device_chat(
+                    &runtime,
+                    &CallContext::default(),
+                    request,
+                )
+                .await,
+                Err(CallError::Domain(
+                    truapi::versioned::account::HostProductDeviceChatError::V1(
+                        truapi::latest::HostProductDeviceChatError::AccessNotGranted,
+                    )
+                ))
+            ));
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 2);
+        });
+    }
+
+    #[test]
+    fn statement_allowance_decisions_survive_runtime_restart_and_remain_scoped() {
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            chain_connect_error: Some("offline"),
+            ..Default::default()
+        });
+        let selector = Some(v01::DerivationIndex::Index(0));
+        let request = PermissionAuthorizationRequest::StatementStoreAllowance {
+            derivation_index: selector.clone(),
+        };
+        futures::executor::block_on(async {
+            let (services, authority) = signing_runtime_with_platform(platform.clone());
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let first = product_runtime(services, authority.clone());
+            let session = authority.current_session().unwrap();
+            first
+                .require_statement_store_allowance(&session, selector.clone())
+                .await
+                .unwrap();
+            drop(first);
+            drop(authority);
+
+            let (services, authority) = signing_runtime_with_platform(platform.clone());
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let restarted = product_runtime(services.clone(), authority.clone());
+            let session = authority.current_session().unwrap();
+            restarted
+                .require_statement_store_allowance(&session, selector.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                platform.resource_allocation_reviews.lock().unwrap().len(),
+                1
+            );
+            assert_eq!(
+                restarted
+                    .permission_authorization_status(request.clone())
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::Authorized
+            );
+            for separate in [
+                PermissionAuthorizationRequest::StatementStoreAllowance {
+                    derivation_index: None,
+                },
+                PermissionAuthorizationRequest::StatementStoreAllowance {
+                    derivation_index: Some(v01::DerivationIndex::Index(1)),
+                },
+                PermissionAuthorizationRequest::ChatAuthority,
+                PermissionAuthorizationRequest::IdentityDisclosure,
+            ] {
+                assert_eq!(
+                    restarted
+                        .permission_authorization_status(separate)
+                        .await
+                        .unwrap(),
+                    PermissionAuthorizationStatus::NotDetermined
+                );
+            }
+            let other = product_runtime_for(services.clone(), authority.clone(), "other.dot");
+            assert_eq!(
+                other
+                    .permission_authorization_status(request.clone())
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined
+            );
+
+            // A connection with a different artifact store must not inherit a
+            // decision even with the same product id and the same authority.
+            let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+            adapters.platform = Arc::new(StubPlatform::default());
+            let other_artifact = ProductRuntimeHost::from_services(
+                services,
+                adapters,
+                authority,
+                ProductContext::new("myapp.dot".to_string()).unwrap(),
+            );
+            assert_eq!(
+                other_artifact
+                    .permission_authorization_status(request.clone())
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined
+            );
+
+            restarted
+                .set_permission_authorization_status(
+                    request.clone(),
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            let result = ResourceAllocation::request(
+                &restarted,
+                &CallContext::default(),
+                HostRequestResourceAllocationRequest::V1(
+                    v01::HostRequestResourceAllocationRequest {
+                        resources: vec![v01::AllocatableResource::ProductStatementStoreAllowance(
+                            v01::DerivationIndex::Index(0),
+                        )],
+                    },
+                ),
+            )
+            .await;
+            assert!(result.is_err());
+            assert!(platform.sent_rpc.lock().unwrap().is_empty());
+            assert_eq!(
+                platform.resource_allocation_reviews.lock().unwrap().len(),
+                1
+            );
+            assert_eq!(
+                restarted
+                    .permission_authorization_status(request.clone())
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::Denied
+            );
+            restarted
+                .set_permission_authorization_status(
+                    request,
+                    PermissionAuthorizationStatus::NotDetermined,
+                )
+                .await
+                .unwrap();
+            restarted
+                .require_statement_store_allowance(&session, selector)
+                .await
+                .unwrap();
+            assert_eq!(
+                platform.resource_allocation_reviews.lock().unwrap().len(),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn explicit_statement_increases_each_prompt_and_initial_approval_also_grants_ensure() {
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            chain_connect_error: Some("offline"),
+            ..Default::default()
+        });
+        let (services, authority) = signing_runtime_with_platform(platform.clone());
+        futures::executor::block_on(async {
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let runtime = product_runtime(services, authority.clone());
+            let session = authority.current_session().unwrap();
+            for expected_reviews in 1..=2 {
+                // Chain availability is independent of consent: a failed
+                // provisioning attempt must not force a second grant prompt.
+                ResourceAllocation::request(
+                    &runtime,
+                    &CallContext::default(),
+                    HostRequestResourceAllocationRequest::V1(
+                        v01::HostRequestResourceAllocationRequest {
+                            resources: vec![v01::AllocatableResource::StatementStoreAllowance],
+                        },
+                    ),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    platform
+                        .resource_allocation_reviews
+                        .lock()
+                        .expect("reviews")
+                        .len(),
+                    expected_reviews
+                );
+                runtime
+                    .require_statement_store_allowance(&session, None)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    platform
+                        .resource_allocation_reviews
+                        .lock()
+                        .expect("reviews")
+                        .len(),
+                    expected_reviews
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn cancelling_an_explicit_increase_preserves_the_implicit_allowance_grant() {
+        let platform = Arc::new(StubPlatform::default());
+        let (services, authority) = signing_runtime_with_platform(platform.clone());
+        futures::executor::block_on(async {
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let runtime = product_runtime(services, authority.clone());
+            let grant = PermissionAuthorizationRequest::StatementStoreAllowance {
+                derivation_index: None,
+            };
+            runtime
+                .set_permission_authorization_status(
+                    grant.clone(),
+                    PermissionAuthorizationStatus::Authorized,
+                )
+                .await
+                .unwrap();
+            assert!(
+                ResourceAllocation::request(
+                    &runtime,
+                    &CallContext::default(),
+                    HostRequestResourceAllocationRequest::V1(
+                        v01::HostRequestResourceAllocationRequest {
+                            resources: vec![v01::AllocatableResource::StatementStoreAllowance],
+                        }
+                    )
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(
+                runtime
+                    .permission_authorization_status(grant)
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::Authorized
+            );
+            runtime
+                .require_statement_store_allowance(&authority.current_session().unwrap(), None)
+                .await
+                .unwrap();
+            assert_eq!(
+                platform
+                    .resource_allocation_reviews
+                    .lock()
+                    .expect("reviews")
+                    .len(),
+                1
+            );
+            assert!(platform.sent_rpc.lock().expect("rpc").is_empty());
+        });
+    }
+
+    #[test]
+    fn administration_during_explicit_review_wins_over_the_confirmation() {
+        use futures::FutureExt;
+        for (before, administrative) in [
+            (
+                PermissionAuthorizationStatus::NotDetermined,
+                PermissionAuthorizationStatus::Denied,
+            ),
+            (
+                PermissionAuthorizationStatus::Authorized,
+                PermissionAuthorizationStatus::NotDetermined,
+            ),
+        ] {
+            let (release, gate) = futures::channel::oneshot::channel();
+            let platform = Arc::new(StubPlatform {
+                resource_allocation_confirmed: true,
+                ..Default::default()
+            });
+            *platform
+                .resource_allocation_confirmation_gate
+                .lock()
+                .expect("gate") = Some(gate);
+            let (services, authority) = signing_runtime_with_platform(platform.clone());
+            futures::executor::block_on(async {
+                authority
+                    .activate_local_session(ENTROPY.to_vec())
+                    .await
+                    .unwrap();
+                let runtime = product_runtime(services, authority);
+                let grant = PermissionAuthorizationRequest::StatementStoreAllowance {
+                    derivation_index: None,
+                };
+                runtime
+                    .set_permission_authorization_status(grant.clone(), before)
+                    .await
+                    .unwrap();
+                let cx = CallContext::default();
+                let allocation = ResourceAllocation::request(
+                    &runtime,
+                    &cx,
+                    HostRequestResourceAllocationRequest::V1(
+                        v01::HostRequestResourceAllocationRequest {
+                            resources: vec![v01::AllocatableResource::StatementStoreAllowance],
+                        },
+                    ),
+                );
+                futures::pin_mut!(allocation);
+                assert!(allocation.as_mut().now_or_never().is_none());
+                runtime
+                    .set_permission_authorization_status(grant.clone(), administrative)
+                    .await
+                    .unwrap();
+                release.send(()).unwrap();
+                assert!(allocation.await.is_err());
+                assert_eq!(
+                    runtime
+                        .permission_authorization_status(grant)
+                        .await
+                        .unwrap(),
+                    administrative
+                );
+                assert!(platform.sent_rpc.lock().expect("rpc").is_empty());
+            });
+        }
+    }
+
+    #[test]
+    fn statement_allowance_storage_failure_never_prompts_or_allocates() {
+        let platform = Arc::new(StubPlatform {
+            local_storage_error: Some("storage unavailable"),
+            resource_allocation_confirmed: true,
+            ..Default::default()
+        });
+        let (services, authority) =
+            signing_runtime_with_platform(Arc::new(StubPlatform::default()));
+        futures::executor::block_on(async {
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+            adapters.platform = platform.clone();
+            let runtime = ProductRuntimeHost::from_services(
+                services,
+                adapters,
+                authority,
+                ProductContext::new("myapp.dot".to_string()).unwrap(),
+            );
+            let result = ResourceAllocation::request(
+                &runtime,
+                &CallContext::default(),
+                HostRequestResourceAllocationRequest::V1(
+                    v01::HostRequestResourceAllocationRequest {
+                        resources: vec![v01::AllocatableResource::StatementStoreAllowance],
+                    },
+                ),
+            )
+            .await;
+            assert!(result.is_err());
+            assert!(
+                platform
+                    .resource_allocation_reviews
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(platform.sent_rpc.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn statement_consent_cannot_survive_same_account_reactivation() {
+        use futures::FutureExt;
+        for explicit in [false, true] {
+            let (release, gate) = futures::channel::oneshot::channel();
+            let platform = Arc::new(StubPlatform {
+                resource_allocation_confirmed: true,
+                ..Default::default()
+            });
+            *platform
+                .resource_allocation_confirmation_gate
+                .lock()
+                .expect("gate lock") = Some(gate);
+            let (services, authority) = signing_runtime_with_platform(platform.clone());
+            futures::executor::block_on(async {
+                authority
+                    .activate_local_session(ENTROPY.to_vec())
+                    .await
+                    .unwrap();
+                let runtime = product_runtime(services, authority.clone());
+                let session = authority.current_session().unwrap();
+                let consent = async {
+                    if explicit {
+                        ResourceAllocation::request(
+                            &runtime,
+                            &CallContext::default(),
+                            HostRequestResourceAllocationRequest::V1(
+                                v01::HostRequestResourceAllocationRequest {
+                                    resources: vec![
+                                        v01::AllocatableResource::StatementStoreAllowance,
+                                    ],
+                                },
+                            ),
+                        )
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| format!("{error:?}"))
+                    } else {
+                        runtime
+                            .require_statement_store_allowance(&session, None)
+                            .await
+                    }
+                };
+                futures::pin_mut!(consent);
+                assert!(consent.as_mut().now_or_never().is_none());
+                authority.disconnect().await;
+                authority
+                    .activate_local_session(ENTROPY.to_vec())
+                    .await
+                    .unwrap();
+                release.send(()).unwrap();
+                assert!(consent.await.is_err());
+                assert_eq!(
+                    runtime
+                        .permission_authorization_status(
+                            PermissionAuthorizationRequest::StatementStoreAllowance {
+                                derivation_index: None
+                            },
+                        )
+                        .await
+                        .unwrap(),
+                    PermissionAuthorizationStatus::NotDetermined
+                );
+                assert!(platform.sent_rpc.lock().expect("rpc lock").is_empty());
+            });
+        }
     }
 
     fn vrf_request(product_id: &str) -> v01::HostAccountSignVrfRequest {
@@ -3013,6 +3633,78 @@ mod tests {
     }
 
     #[test]
+    fn lock_and_wallet_replacement_release_native_custody_and_fence_old_authority() {
+        futures::executor::block_on(async {
+            use truapi::latest::{HostProductDeviceChatError, HostProductDeviceChatRequest};
+            let (_services, authority) = signing_runtime();
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let session = authority.current_local_session().unwrap();
+            let context = authority.native_chat_context(&session).unwrap();
+            let first = authority
+                .native_chat
+                .execute(
+                    context.clone(),
+                    "chat.dot".into(),
+                    HostProductDeviceChatRequest::Initialize,
+                )
+                .await
+                .unwrap();
+            let wallet = authority.native_chat.wallet(&context).await.unwrap();
+            let lifetime = Arc::downgrade(&wallet);
+            drop(wallet);
+            authority.clear_local_session();
+            assert!(lifetime.upgrade().is_none());
+            assert_eq!(
+                context.require_current(),
+                Err(HostProductDeviceChatError::NotConnected)
+            );
+            assert_eq!(
+                authority
+                    .native_chat
+                    .execute(
+                        context,
+                        "chat.dot".into(),
+                        HostProductDeviceChatRequest::Initialize,
+                    )
+                    .await,
+                Err(HostProductDeviceChatError::NotConnected)
+            );
+
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let session = authority.current_local_session().unwrap();
+            let context = authority.native_chat_context(&session).unwrap();
+            let restored = authority
+                .native_chat
+                .execute(
+                    context.clone(),
+                    "chat.dot".into(),
+                    HostProductDeviceChatRequest::Initialize,
+                )
+                .await
+                .unwrap();
+            assert_eq!(restored.device, first.device);
+            let wallet = authority.native_chat.wallet(&context).await.unwrap();
+            let lifetime = Arc::downgrade(&wallet);
+            drop(wallet);
+            authority
+                .activate_local_session(vec![0xCD; 16])
+                .await
+                .unwrap();
+            assert!(lifetime.upgrade().is_none());
+            assert_eq!(
+                context.require_current(),
+                Err(HostProductDeviceChatError::NotConnected)
+            );
+        });
+    }
+
+    #[test]
     fn product_clear_revokes_only_current_activation_grant_and_fences_stale_work() {
         let platform = Arc::new(StubPlatform::default());
         let (_services, authority) = signing_runtime_with_platform(platform);
@@ -3026,8 +3718,7 @@ mod tests {
             .grant_auto_signing(&stale_session, "other.dot")
             .expect("other product grant succeeds");
 
-        authority
-            .clear_product_state("myapp.dot")
+        futures::executor::block_on(authority.clear_product_state("myapp.dot"))
             .expect("product clear succeeds");
 
         let current_session = authority.current_session().expect("session remains active");
@@ -3641,6 +4332,344 @@ mod tests {
                 .is_err(),
             "payload was not double-wrapped",
         );
+    }
+
+    #[test]
+    fn chat_context_rejects_logout_and_same_wallet_reactivation() {
+        futures::executor::block_on(async {
+            let (_, authority) = signing_runtime();
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let session = authority.current_session().unwrap();
+            let context = authority.native_chat_context(&session).unwrap();
+            assert!((context.session_valid)());
+            authority.disconnect().await;
+            assert!(!(context.session_valid)());
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            assert!(!(context.session_valid)());
+            assert!(matches!(
+                authority
+                    .product_device_chat(
+                        &CallContext::default(),
+                        &session,
+                        ProductDeviceChatAuthorityRequest {
+                            calling_product_id: "myapp.dot".to_string(),
+                            operation: truapi::latest::HostProductDeviceChatRequest::Initialize,
+                            permission_platform: authority.platform.clone(),
+                            permission_scope: None,
+                        },
+                    )
+                    .await,
+                Err(ProductDeviceChatAuthorityError::Disconnected)
+            ));
+            let current = authority.current_session().unwrap();
+            assert!((authority
+                .native_chat_context(&current)
+                .unwrap()
+                .session_valid)());
+        });
+    }
+
+    #[test]
+    fn product_chat_username_grant_does_not_authorize_chat() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform::default());
+            let (services, activation) = signing_runtime_with_platform(platform.clone());
+            activation
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let runtime = product_runtime(services, activation);
+            runtime
+                .set_permission_authorization_status(
+                    PermissionAuthorizationRequest::IdentityDisclosure,
+                    PermissionAuthorizationStatus::Authorized,
+                )
+                .await
+                .unwrap();
+            let cx = CallContext::default();
+            let request = HostProductDeviceChatRequest::V1(
+                truapi::latest::HostProductDeviceChatRequest::Initialize,
+            );
+
+            for _ in 0..2 {
+                assert!(matches!(
+                    runtime.product_device_chat(&cx, request.clone()).await,
+                    Err(CallError::Domain(HostProductDeviceChatError::V1(
+                        truapi::latest::HostProductDeviceChatError::AccessNotGranted
+                    )))
+                ));
+            }
+            assert_eq!(
+                platform.chat_authority_reviews.lock().len(),
+                1,
+                "Chat requires its own prompt, then respects the persisted refusal"
+            );
+            assert_eq!(
+                runtime
+                    .permission_authorization_status(PermissionAuthorizationRequest::ChatAuthority)
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::Denied
+            );
+            assert_eq!(
+                runtime
+                    .permission_authorization_status(
+                        PermissionAuthorizationRequest::IdentityDisclosure,
+                    )
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::Authorized
+            );
+        });
+    }
+
+    #[test]
+    fn product_chat_consent_is_cached_and_revocation_blocks_chat() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                chat_authority_confirmed: true,
+                ..StubPlatform::default()
+            });
+            let (services, activation) = signing_runtime_with_platform(platform.clone());
+            activation
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let runtime = product_runtime(services, activation);
+            let cx = CallContext::default();
+            let initialize = HostProductDeviceChatRequest::V1(
+                truapi::latest::HostProductDeviceChatRequest::Initialize,
+            );
+            let HostProductDeviceChatResponse::V1(first) = runtime
+                .product_device_chat(&cx, initialize.clone())
+                .await
+                .unwrap();
+            let HostProductDeviceChatResponse::V1(second) = runtime
+                .product_device_chat(&cx, initialize.clone())
+                .await
+                .unwrap();
+            assert_eq!(first.device, second.device);
+            assert_eq!(first.device.product_account.dot_ns_identifier, "myapp.dot");
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+            runtime
+                .set_permission_authorization_status(
+                    PermissionAuthorizationRequest::ChatAuthority,
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                runtime.product_device_chat(&cx, initialize).await,
+                Err(CallError::Domain(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::AccessNotGranted
+                )))
+            ));
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+        });
+    }
+
+    #[test]
+    fn product_chat_authority_does_not_grant_statement_delivery() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                chat_authority_confirmed: true,
+                ..StubPlatform::default()
+            });
+            let (services, activation) = signing_runtime_with_platform(platform);
+            activation
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let runtime = product_runtime(services, activation);
+            runtime
+                .set_permission_authorization_status(
+                    PermissionAuthorizationRequest::Remote(v01::RemotePermissionRequest {
+                        permission: v01::RemotePermission::StatementSubmit,
+                    }),
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            let request = HostProductDeviceChatRequest::V1(
+                truapi::latest::HostProductDeviceChatRequest::SendPayment {
+                    peer_identity: [0x55; 32],
+                    request_id: "not-authorized".to_string(),
+                    amount_cents: 10,
+                },
+            );
+            assert!(matches!(
+                runtime
+                    .product_device_chat(&CallContext::default(), request)
+                    .await,
+                Err(CallError::Domain(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::AccessNotGranted
+                )))
+            ));
+        });
+    }
+
+    async fn sso_chat(
+        service: &super::sso_service::SigningHostSsoService,
+        payload: SsoProductDeviceChatOperation,
+    ) -> ProductDeviceChatResponse {
+        let message = RemoteMessage::request(
+            "chat-consent".to_string(),
+            ProductRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                payload,
+            },
+        );
+        let Dispatch::Response(answer) = service.dispatch(service.current_session(), message).await
+        else {
+            panic!("expected SSO response");
+        };
+        let RemoteMessageData::V1(v1::RemoteMessage::ProductDeviceChatResponse(response)) =
+            answer.message.data
+        else {
+            panic!("expected SSO Chat response");
+        };
+        response.payload
+    }
+
+    #[test]
+    fn sso_chat_username_grant_does_not_authorize_chat() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform::default());
+            let (_, activation) = signing_runtime_with_platform(platform.clone());
+            activation
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let service = super::sso_service::SigningHostSsoService::new(activation);
+            let permissions =
+                PermissionsService::new(platform.as_ref(), platform.as_ref(), "myapp.dot");
+            permissions
+                .set_authorization_status(
+                    &PermissionAuthorizationRequest::IdentityDisclosure,
+                    PermissionAuthorizationStatus::Authorized,
+                )
+                .await
+                .unwrap();
+            let request = SsoProductDeviceChatOperation::V2(
+                truapi::latest::HostProductDeviceChatRequest::Initialize,
+            );
+
+            for _ in 0..2 {
+                assert_eq!(
+                    sso_chat(&service, request.clone()).await,
+                    Err(HostProductDeviceChatError::V1(
+                        truapi::latest::HostProductDeviceChatError::AccessNotGranted,
+                    ))
+                );
+            }
+            assert_eq!(
+                platform.chat_authority_reviews.lock().len(),
+                1,
+                "SSO Chat requires its own prompt, then respects the persisted refusal"
+            );
+            assert_eq!(
+                permissions
+                    .authorization_status(&PermissionAuthorizationRequest::ChatAuthority)
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::Denied
+            );
+            assert_eq!(
+                permissions
+                    .authorization_status(&PermissionAuthorizationRequest::IdentityDisclosure)
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::Authorized
+            );
+        });
+    }
+
+    #[test]
+    fn sso_chat_consent_is_cached_and_revocation_blocks_chat() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                chat_authority_confirmed: true,
+                ..StubPlatform::default()
+            });
+            let (_, activation) = signing_runtime_with_platform(platform.clone());
+            activation
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let service = super::sso_service::SigningHostSsoService::new(activation);
+            let permissions =
+                PermissionsService::new(platform.as_ref(), platform.as_ref(), "myapp.dot");
+            let initialize = SsoProductDeviceChatOperation::V2(
+                truapi::latest::HostProductDeviceChatRequest::Initialize,
+            );
+            let HostProductDeviceChatResponse::V1(first) =
+                sso_chat(&service, initialize.clone()).await.unwrap();
+            let HostProductDeviceChatResponse::V1(second) =
+                sso_chat(&service, initialize.clone()).await.unwrap();
+            assert_eq!(first.device, second.device);
+            assert_eq!(first.device.product_account.dot_ns_identifier, "myapp.dot");
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+            permissions
+                .set_authorization_status(
+                    &PermissionAuthorizationRequest::ChatAuthority,
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                sso_chat(&service, initialize).await,
+                Err(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::AccessNotGranted,
+                ))
+            );
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+        });
+    }
+
+    #[test]
+    fn sso_chat_authority_does_not_grant_statement_delivery() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                chat_authority_confirmed: true,
+                ..StubPlatform::default()
+            });
+            let (_, activation) = signing_runtime_with_platform(platform.clone());
+            activation
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let service = super::sso_service::SigningHostSsoService::new(activation);
+            let permissions =
+                PermissionsService::new(platform.as_ref(), platform.as_ref(), "myapp.dot");
+            permissions
+                .set_authorization_status(
+                    &PermissionAuthorizationRequest::Remote(v01::RemotePermissionRequest {
+                        permission: v01::RemotePermission::StatementSubmit,
+                    }),
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            let request = SsoProductDeviceChatOperation::V2(
+                truapi::latest::HostProductDeviceChatRequest::SendPayment {
+                    peer_identity: [0x55; 32],
+                    request_id: "not-authorized".to_string(),
+                    amount_cents: 10,
+                },
+            );
+            assert_eq!(
+                sso_chat(&service, request).await,
+                Err(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::AccessNotGranted,
+                ))
+            );
+        });
     }
 
     #[test]

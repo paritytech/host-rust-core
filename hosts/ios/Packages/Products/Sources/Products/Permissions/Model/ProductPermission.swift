@@ -13,6 +13,7 @@ public enum ProductPermission: Equatable, Sendable {
     public static let balanceAccessTypeName = "balance_access"
     public static let statementSubmitAccessTypeName = "statement_submit"
     public static let userIdentityAccessTypeName = "user_identity_access"
+    public static let chatAuthorityTypeName = "chat_authority"
 
     case deviceCapability(DeviceCapabilityType)
     case networkAccess(domain: String)
@@ -23,6 +24,7 @@ public enum ProductPermission: Equatable, Sendable {
     case preimageSubmitAccess
     case statementSubmitAccess
     case userIdentityAccess
+    case chatAuthority
 
     public var typeName: String {
         switch self {
@@ -44,6 +46,8 @@ public enum ProductPermission: Equatable, Sendable {
             Self.statementSubmitAccessTypeName
         case .userIdentityAccess:
             Self.userIdentityAccessTypeName
+        case .chatAuthority:
+            Self.chatAuthorityTypeName
         }
     }
 
@@ -60,7 +64,8 @@ public enum ProductPermission: Equatable, Sendable {
              .chainSubmitAccess,
              .preimageSubmitAccess,
              .statementSubmitAccess,
-             .userIdentityAccess:
+             .userIdentityAccess,
+             .chatAuthority:
             ""
         }
     }
@@ -88,6 +93,8 @@ public enum ProductPermission: Equatable, Sendable {
             return .statementSubmitAccess
         case userIdentityAccessTypeName:
             return .userIdentityAccess
+        case chatAuthorityTypeName:
+            return .chatAuthority
         default:
             return nil
         }

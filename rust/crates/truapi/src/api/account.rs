@@ -12,8 +12,9 @@ use crate::versioned::account::{
     HostAccountRingVrfSignRequest, HostAccountRingVrfSignResponse, HostAccountSignVrfError,
     HostAccountSignVrfRequest, HostAccountSignVrfResponse, HostGetLegacyAccountsError,
     HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse, HostGetUserIdError,
-    HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError, HostRequestLoginRequest,
-    HostRequestLoginResponse,
+    HostGetUserIdRequest, HostGetUserIdResponse, HostProductDeviceChatError,
+    HostProductDeviceChatRequest, HostProductDeviceChatResponse, HostRequestLoginError,
+    HostRequestLoginRequest, HostRequestLoginResponse,
 };
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
@@ -284,6 +285,25 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostAccountRingVrfSignRequest,
     ) -> Result<HostAccountRingVrfSignResponse, CallError<HostAccountRingVrfSignError>> {
+        Err(CallError::unavailable())
+    }
+
+    /// Operate a Host-owned native Chat device and propose one-shot main-purse
+    /// payments. Transport private keys and spendable memos never leave the Host.
+    ///
+    /// Method 11 (the former raw-crypto interface) is retired, not forwarded.
+    ///
+    /// ```ts
+    /// const result = await truapi.account.deviceChat({ tag: "Initialize" });
+    /// assert(result.isOk(), "deviceChat failed:", result);
+    /// console.log("Host-owned Chat device:", result.value.device);
+    /// ```
+    #[wire(id = 12)]
+    async fn product_device_chat(
+        &self,
+        _cx: &CallContext,
+        _request: HostProductDeviceChatRequest,
+    ) -> Result<HostProductDeviceChatResponse, CallError<HostProductDeviceChatError>> {
         Err(CallError::unavailable())
     }
 

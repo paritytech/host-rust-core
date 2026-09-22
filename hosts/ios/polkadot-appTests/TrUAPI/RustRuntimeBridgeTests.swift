@@ -98,6 +98,7 @@ private func makeBridge(
         productStorage: productStorage,
         coreStorage: TrUAPILocalStorage.createCoreLocalStorage(defaults: makeTestDefaults()),
         confirmationPresenter: confirmationPresenter,
+        chatFiles: UnavailableNativeChatFiles(),
         preimageCache: preimageCache,
         hostProvider: hostProvider,
         logger: Logger.shared
@@ -491,6 +492,27 @@ struct RustRuntimeBridgeTests {
         }
     }
 
+    @Test func mainPursePaymentCannotBecomePersistentPermission() async {
+        let presenter = TrUAPIConfirmationPresenter(
+            routerFacade: ProductRoutersFacade.worker()
+        )
+        let review = UserConfirmationReview.mainPurseChatPayment(
+            MainPurseChatPaymentReview(
+                callingProductId: "chat.dot",
+                recipientIdentity: Data(repeating: 1, count: 32),
+                recipientUsername: "recipient.dot",
+                amountCents: 100,
+                maxDebitCents: 102,
+                genesisHash: Data(repeating: 2, count: 32),
+                coinageInstanceId: 0,
+                operationId: Data(repeating: 3, count: 32)
+            )
+        )
+
+        #expect(await presenter.confirmPermission(review: review, from: "chat.dot") == .deny)
+        #expect(await presenter.confirm(review: review, from: "chat.dot") == false)
+    }
+
     // MARK: currentTheme
 
     @Test func currentThemeReturnsDark() throws {
@@ -543,6 +565,7 @@ struct RustRuntimeBridgeTests {
             ),
             coreStorage: TrUAPILocalStorage.createCoreLocalStorage(defaults: makeTestDefaults()),
             confirmationPresenter: MockConfirmationPresenter(),
+            chatFiles: UnavailableNativeChatFiles(),
             preimageCache: TrUAPIPreimageCache { _ in nil },
             hostProvider: StubHostProvider(),
             logger: Logger.shared

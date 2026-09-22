@@ -79,15 +79,12 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
             chainRegistry: chainRegistry,
             secret: secret,
             liteUsername: settingsManager.string(for: .username),
-            networkSuffix: networkSuffix
+            networkSuffix: networkSuffix,
+            coinageInstanceId: AppConfig.Coinage.instanceId
         )
 
         let chainConnections = TrUAPIChainConnectionPool(
-            engineResolver: { [chainRegistry] genesisHash in
-                chainRegistry.getChainByGenesis(for: genesisHash.toHex()).flatMap { chain in
-                    chainRegistry.getConnection(for: chain.chainId)
-                }
-            },
+            chainRegistry: chainRegistry,
             logger: logger
         )
 
@@ -96,6 +93,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
             coreStorage: coreStorage,
             chainConnections: chainConnections,
             confirmationPresenter: TrUAPIConfirmationPresenter(routerFacade: confirmationRouterFacade),
+            chatFiles: TrUAPINativeChatFiles.shared,
             logger: logger
         )
 
@@ -119,7 +117,8 @@ extension TrUAPIHostRuntimeProvider {
         chainRegistry: ChainRegistryProtocol,
         secret: Data,
         liteUsername: String?,
-        networkSuffix: String
+        networkSuffix: String,
+        coinageInstanceId: UInt32
     ) throws -> HostRuntimeConfig {
         let peopleChain = try chainRegistry.getChainOrError(for: AppConfig.Chains.usernameChain)
         let bulletinChain = try chainRegistry.getChainOrError(for: AppConfig.Chains.bulletInChain)
@@ -151,7 +150,8 @@ extension TrUAPIHostRuntimeProvider {
             assetHubChainGenesisHash: Data(hexString: assetHubGenesisHex),
             networkSuffix: networkSuffix,
             localSessionSecret: secret,
-            localSessionLiteUsername: liteUsername
+            localSessionLiteUsername: liteUsername,
+            coinageInstanceId: coinageInstanceId
         )
     }
 }

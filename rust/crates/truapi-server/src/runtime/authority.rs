@@ -14,7 +14,8 @@ use truapi::latest::{
     HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyRequest,
     HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignRequest,
     HostAccountRingVrfSignResponse, HostAccountSignVrfError, HostAccountSignVrfRequest,
-    HostCreateTransactionResponse, HostRequestResourceAllocationRequest,
+    HostCreateTransactionResponse, HostProductDeviceChatError, HostProductDeviceChatRequest,
+    HostProductDeviceChatResponse, HostRequestResourceAllocationRequest,
     HostRequestResourceAllocationResponse, HostSignPayloadRequest, HostSignPayloadResponse,
     HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, ProductAccountId,
@@ -288,6 +289,63 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     IdentityAccount(LegacyAccountTxPayload),
 }
 
+/// Host-owned Chat operation after the caller's capability authorization.
+#[derive(Clone)]
+pub(crate) struct ProductDeviceChatAuthorityRequest {
+    pub calling_product_id: String,
+    pub operation: HostProductDeviceChatRequest,
+    /// Execution-owned callbacks for consent, files and reviewed payments.
+    pub permission_platform: std::sync::Arc<dyn truapi_platform::Platform>,
+    /// Connection identity, even when executions share one platform object.
+    pub permission_scope: Option<u64>,
+}
+
+/// Receive may emit acknowledgments; reconciliation may resume queued delivery.
+pub(crate) fn chat_requires_statement_submit(operation: &HostProductDeviceChatRequest) -> bool {
+    match operation {
+        HostProductDeviceChatRequest::Initialize
+        | HostProductDeviceChatRequest::PaymentStatus { .. } => false,
+        HostProductDeviceChatRequest::Invite { .. }
+        | HostProductDeviceChatRequest::Receive { .. }
+        | HostProductDeviceChatRequest::AcceptInvitation { .. }
+        | HostProductDeviceChatRequest::RejectInvitation { .. }
+        | HostProductDeviceChatRequest::Send { .. }
+        | HostProductDeviceChatRequest::SendPayment { .. }
+        | HostProductDeviceChatRequest::SendAttachments { .. }
+        | HostProductDeviceChatRequest::OpenAttachment { .. }
+        | HostProductDeviceChatRequest::Reconcile => true,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProductDeviceChatAuthorityError {
+    Disconnected,
+    Rejected,
+    Unavailable(String),
+    Domain(HostProductDeviceChatError),
+}
+
+impl From<AuthorityError> for ProductDeviceChatAuthorityError {
+    fn from(error: AuthorityError) -> Self {
+        match error {
+            AuthorityError::Disconnected => Self::Disconnected,
+            AuthorityError::Rejected => Self::Rejected,
+            other => Self::Unavailable(other.to_string()),
+        }
+    }
+}
+
+impl From<ProductDeviceChatAuthorityError> for truapi::v02::HostProductDeviceChatError {
+    fn from(error: ProductDeviceChatAuthorityError) -> Self {
+        match error {
+            ProductDeviceChatAuthorityError::Disconnected => Self::NotConnected,
+            ProductDeviceChatAuthorityError::Rejected => Self::UserRejected,
+            ProductDeviceChatAuthorityError::Unavailable(_) => Self::NetworkUnavailable,
+            ProductDeviceChatAuthorityError::Domain(error) => error,
+        }
+    }
+}
+
 /// Whether an active AutoSigning grant covers one product-account call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AutoSigningGrant {
@@ -297,11 +355,11 @@ pub(crate) enum AutoSigningGrant {
     /// Not covered: the caller must obtain user consent.
     Absent,
 }
-
 /// Statement-store allowance signing material held by the authority layer.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
 pub(crate) struct StatementStoreAllowanceKey {
     /// sr25519 secret used to sign allowance statements.
+    #[debug("\"<redacted>\"")]
     pub(crate) secret: [u8; 64],
     /// Public key derived from `secret`.
     pub(crate) public_key: [u8; 32],
@@ -510,6 +568,14 @@ pub(crate) trait ProductAuthority: Send + Sync {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
+
+    /// Execute an authorized operation on the Host-owned native Chat device.
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<HostProductDeviceChatResponse, ProductDeviceChatAuthorityError>;
 
     /// Ask the account authority to allocate product-scoped resources.
     async fn allocate_resources(

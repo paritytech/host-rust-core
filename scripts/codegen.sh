@@ -9,16 +9,16 @@
 #                                     --playground-output js/packages/truapi/src/playground
 #                                     --client-examples-output playground/test/generated/examples
 #                                     --rust-output rust/crates/truapi-server/src/generated
+#                                     --rust-client-output rust/crates/truapi-client/src/generated.rs
 #                                     --platform-input target/doc/truapi_platform.json
 #                                     --platform-ts-output js/packages/truapi-host/src/generated
 #                                     --platform-wasm-adapter-output js/packages/truapi-host/src/generated
 #                                     --platform-rust-output rust/crates/truapi-server/src/wasm
 #
-# The codec version is not passed: it defaults to `truapi::WIRE_CODEC_VERSION`,
-# so the generated client and the host's handshake derive it from one place.
-#
 # The client surface defaults to the latest wire version any versioned
 # wrapper exposes; pass `--client-version V<N>` to pin to an older one.
+# The codec version defaults to truapi::WIRE_CODEC_VERSION in the generator;
+# do not pin normal generation separately from the Host's handshake constant.
 #
 # Run from the repo root.
 
@@ -36,13 +36,14 @@ unset DYLD_LIBRARY_PATH
 # Both crates in one invocation: rustdoc starts once and truapi is documented
 # once for both, rather than a second process re-reading it.
 RUSTDOCFLAGS="-Z unstable-options --output-format json" \
-  cargo +"$NIGHTLY_TOOLCHAIN" doc -p truapi -p truapi-platform --no-deps
-cargo run -p truapi-codegen -- \
+  cargo +"$NIGHTLY_TOOLCHAIN" doc --locked -p truapi -p truapi-platform --no-deps
+cargo run --locked -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
   --playground-output js/packages/truapi/src/playground \
   --client-examples-output playground/test/generated/examples \
   --rust-output rust/crates/truapi-server/src/generated \
+  --rust-client-output rust/crates/truapi-client/src/generated.rs \
   --platform-input target/doc/truapi_platform.json \
   --platform-ts-output js/packages/truapi-host/src/generated \
   --platform-wasm-adapter-output js/packages/truapi-host/src/generated \
@@ -50,6 +51,7 @@ cargo run -p truapi-codegen -- \
   --explorer-output js/packages/truapi/src/explorer
 
 rustfmt +"$NIGHTLY_TOOLCHAIN" --edition 2024 \
+  rust/crates/truapi-client/src/generated.rs \
   rust/crates/truapi-server/src/generated/dispatcher.rs \
   rust/crates/truapi-server/src/generated/wire_table.rs \
   rust/crates/truapi-server/src/wasm/generated_bridge.rs
@@ -87,5 +89,6 @@ echo "Generated client at js/packages/truapi/src/generated/"
 echo "Generated playground metadata at js/packages/truapi/src/playground/codegen/"
 echo "Generated client examples at playground/test/generated/examples/"
 echo "Generated Rust dispatcher at rust/crates/truapi-server/src/generated/"
+echo "Generated no-std Rust client catalog at rust/crates/truapi-client/src/generated.rs"
 echo "Generated host-callbacks WASM adapter at js/packages/truapi-host/src/generated/"
 echo "Generated Rust WASM bridge at rust/crates/truapi-server/src/wasm/generated_bridge.rs"

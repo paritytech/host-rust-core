@@ -41,6 +41,8 @@ pub(crate) struct RuntimeServices {
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
     pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
+    /// Optional native authenticated username index; only supplies candidates.
+    identity_backend: OnceLock<Arc<dyn truapi_platform::IdentityBackendHost>>,
     /// Asset Hub the dotNS contracts are deployed on. All-zero says this host
     /// has none, which leaves every manifest unresolvable.
     asset_hub_chain_genesis_hash: [u8; 32],
@@ -48,13 +50,13 @@ pub(crate) struct RuntimeServices {
     pub(crate) worker_ledger: WorkerLedger,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
+    /// Configured People chain for native Chat identity and main-purse Coinage.
+    pub(crate) people_chain_genesis_hash: [u8; 32],
     /// People-chain statement store RPC client.
     pub(crate) statement_store: StatementStoreRpc,
     /// In-core Bulletin submission over the configured Bulletin chain.
     pub(crate) bulletin: BulletinRpc,
-    /// Runtime metadata and chain state shared by the native allowance
-    /// paths, per chain.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Runtime metadata and chain state shared by allowance paths, per chain.
     pub(crate) chain_context: crate::runtime::statement_allowance::ChainContextCache,
     /// Values from confirmed in-core submissions, served to `lookup_subscribe`
     /// until the host's content backend has them. Byte-bounded, oldest-first.
@@ -101,12 +103,13 @@ impl RuntimeServices {
             chat_platform: None,
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
+            identity_backend: OnceLock::new(),
             asset_hub_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
             chain,
+            people_chain_genesis_hash,
             statement_store,
             bulletin,
-            #[cfg(not(target_arch = "wasm32"))]
             chain_context: crate::runtime::statement_allowance::ChainContextCache::default(),
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
@@ -152,6 +155,19 @@ impl RuntimeServices {
         host: Arc<dyn PermissionStatusHost>,
     ) -> bool {
         self.permission_status.set(host).is_ok()
+    }
+
+    pub(crate) fn install_identity_backend_host(
+        &self,
+        host: Arc<dyn truapi_platform::IdentityBackendHost>,
+    ) -> bool {
+        self.identity_backend.set(host).is_ok()
+    }
+
+    pub(crate) fn identity_backend_host(
+        &self,
+    ) -> Option<Arc<dyn truapi_platform::IdentityBackendHost>> {
+        self.identity_backend.get().cloned()
     }
 
     /// The Asset Hub dotNS reads run against, when one is configured.

@@ -244,8 +244,12 @@ impl BulletinRpc {
         }
     }
 
+    /// Configured Bulletin identity, also used to select trusted HOP endpoints.
+    pub(crate) fn genesis_hash(&self) -> [u8; 32] {
+        self.genesis_hash
+    }
+
     /// Open a raw RPC client over the configured Bulletin chain.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn client(
         &self,
         label: &'static str,

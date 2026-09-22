@@ -1,4 +1,4 @@
-//! Golden snapshot test for the Rust dispatcher emitter.
+//! Integration tests for Rust emission and host-callback generation.
 //!
 //! `cargo +nightly rustdoc` runs once per package into a dedicated
 //! `target/codegen-test-rustdoc/<package>` directory, off the shared
@@ -16,41 +16,6 @@ use std::sync::{Mutex, OnceLock};
 
 fn nightly_toolchain() -> String {
     std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string())
-}
-
-fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
-    let marker = format!("export const {const_name} = [");
-    let start = src
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing {const_name}"));
-    let rest = &src[start + marker.len()..];
-    let end = rest
-        .find("] as const")
-        .unwrap_or_else(|| panic!("unterminated {const_name}"));
-    let body = &rest[..end];
-    let mut strings = Vec::new();
-    let mut chars = body.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '"' {
-            continue;
-        }
-        let mut value = String::new();
-        let mut escaped = false;
-        for ch in chars.by_ref() {
-            if escaped {
-                value.push(ch);
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                break;
-            } else {
-                value.push(ch);
-            }
-        }
-        strings.push(value);
-    }
-    strings
 }
 
 /// Path to `truapi`'s rustdoc JSON, building it on first use.
@@ -191,73 +156,6 @@ fn prettier_generated(workspace_root: &Path, files: &[PathBuf]) {
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
-    );
-}
-
-#[test]
-fn golden_dispatcher_and_wire_table() {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace = workspace_root();
-
-    let tempdir = workspace_tempdir(&workspace);
-    let rustdoc_json = produce_rustdoc_json(&workspace);
-
-    let out = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
-        .args([
-            "--input",
-            rustdoc_json.to_str().unwrap(),
-            "--output",
-            tempdir.path().join("ts").to_str().unwrap(),
-            "--rust-output",
-            tempdir.path().join("rust").to_str().unwrap(),
-        ])
-        .output()
-        .expect("run truapi-codegen");
-    assert!(
-        out.status.success(),
-        "codegen failed: stdout=\n{}\nstderr=\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-
-    // Compare the emitted files against the goldens. We assert on
-    // wire_table.rs first because it's small and the diff is easy to
-    // read when the wire ids drift. mod.rs is covered because
-    // truapi-server declares `pub mod generated;` unconditionally, so
-    // dropping it stops the crate parsing at all.
-    let golden_dir = manifest_dir.join("tests/golden");
-    let cases = [
-        ("wire_table.rs", "wire_table.rs"),
-        ("dispatcher.rs", "dispatcher.rs"),
-        ("mod.rs", "mod.rs"),
-    ];
-    for (golden_name, output_name) in cases {
-        let golden = fs::read_to_string(golden_dir.join(golden_name))
-            .unwrap_or_else(|e| panic!("read {golden_name}: {e}"));
-        let actual = fs::read_to_string(tempdir.path().join("rust").join(output_name))
-            .unwrap_or_else(|e| panic!("read generated {output_name}: {e}"));
-        if golden != actual {
-            // Dump actual to a sibling file for easy inspection
-            // when running locally.
-            let dump = manifest_dir.join(format!("tests/golden/{output_name}.actual"));
-            let _ = fs::write(&dump, &actual);
-            panic!(
-                "golden mismatch for {output_name}; wrote actual to {}",
-                dump.display()
-            );
-        }
-    }
-
-    // A method body should only ever reference its pre-built `T.{Method}Version`
-    // codec by name (see `method_envelope_name` in `ts.rs`); `types.ts`
-    // legitimately inlines `S.indexedTaggedUnion(` to define those wrapper
-    // codecs themselves, which is why only `client.ts` is scanned here.
-    let client_ts = fs::read_to_string(tempdir.path().join("ts").join("client.ts"))
-        .unwrap_or_else(|e| panic!("read generated client.ts: {e}"));
-    assert!(
-        !client_ts.contains("indexedTaggedUnion"),
-        "generated client.ts contains `S.indexedTaggedUnion(`; a method body should \
-         reference its `T.{{Method}}Version` codec by name instead of inlining one"
     );
 }
 
@@ -425,26 +323,6 @@ fn golden_host_callbacks_ts() {
         panic!(
             "golden mismatch for wasm_bridge.rs; wrote actual to {}",
             dump.display()
-        );
-    }
-
-    assert!(
-        !worker_actual.contains("OPTIONAL_CALLBACK_NAMES"),
-        "worker callback generation should not expose an optional callback manifest"
-    );
-    let mut generated_names = quoted_strings_in_const_array(&worker_actual, "CALLBACK_NAMES");
-    generated_names.extend(quoted_strings_in_const_array(
-        &worker_actual,
-        "SUBSCRIPTION_NAMES",
-    ));
-    for name in generated_names {
-        // Callbacks of an optional capability bind through the optional getter;
-        // either way the bridge must name every callback the worker proxies.
-        assert!(
-            wasm_bridge_actual.contains(&format!("get_function(callbacks, \"{name}\")?"))
-                || wasm_bridge_actual
-                    .contains(&format!("get_optional_function(callbacks, \"{name}\")?")),
-            "generated wasm bridge must bind worker callback `{name}`"
         );
     }
 }

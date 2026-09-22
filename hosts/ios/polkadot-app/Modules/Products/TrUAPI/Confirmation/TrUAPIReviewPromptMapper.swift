@@ -21,6 +21,7 @@ struct TrUAPIAllowanceRequest: Equatable {
 protocol TrUAPIReviewPromptMapping: Sendable {
     func makePermissionRequest(from review: IdentityDisclosureReview) -> TrUAPIPermissionRequest
     func makeActionRequest(from review: PreimageSubmitReview, requester: ProductId) -> TrUAPIActionConfirmationRequest
+    func makePermissionRequest(from review: ChatAuthorityReview) -> TrUAPIPermissionRequest
     func makePermissionRequest(from review: AccountAccessReview) -> TrUAPIPermissionRequest
     func makeActionRequest(from review: ProductSubtreeReview) -> TrUAPIActionConfirmationRequest
     func makePermissionRequest(from review: AccountAliasReview) -> TrUAPIPermissionRequest
@@ -45,6 +46,13 @@ struct TrUAPIReviewPromptMapper: TrUAPIReviewPromptMapping {
         requester: ProductId
     ) -> TrUAPIActionConfirmationRequest {
         .preimageSubmit(productId: requester, size: review.size)
+    }
+
+    func makePermissionRequest(from review: ChatAuthorityReview) -> TrUAPIPermissionRequest {
+        TrUAPIPermissionRequest(
+            productId: review.productId,
+            permissions: [.chatAuthority]
+        )
     }
 
     func makePermissionRequest(from review: AccountAccessReview) -> TrUAPIPermissionRequest {
@@ -121,6 +129,8 @@ private extension TrUAPIReviewPromptMapper {
             try .smartContractAllowance(dest: index.toSelector())
         case .autoSigning:
             .autoSigning
+        case let .productStatementStoreAllowance(index):
+            try .productStatementStoreAllowance(dest: index.toSelector())
         }
     }
 

@@ -7,9 +7,9 @@
 //! The cache layer is shared but keys are typed so a device grant cannot
 //! authorize a remote operation by accident. Keys are also scoped by product id
 //! so one product's authorization never grants another product's request.
-//! Identity disclosure is also represented as a product-scoped authorization,
-//! but the prompt itself is handled by the account runtime because it uses the
-//! richer user-confirmation surface rather than the device/remote callbacks.
+//! Identity disclosure is also represented as a product-scoped authorization;
+//! its richer user-confirmation prompt is coordinated here so local and remote
+//! account-authority paths share one decision state machine.
 //! One-use grants stay in memory and are consumed by operation authorization,
 //! separately from upfront permission requests.
 //!
@@ -35,7 +35,7 @@
 //! authorized for every remote permission while nothing is stored, and never
 //! reaches the prompt callback. A stored decision still wins, so a denial
 //! written through the admin surface revokes the grant. Device permissions,
-//! identity disclosure and account access are never covered.
+//! identity disclosure, account access, and Chat authority are never covered.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -46,9 +46,10 @@ use truapi::latest::{
     GenericError, HostDevicePermissionRequest, RemotePermission, RemotePermissionRequest,
 };
 use truapi_platform::{
-    BLESSED_REMOTE_DOMAINS, CoreStorage, CoreStorageKey, DevicePermissionStatus,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision,
-    PermissionStatusHost, Permissions, has_trusted_remote_permissions,
+    BLESSED_REMOTE_DOMAINS, ChatAuthorityReview, CoreStorage, CoreStorageKey,
+    DevicePermissionStatus, IdentityDisclosureReview, PermissionAuthorizationRequest,
+    PermissionAuthorizationStatus, PermissionDecision, PermissionStatusHost, Permissions,
+    UserConfirmation, UserConfirmationReview, has_trusted_remote_permissions,
     is_valid_remote_domain_pattern, normalize_remote_domain, remote_domain_candidates,
 };
 
@@ -394,6 +395,23 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                 )
                 .await
             }
+            PermissionAuthorizationRequest::ChatAuthority => {
+                authorization_status(
+                    self.storage,
+                    CoreStorageKey::chat_authority_authorization(self.product_id),
+                )
+                .await
+            }
+            PermissionAuthorizationRequest::StatementStoreAllowance { derivation_index } => {
+                authorization_status(
+                    self.storage,
+                    CoreStorageKey::statement_store_allowance_authorization(
+                        self.product_id,
+                        derivation_index.clone(),
+                    ),
+                )
+                .await
+            }
         }
     }
 
@@ -449,9 +467,90 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
                 CoreStorageKey::account_access_authorization(self.product_id, target_product_id)
             }
+            PermissionAuthorizationRequest::ChatAuthority => {
+                CoreStorageKey::chat_authority_authorization(self.product_id)
+            }
+            PermissionAuthorizationRequest::StatementStoreAllowance { derivation_index } => {
+                CoreStorageKey::statement_store_allowance_authorization(
+                    self.product_id,
+                    derivation_index.clone(),
+                )
+            }
         };
         self.temporary_permissions.revoke(&key);
         set_authorization_status(self.storage, key, status).await
+    }
+
+    /// Resolve the product's identity-disclosure grant, prompting once when no
+    /// durable user decision exists.
+    pub async fn check_or_prompt_identity_disclosure(
+        &self,
+    ) -> Result<PermissionAuthorizationStatus, GenericError>
+    where
+        P: UserConfirmation,
+    {
+        let request = PermissionAuthorizationRequest::IdentityDisclosure;
+        let cached = self.authorization_status(&request).await?;
+        if cached != PermissionAuthorizationStatus::NotDetermined {
+            return Ok(cached);
+        }
+        let decision = match self
+            .prompt
+            .confirm_permission(UserConfirmationReview::IdentityDisclosure(
+                IdentityDisclosureReview {
+                    product_id: self.product_id.to_string(),
+                },
+            ))
+            .await
+        {
+            Ok(decision) => decision,
+            Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
+        };
+        let current = self.authorization_status(&request).await?;
+        if current != PermissionAuthorizationStatus::NotDetermined {
+            return Ok(current);
+        }
+        self.record_decision(
+            CoreStorageKey::identity_disclosure_authorization(self.product_id),
+            decision,
+            true,
+        )
+        .await
+    }
+
+    /// Resolve the product's Chat authority grant, prompting once when no
+    /// durable user decision exists.
+    pub async fn check_or_prompt_chat_authority(
+        &self,
+    ) -> Result<PermissionAuthorizationStatus, GenericError>
+    where
+        P: UserConfirmation,
+    {
+        let request = PermissionAuthorizationRequest::ChatAuthority;
+        let cached = self.authorization_status(&request).await?;
+        if cached != PermissionAuthorizationStatus::NotDetermined {
+            return Ok(cached);
+        }
+        let decision = match self
+            .prompt
+            .confirm_permission(UserConfirmationReview::ChatAuthority(ChatAuthorityReview {
+                product_id: self.product_id.to_string(),
+            }))
+            .await
+        {
+            Ok(decision) => decision,
+            Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
+        };
+        let current = self.authorization_status(&request).await?;
+        if current != PermissionAuthorizationStatus::NotDetermined {
+            return Ok(current);
+        }
+        self.record_decision(
+            CoreStorageKey::chat_authority_authorization(self.product_id),
+            decision,
+            true,
+        )
+        .await
     }
 
     /// Resolves a device capability against both the OS state and the stored
@@ -682,6 +781,7 @@ fn status_into_stored(status: PermissionAuthorizationStatus) -> Option<StoredAut
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::StubPlatform;
     use futures::lock::Mutex;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1827,7 +1927,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trusted_product_is_not_authorized_for_identity_disclosure_or_account_access() {
+    fn a_trusted_product_does_not_bypass_sensitive_permissions() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let service = trusted_service(&storage, &prompt);
@@ -1837,6 +1937,7 @@ mod tests {
             PermissionAuthorizationRequest::AccountAccess {
                 target_product_id: "other.dot".to_string(),
             },
+            PermissionAuthorizationRequest::ChatAuthority,
         ] {
             assert_eq!(
                 futures::executor::block_on(service.authorization_status(&request)).unwrap(),
@@ -1994,6 +2095,78 @@ mod tests {
                 .unwrap(),
             PermissionAuthorizationStatus::NotDetermined
         );
+    }
+
+    #[test]
+    fn chat_authority_uses_its_own_cached_permission() {
+        let platform = StubPlatform {
+            chat_authority_confirmed: true,
+            ..Default::default()
+        };
+        let service = PermissionsService::new(&platform, &platform, "chat.paseo");
+
+        assert_eq!(
+            futures::executor::block_on(service.check_or_prompt_chat_authority()).unwrap(),
+            PermissionAuthorizationStatus::Authorized
+        );
+        assert_eq!(
+            futures::executor::block_on(service.check_or_prompt_chat_authority()).unwrap(),
+            PermissionAuthorizationStatus::Authorized
+        );
+        assert_eq!(
+            platform.chat_authority_reviews.lock().as_slice(),
+            &[ChatAuthorityReview {
+                product_id: "chat.paseo".to_string(),
+            }]
+        );
+        assert_eq!(platform.identity_disclosure_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            futures::executor::block_on(
+                service.authorization_status(&PermissionAuthorizationRequest::IdentityDisclosure)
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::NotDetermined
+        );
+    }
+
+    #[test]
+    fn identity_grant_does_not_extend_one_shot_chat_authority() {
+        let platform = StubPlatform {
+            permission_confirmation_decisions: std::sync::Mutex::new(
+                [PermissionDecision::AllowOnce, PermissionDecision::Deny].into(),
+            ),
+            ..Default::default()
+        };
+        let service = PermissionsService::new(&platform, &platform, "chat.paseo");
+        futures::executor::block_on(async {
+            service
+                .set_authorization_status(
+                    &PermissionAuthorizationRequest::IdentityDisclosure,
+                    PermissionAuthorizationStatus::Authorized,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                service.check_or_prompt_chat_authority().await.unwrap(),
+                PermissionAuthorizationStatus::Authorized
+            );
+            assert_eq!(
+                service
+                    .authorization_status(&PermissionAuthorizationRequest::ChatAuthority)
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined
+            );
+            assert_eq!(
+                service.check_or_prompt_chat_authority().await.unwrap(),
+                PermissionAuthorizationStatus::Denied
+            );
+            assert_eq!(
+                service.check_or_prompt_chat_authority().await.unwrap(),
+                PermissionAuthorizationStatus::Denied
+            );
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 2);
+        });
     }
 
     #[test]

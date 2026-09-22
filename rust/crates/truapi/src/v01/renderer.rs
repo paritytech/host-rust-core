@@ -1,5 +1,6 @@
 //! Product-rendered body trees and the contexts that name them.
 
+use alloc::{string::String, vec::Vec};
 use parity_scale_codec::{Compact, Decode, Encode, OptionBool};
 
 /// A size in logical pixels, SCALE-encoded as `Compact<u64>`.
@@ -518,6 +519,7 @@ pub struct HostRendererActionSubscribeItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::{string::ToString, vec};
 
     #[derive(Encode)]
     struct RendererWireComponent<P> {

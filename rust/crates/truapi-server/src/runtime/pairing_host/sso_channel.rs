@@ -2,6 +2,7 @@
 
 use super::super::authority::{
     AuthorityCancelError, AuthorityError, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
+    ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
 };
 use super::super::sso_remote::{
@@ -17,8 +18,8 @@ use crate::host_logic::sso::messages::{
     CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, ProductRequest,
     ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
     RingVrfError, SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource,
-    SsoAllocationOutcome, SsoSessionStatement, build_outgoing_request_statement,
-    decode_sso_session_statement, v1,
+    SsoAllocationOutcome, SsoProductDeviceChatOperation, SsoSessionStatement,
+    build_outgoing_request_statement, decode_sso_session_statement, v1,
 };
 use crate::host_logic::sso::wire::SsoRequest;
 use crate::host_logic::statement_store::parse_new_statements_result;
@@ -488,6 +489,33 @@ impl PairingHost {
             .map_err(ring_vrf_transport_error)?
     }
 
+    /// Forward a product-device Chat v2 operation without exposing wallet key material.
+    pub(super) async fn remote_product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        self.call(
+            cx,
+            session,
+            ProductRequest {
+                calling_product_id: request.calling_product_id,
+                payload: SsoProductDeviceChatOperation::V2(request.operation),
+            },
+        )
+        .await
+        .map_err(|error| ProductDeviceChatAuthorityError::from(remote_authority_error(error)))?
+        .map(|response| {
+            let truapi::versioned::account::HostProductDeviceChatResponse::V1(response) = response;
+            response
+        })
+        .map_err(|error| {
+            let truapi::versioned::account::HostProductDeviceChatError::V1(error) = error;
+            ProductDeviceChatAuthorityError::Domain(error)
+        })
+    }
+
     /// Ask the paired signing host to allocate product resources, caching any
     /// returned allowance keys.
     pub(super) async fn remote_allocate_resources(
@@ -698,6 +726,7 @@ impl PairingHost {
                         .await?;
                     }
                     SsoAllocatedResource::SmartContractAllowance => {}
+                    SsoAllocatedResource::ProductStatementStoreAllowance => {}
                     SsoAllocatedResource::AutoSigning {
                         product_root_private_key,
                         ring_vrf_domain_entropy,

@@ -3612,22 +3612,38 @@ fn resource_allocation_rejects_without_session() {
 }
 
 #[test]
-fn resource_allocation_rejects_when_user_declines() {
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+fn resource_allocation_remembers_denial_without_provisioning() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
     install_pairing_session(&host, session_info());
-    let cx = CallContext::default();
-    let err = futures::executor::block_on(ResourceAllocation::request(
-        &host,
-        &cx,
-        resource_allocation_request(),
-    ))
-    .unwrap_err();
-    match err {
-        CallError::Domain(HostRequestResourceAllocationError::V1(
-            v01::ResourceAllocationError::Unknown { reason },
-        )) => assert_eq!(reason, "User rejected resource allocation"),
-        other => panic!("expected user-rejected resource allocation error, got {other:?}"),
-    }
+    futures::executor::block_on(async {
+        for _ in 0..2 {
+            assert!(
+                ResourceAllocation::request(
+                    &host,
+                    &CallContext::default(),
+                    resource_allocation_request(),
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert_eq!(
+            host.permission_authorization_status(
+                truapi_platform::PermissionAuthorizationRequest::StatementStoreAllowance {
+                    derivation_index: None,
+                },
+            )
+            .await
+            .unwrap(),
+            truapi_platform::PermissionAuthorizationStatus::Denied
+        );
+    });
+    assert_eq!(
+        platform.resource_allocation_reviews.lock().unwrap().len(),
+        1
+    );
+    assert!(platform.sent_rpc.lock().unwrap().is_empty());
 }
 
 #[test]

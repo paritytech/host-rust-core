@@ -55,6 +55,9 @@ import uniffi.truapi.HostLocalStorageReadError
 import uniffi.truapi.HostNavigateToError
 import uniffi.truapi_platform.AuthState
 import uniffi.truapi_platform.HostChainSet
+import uniffi.truapi_platform.NativeChatFilePickRequest
+import uniffi.truapi_platform.NativeChatPickedFile
+import uniffi.truapi_platform.NativeChatFileExportRequest
 import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.PermissionDecision
@@ -78,6 +81,7 @@ import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeStatementRenewalTarget
 import uniffi.truapi_server.NativeTrackedStatementRenewalTarget
 import uniffi.truapi_server.StatementRenewalReport
+import uniffi.truapi_server.SsoRequestOutcome
 import uniffi.truapi_server.WorkerTransition
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
@@ -128,6 +132,8 @@ data class HostRuntimeConfig(
     val networkSuffix: String,
     val localSessionSecret: ByteArray? = null,
     val localSessionLiteUsername: String? = null,
+    /** Trusted asset instance, required for instance-scoped Coinage runtimes. */
+    val coinageInstanceId: UInt? = null,
 ) {
     internal fun toNative(): UniFfiNativeHostRuntimeConfig =
         UniFfiNativeHostRuntimeConfig(
@@ -143,6 +149,7 @@ data class HostRuntimeConfig(
             networkSuffix = networkSuffix,
             localSessionSecret = localSessionSecret,
             localSessionLiteUsername = localSessionLiteUsername,
+            coinageInstanceId = coinageInstanceId,
         )
 
     override fun equals(other: Any?): Boolean {
@@ -158,7 +165,8 @@ data class HostRuntimeConfig(
             assetHubChainGenesisHash.contentEquals(other.assetHubChainGenesisHash) &&
             networkSuffix == other.networkSuffix &&
             localSessionSecret.contentEquals(other.localSessionSecret) &&
-            localSessionLiteUsername == other.localSessionLiteUsername
+            localSessionLiteUsername == other.localSessionLiteUsername &&
+            coinageInstanceId == other.coinageInstanceId
     }
 
     override fun hashCode(): Int {
@@ -173,6 +181,7 @@ data class HostRuntimeConfig(
         result = 31 * result + networkSuffix.hashCode()
         result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
         result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
+        result = 31 * result + (coinageInstanceId?.hashCode() ?: 0)
         return result
     }
 }
@@ -226,6 +235,41 @@ interface HostCoreStorage {
 private val defaultOperationIds = AtomicInteger(0)
 
 /**
+ * Host-private immutable attachment custody. Marshal trusted selection/export UI
+ * to the main thread. Never expose source/export handles or bytes to a guest.
+ * Empty selection/null export means user cancellation, never unavailability.
+ */
+interface NativeChatFilesHost {
+    @Throws(HostRejection::class)
+    suspend fun pickChatFiles(request: NativeChatFilePickRequest): List<NativeChatPickedFile> =
+        throw HostRejection.Rejected("native Chat files unavailable")
+
+    @Throws(HostRejection::class)
+    suspend fun readChatFile(sourceId: String, offset: ULong, length: UInt): ByteArray =
+        throw HostRejection.Rejected("native Chat files unavailable")
+
+    @Throws(HostRejection::class)
+    suspend fun releaseChatFile(sourceId: String): Unit =
+        throw HostRejection.Rejected("native Chat files unavailable")
+
+    @Throws(HostRejection::class)
+    suspend fun beginChatFileExport(request: NativeChatFileExportRequest): String? =
+        throw HostRejection.Rejected("native Chat files unavailable")
+
+    @Throws(HostRejection::class)
+    suspend fun writeChatFileExport(exportId: String, offset: ULong, data: ByteArray): Unit =
+        throw HostRejection.Rejected("native Chat files unavailable")
+
+    @Throws(HostRejection::class)
+    suspend fun finishChatFileExport(exportId: String): Unit =
+        throw HostRejection.Rejected("native Chat files unavailable")
+
+    @Throws(HostRejection::class)
+    suspend fun cancelChatFileExport(exportId: String): Unit =
+        throw HostRejection.Rejected("native Chat files unavailable")
+}
+
+/**
  * Host-side callback bundle that the Rust core invokes for capabilities the
  * native shell owns. The interface mirrors the underlying UniFFI surface but
  * keeps the permission split explicit:
@@ -243,7 +287,7 @@ private val defaultOperationIds = AtomicInteger(0)
  * other TrUAPI traffic. Synchronous callbacks must return promptly. Run UI work
  * on the main thread, for example with `withContext(Dispatchers.Main) { ... }`.
  */
-interface HostBridge {
+interface HostBridge : NativeChatFilesHost {
     /** Lifecycle logger. Marker is a stable slug, detail is free-form. */
     fun onCoreLog(marker: String, detail: String) {}
 
@@ -318,6 +362,18 @@ interface HostBridge {
     @Throws(HostRejection::class)
     fun chainConnect(genesisHash: ByteArray): UInt? = null
 
+    /** Exact WSS endpoint strings from trusted, current Bulletin configuration. */
+    @Throws(HostRejection::class)
+    suspend fun allowedHopEndpoints(bulletinGenesisHash: ByteArray): List<String> = emptyList()
+
+    /**
+     * Recheck the exact endpoint against live trusted configuration before dialing.
+     * Returns null when HOP is unavailable. The id shares chainSend/chainClose
+     * and notifyChainResponse/notifyChainClosed.
+     */
+    @Throws(HostRejection::class)
+    fun hopConnect(bulletinGenesisHash: ByteArray, endpoint: String): UInt? = null
+
     /** Send one JSON-RPC request on a native chain connection. */
     @Throws(HostRejection::class)
     fun chainSend(connectionId: UInt, request: String) {}
@@ -343,6 +399,13 @@ interface HostBridge {
     /** Return the current preimage value for [key], or null for a miss. */
     @Throws(HostRejection::class)
     suspend fun lookupPreimage(key: ByteArray): ByteArray? = null
+
+    /** Exact-name AccountId32 candidates; core verifies dotNS ownership and the People key. */
+    @Throws(HostRejection::class)
+    suspend fun identityUsernameCandidates(
+        username: String,
+        peopleChainGenesisHash: ByteArray,
+    ): List<ByteArray> = throw HostRejection.Rejected("native identity backend unavailable")
 
     /** Return the current host theme. Hosts with no named themes report [ThemeName.Default]. */
     @Throws(HostRejection::class)
@@ -551,11 +614,38 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun chainConnect(genesisHash: ByteArray): UInt? =
         withHostRejection { bridge.chainConnect(genesisHash) }
 
+    override suspend fun allowedHopEndpoints(bulletinGenesisHash: ByteArray): List<String> =
+        withHostRejection { bridge.allowedHopEndpoints(bulletinGenesisHash) }
+
+    override fun hopConnect(bulletinGenesisHash: ByteArray, endpoint: String): UInt? =
+        withHostRejection { bridge.hopConnect(bulletinGenesisHash, endpoint) }
+
     override fun chainSend(connectionId: UInt, request: String) =
         withHostRejection { bridge.chainSend(connectionId, request) }
 
     override fun chainClose(connectionId: UInt) =
         withHostRejection { bridge.chainClose(connectionId) }
+
+    override suspend fun pickChatFiles(request: NativeChatFilePickRequest): List<NativeChatPickedFile> =
+        withChatFileRejection { bridge.pickChatFiles(request) }
+
+    override suspend fun readChatFile(sourceId: String, offset: ULong, length: UInt): ByteArray =
+        withChatFileRejection { bridge.readChatFile(sourceId, offset, length) }
+
+    override suspend fun releaseChatFile(sourceId: String) =
+        withChatFileRejection { bridge.releaseChatFile(sourceId) }
+
+    override suspend fun beginChatFileExport(request: NativeChatFileExportRequest): String? =
+        withChatFileRejection { bridge.beginChatFileExport(request) }
+
+    override suspend fun writeChatFileExport(exportId: String, offset: ULong, data: ByteArray) =
+        withChatFileRejection { bridge.writeChatFileExport(exportId, offset, data) }
+
+    override suspend fun finishChatFileExport(exportId: String) =
+        withChatFileRejection { bridge.finishChatFileExport(exportId) }
+
+    override suspend fun cancelChatFileExport(exportId: String) =
+        withChatFileRejection { bridge.cancelChatFileExport(exportId) }
 
     override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
         withHostRejection { bridge.confirmUserAction(review) }
@@ -565,6 +655,13 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         withHostRejection { bridge.lookupPreimage(key) }
+
+    override suspend fun identityUsernameCandidates(
+        username: String,
+        peopleChainGenesisHash: ByteArray,
+    ): List<ByteArray> = withHostRejection {
+        bridge.identityUsernameCandidates(username, peopleChainGenesisHash)
+    }
 
     override fun currentTheme(): HostThemeSubscribeItem =
         withHostRejection { bridge.currentTheme() }
@@ -605,6 +702,16 @@ private fun hostRejectionReason(error: Throwable): String =
     (error.message ?: error.toString()).take(HOST_REJECTION_REASON_MAX_CHARS)
 
 private const val HOST_REJECTION_REASON_MAX_CHARS = 256
+
+private inline fun <T> withChatFileRejection(operation: () -> T): T =
+    try {
+        operation()
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        // Provider/filesystem exceptions may contain private paths or handles.
+        throw HostRejection.Rejected("native Chat file operation unavailable or failed")
+    }
 
 private inline fun <T> withHostRejection(operation: () -> T): T =
     try {
@@ -876,6 +983,14 @@ class TrUAPIHostRuntime private constructor(
     fun activateLocalSession(secret: ByteArray, liteUsername: String? = null) {
         inner.activateLocalSession(secret, liteUsername)
     }
+
+    /** Handle a paired session's opaque SSO request, awaiting native user consent. */
+    @Throws(HostRejection::class)
+    suspend fun handleSsoRequest(message: ByteArray): SsoRequestOutcome =
+        inner.handleSsoRequest(message)
+
+    /** Encode the disconnect notification; the caller routes it to the ending session. */
+    fun prepareDisconnectRequest(): ByteArray = inner.prepareDisconnectRequest()
 
     /** Push a JSON-RPC response from a native chain connection into the runtime. */
     fun notifyChainResponse(connectionId: UInt, json: String) {

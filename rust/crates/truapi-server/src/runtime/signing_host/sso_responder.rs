@@ -21,10 +21,8 @@ use truapi::v01;
 
 use super::sso_replay::{ReplayExecution, SsoReplayScope, execute_once};
 use super::{SigningHost, SigningHostSsoService};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::derive_sr25519_hard_path;
 use crate::host_logic::product_account::{
     ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
@@ -49,23 +47,20 @@ use crate::runtime::authority::{AuthorityError, AuthoritySession};
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::{fresh_statement_expiry, sso_message_id};
 use crate::runtime::sso_service::Dispatch;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
 /// RFC-0022 domain for the responder's persistent SSO X25519 key.
 const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
-#[cfg(not(target_arch = "wasm32"))]
 const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
 
 /// Upper bound on undecodable request ids acknowledged within one serve loop.
 const MAX_DECODE_FAILURE_REQUEST_IDS: usize = 1024;
 
-fn derive_responder_identity(
+pub(super) fn derive_responder_identity(
     entropy: &[u8],
     network_suffix: &str,
 ) -> Result<(ResponderIdentity, [u8; 32]), ProductAccountError> {
@@ -166,20 +161,13 @@ pub(super) enum AllowanceAllocationError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("supported chains: {0}")]
     SupportedChains(String),
-    /// Product-account key derivation failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     ProductAccount(#[from] ProductAccountError),
-    /// Chain state, metadata, ring, slot, proof, or extrinsic allocation failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementAllowance(#[from] StatementAllowanceError),
-    /// Runtime service could not open the required Statement Store RPC client.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementStoreRpcClient(#[from] StatementStoreRpcClientError),
     /// Runtime service could not open the required Bulletin RPC client.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{context}: {source}")]
     ChainRpcClient {
         /// Client context, naming which chain failed.
@@ -199,8 +187,6 @@ pub(super) enum AllowanceAllocationError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("system clock before UNIX epoch")]
     SystemClockBeforeUnixEpoch,
-    /// The signing account is not in any personhood ring.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("signing account is not a personhood ring member; cannot grant {resource} allowance")]
     MissingPersonhoodMembership {
         /// Resource name.
@@ -212,6 +198,9 @@ impl AllowanceAllocationError {
     pub(super) fn into_authority_error(self) -> AuthorityError {
         match self {
             Self::Authority(err) => err,
+            Self::StatementAllowance(StatementAllowanceError::SessionInvalidated) => {
+                AuthorityError::Disconnected
+            }
             other => AuthorityError::Unavailable {
                 reason: other.to_string(),
             },
@@ -384,7 +373,11 @@ async fn submit_handshake_answer(
         handshake.encode(),
         fresh_statement_expiry(),
     )?;
-    services.statement_store.submit(statement, context).await
+    services
+        .statement_store
+        .submit(statement, context)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// The identity and peer a pairing notice went out under.
@@ -701,7 +694,6 @@ fn response_cli_summary(
     summary
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_statement_store_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -709,17 +701,56 @@ pub(super) async fn allocate_statement_store_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
-    use super::allowance_renewal::{self, StatementRenewalTarget};
+    signing_host.require_current_session(session)?;
+    let entropy = signing_host.root_entropy()?;
+    let allowance =
+        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
+    register_statement_store_target(
+        services,
+        signing_host,
+        session,
+        product_id,
+        allowance.public.to_bytes(),
+        policy,
+    )
+    .await?;
+    Ok(allowance.secret.to_bytes().to_vec())
+}
+
+pub(super) async fn allocate_product_statement_store_allowance(
+    services: &RuntimeServices,
+    signing_host: &SigningHost,
+    session: &AuthoritySession,
+    product_id: &str,
+    derivation_index: &v01::DerivationIndex,
+    policy: OnExistingAllowancePolicy,
+) -> Result<(), AllowanceAllocationError> {
+    signing_host.require_current_session(session)?;
+    let target = signing_host
+        .product_keypair(&v01::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index: derivation_index.clone(),
+        })?
+        .public
+        .to_bytes();
+    register_statement_store_target(services, signing_host, session, product_id, target, policy)
+        .await
+}
+
+async fn register_statement_store_target(
+    services: &RuntimeServices,
+    signing_host: &SigningHost,
+    session: &AuthoritySession,
+    product_id: &str,
+    target: [u8; 32],
+    policy: OnExistingAllowancePolicy,
+) -> Result<(), AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
         self, PooledRegistrationParams, allocated_in, find_including_rings,
         register_statement_account_pooled, scan_collections,
     };
 
     signing_host.require_current_session(session)?;
-    let entropy = signing_host.root_entropy()?;
-    let allowance =
-        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
-    let target = allowance.public.to_bytes();
     let candidates = signing_host.reserved_person_collection_candidates(session)?;
     let client = services
         .statement_store
@@ -733,13 +764,8 @@ pub(super) async fn allocate_statement_store_allowance(
 
     // Held from the scan through the submission, not just around the submission:
     // the scan is what picks the free slot, so a renewal pass scanning in the gap
-    // would choose the same one. Released on the early return below, which
-    // submits nothing.
+    // would choose the same one.
     let _registration = signing_host.renewal.registration_lock().lock().await;
-
-    // One read of the period's slot tables, reused below rather than rescanned:
-    // when an allowance is already recorded on chain neither a proof nor a
-    // submission is needed, and a ring snapshot pages in every member key.
     let scans = scan_collections(
         rpc,
         &chain.metadata,
@@ -750,6 +776,7 @@ pub(super) async fn allocate_statement_store_allowance(
         reuse_existing,
     )
     .await?;
+    signing_host.require_current_session(session)?;
     if let Some((collection, seq)) = allocated_in(&scans) {
         debug!(
             %product_id,
@@ -758,79 +785,65 @@ pub(super) async fn allocate_statement_store_allowance(
             %collection,
             "statement-store allowance already allocated"
         );
+    } else {
+        // Every ring back to index 0, because a membership that stopped being
+        // re-included still proves against the ring that holds it.
+        let memberships = find_including_rings(rpc, &chain.metadata, &candidates, u32::MAX).await?;
+        if memberships.is_empty() {
+            return Err(AllowanceAllocationError::MissingPersonhoodMembership {
+                resource: "statement-store",
+            });
+        }
         signing_host.require_current_session(session)?;
-        return Ok(allowance.secret.to_bytes().to_vec());
-    }
-
-    // Every ring back to index 0, because a membership that stopped being
-    // re-included still proves against the ring that holds it.
-    let memberships = find_including_rings(rpc, &chain.metadata, &candidates, u32::MAX).await?;
-    if memberships.is_empty() {
-        return Err(AllowanceAllocationError::MissingPersonhoodMembership {
-            resource: "statement-store",
-        });
-    }
-    signing_host.require_current_session(session)?;
-    let outcome = register_statement_account_pooled(
-        rpc,
-        &chain.metadata,
-        &chain.state,
-        &scans,
-        &memberships,
-        PooledRegistrationParams {
-            target: &target,
-            period,
-            network_suffix: &network_suffix,
-            reuse_existing,
-            // Connecting a product must not revoke another product's allowance.
-            // A full period is reported as exhaustion; reclaiming space is the
-            // renewal pass's job, which only ever replaces for its own ledger.
-            allow_eviction: false,
-            protected: &[],
-        },
-    )
-    .await?;
-    match outcome {
-        statement_allowance::RegistrationOutcome::Registered {
-            block_hash,
-            seq,
-            ring_index,
-            collection,
-        } => {
-            debug!(
-                %product_id,
-                %block_hash,
+        let outcome = register_statement_account_pooled(
+            rpc,
+            &chain.metadata,
+            &chain.state,
+            &scans,
+            &memberships,
+            PooledRegistrationParams {
+                target: &target,
+                period,
+                network_suffix: &network_suffix,
+                reuse_existing,
+                // Connecting a product must not revoke another product's allowance.
+                // A full period is reported as exhaustion; reclaiming space is the
+                // renewal pass's job, which only ever replaces for its own ledger.
+                allow_eviction: false,
+                protected: &[],
+            },
+        )
+        .await?;
+        match outcome {
+            statement_allowance::RegistrationOutcome::Registered {
+                block_hash,
                 seq,
                 ring_index,
-                %collection,
-                "registered statement-store allowance"
-            );
-        }
-        statement_allowance::RegistrationOutcome::AlreadyAllocated { seq, collection } => {
-            debug!(
-                %product_id,
-                seq,
-                %collection,
-                "statement-store allowance already allocated"
-            );
+                collection,
+            } => {
+                debug!(
+                    %product_id,
+                    %block_hash,
+                    seq,
+                    ring_index,
+                    %collection,
+                    "registered statement-store allowance"
+                );
+            }
+            statement_allowance::RegistrationOutcome::AlreadyAllocated { seq, collection } => {
+                debug!(
+                    %product_id,
+                    seq,
+                    %collection,
+                    "statement-store allowance already allocated"
+                );
+            }
         }
     }
     signing_host.require_current_session(session)?;
-    if let Err(reason) = allowance_renewal::track(
-        signing_host,
-        vec![StatementRenewalTarget::ProductStatementAllowance {
-            product_id: product_id.to_string(),
-        }],
-    )
-    .await
-    {
-        warn!(%product_id, %reason, "failed to record statement-store renewal target");
-    }
-    signing_host.require_current_session(session)?;
-    Ok(allowance.secret.to_bytes().to_vec())
+    Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_bulletin_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
@@ -899,16 +912,19 @@ pub(super) async fn allocate_bulletin_allowance(
         period_duration,
     )?;
     signing_host.require_current_session(session)?;
-    let outcome = claim_long_term_storage(statement_allowance::LongTermStorageClaim {
-        rpc: people_rpc,
-        metadata: &chain.metadata,
-        chain_state: &chain.state,
-        entropy: membership.entropy,
-        network_suffix: &network_suffix,
-        target: &target,
-        period,
-        ring: &membership.ring,
-    })
+    let outcome = claim_long_term_storage(
+        statement_allowance::LongTermStorageClaim {
+            rpc: people_rpc,
+            metadata: &chain.metadata,
+            chain_state: &chain.state,
+            entropy: membership.entropy,
+            network_suffix: &network_suffix,
+            target: &target,
+            period,
+            ring: &membership.ring,
+        },
+        || signing_host.require_current_session(session).is_ok(),
+    )
     .await?;
     let statement_allowance::LongTermStorageOutcome::Claimed {
         block_hash,
@@ -938,19 +954,6 @@ pub(super) async fn allocate_bulletin_allowance(
     );
     signing_host.require_current_session(session)?;
     Ok(allowance.secret.to_bytes().to_vec())
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_statement_store_allowance(
-    _services: &RuntimeServices,
-    _signing_host: &SigningHost,
-    _session: &AuthoritySession,
-    _product_id: &str,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "statement-store",
-    })
 }
 
 /// Claim an Asset Hub PGAS allowance for the product account `derivation_index`
@@ -1074,25 +1077,17 @@ pub(super) async fn allocate_smart_contract_allowance(
     Err(AllowanceAllocationError::NativeOnly { resource: "PGAS" })
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_bulletin_allowance(
-    _services: &RuntimeServices,
-    _signing_host: &SigningHost,
-    _session: &AuthoritySession,
-    _product_id: &str,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "Bulletin",
-    })
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|_| AllowanceAllocationError::SystemClockBeforeUnixEpoch)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
+    Ok(statement_current_unix_secs())
 }
 
 #[cfg(test)]
@@ -1170,7 +1165,11 @@ mod tests {
             config.asset_hub_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHost::new(services.clone(), config.network_suffix);
+        let signing_host = SigningHost::new(
+            services.clone(),
+            config.network_suffix,
+            config.coinage_instance_id,
+        );
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         (services, signing_host)
@@ -1187,7 +1186,7 @@ mod tests {
     /// rather than passing quietly.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn an_existing_allowance_is_served_without_touching_the_ring() {
+    fn repeated_implicit_provisioning_reuses_existing_allowance_without_submission() {
         use futures::FutureExt;
 
         use crate::host_logic::product_account::derive_sr25519_hard_path;
@@ -1237,35 +1236,58 @@ mod tests {
                     "state_getStorage",
                     format!(r#""0x{}""#, hex::encode(&slot_entry)),
                 ),
+                (
+                    "state_getStorage",
+                    format!(r#""0x{}""#, hex::encode(b"paseo".to_vec().encode())),
+                ),
+                (
+                    "state_getStorage",
+                    format!(r#""0x{}""#, hex::encode(&slot_entry)),
+                ),
+                (
+                    "state_getRuntimeVersion",
+                    r#"{"specVersion":1000000,"transactionVersion":1}"#.to_string(),
+                ),
+                (
+                    "chain_getBlockHash",
+                    format!(r#""0x{}""#, hex::encode([0u8; 32])),
+                ),
+                (
+                    "RuntimeViewFunction_execute_view_function",
+                    format!(
+                        r#""0x{}""#,
+                        hex::encode(Ok::<Vec<u8>, ()>(20u32.encode()).encode()),
+                    ),
+                ),
             ],
             ..Default::default()
         });
-        let (services, signing_host) = signing_fixture(platform.clone());
+        let (_services, signing_host) = signing_fixture(platform.clone());
 
         // Bounded, because the failure mode of losing the early return is a
         // wait on a chain read the stub deliberately does not answer — an
         // unbounded test would hang instead of reporting. The bound is generous
         // because it is catching a hang, not asserting latency.
-        let secret = futures::executor::block_on(async {
+        futures::executor::block_on(async {
             let session = signing_host.current_session().unwrap();
-            futures::select! {
-                result = allocate_statement_store_allowance(
-                    &services,
-                    &signing_host,
+            let cx = truapi::CallContext::default();
+            for _ in 0..2 {
+                let allocation = signing_host.statement_store_allowance_key(
+                    &cx,
                     &session,
-                    product_id,
-                    OnExistingAllowancePolicy::Ignore,
-                )
-                .fuse() => result,
-                _ = futures_timer::Delay::new(std::time::Duration::from_secs(30)).fuse() => {
-                    panic!("allocation blocked on a chain read it should not have made")
+                    product_id.to_string(),
+                );
+                futures::pin_mut!(allocation);
+                let response = futures::select! {
+                    result = allocation.fuse() => result,
+                    _ = futures_timer::Delay::new(std::time::Duration::from_secs(30)).fuse() => {
+                        panic!("allocation blocked on a chain read it should not have made")
+                    }
                 }
+                .expect("existing allowance succeeds");
+                assert_eq!(response.public_key, allowance.public.to_bytes());
             }
-        })
-        .expect("an existing allowance is returned");
-
-        assert_eq!(secret, allowance.secret.to_bytes().to_vec());
-
+        });
         let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
         let methods: Vec<String> = sent
             .iter()
@@ -1290,15 +1312,6 @@ mod tests {
                 .iter()
                 .any(|method| method.starts_with("author_submit")),
             "an extrinsic was submitted for an allowance already in place: {methods:?}"
-        );
-        // The suffix and one slot read answered it; the scan stopped at the first match.
-        assert_eq!(
-            methods
-                .iter()
-                .filter(|method| *method == "state_getStorage")
-                .count(),
-            2,
-            "expected one suffix and one slot read: {methods:?}"
         );
     }
 
@@ -1489,6 +1502,63 @@ mod tests {
         };
         let RemoteMessageData::V1(data) = answer.message.data;
         data
+    }
+
+    #[test]
+    fn chat_attachments_require_preimage_consent_over_sso() {
+        let platform = Arc::new(StubPlatform {
+            chat_authority_confirmed: true,
+            remote_permission_decisions: std::sync::Mutex::new(
+                [
+                    truapi_platform::PermissionDecision::AllowOnce,
+                    truapi_platform::PermissionDecision::Deny,
+                ]
+                .into(),
+            ),
+            ..Default::default()
+        });
+        let (_, signing_host) = signing_fixture(platform.clone());
+        let response = answer(
+            &signing_host,
+            "attachments-1",
+            v1::RemoteMessage::ProductDeviceChatRequest(messages::ProductRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                payload: messages::SsoProductDeviceChatOperation::V2(
+                    api::HostProductDeviceChatRequest::SendAttachments {
+                        peer_identity: [1; 32],
+                        request_id: "files-1".to_string(),
+                        text: None,
+                    },
+                ),
+            }),
+        );
+        let v1::RemoteMessage::ProductDeviceChatResponse(response) = response else {
+            panic!("expected Chat response");
+        };
+        assert_eq!(
+            response,
+            messages::Response {
+                responding_to: "attachments-1".to_string(),
+                payload: Err(truapi::versioned::account::HostProductDeviceChatError::V1(
+                    api::HostProductDeviceChatError::AccessNotGranted,
+                ),),
+            }
+        );
+        assert_eq!(
+            platform
+                .remote_permission_requests
+                .lock()
+                .expect("remote permission list mutex poisoned")
+                .as_slice(),
+            &[
+                api::RemotePermissionRequest {
+                    permission: api::RemotePermission::StatementSubmit,
+                },
+                api::RemotePermissionRequest {
+                    permission: api::RemotePermission::PreimageSubmit,
+                },
+            ]
+        );
     }
 
     #[test]

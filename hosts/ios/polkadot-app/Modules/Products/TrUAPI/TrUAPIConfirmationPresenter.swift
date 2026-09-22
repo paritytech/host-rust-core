@@ -50,6 +50,10 @@ final class TrUAPIConfirmationPresenter: TrUAPIConfirmationPresenting, @unchecke
             await presentPermission(
                 promptMapper.makePermissionRequest(from: identityReview)
             )
+        case let .chatAuthority(chatReview):
+            await presentPermission(
+                promptMapper.makePermissionRequest(from: chatReview)
+            )
         case let .accountAccess(accessReview):
             await presentPermission(
                 promptMapper.makePermissionRequest(from: accessReview)
@@ -71,6 +75,8 @@ private extension TrUAPIConfirmationPresenter {
              .signRaw,
              .createTransaction:
             try await confirmSigning(for: review, from: requesterName)
+        case let .mainPurseChatPayment(paymentReview):
+            await confirmMainPursePayment(paymentReview)
         case let .statementStoreProductSign(statementReview):
             await confirmStatementSign(
                 promptMapper.makeStatementSignRequest(from: statementReview)
@@ -82,6 +88,7 @@ private extension TrUAPIConfirmationPresenter {
         case let .productSubtree(subtreeReview):
             await confirmAction(promptMapper.makeActionRequest(from: subtreeReview))
         case .identityDisclosure,
+             .chatAuthority,
              .accountAccess,
              .accountAlias:
             await confirmPermission(review: review, from: requesterName) != .deny
@@ -132,6 +139,18 @@ private extension TrUAPIConfirmationPresenter {
                 routerFacade.productsRouter.showStatementSignPrompt(context: context)
             }
             return decision == .approved
+        }
+    }
+    func confirmMainPursePayment(_ review: MainPurseChatPaymentReview) async -> Bool {
+        await awaitDecision(cancelled: false) { [routerFacade] in
+            await withCheckedContinuation { continuation in
+                let context = MainPursePaymentConfirmationContext(review: review)
+                context.setContinuation(continuation)
+                let prompt = MainPursePaymentPromptViewFactory.createView(context: context)
+                if !routerFacade.productsRouter.present(view: prompt) {
+                    context.deliver(false)
+                }
+            }
         }
     }
 

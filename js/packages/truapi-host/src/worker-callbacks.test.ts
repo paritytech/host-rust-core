@@ -5,6 +5,7 @@ import {
   startRawSubscription,
 } from "./generated/worker-callbacks.js";
 import type { RawCallbacks } from "./generated/host-callbacks-adapter.js";
+import type { WorkerCallbackBridge } from "./generated/worker-callbacks.js";
 
 // The worker proxies an optional capability only when the main thread reports
 // the host serves it, so the core sees the same capability set on both sides of
@@ -13,7 +14,8 @@ import type { RawCallbacks } from "./generated/host-callbacks-adapter.js";
 
 function stubBridge() {
   const requests: { name: string; args: readonly unknown[] }[] = [];
-  const subscriptions: { name: string; payload: Uint8Array | null }[] = [];
+  const subscriptions: { name: string; payload: Uint8Array | string | null }[] =
+    [];
   return {
     requests,
     subscriptions,
@@ -22,22 +24,31 @@ function stubBridge() {
         requests.push({ name, args });
         return new Uint8Array();
       },
-      startSubscription: (name: string, payload: Uint8Array | null) => {
+      startSubscription: (
+        name: string,
+        payload: Uint8Array | string | null,
+      ) => {
         subscriptions.push({ name, payload });
         return () => {};
       },
       chainConnect: async () => null,
-    },
+      hopConnect: async () => null,
+    } satisfies WorkerCallbackBridge,
   };
 }
 
 describe("worker raw callbacks", () => {
+  it("leaves username search unavailable when the host omits its capability", () => {
+    const { bridge } = stubBridge();
+    const callbacks = createWorkerRawCallbacks(bridge);
+
+    expect(callbacks.identityUsernameCandidates).toBeUndefined();
+  });
+
   it("omits the chat proxies when no chat capability is reported", () => {
     const { bridge } = stubBridge();
 
-    const callbacks = createWorkerRawCallbacks(
-      bridge as unknown as Parameters<typeof createWorkerRawCallbacks>[0],
-    );
+    const callbacks = createWorkerRawCallbacks(bridge);
 
     expect(callbacks.createChatRoom).toBeUndefined();
     expect(callbacks.postChatMessage).toBeUndefined();
@@ -48,10 +59,7 @@ describe("worker raw callbacks", () => {
   it("proxies chat through the bridge when the capability is reported", async () => {
     const { bridge, requests, subscriptions } = stubBridge();
 
-    const callbacks = createWorkerRawCallbacks(
-      bridge as unknown as Parameters<typeof createWorkerRawCallbacks>[0],
-      { chat: true },
-    );
+    const callbacks = createWorkerRawCallbacks(bridge, { chat: true });
 
     const product = new Uint8Array([1]);
     await (
@@ -80,9 +88,7 @@ describe("worker raw callbacks", () => {
 
   it("starts no chat room subscription when chat is absent", () => {
     const { bridge, subscriptions } = stubBridge();
-    const callbacks = createWorkerRawCallbacks(
-      bridge as unknown as Parameters<typeof createWorkerRawCallbacks>[0],
-    ) as RawCallbacks;
+    const callbacks = createWorkerRawCallbacks(bridge) as RawCallbacks;
 
     const stop = startRawSubscription(
       callbacks,
@@ -99,9 +105,7 @@ describe("worker raw callbacks", () => {
   it("omits the pocket proxies when no pocket capability is reported", () => {
     const { bridge } = stubBridge();
 
-    const callbacks = createWorkerRawCallbacks(
-      bridge as unknown as Parameters<typeof createWorkerRawCallbacks>[0],
-    );
+    const callbacks = createWorkerRawCallbacks(bridge);
 
     expect(callbacks.subscribePocketCards).toBeUndefined();
     expect(callbacks.removePocketCard).toBeUndefined();
@@ -110,10 +114,7 @@ describe("worker raw callbacks", () => {
   it("proxies pocket through the bridge when the capability is reported", async () => {
     const { bridge, requests, subscriptions } = stubBridge();
 
-    const callbacks = createWorkerRawCallbacks(
-      bridge as unknown as Parameters<typeof createWorkerRawCallbacks>[0],
-      { pocket: true },
-    );
+    const callbacks = createWorkerRawCallbacks(bridge, { pocket: true });
 
     const product = new Uint8Array([1]);
     await (

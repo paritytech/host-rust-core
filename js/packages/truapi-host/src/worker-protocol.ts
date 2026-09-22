@@ -44,11 +44,26 @@ export type {
   SubscriptionName,
 } from "./generated/worker-callbacks.js";
 
+/** Shared cap includes connections still opening or closing during an open. */
+export const MAX_JSON_RPC_CONNECTIONS = 64;
+
 /**
  * Positional arguments for a callback. The wasm core calls each callback
  * at a fixed arity; a uniform `unknown[]` keeps the wire protocol simple.
  */
 export type CallbackArgs = readonly unknown[];
+
+/** Chain-verified identity metadata for the wallet's network-specific UID account. */
+export interface LocalIdentity {
+  /** Canonical lowercase 0x-prefixed 32-byte account identifier. */
+  identityAccountId: string;
+  liteUsername?: string;
+}
+
+/** Observable registration stages; acceptance is not verified ownership. */
+export type LocalIdentityProgress =
+  | { stage: "checking" | "authenticating" | "submitting" | "confirming" }
+  | { stage: "retrying"; error: string };
 
 /**
  * Messages posted by the main window to the WASM worker. These either control
@@ -60,6 +75,7 @@ export type MainToWorker =
       kind: "init";
       logLevel: LogLevel;
       hostConfig: unknown;
+      runtimeKind?: "pairing" | "signing";
       /**
        * Optional capabilities the main-thread host serves. The worker proxies
        * only these, so the core sees the same capability set on both sides of
@@ -70,7 +86,12 @@ export type MainToWorker =
       // frames to it. Null in production, so the host tap stays inert.
       debuggerUrl: string | null;
     }
-  | { kind: "createCore"; coreId: number; product: unknown }
+  | {
+      kind: "createCore";
+      coreId: number;
+      product: unknown;
+      capabilities?: OptionalCapabilities;
+    }
   | { kind: "disposeCore"; coreId: number }
   | { kind: "setLogLevel"; level: LogLevel }
   | { kind: "frame"; coreId: number; bytes: Uint8Array }
@@ -82,6 +103,24 @@ export type MainToWorker =
   | { kind: "activateStoredSession"; requestId: number }
   | { kind: "activateExternalSession"; requestId: number; blob: Uint8Array }
   | { kind: "resetSessionState"; requestId: number }
+  | {
+      kind: "activateLocalSession";
+      requestId: number;
+      secret: Uint8Array;
+    }
+  | {
+      kind: "activateLocalSessionWithIdentity";
+      requestId: number;
+      secret: Uint8Array;
+      liteUsername?: string;
+    }
+  | { kind: "refreshLocalIdentity"; requestId: number }
+  | {
+      kind: "registerLocalLiteUsername";
+      requestId: number;
+      baseUsername: string;
+      identityBackendBaseUrl: string;
+    }
   | {
       kind: "getPermissionAuthorizationStatus";
       productId: string;
@@ -139,6 +178,7 @@ export type MainToWorker =
   | { kind: "chainConnectAck"; connId: number; ok: true }
   | { kind: "chainConnectAck"; connId: number; ok: false; error: string }
   | { kind: "chainResponse"; connId: number; json: string }
+  | { kind: "chainClosed"; connId: number }
   | { kind: "dispose" };
 
 /**
@@ -178,6 +218,23 @@ export type WorkerToMain =
   | { kind: "sessionActivationResponse"; requestId: number; ok: true }
   | {
       kind: "sessionActivationResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
+      kind: "localIdentityProgress";
+      requestId: number;
+      progress: LocalIdentityProgress;
+    }
+  | {
+      kind: "localIdentityResponse";
+      requestId: number;
+      ok: true;
+      identity: LocalIdentity;
+    }
+  | {
+      kind: "localIdentityResponse";
       requestId: number;
       ok: false;
       error: string;
@@ -292,16 +349,24 @@ export type WorkerToMain =
   | {
       kind: "callbackRequest";
       requestId: number;
+      coreId?: number;
       name: CallbackName;
       args: CallbackArgs;
     }
   | {
       kind: "subscriptionStart";
       subId: number;
+      coreId?: number;
       name: SubscriptionName;
       payload: Uint8Array | string | null;
     }
   | { kind: "subscriptionStop"; subId: number }
   | { kind: "chainConnectStart"; connId: number; genesisHash: string }
+  | {
+      kind: "hopConnectStart";
+      connId: number;
+      genesisHash: string;
+      endpoint: string;
+    }
   | { kind: "chainSend"; connId: number; request: string }
   | { kind: "chainClose"; connId: number };

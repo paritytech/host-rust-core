@@ -29,6 +29,7 @@ use truapi::latest::{
     LegacyAccountTxPayload, ProductAccountTxPayload, RawPayload, RegisteredRingVrfKey,
     VrfSignature,
 };
+use truapi::v01;
 
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::pairing::{
@@ -268,6 +269,8 @@ pub enum SsoAllocatedResource {
         /// Entropy of the product's ring-VRF domain.
         ring_vrf_domain_entropy: [u8; 32],
     },
+    /// Product account was registered as the current Statement Store slot target.
+    ProductStatementStoreAllowance,
 }
 
 impl SsoAllocatedResource {
@@ -278,6 +281,7 @@ impl SsoAllocatedResource {
             Self::BulletinAllowance { .. } => "bulletin-allowance",
             Self::SmartContractAllowance => "smart-contract-allowance",
             Self::AutoSigning { .. } => "auto-signing",
+            Self::ProductStatementStoreAllowance => "product-statement-store-allowance",
         }
     }
 }
@@ -297,6 +301,22 @@ pub struct ProductSubtreeRequest {
 
 /// Account Holder response carrying a product subtree public key.
 pub type ProductSubtreeResponse = Result<[u8; 32], String>;
+/// Exact unsigned Statement Store payload to sign with a product-derived account.
+///
+/// The signing host validates the payload as canonical unsigned statement
+/// fields before signing, so this cannot become a generic signing oracle.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct StatementStoreProductSignRequest {
+    /// Product making the request.
+    pub calling_product_id: String,
+    /// Product account that signs the statement payload.
+    pub account: v01::ProductAccountId,
+    /// Exact unsigned statement fields, without their SCALE vector prefix.
+    pub payload: Vec<u8>,
+}
+
+/// Account Holder response carrying the product-account sr25519 signature.
+pub type StatementStoreProductSignResponse = Result<[u8; 64], String>;
 
 /// Request sent when a product asks the signing host to create a transaction
 /// for a product-derived account.
@@ -320,6 +340,20 @@ pub struct CreateTransactionWithLegacyAccountRequest {
     /// Transaction payload to build.
     pub payload: CreateTransactionLegacyPayload,
 }
+
+/// Host-owned Chat operations carried over encrypted SSO.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum SsoProductDeviceChatOperation {
+    /// The removed raw-crypto tags 0 through 5 are deliberately not accepted.
+    #[codec(index = 6)]
+    V2(truapi::latest::HostProductDeviceChatRequest),
+}
+
+/// Public Chat views and typed failures returned by the signing authority.
+pub type ProductDeviceChatResponse = Result<
+    truapi::versioned::account::HostProductDeviceChatResponse,
+    truapi::versioned::account::HostProductDeviceChatError,
+>;
 
 /// Versioned legacy transaction-creation payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -586,6 +620,7 @@ mod tests {
     use crate::host_logic::sso::wire::SsoRequest;
     use crate::host_logic::statement_store::{
         StatementField, build_signed_statement, decode_statement_data,
+        unsigned_statement_signing_payload,
     };
     use crate::test_support::sso_host_and_responder_sessions;
     use schnorrkel::{ExpansionMode, MiniSecretKey};
@@ -952,6 +987,103 @@ mod tests {
                 responding_to: "request".to_string(),
                 payload: Ok([0xAB; 32]),
             })
+        );
+    }
+
+    #[test]
+    fn product_device_chat_messages_preserve_typed_operations_and_failures() {
+        let chat_request = ProductRequest {
+            calling_product_id: "egui-chat.paseo".to_string(),
+            payload: SsoProductDeviceChatOperation::V2(
+                truapi::latest::HostProductDeviceChatRequest::SendPayment {
+                    peer_identity: [0x55; 32],
+                    request_id: "payment-one".to_string(),
+                    amount_cents: 19,
+                },
+            ),
+        };
+        let request = RemoteMessage::request("request".to_string(), chat_request);
+        let encoded_request = request.encode();
+        assert_eq!(encoded_request[9], 24);
+        assert_eq!(
+            RemoteMessage::decode(&mut encoded_request.as_slice()).unwrap(),
+            request
+        );
+
+        let product_response: ProductDeviceChatResponse =
+            Err(truapi::versioned::account::HostProductDeviceChatError::V1(
+                truapi::latest::HostProductDeviceChatError::OperationConflict,
+            ));
+        let response_envelope = Response {
+            responding_to: "request".to_string(),
+            payload: product_response,
+        };
+        let response = RemoteMessage {
+            message_id: "response".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductDeviceChatResponse(
+                response_envelope.clone(),
+            )),
+        };
+        let encoded_response = response.encode();
+        assert_eq!(encoded_response[10], 25);
+        assert_eq!(
+            RemoteMessage::decode(&mut encoded_response.as_slice()).unwrap(),
+            response
+        );
+        let RemoteMessageData::V1(data) = response.data;
+        assert_eq!(
+            ProductRequest::<SsoProductDeviceChatOperation>::response_from_message(data),
+            Some(response_envelope)
+        );
+    }
+
+    #[test]
+    fn product_device_chat_rejects_removed_raw_crypto_tags() {
+        for tag in 0..6u8 {
+            let mut legacy = vec![tag];
+            legacy.extend_from_slice(&[0; 256]);
+            assert!(SsoProductDeviceChatOperation::decode(&mut legacy.as_slice()).is_err());
+        }
+    }
+    #[test]
+    fn statement_store_product_sign_messages_pin_extension_wire_indices() {
+        let payload = unsigned_statement_signing_payload(vec![
+            StatementField::Data(vec![1, 2, 3]),
+            StatementField::Channel([0x44; 32]),
+        ])
+        .unwrap();
+        let request_payload = StatementStoreProductSignRequest {
+            calling_product_id: "egui-chat.paseo".to_string(),
+            account: ProductAccountId {
+                dot_ns_identifier: "egui-chat.paseo".to_string(),
+                derivation_index: DerivationIndex::Index(0),
+            },
+            payload,
+        };
+        let request = RemoteMessage::request("request".to_string(), request_payload);
+        let encoded_request = request.encode();
+        assert_eq!(encoded_request[9], 26);
+        assert_eq!(
+            RemoteMessage::decode(&mut encoded_request.as_slice()).unwrap(),
+            request
+        );
+
+        let response_envelope = Response {
+            responding_to: "request".to_string(),
+            payload: Ok([0xAB; 64]),
+        };
+        let response = RemoteMessage {
+            message_id: "response".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::StatementStoreProductSignResponse(
+                response_envelope.clone(),
+            )),
+        };
+        let encoded_response = response.encode();
+        assert_eq!(encoded_response[10], 27);
+        let RemoteMessageData::V1(data) = response.data;
+        assert_eq!(
+            StatementStoreProductSignRequest::response_from_message(data),
+            Some(response_envelope)
         );
     }
 
