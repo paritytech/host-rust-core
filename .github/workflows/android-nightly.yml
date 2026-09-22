@@ -51,6 +51,7 @@ jobs:
           app_id: ${{ secrets.ANDROID_FIREBASE_NIGHTLY_APP_ID }}
           groups: ${{ vars.ANDROID_FIREBASE_GROUP }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
 
   nightly:
     name: Build and publish
