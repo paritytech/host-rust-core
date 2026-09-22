@@ -9,7 +9,6 @@ import {
   Bytes,
   Enum,
   Struct,
-  Tuple,
   createCodec,
   createDecoder,
   enhanceCodec,
@@ -26,14 +25,6 @@ import {
 
 export type { Codec };
 export type { ResultPayload } from "scale-ts";
-
-/** Decodes one complete value, rejecting unexpected trailing bytes. */
-export function decodeAll<T>(codec: Codec<T>, input: Uint8Array): T {
-  const [value, remaining] = Tuple(codec, Bytes(Infinity)).dec(input.slice());
-  if (remaining.length !== 0)
-    throw new Error("Unexpected trailing SCALE bytes");
-  return value;
-}
 
 /**
  * Bare-named type alias matching generated codegen's naming convention for

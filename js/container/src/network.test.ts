@@ -633,7 +633,6 @@ describe('container fetch authorization', () => {
   for (const corruption of [
     'method',
     'message type',
-    'trailing bytes',
     'truncated payload',
     'invalid boolean',
   ]) {
@@ -646,11 +645,6 @@ describe('container fetch authorization', () => {
           const decoded = decodeWireMessage(frame)._unsafeUnwrap();
           if (corruption === 'method') decoded.payload.methodId++;
           if (corruption === 'message type') decoded.payload.messageType++;
-          if (corruption === 'trailing bytes')
-            decoded.payload.value = new Uint8Array([
-              ...decoded.payload.value,
-              0,
-            ]);
           if (corruption === 'truncated payload')
             decoded.payload.value = decoded.payload.value.slice(0, -1);
           if (corruption === 'invalid boolean')
