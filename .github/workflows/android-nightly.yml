@@ -5,20 +5,9 @@
 # equivalent, and it reaches a named tester group rather than anyone with the
 # link. That remains the channel for testers.
 #
-# This file previously said a public release asset was not an option, because
-# the build embeds configuration that should not be world readable. That is
-# worth re-examining rather than inheriting: paritytech/polkadot-android-community
-# has published `app-gp-nightly.apk` from the same `gp/nightly` flavour as a
-# public asset for weeks, and that APK already carries `google_api_key`,
-# `google_app_id`, `gcm_defaultSenderId`, `google_crash_reporting_api_key` and
-# `project_id` in its resources. If this build is no more sensitive than that
-# one, the asset adds no exposure. If it IS more sensitive, say so on the PR
-# and this step should go rather than ship.
-#
-# Why it is wanted: paritytech/triangle-e2e installs the nightly on an emulator
-# for the Android shard of its E2E matrix, and App Distribution gives it nothing
-# to download. The iOS shard already consumes `simulator-*` prereleases from
-# this repo; this is the Android mirror of that.
+# The asset exists because paritytech/triangle-e2e installs the nightly on an
+# emulator and App Distribution gives it nothing to download. Same shape as the
+# `simulator-*` prereleases its iOS shard already consumes from this repo.
 #
 # Authentication is federated. The job proves its identity with the run's OIDC
 # token and receives a short lived credential, so no long lived key for this
@@ -237,8 +226,7 @@ jobs:
           grep -v 'Download the release binary' "${out}" || true
           exit "${status}"
 
-      # Tag shape mirrors ios-nightly-simulator-release.yml so the two
-      # nightlies sort and read the same way in the release list.
+      # Tag shape mirrors ios-nightly-simulator-release.yml.
       - name: Compute release tag + name
         id: release-tag
         run: |
@@ -251,9 +239,7 @@ jobs:
             echo "name=Nightly Android ${DATE_NAME} UTC"
           } >> "$GITHUB_OUTPUT"
 
-      # Published under the name polkadot-android-community used, so a
-      # consumer that already resolves `app-gp-nightly.apk` needs no change
-      # beyond pointing at this repo.
+      # The name polkadot-android-community used, so consumers need no change.
       - name: Name the asset for consumers
         id: release-asset
         working-directory: hosts/android
@@ -273,12 +259,7 @@ jobs:
           name: ${{ steps.release-tag.outputs.name }}
           generate_release_notes: true
           body: |
-            Google-Play (`gp`) nightly APK built from commit `${{ github.sha }}`,
-            build `${{ steps.setup.outputs.build_id }}`. Same artifact the
-            Firebase App Distribution release above carries.
-
-            Consumed by https://github.com/paritytech/triangle-e2e for the
-            Android shard of the App Tests matrix — mirror of how
-            `polkadot-app-simulator.app.zip` feeds the iOS shard.
+            Google-Play (`gp`) nightly, build `${{ steps.setup.outputs.build_id }}`.
+            Same APK the Firebase release above carries.
           prerelease: true
           files: ${{ steps.release-asset.outputs.path }}
