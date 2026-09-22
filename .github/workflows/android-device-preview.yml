@@ -1,0 +1,201 @@
+# An installable APK, produced on demand rather than on every commit.
+#
+# Its own workflow rather than a job in ci.yml, because starting it needs the
+# `labeled` event and adding that to ci.yml would rerun every gate each time
+# any label changed.
+#
+# The artifact is attached to the run and nothing else. Unlike the iOS device
+# preview there is no provisioning to do: an Android debug build installs on
+# any phone that will accept it, so no device has to be registered anywhere.
+#
+# It builds the flavour that ships. The other flavour replaces Google auth,
+# Firebase auth, push and backup with stubs that return failure, so a preview
+# built from it cannot sign in and would read as the branch being broken. A
+# pull request from a fork cannot reach the configuration this needs, so it is
+# told that rather than handed a build that misleads.
+name: Android device preview
+
+on:
+  pull_request:
+    # `labeled` starts it. `synchronize` keeps it current once the label is on,
+    # so the APK follows the branch rather than pinning to whichever commit was
+    # the head when someone asked.
+    types: [labeled, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Installable APK
+    # Narrow on purpose. `labeled` fires for every label, so matching only on
+    # the label being present lets anything else being added, by a person or by
+    # labeler.yml, start a second run for the same commit that cancels the one
+    # already building.
+    if: >-
+      (github.event.action == 'labeled'
+       && github.event.label.name == 'android-device-build')
+      || (github.event.action == 'synchronize'
+          && contains(github.event.pull_request.labels.*.name, 'android-device-build'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The app tree pins the nightly its codegen runs under, because rustdoc's
+      # JSON format version moves with the toolchain. The value reaches an
+      # action input that is interpolated into a shell command, so it is
+      # constrained to the dated-nightly shape and to a single line.
+      - name: Read the pinned nightly
+        id: nightly
+        run: |
+          set -euo pipefail
+          toolchain="$(sed -n 's/^truapi\.rustNightly=//p' hosts/android/gradle.properties | head -n1)"
+          case "${toolchain}" in
+            nightly-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *)
+              echo "::error::truapi.rustNightly must be a dated nightly, got '${toolchain}'"
+              exit 1
+              ;;
+          esac
+          echo "toolchain=${toolchain}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # pinned nightly
+        with:
+          toolchain: ${{ steps.nightly.outputs.toolchain }}
+          components: rustfmt
+
+      # An APK carries the native core for every ABI it ships, so unlike the
+      # compile gate this build really does cross-compile.
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
+        with:
+          shared-key: host-android-bindings-gate
+          save-if: false
+
+      # The wrapper jar is a tracked binary and its distribution url is a
+      # tracked file, both editable by the pull request being built, and this
+      # job holds a signing key while it runs the result.
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # Two modes. With the shared configuration and signing key this builds the
+      # flavour that ships, signed the way every other build of it is signed, so
+      # a new APK installs over the last one. A pull request from a fork gets
+      # neither, because `pull_request` withholds secrets from forks, so it
+      # falls back to the flavour that carries no Firebase dependency, a
+      # placeholder Google config, and a key generated for this run. That build
+      # installs, but not over one signed by any other run.
+      - name: Decode the build inputs
+        id: prep
+        working-directory: hosts/android
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.CI_GITHUB_KEYSTORE_KEY_FILE }}
+          KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
+          KEYSTORE_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          present=0
+          for value in "${GOOGLE_SERVICES_JSON_BASE64}" "${KEYSTORE_BASE64}" \
+                       "${KEYSTORE_PASS}" "${KEYSTORE_ALIAS}" "${KEYSTORE_KEY_PASS}"; do
+            if [ -n "${value}" ]; then
+              present=$((present + 1))
+            fi
+          done
+
+          if [ "${present}" -eq 0 ]; then
+            echo "::error::A preview build needs the shared Android configuration and signing key. A pull request opened from a fork cannot reach them, so push the branch to this repository instead."
+            exit 1
+          fi
+          if [ "${present}" -ne 5 ]; then
+            echo "::error::Signing is partly configured, ${present} of 5 values are set. Set all five or none."
+            exit 1
+          fi
+
+          printf '%s' "${GOOGLE_SERVICES_JSON_BASE64}" | base64 --decode > app/google-services.json
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > develop_key.jks
+
+      # Configuration rather than credentials. The app tree reads each of these
+      # from the environment when local.properties does not carry it, so a
+      # preview build needs none of them provisioned. The application id is the
+      # exception: it has to match the Google configuration above.
+      - name: Build the APK
+        working-directory: hosts/android
+        env:
+          APPLICATION_ID: io.parity.polkadotapp
+          APPLICATION_NAME: Polkadot
+          CURRENCY_SYMBOL: DOT
+          FIRESTORE_DATABASE_ID: preview
+          GOOGLE_OAUTH_ID: preview
+          # Typed as a long, so a non-numeric placeholder is a compile error.
+          GOOGLE_PROJECT_ID: "0"
+          LOG_COLLECTION_EMAIL: preview@example.invalid
+          NIGHTLY_FUNDING_MNEMONIC: preview
+          PRIVACY_POLICY_URL: https://example.invalid/privacy
+          SENTRY_ORG: preview
+          SENTRY_PROJECT: preview
+          TERMS_OF_USE_URL: https://example.invalid/terms
+          CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
+          CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
+        run: ./gradlew assembleGpDebug --no-daemon
+
+      - name: Check exactly one APK came out, and that it is signed
+        id: package
+        working-directory: hosts/android
+        env:
+          COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          apks=("app/build/outputs/apk/gp/debug"/*.apk)
+          if [ ${#apks[@]} -ne 1 ]; then
+            echo "::error::Expected exactly one APK, found ${#apks[@]}"
+            exit 1
+          fi
+
+          # A build can produce an unsigned APK without failing, which then
+          # installs nowhere. Better to fail here than to hand someone a file
+          # that their phone refuses.
+          apksigner="$(ls -d "${ANDROID_HOME}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)"
+          if [ -z "${apksigner}" ]; then
+            echo "::error::No apksigner under ${ANDROID_HOME}/build-tools"
+            exit 1
+          fi
+          "${apksigner}" verify "${apks[0]}"
+
+          short="${COMMIT:0:9}"
+          mv "${apks[0]}" "polkadot-app-${short}.apk"
+          echo "short=${short}" >> "$GITHUB_OUTPUT"
+          echo "apk=hosts/android/polkadot-app-${short}.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-preview-pr-${{ github.event.pull_request.number }}
+          path: ${{ steps.package.outputs.apk }}
+          overwrite: true
+          retention-days: 5
+          if-no-files-found: error

@@ -18,7 +18,7 @@ use crate::subscription::Spawner;
 use crate::subscription::thread_per_subscription_spawner;
 
 use futures::Stream;
-use futures::stream::{self, BoxStream};
+use futures::stream::{self, BoxStream, StreamExt};
 use parity_scale_codec::{Decode, Encode};
 use schnorrkel::{ExpansionMode, MiniSecretKey};
 use truapi::v01;
@@ -30,9 +30,10 @@ use truapi_platform::{
     Features as PlatformFeatures, HostInfo, JsonRpcConnection, LocaleHost,
     Navigation as PlatformNavigation, Notifications as PlatformNotifications, PairingHostConfig,
     Permissions as PlatformPermissions, PlatformInfo, PreimageHost, ProductContext,
-    ProductStorage as PlatformProductStorage, ProductSubtreeReview, ResourceAllocationReview,
-    SignPayloadReview, SignRawReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
-    UserConfirmation, UserConfirmationReview,
+    ProductOperations as PlatformProductOperations, ProductStorage as PlatformProductStorage,
+    ProductSubtreeReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
+    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -75,7 +76,12 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 /// can exercise its delegation paths without pulling in a real backend.
 #[derive(Default)]
 pub(crate) struct StubPlatform {
+    pub(crate) device_permission_decisions:
+        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
+    pub(crate) device_permission_requests: Mutex<Vec<v01::HostDevicePermissionRequest>>,
     pub(crate) remote_permission_denied: bool,
+    pub(crate) remote_permission_decisions:
+        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
     /// Every `remote_permission` request, in order, so a test can assert which
     /// domains reached the prompt and that a stored grant suppresses a re-ask.
     pub(crate) remote_permission_requests: Arc<Mutex<Vec<v01::RemotePermissionRequest>>>,
@@ -89,6 +95,9 @@ pub(crate) struct StubPlatform {
     pub(crate) account_access_confirmed: bool,
     pub(crate) account_access_error: Option<&'static str>,
     pub(crate) account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
+    /// Permission answers retain their lifetime separately from action confirmations.
+    pub(crate) permission_confirmation_decisions:
+        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
     /// Inverted so the derived default (`false`) approves, matching the
     /// pre-consent behavior where a cold own-account resolve was not gated.
     pub(crate) product_subtree_denied: bool,
@@ -144,6 +153,10 @@ pub(crate) struct StubPlatform {
     /// Deliver the pairing success statement only through a snapshot
     /// query page; the live subscription stays silent.
     pub(crate) pairing_success_via_query: bool,
+    /// Acknowledge the pairing subscription and then publish nothing, the
+    /// shape a peer answering on a different SSO envelope presents: subscribed
+    /// to the topic, with no statement this host can open ever arriving.
+    pub(crate) pairing_silent_after_subscribe: bool,
     pub(crate) notification_id: v01::NotificationId,
     pub(crate) pushed_notifications: Arc<Mutex<Vec<v01::HostPushNotificationRequest>>>,
     pub(crate) cancelled_notifications: Arc<Mutex<Vec<v01::NotificationId>>>,
@@ -172,6 +185,9 @@ pub(crate) struct StubPlatform {
     /// asserts a lookup failed and a test that spends ten seconds proving it.
     pub(crate) chain_responses_end: bool,
     /// When true, `connect` stays pending forever.
+    /// Hold every core-storage read pending forever, standing in for a host
+    /// callback that is never answered.
+    pub(crate) core_storage_pending: bool,
     pub(crate) chain_connect_pending: bool,
     /// Set when a `chain_connect_pending` connect future is dropped.
     pub(crate) pending_connect_dropped: Arc<AtomicBool>,
@@ -179,6 +195,24 @@ pub(crate) struct StubPlatform {
     /// forged value to exercise the in-core integrity check.
     pub(crate) preimage_lookup_value: Option<Vec<u8>>,
     pub(crate) local_storage: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    /// Every product storage write that reached the platform, in order, so a
+    /// test can see which writes the core skipped.
+    pub(crate) local_storage_writes: Arc<Mutex<Vec<StorageWrite>>>,
+    /// Open `subscribe_storage` streams by namespaced key; `write` and
+    /// `clear` push each change to the matching ones.
+    pub(crate) storage_subscribers: Arc<Mutex<Vec<(String, StorageChangeSender)>>>,
+    /// Every `begin_operation` as `(product_id, label)`, in order. The
+    /// returned id is the call's 1-based position.
+    pub(crate) begun_operations: Arc<Mutex<Vec<(String, String)>>>,
+    /// Every `end_operation` as `(product_id, id)`, in order.
+    pub(crate) ended_operations: Arc<Mutex<Vec<(String, u32)>>>,
+    /// Held open by a test so `begin_operation` is still in flight while the
+    /// dispatch awaiting it goes away.
+    pub(crate) begin_operation_gate: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
+    /// When set, `end_operation` records the call and then fails with this
+    /// reason, standing in for a host that drops the operation and still
+    /// reports an error.
+    pub(crate) end_operation_error: Option<&'static str>,
     /// When set, product/core storage reads fail with this reason.
     pub(crate) local_storage_error: Option<&'static str>,
     /// When set, only `PermissionAuthorization` reads fail. Narrower than
@@ -186,6 +220,46 @@ pub(crate) struct StubPlatform {
     /// manifest cache to answer while the stored permission decision is
     /// unreadable cannot use the broad knob.
     pub(crate) permission_storage_error: Option<&'static str>,
+}
+
+/// One product storage write as the platform saw it: namespaced key and bytes.
+pub(crate) type StorageWrite = (String, Vec<u8>);
+
+/// Sender side of one stubbed storage subscription.
+pub(crate) type StorageChangeSender = futures::channel::mpsc::UnboundedSender<
+    Result<v01::HostLocalStorageChangeItem, v01::GenericError>,
+>;
+
+impl StubPlatform {
+    /// Fail every open subscription on `key`, as a host whose store broke
+    /// mid-stream would.
+    pub(crate) fn fail_storage_subscriptions(&self, key: &str, reason: &str) {
+        self.storage_subscribers
+            .lock()
+            .expect("storage subscribers mutex poisoned")
+            .retain(|(subscribed, tx)| {
+                subscribed != key
+                    || tx
+                        .unbounded_send(Err(v01::GenericError {
+                            reason: reason.to_string(),
+                        }))
+                        .is_ok()
+            });
+    }
+
+    fn push_storage_change(&self, key: &str, value: Option<Vec<u8>>) {
+        self.storage_subscribers
+            .lock()
+            .expect("storage subscribers mutex poisoned")
+            .retain(|(subscribed, tx)| {
+                subscribed != key
+                    || tx
+                        .unbounded_send(Ok(v01::HostLocalStorageChangeItem {
+                            value: value.clone(),
+                        }))
+                        .is_ok()
+            });
+    }
 }
 
 /// Scripted peer behavior for the recording connection's SSO exchange.
@@ -850,10 +924,15 @@ impl PlatformProductStorage for StubPlatform {
                 reason: reason.to_string(),
             });
         }
+        self.local_storage_writes
+            .lock()
+            .expect("local storage writes mutex poisoned")
+            .push((key.clone(), value.clone()));
         self.local_storage
             .lock()
             .expect("local storage mutex poisoned")
-            .insert(key, value);
+            .insert(key.clone(), value.clone());
+        self.push_storage_change(&key, Some(value));
         Ok(())
     }
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
@@ -866,7 +945,84 @@ impl PlatformProductStorage for StubPlatform {
             .lock()
             .expect("local storage mutex poisoned")
             .remove(&key);
+        self.push_storage_change(&key, None);
         Ok(())
+    }
+
+    fn subscribe_storage(
+        &self,
+        key: String,
+    ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        self.storage_subscribers
+            .lock()
+            .expect("storage subscribers mutex poisoned")
+            .push((key.clone(), tx));
+        let value = self
+            .local_storage
+            .lock()
+            .expect("local storage mutex poisoned")
+            .get(&key)
+            .cloned();
+        Box::pin(
+            stream::once(async move { Ok(v01::HostLocalStorageChangeItem { value }) }).chain(rx),
+        )
+    }
+}
+
+#[truapi_platform::async_trait]
+impl PlatformProductOperations for StubPlatform {
+    async fn begin_operation(
+        &self,
+        product: &ProductContext,
+        label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        let gate = self
+            .begin_operation_gate
+            .lock()
+            .expect("begin operation gate mutex poisoned")
+            .take();
+        if let Some(gate) = gate {
+            let _ = gate.await;
+        }
+        // The stub has no worker lifecycle to keep alive; it only records the
+        // call and hands back its position as the id.
+        let id = {
+            let mut begun = self
+                .begun_operations
+                .lock()
+                .expect("begun operations mutex poisoned");
+            begun.push((product.product_id.clone(), label));
+            begun.len() as u32
+        };
+        // The operation exists host-side from here on, so a test holding the
+        // gate keeps only the answer in flight.
+        let gate = self
+            .begin_operation_gate
+            .lock()
+            .expect("begin operation gate mutex poisoned")
+            .take();
+        if let Some(gate) = gate {
+            let _ = gate.await;
+        }
+        Ok(v01::HostWorkerBeginOperationResponse { id })
+    }
+
+    async fn end_operation(
+        &self,
+        product: &ProductContext,
+        id: u32,
+    ) -> Result<(), v01::HostWorkerOperationError> {
+        self.ended_operations
+            .lock()
+            .expect("ended operations mutex poisoned")
+            .push((product.product_id.clone(), id));
+        match self.end_operation_error {
+            Some(reason) => Err(v01::HostWorkerOperationError::Unknown {
+                reason: reason.to_string(),
+            }),
+            None => Ok(()),
+        }
     }
 }
 
@@ -876,6 +1032,9 @@ impl PlatformCoreStorage for StubPlatform {
         &self,
         key: CoreStorageKey,
     ) -> Result<Option<Vec<u8>>, v01::GenericError> {
+        if self.core_storage_pending {
+            futures::future::pending::<()>().await;
+        }
         if let CoreStorageKey::AuthSession = key {
             if let Some(reason) = self.session_error {
                 return Err(v01::GenericError {
@@ -1001,21 +1160,40 @@ impl PlatformNotifications for StubPlatform {
 impl PlatformPermissions for StubPlatform {
     async fn device_permission(
         &self,
-        _request: v01::HostDevicePermissionRequest,
-    ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
-        Ok(v01::HostDevicePermissionResponse { granted: true })
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        self.device_permission_requests
+            .lock()
+            .expect("device permission list mutex poisoned")
+            .push(request);
+        Ok(self
+            .device_permission_decisions
+            .lock()
+            .expect("device permission decisions mutex poisoned")
+            .pop_front()
+            .unwrap_or(truapi_platform::PermissionDecision::AllowAlways))
     }
 
     async fn remote_permission(
         &self,
         request: v01::RemotePermissionRequest,
-    ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         self.remote_permission_requests
             .lock()
             .expect("remote permission list mutex poisoned")
             .push(request);
-        Ok(v01::RemotePermissionResponse {
-            granted: !self.remote_permission_denied,
+        if let Some(decision) = self
+            .remote_permission_decisions
+            .lock()
+            .expect("remote permission decisions mutex poisoned")
+            .pop_front()
+        {
+            return Ok(decision);
+        }
+        Ok(if self.remote_permission_denied {
+            truapi_platform::PermissionDecision::Deny
+        } else {
+            truapi_platform::PermissionDecision::AllowAlways
         })
     }
 }
@@ -1050,6 +1228,7 @@ struct RecordingConnection {
     pairing_pending_response: bool,
     pairing_failure_response: bool,
     pairing_success_via_query: bool,
+    pairing_silent_after_subscribe: bool,
     chain_responses_end: bool,
 }
 
@@ -1192,6 +1371,21 @@ impl JsonRpcConnection for RecordingConnection {
             .push(request);
     }
     fn responses(&self) -> BoxStream<'static, String> {
+        if self.pairing_silent_after_subscribe {
+            let sent = self.sent.clone();
+            return Box::pin(stream::unfold(0, move |state| {
+                let sent = sent.clone();
+                async move {
+                    match state {
+                        0 => {
+                            let id = wait_for_statement_subscribe_id(sent.clone(), 0).await;
+                            Some((subscribe_ack_frame(&id, "pairing-sub"), 1))
+                        }
+                        _ => futures::future::pending().await,
+                    }
+                }
+            }));
+        }
         if self.pairing_success_via_query {
             let auth_states = self.auth_states.clone();
             let sent = self.sent.clone();
@@ -1536,6 +1730,7 @@ impl ChainProvider for StubPlatform {
             pairing_pending_response: self.pairing_pending_response,
             pairing_failure_response: self.pairing_failure_response,
             pairing_success_via_query: self.pairing_success_via_query,
+            pairing_silent_after_subscribe: self.pairing_silent_after_subscribe,
             chain_responses_end: self.chain_responses_end,
         }))
     }
@@ -1560,6 +1755,23 @@ impl AuthPresenter for StubPlatform {
 
 #[truapi_platform::async_trait]
 impl UserConfirmation for StubPlatform {
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        let confirmed = self.confirm_user_action(review).await?;
+        Ok(self
+            .permission_confirmation_decisions
+            .lock()
+            .expect("permission confirmation mutex poisoned")
+            .pop_front()
+            .unwrap_or(if confirmed {
+                truapi_platform::PermissionDecision::AllowAlways
+            } else {
+                truapi_platform::PermissionDecision::Deny
+            }))
+    }
+
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,

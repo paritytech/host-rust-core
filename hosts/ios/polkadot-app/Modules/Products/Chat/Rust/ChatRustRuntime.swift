@@ -59,19 +59,10 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
         guard !started, !disposed else { throw CancellationError() }
         started = true
 
-        let jsEngine = try await bootEngine()
-
+        let bootstrapScript = try executionModel.startBridge()
+        let scriptsFactory = RustRuntimeScriptsFactory(bootstrapScript: bootstrapScript)
+        let jsEngine = try await bootEngine(scripts: scriptsFactory.makeScripts())
         try checkNotDisposed()
-        let bootstrapScript = try await executionModel.startBridge()
-        let scriptsFactory = ChatRustRuntimeScriptsFactory(bootstrapScript: bootstrapScript)
-
-        // Factory order is load-bearing: the bootstrap publishes
-        // __truapi_localhost, then the container lockdown gates WebSocket to
-        // exactly that URL.
-        for script in try scriptsFactory.makeScripts() {
-            try checkNotDisposed()
-            try await jsEngine.evaluate(script)
-        }
 
         let modBridge = JSESModuleBridge(engine: jsEngine)
         await modBridge.install()
@@ -126,19 +117,21 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
 }
 
 private extension ChatRustRuntime {
-    func bootEngine() async throws -> JSEngineProtocol {
+    func bootEngine(scripts: [JSEngineScript]) async throws -> JSEngineProtocol {
         let jsEngine = engineFactory()
-        try await jsEngine.initialize()
-
-        guard await jsEngine.getState() == .ready else {
-            throw ScriptExecutorError.engineInitFailed
-        }
-
-        // Disposed while booting: dispose captured nil for the engine, so
-        // this start is the only owner left — destroy before bailing.
-        guard !disposed else {
+        do {
+            await jsEngine.registerJSDeviceCapabilityHandler(
+                executionModel.osPermissionAsker.makeDeviceCapabilityHandler()
+            )
+            try checkNotDisposed()
+            try await jsEngine.initialize(with: scripts)
+            guard await jsEngine.getState() == .ready else {
+                throw ScriptExecutorError.engineInitFailed
+            }
+            try checkNotDisposed()
+        } catch {
             await jsEngine.destroy()
-            throw CancellationError()
+            throw error
         }
 
         let monitor = JSEngineMonitor(

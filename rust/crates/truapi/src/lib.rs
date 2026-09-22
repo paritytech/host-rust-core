@@ -61,9 +61,9 @@ pub mod latest {
         HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
         HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
         HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
-        ImageFit, ImageProps, ImageSource, Modifier, NotificationId, OperationStartedResult,
-        PocketCard, ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey,
-        RemotePermission, RemoteStatementStoreCreateProofError,
+        HostWorkerOperationError, ImageFit, ImageProps, ImageSource, Modifier, NotificationId,
+        OperationId, OperationStartedResult, PocketCard, ProductAccountId, ProductProofContext,
+        RawPayload, RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
         RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
         RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
         RendererNode, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi,
@@ -141,6 +141,9 @@ pub mod latest {
     /// Product context bound to the current host runtime.
     pub type HostGetProductContextResponse =
         LatestOf<versioned::system::HostGetProductContextResponse>;
+    /// Storage key change pushed to a subscriber.
+    pub type HostLocalStorageChangeItem =
+        LatestOf<versioned::local_storage::HostLocalStorageChangeItem>;
     /// Local storage operation error.
     pub type HostLocalStorageReadError =
         LatestOf<versioned::local_storage::HostLocalStorageReadError>;
@@ -184,6 +187,9 @@ pub mod latest {
         LatestOf<versioned::signing::HostSignRawWithLegacyAccountRequest>;
     /// Current host theme pushed to subscribers.
     pub type HostThemeSubscribeItem = LatestOf<versioned::theme::HostThemeSubscribeItem>;
+    /// Result of beginning a worker pending operation.
+    pub type HostWorkerBeginOperationResponse =
+        LatestOf<versioned::worker::HostWorkerBeginOperationResponse>;
     /// Transaction creation payload for a legacy account.
     pub type LegacyAccountTxPayload =
         LatestOf<versioned::signing::HostCreateTransactionWithLegacyAccountRequest>;
@@ -246,6 +252,10 @@ pub enum CallError<D> {
         /// Diagnostic reason for the failure.
         reason: String,
     },
+    /// The caller withdrew the request before it produced a result.
+    ///
+    /// Appended last so the preceding variants keep their SCALE indices.
+    Cancelled,
 }
 
 impl<D> CallError<D> {
@@ -262,8 +272,8 @@ pub type FrameworkOnlyError = CallError<Infallible>;
 
 /// Cooperative cancellation token exposed to handlers.
 ///
-/// Current one-shot request frames have no cancel control message, so request
-/// tokens fire when a runtime explicitly cancels them or attaches a timeout.
+/// A request token fires when the peer sends a `Cancel` frame for the call,
+/// when a runtime explicitly cancels it, or when an attached timeout elapses.
 /// Subscription runtimes can cancel this token when the peer sends `_stop` or
 /// disconnects.
 #[derive(Clone, Default)]

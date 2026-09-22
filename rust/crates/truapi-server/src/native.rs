@@ -23,15 +23,16 @@ use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
     HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions, PlatformInfo,
-    PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
-    RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision, Permissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductExecutionKind, ProductOperations,
+    ProductStorage, RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 
 use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::{NavigateDecision, PocketDeeplinkAction};
+use crate::host_logic::permissions::TemporaryPermissions;
 use crate::host_logic::sso::messages::{
     RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
     decode_remote_message, v1,
@@ -415,6 +416,16 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
 }
 
+/// The bridge script a host injects into a product's web view, for the `port`
+/// and `token` a `WsBridgeEndpoint` carries.
+///
+/// Inject it at document start, before the product's own scripts and before the
+/// lockdown container, which reads the endpoint this publishes.
+#[uniffi::export]
+pub fn localhost_bridge_bootstrap_script(port: u16, token: String) -> String {
+    crate::bootstrap::script(&format!("ws://127.0.0.1:{port}/?t={token}"))
+}
+
 /// Whether `product_id` is a first-party product the host grants every
 /// [`truapi::latest::RemotePermission`] without prompting.
 ///
@@ -448,6 +459,7 @@ pub fn has_trusted_remote_permissions(product_id: String) -> bool {
 /// directly: an async callback method returning a type from another UniFFI
 /// namespace lowers into that namespace's `RustBuffer`, and the generated
 /// Kotlin then fails to compile. The conversion is total.
+/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum NativeDevicePermissionStatus {
     /// The OS grants this capability to the host application.
@@ -471,13 +483,36 @@ impl From<NativeDevicePermissionStatus> for truapi_platform::DevicePermissionSta
     }
 }
 
+/// Keeps async permission callbacks in this UniFFI namespace for the same
+/// Kotlin `RustBuffer` constraint as [`NativeDevicePermissionStatus`].
+/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativePermissionDecision {
+    /// Approves one operation in this execution.
+    AllowOnce,
+    /// Approves subsequent operations until the setting changes.
+    AllowAlways,
+    /// Refuses subsequent operations until the setting changes.
+    Deny,
+}
+
+impl From<NativePermissionDecision> for PermissionDecision {
+    fn from(decision: NativePermissionDecision) -> Self {
+        match decision {
+            NativePermissionDecision::AllowOnce => Self::AllowOnce,
+            NativePermissionDecision::AllowAlways => Self::AllowAlways,
+            NativePermissionDecision::Deny => Self::Deny,
+        }
+    }
+}
+
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback executes on the shared bridge
 /// executor's worker threads, and blocking one of those threads can stall
 /// the entire bridge — not just the request being served. Async callbacks
 /// (`navigate_to`, `push_notification`, `device_permission`,
-/// `remote_permission`, `feature_supported`, `confirm_user_action`,
+/// `remote_permission`, `feature_supported`, `confirm_user_action`, `confirm_permission`,
 /// `lookup_preimage`) are awaited by the core — implementations hop to the
 /// main thread for any UI and may keep the future pending arbitrarily long,
 /// but must suspend rather than block the polling thread (foreign
@@ -506,11 +541,11 @@ pub trait HostCallbacks: Send + Sync {
     fn cancel_notification(&self, id: u32) -> Result<(), HostRejection>;
 
     /// Prompt the user for a device-level permission (camera, mic, ...);
-    /// the host returns whether the permission was granted.
+    /// the host preserves whether approval applies once or always.
     async fn device_permission(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<bool, HostRejection>;
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Report the OS status of a device capability without prompting.
     ///
@@ -531,7 +566,7 @@ pub trait HostCallbacks: Send + Sync {
     async fn remote_permission(
         &self,
         request: v01::RemotePermission,
-    ) -> Result<bool, HostRejection>;
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Observe an auth state change, in transition order: render `Pairing` as
     /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
@@ -570,6 +605,12 @@ pub trait HostCallbacks: Send + Sync {
         &self,
         review: UserConfirmationReview,
     ) -> Result<bool, HostRejection>;
+
+    /// Preserve the lifetime of consent for identity and account disclosures.
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Look up one preimage value by key. The native shim emits this as the
     /// current item in its subscription stream.
@@ -617,6 +658,17 @@ pub trait HostCallbacks: Send + Sync {
     fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), HostStorageError>;
     /// Clear a value from the host's scoped key-value store.
     fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
+
+    /// Record a pending operation, whose id keeps the product's worker alive
+    /// until it ends.
+    async fn begin_operation(
+        &self,
+        product_id: String,
+        label: String,
+    ) -> Result<u32, HostRejection>;
+    /// End a pending operation. Idempotent: an unknown or already-ended id
+    /// succeeds, so a retry after an ambiguous failure is safe.
+    async fn end_operation(&self, product_id: String, id: u32) -> Result<(), HostRejection>;
 }
 
 /// Native Chat storage and UI adapter. Hosts that support the Chat modality
@@ -716,6 +768,7 @@ impl NativeTrUApiHostRuntime {
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: events.clone(),
         });
         let spawner = native_thread_pool_spawner(&callbacks);
         let runtime = Arc::new(SigningHostRuntime::new(
@@ -760,6 +813,7 @@ impl NativeTrUApiHostRuntime {
         let callback_platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: self.events.clone(),
         });
         let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
             callback_platform.clone();
@@ -785,6 +839,7 @@ impl NativeTrUApiHostRuntime {
             chat,
             pocket,
             permission_status,
+            permission_grants: Arc::new(TemporaryPermissions::default()),
             events,
             shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -1169,6 +1224,8 @@ pub struct NativeProductExecution {
     /// The same `CallbackPlatform` as `platform`, kept separately because
     /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
     permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
+    /// One-use grants follow this execution across its product and admin connections.
+    permission_grants: Arc<TemporaryPermissions>,
     events: Arc<NativeEventBus>,
     /// Host-runtime events back the process-wide services shared by every
     /// product execution (chain, Statement Store, and Bulletin). Native
@@ -1202,6 +1259,7 @@ impl NativeProductExecution {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
             permission_status: Some(self.permission_status.clone()),
+            permission_grants: self.permission_grants.clone(),
             chat: self.chat_connection.clone(),
             renderer: self.renderer_connection.clone(),
             pocket_platform: self.pocket.clone(),
@@ -1252,6 +1310,38 @@ impl NativeProductExecution {
 
 #[uniffi::export]
 impl NativeProductExecution {
+    /// Authorize one native operation using this execution's saved and one-use permissions.
+    pub async fn authorize_remote_permission(
+        &self,
+        request: truapi::latest::RemotePermissionRequest,
+    ) -> Result<bool, HostRejection> {
+        use truapi::api::Permissions;
+        use truapi::versioned::IntoLatest;
+
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostRejection::Rejected {
+                reason: "product execution is closed".to_string(),
+            });
+        }
+        let response = self
+            .admin()
+            .product_runtime()
+            .authorize_remote_permission(
+                &truapi::CallContext::default(),
+                truapi::versioned::permissions::RemotePermissionRequest::V1(request),
+            )
+            .await
+            .map_err(|error| HostRejection::Rejected {
+                reason: format!("{error:?}"),
+            })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostRejection::Rejected {
+                reason: "product execution is closed".to_string(),
+            });
+        }
+        Ok(response.into_latest().granted)
+    }
+
     /// Read a product-scoped permission authorization without prompting.
     ///
     /// A device capability resolves the host application's OS gate as well as
@@ -1325,6 +1415,14 @@ impl NativeProductExecution {
     /// Push a preimage lookup replacement to this execution's subscriptions.
     pub fn notify_preimage_changed(&self, key: Vec<u8>, value: Option<Vec<u8>>) {
         self.events.notify_preimage_changed(&key, value);
+    }
+
+    /// Push a host storage change to the product's subscriptions for `key`.
+    ///
+    /// Storage is one namespace per product rather than per execution, so this
+    /// reaches every execution of the product, not only this one.
+    pub fn notify_storage_changed(&self, key: String, value: Option<Vec<u8>>) {
+        self.shared_events.notify_storage_changed(&key, value);
     }
 
     /// Notify this execution's chain adapter of one JSON-RPC response.
@@ -1412,6 +1510,7 @@ impl NativeProductExecution {
         }
         #[cfg(feature = "ws-bridge")]
         self.stop_bridge();
+        self.permission_grants.clear();
         self.chat_connection.close();
         self.renderer_connection.close();
     }
@@ -1511,6 +1610,10 @@ fn native_thread_pool_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
 struct CallbackPlatform {
     callbacks: Arc<dyn HostCallbacks>,
     events: Arc<NativeEventBus>,
+    /// Storage changes are product-wide rather than per-execution: a worker
+    /// and the screen share one namespace, so they subscribe and publish on
+    /// the runtime-wide bus instead of this execution's own.
+    storage_events: Arc<NativeEventBus>,
 }
 
 impl crate::host_logic::worker::WorkerDemandObserver for CallbackPlatform {
@@ -1527,16 +1630,28 @@ struct NativeEventBus {
     locale_changes:
         Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostLocaleSubscribeItem, v01::GenericError>>>>,
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
-    chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
+    storage_changes: Mutex<Vec<StorageSubscription>>,
+    chain_events: Mutex<NativeChainEvents>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
     pocket_card_changes: Mutex<
         Vec<mpsc::UnboundedSender<Result<v01::HostPocketListSubscribeItem, v01::GenericError>>>,
     >,
 }
 
+#[derive(Default)]
+struct NativeChainEvents {
+    responses: HashMap<u32, mpsc::UnboundedSender<String>>,
+    early_close_generation: u64,
+}
+
 struct PreimageSubscription {
     key: Vec<u8>,
     tx: mpsc::UnboundedSender<Result<Option<Vec<u8>>, v01::GenericError>>,
+}
+
+struct StorageSubscription {
+    key: String,
+    tx: mpsc::UnboundedSender<Result<v01::HostLocalStorageChangeItem, v01::GenericError>>,
 }
 
 impl NativeEventBus {
@@ -1602,32 +1717,84 @@ impl NativeEventBus {
             });
     }
 
-    fn register_chain(&self, connection_id: u32) -> mpsc::UnboundedReceiver<String> {
+    fn subscribe_storage_changes(
+        &self,
+        key: String,
+    ) -> mpsc::UnboundedReceiver<Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
         let (tx, rx) = mpsc::unbounded();
-        self.chain_responses
+        self.storage_changes
             .lock()
-            .expect("native chain subscribers mutex poisoned")
-            .insert(connection_id, tx);
+            .expect("native storage subscribers mutex poisoned")
+            .push(StorageSubscription { key, tx });
         rx
     }
 
-    fn notify_chain_response(&self, connection_id: u32, json: String) {
-        let mut responses = self
-            .chain_responses
+    fn notify_storage_changed(&self, key: &str, value: Option<Vec<u8>>) {
+        let item = v01::HostLocalStorageChangeItem { value };
+        self.storage_changes
+            .lock()
+            .expect("native storage subscribers mutex poisoned")
+            .retain(|sub| {
+                if sub.key != key {
+                    return true;
+                }
+                sub.tx.unbounded_send(Ok(item.clone())).is_ok()
+            });
+    }
+
+    fn chain_close_generation(&self) -> u64 {
+        self.chain_events
+            .lock()
+            .expect("native chain subscribers mutex poisoned")
+            .early_close_generation
+    }
+
+    fn register_chain(
+        &self,
+        connection_id: u32,
+        close_generation: u64,
+    ) -> Option<mpsc::UnboundedReceiver<String>> {
+        let mut events = self
+            .chain_events
             .lock()
             .expect("native chain subscribers mutex poisoned");
-        let Some(tx) = responses.get(&connection_id) else {
+        if events.early_close_generation != close_generation {
+            return None;
+        }
+        let (tx, rx) = mpsc::unbounded();
+        events.responses.insert(connection_id, tx);
+        Some(rx)
+    }
+
+    fn notify_chain_response(&self, connection_id: u32, json: String) {
+        let mut events = self
+            .chain_events
+            .lock()
+            .expect("native chain subscribers mutex poisoned");
+        let Some(tx) = events.responses.get(&connection_id) else {
             return;
         };
         if tx.unbounded_send(json).is_err() {
-            responses.remove(&connection_id);
+            events.responses.remove(&connection_id);
         }
     }
 
     fn notify_chain_closed(&self, connection_id: u32) {
-        self.chain_responses
+        let mut events = self
+            .chain_events
+            .lock()
+            .expect("native chain subscribers mutex poisoned");
+        if events.responses.remove(&connection_id).is_none() {
+            // Native callbacks can close a connection before returning its ID.
+            events.early_close_generation = events.early_close_generation.wrapping_add(1);
+        }
+    }
+
+    fn unregister_chain(&self, connection_id: u32) {
+        self.chain_events
             .lock()
             .expect("native chain subscribers mutex poisoned")
+            .responses
             .remove(&connection_id);
     }
 
@@ -1758,35 +1925,33 @@ impl Permissions for CallbackPlatform {
     async fn device_permission(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
+    ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.device_permission".to_string(),
             format!("{request}"),
         );
 
-        let granted = self
-            .callbacks
+        self.callbacks
             .device_permission(request)
             .await
-            .map_err(v01::GenericError::from)?;
-        Ok(v01::HostDevicePermissionResponse { granted })
+            .map(Into::into)
+            .map_err(v01::GenericError::from)
     }
 
     async fn remote_permission(
         &self,
         request: v01::RemotePermissionRequest,
-    ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+    ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.remote_permission".to_string(),
             format!("{request}"),
         );
 
-        let granted = self
-            .callbacks
+        self.callbacks
             .remote_permission(request.permission)
             .await
-            .map_err(v01::GenericError::from)?;
-        Ok(v01::RemotePermissionResponse { granted })
+            .map(Into::into)
+            .map_err(v01::GenericError::from)
     }
 }
 
@@ -1833,12 +1998,72 @@ impl ProductStorage for CallbackPlatform {
         value: Vec<u8>,
     ) -> Result<(), v01::HostLocalStorageReadError> {
         self.callbacks
-            .local_storage_write(key, value)
-            .map_err(Into::into)
+            .local_storage_write(key.clone(), value.clone())
+            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.storage_events
+            .notify_storage_changed(&key, Some(value));
+        Ok(())
     }
 
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
-        self.callbacks.local_storage_clear(key).map_err(Into::into)
+        self.callbacks
+            .local_storage_clear(key.clone())
+            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.storage_events.notify_storage_changed(&key, None);
+        Ok(())
+    }
+
+    fn subscribe_storage(
+        &self,
+        key: String,
+    ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        // Subscribe before reading, so a change landing between the two repeats
+        // rather than being lost. The host pushes later changes via
+        // `notify_storage_changed`.
+        let rx = self.storage_events.subscribe_storage_changes(key.clone());
+        let callbacks = self.callbacks.clone();
+        let current = async move {
+            callbacks
+                .local_storage_read(key)
+                .map(|value| v01::HostLocalStorageChangeItem { value })
+                .map_err(|error| {
+                    let error: v01::HostLocalStorageReadError = error.into();
+                    v01::GenericError {
+                        reason: error.to_string(),
+                    }
+                })
+        };
+        stream::once(current).chain(rx).boxed()
+    }
+}
+
+#[async_trait]
+impl ProductOperations for CallbackPlatform {
+    async fn begin_operation(
+        &self,
+        product: &ProductContext,
+        label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        self.callbacks
+            .begin_operation(product.product_id.clone(), label)
+            .await
+            .map(|id| v01::HostWorkerBeginOperationResponse { id })
+            .map_err(|error| v01::HostWorkerOperationError::Unknown {
+                reason: error.to_string(),
+            })
+    }
+
+    async fn end_operation(
+        &self,
+        product: &ProductContext,
+        id: u32,
+    ) -> Result<(), v01::HostWorkerOperationError> {
+        self.callbacks
+            .end_operation(product.product_id.clone(), id)
+            .await
+            .map_err(|error| v01::HostWorkerOperationError::Unknown {
+                reason: error.to_string(),
+            })
     }
 }
 
@@ -1909,7 +2134,7 @@ impl JsonRpcConnection for NativeJsonRpcConnection {
         if self.closed.swap(true, Ordering::Relaxed) {
             return;
         }
-        self.events.notify_chain_closed(self.id);
+        self.events.unregister_chain(self.id);
         if let Err(err) = self.callbacks.chain_close(self.id) {
             self.callbacks.on_core_log(
                 "truapi.native.callback.chain_close_failed".to_string(),
@@ -1931,6 +2156,7 @@ impl ChainProvider for CallbackPlatform {
         &self,
         genesis_hash: [u8; 32],
     ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+        let close_generation = self.events.chain_close_generation();
         let Some(connection_id) = self
             .callbacks
             .chain_connect(genesis_hash.to_vec())
@@ -1940,14 +2166,21 @@ impl ChainProvider for CallbackPlatform {
                 reason: "chain provider unavailable".to_string(),
             });
         };
-        let response_rx = self.events.register_chain(connection_id);
-        Ok(Box::new(NativeJsonRpcConnection {
+        let response_rx = self.events.register_chain(connection_id, close_generation);
+        let registered = response_rx.is_some();
+        let connection = NativeJsonRpcConnection {
             id: connection_id,
             callbacks: self.callbacks.clone(),
             events: self.events.clone(),
-            response_rx: Mutex::new(Some(response_rx)),
+            response_rx: Mutex::new(response_rx),
             closed: AtomicBool::new(false),
-        }))
+        };
+        if !registered {
+            return Err(v01::GenericError {
+                reason: "chain connection closed during setup".to_string(),
+            });
+        }
+        Ok(Box::new(connection))
     }
 }
 
@@ -1963,6 +2196,21 @@ impl AuthPresenter for CallbackPlatform {
 
 #[async_trait]
 impl UserConfirmation for CallbackPlatform {
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<PermissionDecision, v01::GenericError> {
+        self.callbacks.on_core_log(
+            "truapi.native.callback.confirm_permission".to_string(),
+            String::new(),
+        );
+        self.callbacks
+            .confirm_permission(review)
+            .await
+            .map(PermissionDecision::from)
+            .map_err(v01::GenericError::from)
+    }
+
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,
@@ -2456,6 +2704,7 @@ mod tests {
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
+        on_chain_connect: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         chain_connects: Mutex<Vec<Vec<u8>>>,
         chain_sends: Mutex<Vec<(u32, String)>>,
         chain_closes: Mutex<Vec<u32>>,
@@ -2463,6 +2712,20 @@ mod tests {
         worker_demand: Mutex<Vec<(String, WorkerTransition)>>,
         /// Capability this host reports as refused by the OS, if any.
         os_refused: Option<v01::HostDevicePermissionRequest>,
+        /// Configurable prompt outcome for grant, denial, and callback failure tests.
+        remote_permission_result: Result<NativePermissionDecision, HostRejection>,
+        remote_permission_reply: Mutex<
+            Option<
+                futures::channel::oneshot::Receiver<
+                    Result<NativePermissionDecision, HostRejection>,
+                >,
+            >,
+        >,
+        core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+        /// Disclosure consent is distinct from boolean action confirmation.
+        permission_confirmation_result: NativePermissionDecision,
+        /// Counts prompts across the execution's separate connections.
+        remote_permission_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl EventCallbacks {
@@ -2496,11 +2759,17 @@ mod tests {
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
                 chain_id: Mutex::new(None),
+                on_chain_connect: Mutex::new(None),
                 chain_connects: Mutex::new(Vec::new()),
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
                 worker_demand: Mutex::new(Vec::new()),
                 os_refused: None,
+                remote_permission_result: Ok(NativePermissionDecision::Deny),
+                remote_permission_reply: Mutex::new(None),
+                core_storage: Mutex::default(),
+                permission_confirmation_result: NativePermissionDecision::Deny,
+                remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
     }
@@ -2531,8 +2800,8 @@ mod tests {
         async fn device_permission(
             &self,
             _request: v01::HostDevicePermissionRequest,
-        ) -> Result<bool, HostRejection> {
-            Ok(false)
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            Ok(NativePermissionDecision::Deny)
         }
         async fn device_permission_status(
             &self,
@@ -2547,8 +2816,13 @@ mod tests {
         async fn remote_permission(
             &self,
             _request: v01::RemotePermission,
-        ) -> Result<bool, HostRejection> {
-            Ok(false)
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            self.remote_permission_calls.fetch_add(1, Ordering::SeqCst);
+            let reply = self.remote_permission_reply.lock().unwrap().take();
+            match reply {
+                Some(reply) => reply.await.unwrap(),
+                None => self.remote_permission_result.clone(),
+            }
         }
         fn auth_state_changed(&self, state: AuthState) {
             self.auth_states
@@ -2556,13 +2830,15 @@ mod tests {
                 .expect("auth state mutex poisoned")
                 .push(state);
         }
-        fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
-            Ok(None)
+        fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            Ok(self.core_storage.lock().unwrap().get(&key).cloned())
         }
-        fn core_storage_write(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<(), HostRejection> {
+        fn core_storage_write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), HostRejection> {
+            self.core_storage.lock().unwrap().insert(key, value);
             Ok(())
         }
-        fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
+        fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection> {
+            self.core_storage.lock().unwrap().remove(&key);
             Ok(())
         }
         fn chain_connect(&self, genesis_hash: Vec<u8>) -> Result<Option<u32>, HostRejection> {
@@ -2570,6 +2846,10 @@ mod tests {
                 .lock()
                 .expect("chain connects mutex poisoned")
                 .push(genesis_hash);
+            let on_connect = self.on_chain_connect.lock().unwrap().take();
+            if let Some(on_connect) = on_connect {
+                on_connect();
+            }
             Ok(*self.chain_id.lock().expect("chain id mutex poisoned"))
         }
         fn chain_send(&self, connection_id: u32, request: String) -> Result<(), HostRejection> {
@@ -2591,6 +2871,12 @@ mod tests {
             _review: UserConfirmationReview,
         ) -> Result<bool, HostRejection> {
             Ok(false)
+        }
+        async fn confirm_permission(
+            &self,
+            _review: UserConfirmationReview,
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            Ok(self.permission_confirmation_result)
         }
         async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
             Ok(self
@@ -2630,6 +2916,16 @@ mod tests {
             Ok(())
         }
         fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+            Ok(())
+        }
+        async fn begin_operation(
+            &self,
+            _product_id: String,
+            _label: String,
+        ) -> Result<u32, HostRejection> {
+            Ok(1)
+        }
+        async fn end_operation(&self, _product_id: String, _id: u32) -> Result<(), HostRejection> {
             Ok(())
         }
     }
@@ -2755,8 +3051,114 @@ mod tests {
         let platform = CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: events.clone(),
         };
         (callbacks, events, platform)
+    }
+
+    #[test]
+    fn a_product_write_reaches_a_storage_subscription_on_the_same_key() {
+        let (_callbacks, _events, platform) = event_platform();
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = platform.subscribe_storage(key.clone());
+
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        futures::executor::block_on(ProductStorage::write(&platform, key, vec![1, 2, 3]))
+            .expect("write");
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![1, 2, 3]),
+            }))),
+            "a write the product made is a change its own subscribers must see"
+        );
+    }
+
+    #[test]
+    fn a_worker_write_reaches_a_storage_subscription_in_the_products_other_execution() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
+            .expect("host runtime config should be valid");
+        let screen = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::App),
+            )
+            .expect("open app execution");
+        let worker = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::Worker),
+            )
+            .expect("open worker execution");
+
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = screen.platform.subscribe_storage(key.clone());
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        futures::executor::block_on(worker.platform.write(key, vec![9])).expect("write");
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![9]),
+            }))),
+            "the screen and the worker share one storage namespace, so a write in one \
+             reaches a subscription in the other"
+        );
+    }
+
+    #[test]
+    fn a_host_pushed_storage_change_reaches_the_products_subscription() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
+            .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::App),
+            )
+            .expect("open app execution");
+
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = execution.platform.subscribe_storage(key.clone());
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        execution.notify_storage_changed(key, Some(vec![7]));
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![7]),
+            }))),
+            "a change the host made itself still reaches the product"
+        );
     }
 
     fn native_host_runtime_config() -> NativeHostRuntimeConfig {
@@ -3058,6 +3460,7 @@ mod tests {
                 chat_public_key: None,
                 device_enc_public_key: None,
                 peer_statement_account_id: None,
+                device_statement_account_id: None,
                 lite_username: Some("alice".to_string()),
                 full_username: None,
             },
@@ -3080,6 +3483,7 @@ mod tests {
                     chat_public_key: None,
                     device_enc_public_key: None,
                     peer_statement_account_id: None,
+                    device_statement_account_id: None,
                     lite_username: Some("alice".to_string()),
                     full_username: None,
                 }),
@@ -3672,6 +4076,68 @@ mod tests {
     }
 
     #[test]
+    fn native_chain_provider_rejects_an_early_close_and_allows_a_later_retry() {
+        let (callbacks, events, platform) = event_platform();
+        *callbacks.chain_id.lock().unwrap() = Some(42);
+        let closing_events = events.clone();
+        *callbacks.on_chain_connect.lock().unwrap() = Some(Box::new(move || {
+            closing_events.notify_chain_closed(42);
+        }));
+
+        let closed = futures::executor::block_on(ChainProvider::connect(&platform, [9; 32]));
+        assert_eq!(
+            closed.map(|_| ()),
+            Err(v01::GenericError {
+                reason: "chain connection closed during setup".to_string(),
+            })
+        );
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![42]);
+
+        *callbacks.chain_id.lock().unwrap() = Some(43);
+        let connection =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut responses = connection.responses();
+        events.notify_chain_response(43, "after retry".to_string());
+        assert_eq!(
+            futures::executor::block_on(responses.next()),
+            Some("after retry".to_string())
+        );
+        events.notify_chain_closed(43);
+        assert_eq!(futures::executor::block_on(responses.next()), None);
+        drop(connection);
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![42, 43]);
+    }
+
+    #[test]
+    fn native_chain_provider_keeps_new_setup_when_an_active_connection_closes() {
+        let (callbacks, events, platform) = event_platform();
+        *callbacks.chain_id.lock().unwrap() = Some(41);
+        let previous =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut previous_responses = previous.responses();
+        *callbacks.chain_id.lock().unwrap() = Some(42);
+        let closing_events = events.clone();
+        *callbacks.on_chain_connect.lock().unwrap() = Some(Box::new(move || {
+            closing_events.notify_chain_closed(41);
+            previous.close();
+        }));
+
+        let connection =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut responses = connection.responses();
+        events.notify_chain_response(42, "new connection".to_string());
+        assert_eq!(
+            (
+                futures::executor::block_on(previous_responses.next()),
+                futures::executor::block_on(responses.next()),
+            ),
+            (None, Some("new connection".to_string()))
+        );
+        drop(connection);
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![41, 42]);
+    }
+
+    #[test]
     fn native_chain_provider_forwards_send_response_and_close() {
         let (callbacks, events, platform) = event_platform();
         *callbacks.chain_id.lock().expect("chain id mutex poisoned") = Some(42);
@@ -3728,8 +4194,8 @@ mod tests {
                 native_execution_config("chain.dot", ProductExecutionKind::App),
             )
             .expect("App execution should open");
-        let mut shared_responses = host.events.register_chain(41);
-        let mut scoped_responses = execution.events.register_chain(41);
+        let mut shared_responses = host.events.register_chain(41, 0).unwrap();
+        let mut scoped_responses = execution.events.register_chain(41, 0).unwrap();
         let response = r#"{"jsonrpc":"2.0","id":"truapi:1","result":true}"#.to_string();
 
         execution.notify_chain_response(41, response.clone());
@@ -3884,6 +4350,13 @@ mod tests {
         struct Noop;
         #[async_trait::async_trait]
         impl HostCallbacks for Noop {
+            async fn confirm_permission(
+                &self,
+                _review: UserConfirmationReview,
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
+            }
+
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
@@ -3901,8 +4374,8 @@ mod tests {
             async fn device_permission(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             async fn device_permission_status(
                 &self,
@@ -3913,8 +4386,8 @@ mod tests {
             async fn remote_permission(
                 &self,
                 _request: v01::RemotePermission,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
             fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -3992,6 +4465,20 @@ mod tests {
                 Ok(())
             }
             fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+                Ok(())
+            }
+            async fn begin_operation(
+                &self,
+                _product_id: String,
+                _label: String,
+            ) -> Result<u32, HostRejection> {
+                Ok(1)
+            }
+            async fn end_operation(
+                &self,
+                _product_id: String,
+                _id: u32,
+            ) -> Result<(), HostRejection> {
                 Ok(())
             }
         }
@@ -4030,6 +4517,13 @@ mod tests {
 
         #[async_trait::async_trait]
         impl HostCallbacks for GatedPermissionCallbacks {
+            async fn confirm_permission(
+                &self,
+                _review: UserConfirmationReview,
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
+            }
+
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
@@ -4047,7 +4541,7 @@ mod tests {
             async fn device_permission(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<bool, HostRejection> {
+            ) -> Result<NativePermissionDecision, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
                 self.release
                     .lock()
@@ -4055,7 +4549,7 @@ mod tests {
                     .recv()
                     .await
                     .expect("release signal");
-                Ok(true)
+                Ok(NativePermissionDecision::AllowAlways)
             }
             async fn device_permission_status(
                 &self,
@@ -4066,8 +4560,8 @@ mod tests {
             async fn remote_permission(
                 &self,
                 _request: v01::RemotePermission,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
             fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -4145,6 +4639,20 @@ mod tests {
                 Ok(())
             }
             fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+                Ok(())
+            }
+            async fn begin_operation(
+                &self,
+                _product_id: String,
+                _label: String,
+            ) -> Result<u32, HostRejection> {
+                Ok(1)
+            }
+            async fn end_operation(
+                &self,
+                _product_id: String,
+                _id: u32,
+            ) -> Result<(), HostRejection> {
                 Ok(())
             }
         }
@@ -4663,6 +5171,291 @@ mod tests {
         )
         .expect("review must lift back");
         assert_eq!(lifted, review);
+    }
+
+    #[test]
+    fn native_remote_authorization_uses_the_execution_permission_callback() {
+        for (answer, granted) in [
+            (Ok(NativePermissionDecision::AllowAlways), true),
+            (Ok(NativePermissionDecision::Deny), false),
+            (
+                Err(HostRejection::Rejected {
+                    reason: "permission UI unavailable".to_string(),
+                }),
+                false,
+            ),
+        ] {
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                Arc::new(EventCallbacks::new()),
+                native_host_runtime_config(),
+            )
+            .unwrap();
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_result: answer,
+                ..EventCallbacks::new()
+            });
+            let execution = host
+                .open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config("fetch.dot", ProductExecutionKind::App),
+                )
+                .unwrap();
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            let response =
+                futures::executor::block_on(execution.authorize_remote_permission(request))
+                    .unwrap();
+            assert_eq!(
+                (
+                    response,
+                    callbacks.remote_permission_calls.load(Ordering::SeqCst)
+                ),
+                (granted, 1),
+            );
+        }
+    }
+
+    #[test]
+    fn native_permission_confirmation_preserves_consent_lifetime() {
+        futures::executor::block_on(async {
+            for decision in [
+                NativePermissionDecision::AllowOnce,
+                NativePermissionDecision::AllowAlways,
+                NativePermissionDecision::Deny,
+            ] {
+                let platform = CallbackPlatform {
+                    callbacks: Arc::new(EventCallbacks {
+                        permission_confirmation_result: decision,
+                        ..EventCallbacks::new()
+                    }),
+                    events: Arc::default(),
+                    storage_events: Arc::default(),
+                };
+                let review = UserConfirmationReview::IdentityDisclosure(
+                    truapi_platform::IdentityDisclosureReview {
+                        product_id: "product.dot".to_string(),
+                    },
+                );
+                assert_eq!(
+                    (
+                        platform.confirm_permission(review.clone()).await.unwrap(),
+                        platform.confirm_user_action(review).await.unwrap(),
+                    ),
+                    (PermissionDecision::from(decision), false),
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn native_execution_shares_one_use_permissions_across_connections_only() {
+        use truapi::api::Permissions;
+
+        let callbacks = Arc::new(EventCallbacks {
+            remote_permission_result: Ok(NativePermissionDecision::AllowOnce),
+            ..EventCallbacks::new()
+        });
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            native_host_runtime_config(),
+        )
+        .unwrap();
+        let open = || {
+            host.open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("fetch.dot", ProductExecutionKind::App),
+            )
+            .unwrap()
+        };
+        let execution = open();
+        let other = open();
+        futures::executor::block_on(async {
+            let admin = execution.admin();
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            let context = truapi::CallContext::default();
+            let sdk_request = || {
+                admin.product_runtime().request_remote_permission(
+                    &context,
+                    truapi::versioned::permissions::RemotePermissionRequest::V1(request.clone()),
+                )
+            };
+            let granted = sdk_request().await.unwrap();
+            let permission = PermissionAuthorizationRequest::Remote(request.clone());
+            let other_status = other
+                .permission_authorization_status(permission.clone())
+                .await
+                .unwrap();
+            let consumed = execution
+                .authorize_remote_permission(request.clone())
+                .await
+                .unwrap();
+            let after_use = execution
+                .permission_authorization_status(permission.clone())
+                .await
+                .unwrap();
+            let prompts_after_use = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+            let next_operation = execution
+                .authorize_remote_permission(request.clone())
+                .await
+                .unwrap();
+            let other_operation = other
+                .authorize_remote_permission(request.clone())
+                .await
+                .unwrap();
+            let prompts_after_operations = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+            sdk_request().await.unwrap();
+            execution.shutdown();
+            let after_shutdown = admin
+                .permission_authorization_status(permission)
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    granted,
+                    other_status,
+                    consumed,
+                    after_use,
+                    prompts_after_use,
+                    next_operation,
+                    other_operation,
+                    prompts_after_operations,
+                    after_shutdown
+                ),
+                (
+                    truapi::versioned::permissions::RemotePermissionResponse::V1(
+                        truapi::latest::RemotePermissionResponse { granted: true },
+                    ),
+                    PermissionAuthorizationStatus::NotDetermined,
+                    true,
+                    PermissionAuthorizationStatus::NotDetermined,
+                    1,
+                    true,
+                    true,
+                    3,
+                    PermissionAuthorizationStatus::NotDetermined,
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn native_remote_authorization_reuses_stored_product_decisions() {
+        for (decision, granted) in [
+            (NativePermissionDecision::AllowAlways, true),
+            (NativePermissionDecision::Deny, false),
+        ] {
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_result: Ok(decision),
+                ..EventCallbacks::new()
+            });
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                callbacks.clone(),
+                native_host_runtime_config(),
+            )
+            .unwrap();
+            let open = |product_id| {
+                host.open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config(product_id, ProductExecutionKind::App),
+                )
+                .unwrap()
+            };
+            let first_execution = open("fetch.dot");
+            let next_execution = open("fetch.dot");
+            let other_product = open("other.dot");
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            futures::executor::block_on(async {
+                let first = first_execution
+                    .authorize_remote_permission(request.clone())
+                    .await
+                    .unwrap();
+                let next = next_execution
+                    .authorize_remote_permission(request.clone())
+                    .await
+                    .unwrap();
+                let prompts_for_product = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+                let other = other_product
+                    .authorize_remote_permission(request)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (
+                        first,
+                        next,
+                        prompts_for_product,
+                        other,
+                        callbacks.remote_permission_calls.load(Ordering::SeqCst),
+                    ),
+                    (granted, granted, 1, granted, 2),
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn native_remote_authorization_rejects_closed_and_closing_executions() {
+        for pending in [false, true] {
+            let (reply, response) = futures::channel::oneshot::channel();
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_reply: Mutex::new(Some(response)),
+                ..EventCallbacks::new()
+            });
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                callbacks.clone(),
+                native_host_runtime_config(),
+            )
+            .unwrap();
+            let execution = host
+                .open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config("fetch.dot", ProductExecutionKind::App),
+                )
+                .unwrap();
+            futures::executor::block_on(async {
+                let request = execution.authorize_remote_permission(
+                    truapi::latest::RemotePermissionRequest {
+                        permission: truapi::latest::RemotePermission::Remote {
+                            domains: vec!["api.example.com".to_string()],
+                        },
+                    },
+                );
+                futures::pin_mut!(request);
+                if pending {
+                    assert!(futures::poll!(&mut request).is_pending());
+                }
+                execution.shutdown();
+                reply.send(Ok(NativePermissionDecision::AllowOnce)).unwrap();
+                assert_eq!(
+                    (
+                        request.await.err().map(|error| error.to_string()),
+                        callbacks.remote_permission_calls.load(Ordering::SeqCst),
+                    ),
+                    (
+                        Some("product execution is closed".to_string()),
+                        usize::from(pending)
+                    ),
+                );
+            });
+        }
     }
 
     /// Drives the whole native chain for a status read: foreign callback,

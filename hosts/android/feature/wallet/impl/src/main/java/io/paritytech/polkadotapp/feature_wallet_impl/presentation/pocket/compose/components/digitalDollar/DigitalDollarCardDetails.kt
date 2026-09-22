@@ -22,6 +22,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
 import io.paritytech.polkadotapp.common.presentation.loading.onLoaded
 import io.paritytech.polkadotapp.common.utils.CurrencyConfig
@@ -248,7 +249,10 @@ private fun SendCashButton(
                 imageVector = NovaIcons.ArrowUpwards
             )
 
-            NovaText(stringResource(RCommon.string.pocket_digital_dollar_send_button, CurrencyConfig.symbol))
+            NovaText(
+                stringResource(RCommon.string.pocket_digital_dollar_send_button, CurrencyConfig.symbol)
+                    .withCurrencyTickerStyle(PolkadotTheme.typography.title.large)
+            )
         }
     }
 }
@@ -288,7 +292,6 @@ private fun DigitalDollarCardDetailsPreview() {
                         autoFundAvailable = true,
                         fundInProgress = false,
                         actionsEnabled = true,
-                        coinageWidgetsEnabled = true,
                         shareLogsEnabled = true,
                         detailsVisible = false,
                         keyVisible = false

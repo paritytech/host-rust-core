@@ -15,6 +15,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.utils.CurrencyConfig
 import io.paritytech.polkadotapp.design.components.bottomsheet.NovaBottomSheetSurface
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
@@ -64,7 +65,8 @@ fun IdDetailsBottomSheetContent(
             VerticalSpacer { small }
 
             NovaText(
-                text = stringResource(RCommon.string.pocket_id_share_subtitle, CurrencyConfig.symbol),
+                text = stringResource(RCommon.string.pocket_id_share_subtitle, CurrencyConfig.symbol)
+                    .withCurrencyTickerStyle(PolkadotTheme.typography.paragraph.large),
                 style = PolkadotTheme.typography.paragraph.large
             )
 

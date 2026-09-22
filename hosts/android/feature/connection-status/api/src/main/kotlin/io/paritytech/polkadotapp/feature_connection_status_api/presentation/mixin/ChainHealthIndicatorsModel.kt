@@ -1,8 +1,11 @@
 package io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin
 
 import androidx.compose.runtime.Immutable
+import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.ChainId
 import kotlinx.collections.immutable.ImmutableList
-import kotlin.time.Instant
+import kotlin.math.roundToLong
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 
 enum class ChainGlyph {
     People,
@@ -10,31 +13,63 @@ enum class ChainGlyph {
     Bulletin,
 }
 
+/** The share of its expected blocks a connected chain produced, and the block interval that share implies. */
+data class ChainLiveness(
+    val share: Float,
+    val blockInterval: Duration,
+)
+
 /**
- * What one chain's indicator draws, in the priority the health rules give them: connectivity first,
- * then block production, then connection speed; [Healthy] only when none of them has anything to say.
+ * What one chain's indicator draws, in the priority the health rules give them: the connection first, then
+ * block production. [Healthy] is a connected chain producing at least [HEALTHY_SHARE] of its expected blocks.
  */
 sealed interface ChainHealthIndicator {
-    data object Healthy : ChainHealthIndicator
+    /** [liveness] is null while the chain is connected but not yet measured. */
+    data class Healthy(val liveness: ChainLiveness?) : ChainHealthIndicator
 
+    /** Connected and short of blocks: the ring fills to the share, always above zero and below [HEALTHY_SHARE]. */
+    data class Production(val liveness: ChainLiveness) : ChainHealthIndicator {
+        val band: ProductionBand
+            get() = ProductionBand.of(liveness.share)
+    }
+
+    /** Connected and produced nothing across the window. */
     data object Outage : ChainHealthIndicator
-
-    /** [arc] is the share of the ring the indicator fills; it travels inside the [speed] band's quarter. */
-    data class ConnectionSpeed(
-        val speed: Speed,
-        val arc: Float,
-    ) : ChainHealthIndicator
 
     data object Connecting : ChainHealthIndicator
 
-    /** No node responding, a connected node that no longer answers, or a device with no internet. */
+    /** No node responding, or a connected node that no longer answers. */
     data object Disconnected : ChainHealthIndicator
 
-    /** How far the chain has fallen from a speed that needs no comment; the band above these is [Healthy]. */
-    enum class Speed {
-        Good,
-        Fair,
-        Low,
+    /** The device has no network. Drawn as [Disconnected] but named for the cause, not the chain. */
+    data object Offline : ChainHealthIndicator
+
+    companion object {
+        /** Five sixths of the expected blocks; strictly below it the arc shows. */
+        const val HEALTHY_SHARE = 5f / 6f
+
+        /** The indicator for a connected chain from its production [share], null while unmeasured. */
+        fun of(share: Float?, expectedBlockTime: Duration): ChainHealthIndicator = when {
+            share == null -> Healthy(liveness = null)
+            share <= 0f -> Outage
+            else -> {
+                val interval = (expectedBlockTime.inWholeMilliseconds / share).roundToLong().milliseconds
+                val liveness = ChainLiveness(share = share, blockInterval = interval)
+                if (share >= HEALTHY_SHARE) Healthy(liveness) else Production(liveness)
+            }
+        }
+    }
+}
+
+/** Colour of a production arc. Each band starts at its [floor] share and runs up to the next band's. */
+enum class ProductionBand(val floor: Float) {
+    Error(0f),
+    Warning(0.25f),
+    Plain(0.5f),
+    ;
+
+    companion object {
+        fun of(share: Float): ProductionBand = entries.last { share >= it.floor }
     }
 }
 
@@ -45,9 +80,8 @@ data class ChainHealthIndicatorsModel(
 
 @Immutable
 data class ChainHealthItemModel(
+    val chainId: ChainId,
     val chainName: String,
     val glyph: ChainGlyph,
     val indicator: ChainHealthIndicator,
-    /** When the last block landed. The view ages it on its own tick, so a stalled chain keeps counting. */
-    val lastBlockAt: Instant?,
 )

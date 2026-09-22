@@ -4,6 +4,7 @@ import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.IN_BEST
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUBMISSION
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -70,6 +71,53 @@ class SystemScenariosTest {
 
         assertEquals(FINALIZED_SUCCESS, statusOf(first))
         assertEquals(FINALIZED_SUCCESS, statusOf(second))
+    }
+
+    /**
+     * A chat payment is saved with its split scheduled, and the app dies before the split is built.
+     * On the next launch the split is built and submitted, without anything having to schedule it again.
+     */
+    @Test
+    fun `a crash between scheduling and building resumes on relaunch`() = scenario {
+        mintCoinsOnChain(COIN_A, finality = FINALIZED)
+        val policy = givenSubmissionPolicy(PolicyBehaviour.BUILD)
+        val id = scheduleRetriable(inputCoin = COIN_A, COIN_B)
+
+        crash()
+        assertEquals(PENDING_SUBMISSION, statusOf(id))
+        assertTrue("nothing may have been built before the crash", policy.prepared.isEmpty())
+
+        startExecutor()
+        releaseSubmissions()
+
+        assertEquals(PENDING, statusOf(id))
+        assertEquals(1, submissionCount)
+        assertEquals(PENDING, assetStateOf(COIN_A).consumerStatus)
+    }
+
+    /**
+     * A split's window closes with the coin it spends still on chain, so it never ran.
+     * It is rebuilt: the same entry, the same input, the same coins out — nothing new is minted.
+     */
+    @Test
+    fun `a failed split is rebuilt with the same outputs`() = scenario {
+        disableFallbackTxSearch()
+        mintCoinsOnChain(COIN_A, finality = FINALIZED)
+        val policy = givenSubmissionPolicy(PolicyBehaviour.BUILD)
+        val id = registerRetriable(inputCoin = COIN_A, COIN_B, COIN_C)
+        val outputsBefore = ledger.coinage.assetsOf(listOf(id)).getOrThrow().getValue(id).outputs
+        releaseSubmissions()
+
+        chainReachesMortalityOf(id, finality = FINALIZED)
+        runPass()
+        releaseSubmissions()
+
+        assertEquals(PENDING, statusOf(id))
+        assertEquals(listOf(listOf(id)), policy.prepared)
+        assertEquals(outputsBefore, ledger.coinage.assetsOf(listOf(id)).getOrThrow().getValue(id).outputs)
+        assertEquals("no second entry mints the split's coins", 1, ledger.entries().size)
+        assertEquals(PENDING, assetStateOf(COIN_B).minterStatus)
+        assertEquals(PENDING, assetStateOf(COIN_C).minterStatus)
     }
 
     @Test

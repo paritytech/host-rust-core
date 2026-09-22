@@ -14,17 +14,17 @@ import {
   HostChatRegisterBotRequest,
   HostChatRegisterBotResponse,
   HostDevicePermissionRequest,
-  HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostLocalStorageChangeItem,
   HostLocaleSubscribeItem,
   HostPocketListSubscribeItem,
   HostPocketRemoveCardRequest,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
+  HostWorkerBeginOperationResponse,
   RemotePermissionRequest,
-  RemotePermissionResponse,
 } from "@parity/truapi";
 import type { GenericError, NotificationId } from "@parity/truapi";
 import {
@@ -32,6 +32,7 @@ import {
   CoreStorageKey,
   DevicePermissionStatus,
   HostChainSet,
+  PermissionDecision,
   ProductContext,
   UserConfirmationReview,
 } from "./host-callbacks.js";
@@ -91,13 +92,21 @@ export interface RawCallbacks {
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  beginOperation(product: Uint8Array, label: string): Promise<Uint8Array>;
+  endOperation(product: Uint8Array, id: number): Promise<void>;
   read(key: string): Promise<Uint8Array | null | undefined>;
   write(key: string, value: Uint8Array): Promise<void>;
   clear(key: string): Promise<void>;
+  subscribeStorage(
+    key: string,
+    sendItem: (item?: Uint8Array) => void,
+    sendError: (error: GenericError) => void,
+  ): (() => void) | void;
   subscribeTheme(
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  confirmPermission(review: Uint8Array): Promise<Uint8Array>;
   confirmUserAction(review: Uint8Array): Promise<boolean>;
 }
 /** Adapt typed host callbacks into the raw SCALE callback surface the
@@ -186,13 +195,13 @@ export function createWasmRawCallbacks(
         }
       : {}),
     devicePermission: async (request) =>
-      HostDevicePermissionResponse.enc(
+      PermissionDecision.enc(
         await callbacks.permissions.devicePermission(
           HostDevicePermissionRequest.dec(request),
         ),
       ),
     remotePermission: async (request) =>
-      RemotePermissionResponse.enc(
+      PermissionDecision.enc(
         await callbacks.permissions.remotePermission(
           RemotePermissionRequest.dec(request),
         ),
@@ -218,15 +227,39 @@ export function createWasmRawCallbacks(
         sendItem,
         sendError,
       ),
+    beginOperation: async (product, label) =>
+      HostWorkerBeginOperationResponse.enc(
+        await callbacks.productOperations.beginOperation(
+          ProductContext.dec(product),
+          label,
+        ),
+      ),
+    endOperation: async (product, id) =>
+      await callbacks.productOperations.endOperation(
+        ProductContext.dec(product),
+        id,
+      ),
     read: async (key) => await callbacks.productStorage.read(key),
     write: async (key, value) =>
       await callbacks.productStorage.write(key, value),
     clear: async (key) => await callbacks.productStorage.clear(key),
+    subscribeStorage: (key, sendItem, sendError) =>
+      driveResultStream(
+        callbacks.productStorage.subscribeStorage(key),
+        (item) => sendItem(HostLocalStorageChangeItem.enc(item)),
+        sendError,
+      ),
     subscribeTheme: (sendItem, sendError) =>
       driveResultStream(
         callbacks.theme.subscribeTheme(),
         (item) => sendItem(HostThemeSubscribeItem.enc(item)),
         sendError,
+      ),
+    confirmPermission: async (review) =>
+      PermissionDecision.enc(
+        await callbacks.userConfirmation.confirmPermission(
+          UserConfirmationReview.dec(review),
+        ),
       ),
     confirmUserAction: async (review) =>
       await callbacks.userConfirmation.confirmUserAction(

@@ -22,20 +22,17 @@ struct RustRuntimeEnvironment {
     struct ExecutionModel {
         let execution: TrUAPIProductExecutionProtocol
         let chainConnections: TrUAPIChainConnecting
+        let osPermissionAsker: OSPermissionAsking
 
         /// Start the localhost ws-bridge and return the bootstrap script to
         /// inject. Called from the runtime's `start`; opening the execution
         /// (``makeSPAExecution``/``makeChatExecution``) stays side-effect free.
         /// The local session is activated once on the shared runtime, not here.
-        func startBridge() async throws -> String {
-            let webRtcAllowed = try await execution.permissionAuthorizationStatus(
-                request: .remote(RemotePermissionRequest(permission: .webRtc))
-            ) == .authorized
+        func startBridge() throws -> String {
             let endpoint = try execution.startWsBridge(bindPort: 0)
             return LocalhostBridgeBootstrap.script(
                 port: endpoint.port,
-                token: endpoint.token,
-                webRtcAllowed: webRtcAllowed
+                token: endpoint.token
             )
         }
     }
@@ -71,10 +68,12 @@ private extension RustRuntimeEnvironment {
             logger: logger
         )
 
+        let osPermissionAsker = OSPermissionAsker()
         let bridge = RustProductExecutionBridge(dependencies: makeBridgeDependencies(
             productId: productId,
             routers: routers,
-            chainConnections: chainConnections
+            chainConnections: chainConnections,
+            osPermissionAsker: osPermissionAsker
         ))
 
         let execution = try runtime.openProductExecution(
@@ -85,20 +84,27 @@ private extension RustRuntimeEnvironment {
 
         bridge.attach(execution)
 
-        return ExecutionModel(execution: execution, chainConnections: chainConnections)
+        return ExecutionModel(
+            execution: execution,
+            chainConnections: chainConnections,
+            osPermissionAsker: osPermissionAsker
+        )
     }
 
     func makeBridgeDependencies(
         productId: ProductId,
         routers: ProductRoutersFacadeProtocol,
-        chainConnections: TrUAPIChainConnecting
+        chainConnections: TrUAPIChainConnecting,
+        osPermissionAsker: OSPermissionAsking
     ) -> RustProductExecutionBridge.Dependencies {
         RustProductExecutionBridge.Dependencies(
             productId: productId,
             permissionGuard: ProductPermissionGuard.create(
                 router: routers.productsRouter,
-                fundingProvider: FundingDomainProvider(hostProvider: hostProvider)
+                fundingProvider: FundingDomainProvider(hostProvider: hostProvider),
+                osAsker: osPermissionAsker
             ),
+            osPermissionAsker: osPermissionAsker,
             notificationScheduler: notificationScheduler,
             navigationRouter: routers.navigationRouter,
             chainRegistry: chainRegistry,

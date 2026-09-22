@@ -9,8 +9,7 @@ use futures::StreamExt as _;
 use super::authority::{AuthorityError, StatementStoreAllowanceKey};
 use super::statement_store_rpc::{self, StatementStoreRpc};
 use super::{
-    ProductRuntimeHost, REMOTE_PERMISSION_DENIED_REASON, remote_authority_call,
-    remote_authority_context,
+    PERMISSION_DENIED_REASON, ProductRuntimeHost, remote_authority_call, remote_authority_context,
 };
 use crate::host_logic::statement_store::{
     MAX_MATCH_ALL_TOPICS, MAX_MATCH_ANY_TOPICS, TopicFilterKind, decode_signed_statement,
@@ -111,7 +110,7 @@ impl StatementStore for ProductRuntimeHost {
         self.require_remote_permission(
             latest::RemotePermission::StatementSubmit,
             RemoteStatementStoreSubmitError::V1(latest::GenericError {
-                reason: REMOTE_PERMISSION_DENIED_REASON.to_string(),
+                reason: PERMISSION_DENIED_REASON.to_string(),
             }),
         )
         .await?;
@@ -703,7 +702,7 @@ mod tests {
         match err {
             CallError::Domain(RemoteStatementStoreSubmitError::V1(latest::GenericError {
                 reason,
-            })) => assert_eq!(reason, REMOTE_PERMISSION_DENIED_REASON),
+            })) => assert_eq!(reason, PERMISSION_DENIED_REASON),
             other => panic!("expected statement-store permission denial, got {other:?}"),
         }
         assert!(platform.sent_rpc.lock().unwrap().is_empty());

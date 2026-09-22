@@ -621,6 +621,7 @@ fn normalize_chain_code(encoded: Vec<u8>) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_logic::statement_store::statement_public_key_from_secret;
 
     const SS_PUBLIC: [u8; 32] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -686,6 +687,26 @@ mod tests {
         assert_eq!(proposal.device.statement_account_id, SS_PUBLIC);
         assert_eq!(proposal.device.encryption_public_key, public);
         assert_eq!(proposal.device.encryption_public_key.len(), 32);
+    }
+
+    #[test]
+    fn established_session_carries_the_account_the_deeplink_advertises() {
+        let identity = generate_pairing_device_identity().unwrap();
+        let bootstrap =
+            create_pairing_bootstrap_from_identity(&runtime_config(), identity).unwrap();
+        let VersionedHandshakeProposal::V2(proposal) =
+            decode_pairing_deeplink(&bootstrap.deeplink).unwrap();
+
+        let session =
+            establish_sso_session_info(&bootstrap, [0x77; 32], x25519_keypair(3).1).unwrap();
+
+        // The wallet registers the statement-store allowance for the account in
+        // the proposal, so the session has to sign with that same account.
+        assert_eq!(session.ss_public_key, proposal.device.statement_account_id);
+        assert_eq!(
+            statement_public_key_from_secret(session.ss_secret).unwrap(),
+            proposal.device.statement_account_id
+        );
     }
 
     #[test]

@@ -53,6 +53,7 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
   sessionChatIdentityKey(): Uint8Array | undefined;
+  deviceStatementKey(): Uint8Array | undefined;
   deviceEncryptionKey(): Promise<Uint8Array>;
   productSubtreePublicKey(
     productId: string,

@@ -17,6 +17,8 @@ Classic signed extrinsics + a growing family of custom origins (People-Lite, AsP
 - **`ExtrinsicService.submitExtrinsic` / `submitAndWatchExtrinsic`** — submission entry point. Use the lambda + origin model; never hand-build extrinsics outside this seam.
 - **`ExtrinsicBuilderSequence`** — auto-nonce-incrementing iterator for multi-extrinsic batches keyed by `(ChainId, AccountId)`.
 - **`ChainConnectionRefCounter`** — ref-counted connection enabler for background work. `withConnectionEnabled { ... }` for scoped use; `requestConnectionEnabled` + `release()` for long-lived (Service).
+- **`DurableTransactionService`** — the durable ledger: `submit` / `submitAll` register signed extrinsics, `schedule` registers transactions that are built later. Statuses `PENDING` → `PENDING_SUCCESS` → `FINALIZED_SUCCESS` | `FAILURE`, plus `PENDING_SUBMISSION` (waiting for its policy to build it; live, holds its domain's locks, never evaluated by a pass).
+- **`AsyncDurableSubmissionPolicy`** — builds a durable transaction's extrinsic outside the registering call: the first build of a scheduled row, and a rebuild of a row whose attempt is proven unable to land. Bound per policy id (`@IntoMap @SubmissionPolicyKey`), referenced per row with opaque params.
 
 ---
 
@@ -29,7 +31,13 @@ Classic signed extrinsics + a growing family of custom origins (People-Lite, AsP
 5. **`major`** — Manual binary encoding of arguments is forbidden when `BinaryScale` / `autoEncodedArgs` covers the case.
 6. **`major`** — Origin's `paysFees` flag is the source of truth at the caller. Don't second-guess. Fee estimation uses it; submission uses it.
 7. **`major`** — Multi-extrinsic submission from the same `(chainId, accountId)` uses `ExtrinsicBuilderSequence` for nonce management. Don't hand-roll.
-8. **`major`** — When a new identity-proof origin is added, extend `AsPersonTransactionExtension` and expose via the matching `*Origins` factory (e.g. `PeopleOrigins`, `CoinageTransactionOrigins`). Composition, not inheritance from scratch.
+8. **`blocking`** — A verdict about a submitted attempt is written only through `DurableVerdictWriter` (recovery pass and submission watch alike). It is where a `FAILURE` is handed back to the row's policy; a second writer silently makes failures final again. (Starting an attempt and a policy's give-up are the executor's writes on rows waiting to be built.)
+9. **`blocking`** — An `AsyncDurableSubmissionPolicy` rebuild consumes and mints exactly the assets registered for the row. A retry re-arms the same `DurableTxId`; the domain's rows, locks and completion rules keep applying to it.
+10. **`major`** — `AsyncDurableSubmissionPolicy.canRetry` never reads the chain — it runs while a verdict is written. Whether a rebuild can still land is decided in `prepareSubmission`, which returns `GiveUp` to end it; a failed `Result` is retried after a backoff, never treated as a verdict.
+11. **`blocking`** — `canRetry` distinguishes `DurableFailureKind`: an `EXPIRED` attempt may be rebuilt indefinitely, but a `DISPATCH_FAILED` or `REJECTED` one would repeat on the same effects and must be bounded (coinage: only while the window is open). Nothing else ends that loop.
+12. **`major`** — A `TxCompletionOracle`'s `LedgerView` never contains `PENDING_SUBMISSION` rows: they have no attempt in flight and cannot have produced an effect.
+13. **`major`** — Work common to one policy's transactions of one group (pinned blocks, proofs, per-extrinsic tokens) is done once per `prepareSubmission` call, not per transaction.
+14. **`major`** — When a new identity-proof origin is added, extend `AsPersonTransactionExtension` and expose via the matching `*Origins` factory (e.g. `PeopleOrigins`, `CoinageTransactionOrigins`). Composition, not inheritance from scratch.
 
 ## Seams
 
@@ -42,6 +50,8 @@ Classic signed extrinsics + a growing family of custom origins (People-Lite, AsP
 | `ExtrinsicService.submitExtrinsic { runtime, builder -> ... }` | Build + sign + submit + reconcile | All new submission flows go through this |
 | `ExtrinsicBuilderSequence` | Auto-nonce iterator | Multi-extrinsic batches |
 | `ChainConnectionRefCounter` | Connection-on-demand | Any background submission |
+| `DurableTransactionService.schedule` | Registers unbuilt transactions (locks taken at commit); safe inside an enclosing DB transaction | A user-facing flow that must not wait for slow extrinsic construction |
+| `AsyncDurableSubmissionPolicy` + `@SubmissionPolicyKey` | Builds scheduled rows and rebuilds proven-failed ones; `DurableSubmissionExecutor` runs one coroutine per (policy, group) | A domain whose transactions should be built later or retried with the same effects |
 
 ## Anti-patterns
 
@@ -57,6 +67,8 @@ Classic signed extrinsics + a growing family of custom origins (People-Lite, AsP
 | `getOrThrow()` on a chain `Result` | major | see `code/results-and-errors.md § getOrThrow` |
 | `withSessionEnabled { awaitCancellation() }` for long-lived connections | major | use `requestConnectionEnabled` + `release()` |
 | Marking on-chain state changes locally without a rollback path | major | architect plan must include rollback (this is a recurring risk, not a recipe) |
+| Writing a durable status via `compareAndSetStatus` outside `DurableVerdictWriter` | blocking | route through the writer |
+| A retry loop around `submit` that mints new outputs per attempt | major | register with a submission policy; the engine re-arms the same row |
 | Polling chain state instead of subscribing | minor | `.observe()` |
 
 ## North star

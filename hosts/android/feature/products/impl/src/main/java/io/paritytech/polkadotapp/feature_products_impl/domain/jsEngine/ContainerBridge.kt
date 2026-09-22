@@ -8,6 +8,7 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
@@ -165,15 +166,12 @@ class ContainerBridge(
             val job = flow
                 .onEach { value -> sendUpdate(id, gson.toJson(value)) }
                 .onCompletion { cause ->
-                    if (cause != null) {
-                        // The Throwable overload, so a HostCallException thrown while subscribing keeps its
-                        // code: a subscription that can fail for more than one reason is unreadable without it.
-                        respondError(id, cause)
-                    } else {
-                        sendComplete(id)
-                    }
+                    if (cause == null) sendComplete(id)
                     activeSubscriptions.remove(id)
                 }
+                // The Throwable overload, so a HostCallException thrown while subscribing keeps its
+                // code: a subscription that can fail for more than one reason is unreadable without it.
+                .catch { respondError(id, it) }
                 .launchIn(scope)
 
             activeSubscriptions[id] = job

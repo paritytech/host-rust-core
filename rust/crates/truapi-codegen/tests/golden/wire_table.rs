@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "dce7dbcb3598c981";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "462dacb6e0d1f504";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -332,6 +332,12 @@ pub const LOCAL_STORAGE_CLEAR: MethodIds = MethodIds {
     method_id: 2,
 };
 
+/// Wire discriminants for `local_storage_subscribe`.
+pub const LOCAL_STORAGE_SUBSCRIBE: MethodIds = MethodIds {
+    trait_id: 7,
+    method_id: 3,
+};
+
 /// Wire discriminants for `notifications_send_push_notification`.
 pub const NOTIFICATIONS_SEND_PUSH_NOTIFICATION: MethodIds = MethodIds {
     trait_id: 8,
@@ -378,6 +384,18 @@ pub const PERMISSIONS_REQUEST_DEVICE_PERMISSION: MethodIds = MethodIds {
 pub const PERMISSIONS_REQUEST_REMOTE_PERMISSION: MethodIds = MethodIds {
     trait_id: 10,
     method_id: 1,
+};
+
+/// Wire discriminants for `permissions_authorize_remote_permission`.
+pub const PERMISSIONS_AUTHORIZE_REMOTE_PERMISSION: MethodIds = MethodIds {
+    trait_id: 10,
+    method_id: 2,
+};
+
+/// Wire discriminants for `permissions_authorize_device_permission`.
+pub const PERMISSIONS_AUTHORIZE_DEVICE_PERMISSION: MethodIds = MethodIds {
+    trait_id: 10,
+    method_id: 3,
 };
 
 /// Wire discriminants for `preimage_lookup_subscribe`.
@@ -503,6 +521,18 @@ pub const POCKET_LIST_SUBSCRIBE: MethodIds = MethodIds {
 /// Wire discriminants for `pocket_remove_card`.
 pub const POCKET_REMOVE_CARD: MethodIds = MethodIds {
     trait_id: 18,
+    method_id: 1,
+};
+
+/// Wire discriminants for `worker_begin_operation`.
+pub const WORKER_BEGIN_OPERATION: MethodIds = MethodIds {
+    trait_id: 19,
+    method_id: 0,
+};
+
+/// Wire discriminants for `worker_end_operation`.
+pub const WORKER_END_OPERATION: MethodIds = MethodIds {
+    trait_id: 19,
     method_id: 1,
 };
 
@@ -703,6 +733,10 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Request(LOCAL_STORAGE_CLEAR),
     },
     WireEntry {
+        method: "local_storage_subscribe",
+        kind: WireKind::Subscription(LOCAL_STORAGE_SUBSCRIBE),
+    },
+    WireEntry {
         method: "notifications_send_push_notification",
         kind: WireKind::Request(NOTIFICATIONS_SEND_PUSH_NOTIFICATION),
     },
@@ -733,6 +767,14 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "permissions_request_remote_permission",
         kind: WireKind::Request(PERMISSIONS_REQUEST_REMOTE_PERMISSION),
+    },
+    WireEntry {
+        method: "permissions_authorize_remote_permission",
+        kind: WireKind::Request(PERMISSIONS_AUTHORIZE_REMOTE_PERMISSION),
+    },
+    WireEntry {
+        method: "permissions_authorize_device_permission",
+        kind: WireKind::Request(PERMISSIONS_AUTHORIZE_DEVICE_PERMISSION),
     },
     WireEntry {
         method: "preimage_lookup_subscribe",
@@ -817,5 +859,13 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "pocket_remove_card",
         kind: WireKind::Request(POCKET_REMOVE_CARD),
+    },
+    WireEntry {
+        method: "worker_begin_operation",
+        kind: WireKind::Request(WORKER_BEGIN_OPERATION),
+    },
+    WireEntry {
+        method: "worker_end_operation",
+        kind: WireKind::Request(WORKER_END_OPERATION),
     },
 ];

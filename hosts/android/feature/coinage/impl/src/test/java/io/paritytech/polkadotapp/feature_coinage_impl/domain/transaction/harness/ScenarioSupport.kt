@@ -292,6 +292,7 @@ suspend fun DurabilityHarness.registerGroup(
             extrinsic = extrinsicAnchoredAtFinalizedHead(periodBlocks),
             inputs = listOf(CoinageInput.Coin.Own(testKey(input))),
             outputs = listOf(OwnAsset.Coin(testKey(output))),
+            policy = null,
         )
     },
     groupId = groupId,

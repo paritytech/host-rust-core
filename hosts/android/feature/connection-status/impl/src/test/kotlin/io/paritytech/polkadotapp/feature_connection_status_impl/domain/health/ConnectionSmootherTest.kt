@@ -129,6 +129,18 @@ class ConnectionSmootherTest {
         assertEquals(ChainConnectionPresentation.Connected, results.last())
     }
 
+    @Test
+    fun `a device with no internet is reported at once rather than waiting out the cooldown`() = runTest {
+        val results = collectSmoothed()
+
+        source.emit(RawConnectivity.Connected)
+        advanceTimeBy(3_500); runCurrent()
+
+        source.emit(RawConnectivity.Offline); runCurrent()
+
+        assertEquals(ChainConnectionPresentation.Offline, results.last())
+    }
+
     private lateinit var source: MutableSharedFlow<RawConnectivity>
 
     private fun TestScope.collectSmoothed(): List<ChainConnectionPresentation> {

@@ -286,6 +286,25 @@ await runtime.activateStoredSession().catch(() => {});
 const provider = await runtime.createProvider({ productId: "first.dot" });
 ```
 
+### Statement-store traffic of the host's own
+
+A host that runs its own statement-store traffic — P2P chat, device sync — signs
+with the account its device advertises in the pairing QR. The paired wallet
+registers that account's statement-store allowance while answering the
+handshake, so it is the only account whose statements the network accepts from
+this host. A locally minted key gets no allowance, and every submission fails
+with `no allowance set for account`.
+
+| Value                                    | Where                                  |
+| ---------------------------------------- | -------------------------------------- |
+| `SessionUiInfo.deviceStatementAccountId` | On every `AuthState.Connected`         |
+| `getDeviceStatementKey()`                | Runtime method, 64-byte sr25519 secret |
+
+Peers are told to address that same account, so it is also what a host derives
+its own statement topics from. Both are `undefined` without an active session,
+and the account is rotated per login: read it from the current session rather
+than caching it across sign-ins.
+
 ## Worker lifecycle
 
 A product has one worker, and the core keeps one reference count per worker. The host takes a reference while a

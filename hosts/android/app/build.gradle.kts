@@ -26,6 +26,10 @@ android {
         manifestPlaceholders["sentryDsn"] = localProperties.readSecretOrNull("SENTRY_DSN") ?: ""
 
         buildConfigString(
+            "CONTACT_EMAIL",
+            localProperties.readSecretOrThrow("CONTACT_EMAIL")
+        )
+        buildConfigString(
             "LOG_COLLECTION_EMAIL",
             localProperties.readSecretOrThrow("LOG_COLLECTION_EMAIL")
         )

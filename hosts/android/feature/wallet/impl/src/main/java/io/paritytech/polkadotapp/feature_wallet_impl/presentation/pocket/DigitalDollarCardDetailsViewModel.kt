@@ -62,7 +62,6 @@ class DigitalDollarCardDetailsViewModel @Inject constructor(
                 autoFundAvailable = interactor.autoFundAvailable(),
                 fundInProgress = inProgress,
                 actionsEnabled = actionsEnabled,
-                coinageWidgetsEnabled = BuildConfig.COINAGE_WIDGETS_ENABLED,
                 shareLogsEnabled = BuildConfig.TESTNET_FUND_ENABLED,
                 detailsVisible = toggles.first,
                 keyVisible = toggles.second

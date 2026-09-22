@@ -9,15 +9,18 @@ import io.paritytech.polkadotapp.chains.multiNetwork.connection.ChainConnectionR
 import io.paritytech.polkadotapp.chains.multiNetwork.connection.withConnectionEnabled
 import io.paritytech.polkadotapp.chains.multiNetwork.getChain
 import io.paritytech.polkadotapp.chains.multiNetwork.runtime.repository.ExtrinsicOutcome
+import io.paritytech.polkadotapp.chains.util.extrinsicHash
 import io.paritytech.polkadotapp.feature_transactions.api.data.ExtrinsicService
 import io.paritytech.polkadotapp.feature_transactions.api.data.retry.PreSubmissionValidationFailed
 import io.paritytech.polkadotapp.feature_transactions.api.data.retry.ResubmitWhenValidFactory
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.CheckpointBlock
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableFailureKind
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxId
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainViewFactory
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TxCompletionOracle
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.Verdict
+import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionHash
 import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.DurableTxRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -42,6 +45,7 @@ class DurableSubmissionTracker @Inject constructor(
     private val chainRegistry: ChainRegistry,
     private val extrinsicService: ExtrinsicService,
     private val repository: DurableTxRepository,
+    private val verdictWriter: DurableVerdictWriter,
     private val chainViewFactory: PinnedChainViewFactory,
     private val submissionOwned: SubmissionOwnedTransactions,
     private val resubmitWhenValidFactory: ResubmitWhenValidFactory,
@@ -53,11 +57,13 @@ class DurableSubmissionTracker @Inject constructor(
         extrinsic: SendableExtrinsic,
         onReleased: () -> Unit,
     ) {
+        val txHash = extrinsic.extrinsicHex.extrinsicHash()
+
         scope.launch {
-            runCatching { follow(id, extrinsic) }
+            runCatching { follow(id, txHash, extrinsic) }
                 .onFailure { durabilityLogW("${logId(id)} submission-watch-failed error=$it") }
 
-            submissionOwned.release(id)
+            submissionOwned.release(id, txHash)
 
             // Recovery is for transactions nobody has decided. A watch that ended by writing a terminal
             // verdict has already done the deciding, and a terminal row is never rewritten — so asking for
@@ -70,7 +76,8 @@ class DurableSubmissionTracker @Inject constructor(
     private suspend fun needsRecovery(id: DurableTxId): Boolean {
         val status = repository.getStatus(id).getOrNull()
 
-        if (status?.isLive == false) {
+        // One waiting to be built is the executor's, and no pass could decide it.
+        if (status?.awaitsVerdict == false) {
             durabilityLogD("${logId(id)} recovery-skipped reason=decided status=$status")
 
             return false
@@ -79,19 +86,20 @@ class DurableSubmissionTracker @Inject constructor(
         return true
     }
 
-    private suspend fun follow(id: DurableTxId, extrinsic: SendableExtrinsic) {
+    private suspend fun follow(id: DurableTxId, txHash: TransactionHash, extrinsic: SendableExtrinsic) {
         val chain = chainRegistry.getChain(chainOf(id))
 
         // Held for as long as the watch lives. This subscription is the only thing following the
         // transaction while it is in flight, and a connection torn down because the app went to background
         // would end it — handing it to the recovery pass to decide the slow way, over its whole window.
         chainConnectionRefCounter.withConnectionEnabled(chain.id, CONNECTION_LABEL) {
-            watchSubmission(id, chain, extrinsic)
+            watchSubmission(id, txHash, chain, extrinsic)
         }
     }
 
     private suspend fun watchSubmission(
         id: DurableTxId,
+        txHash: TransactionHash,
         chain: Chain,
         extrinsic: SendableExtrinsic,
     ) = coroutineScope {
@@ -126,7 +134,7 @@ class DurableSubmissionTracker @Inject constructor(
                 val line = "${logId(id)} submission-status ${status.describe()}"
                 if (status.terminal) durabilityLogI(line) else durabilityLogD(line)
 
-                if (handle(id, status)) break
+                if (handle(id, txHash, status)) break
             }
         } finally {
             pump.cancel()
@@ -134,7 +142,7 @@ class DurableSubmissionTracker @Inject constructor(
     }
 
     /** Returns true when the transaction is done being watched. */
-    private suspend fun handle(id: DurableTxId, status: ExtrinsicStatus): Boolean = when (status) {
+    private suspend fun handle(id: DurableTxId, txHash: TransactionHash, status: ExtrinsicStatus): Boolean = when (status) {
         // Pre-inclusion states carry no evidence either way. They must not lower a transaction that has
         // some: the resubmission path keeps consuming this flow after an inclusion, so one of these can
         // arrive behind an InBlock, and clearing the record there would withdraw its effects on nothing.
@@ -151,13 +159,13 @@ class DurableSubmissionTracker @Inject constructor(
             durabilityLogD("${logId(id)} in-block block=${at?.blockNumber} outcome=$outcome")
 
             if (outcome == ExtrinsicOutcome.SUCCESS) {
-                propose(id, Verdict(DurableTxStatus.PENDING_SUCCESS, successDetectedAt = at))
+                propose(id, txHash, Verdict(DurableTxStatus.PENDING_SUCCESS, successDetectedAt = at, failure = null))
             }
             false
         }
 
         is ExtrinsicStatus.Retracted -> {
-            clearRecordIfItNames(id, status.blockHash)
+            clearRecordIfItNames(id, txHash, status.blockHash)
             false
         }
 
@@ -168,10 +176,10 @@ class DurableSubmissionTracker @Inject constructor(
 
             when (outcome) {
                 ExtrinsicOutcome.SUCCESS ->
-                    propose(id, Verdict(DurableTxStatus.FINALIZED_SUCCESS, blockOf(id, status.blockHash)))
+                    propose(id, txHash, Verdict(DurableTxStatus.FINALIZED_SUCCESS, blockOf(id, status.blockHash), failure = null))
 
                 ExtrinsicOutcome.FAILURE ->
-                    propose(id, Verdict(DurableTxStatus.FAILURE, successDetectedAt = null))
+                    propose(id, txHash, Verdict(DurableTxStatus.FAILURE, successDetectedAt = null, DurableFailureKind.DISPATCH_FAILED))
 
                 null -> Unit
             }
@@ -188,7 +196,7 @@ class DurableSubmissionTracker @Inject constructor(
             // propagated when recovery declined to resubmit, so nothing can ever include these bytes:
             // finalized-grade evidence without waiting for finality.
             if (status.exception is PreSubmissionValidationFailed) {
-                propose(id, Verdict(DurableTxStatus.FAILURE, successDetectedAt = null))
+                propose(id, txHash, Verdict(DurableTxStatus.FAILURE, successDetectedAt = null, DurableFailureKind.REJECTED))
             }
             true
         }
@@ -201,36 +209,40 @@ class DurableSubmissionTracker @Inject constructor(
      * because leaving PENDING_SUCCESS behind with no evidence would keep its effects trusted for a whole
      * mortality window on the strength of a block that no longer exists.
      */
-    private suspend fun clearRecordIfItNames(id: DurableTxId, blockHash: String) {
+    private suspend fun clearRecordIfItNames(id: DurableTxId, txHash: TransactionHash, blockHash: String) {
         val entry = repository.getEntry(id).getOrNull() ?: return
         if (entry.successDetectedAt?.blockHash != blockHash) return
 
-        propose(id, Verdict(DurableTxStatus.PENDING, successDetectedAt = null))
+        propose(id, txHash, Verdict(DurableTxStatus.PENDING, successDetectedAt = null, failure = null))
     }
 
     /**
      * A terminal row is never rewritten, so a late event cannot un-fail a failed transaction; the
-     * compare-and-set then covers a status that moved since it was read.
+     * compare-and-set then covers a status that moved since it was read. A row whose attempt is no longer the
+     * one watched is not this watch's to write: its bytes were proven unable to land and built again.
      */
-    private suspend fun propose(id: DurableTxId, verdict: Verdict) {
-        val observed = repository.getStatus(id).getOrNull() ?: run {
-            durabilityLogW("${logId(id)} proposal-skipped to=${verdict.status} reason=status-unreadable")
+    private suspend fun propose(id: DurableTxId, txHash: TransactionHash, verdict: Verdict) {
+        val observed = repository.getEntry(id).getOrNull() ?: run {
+            durabilityLogW("${logId(id)} proposal-skipped to=${verdict.status} reason=entry-unreadable")
 
             return
         }
 
-        if (!observed.isLive) {
-            durabilityLogD("${logId(id)} proposal-skipped to=${verdict.status} reason=not-live observed=$observed")
+        if (!observed.status.awaitsVerdict || observed.txHash != txHash) {
+            durabilityLogD(
+                "${logId(id)} proposal-skipped to=${verdict.status} reason=not-awaiting-verdict " +
+                    "observed=${observed.status} attempt=${observed.txHash.shortHash()}"
+            )
 
             return
         }
 
         durabilityLogD(
-            "${logId(id)} proposing from=$observed to=${verdict.status} " +
+            "${logId(id)} proposing from=${observed.status} to=${verdict.status} " +
                 "record=${verdict.successDetectedAt?.blockNumber ?: "none"}"
         )
 
-        repository.compareAndSetStatus(id, observed, verdict)
+        verdictWriter.write(observed, verdict)
             .onFailure { durabilityLogW("${logId(id)} proposal-write-failed to=${verdict.status} error=$it") }
     }
 

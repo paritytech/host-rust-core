@@ -57,7 +57,10 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.Pro
 import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.RequestPaymentUseCase
 import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.spendableByProducts
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionGuard
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.RealProductPermissionRequester
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.DeviceCapabilityPermissionHandler
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.DeviceCapabilityType
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.PermissionDecision
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermissionDeniedException
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.RemotePermissionRequest
@@ -92,6 +95,8 @@ class HostApiInteractor @Inject constructor(
     private val chainRegistry: ChainRegistry,
     private val connectionSecrets: ConnectionSecrets,
     private val permissionGuard: ProductPermissionGuard,
+    private val permissionRequester: RealProductPermissionRequester,
+    private val deviceCapabilityPermissionHandler: DeviceCapabilityPermissionHandler,
     private val ipfsContentLookup: IpfsContentLookup,
     private val statementStoreService: StatementStoreService,
     private val statementStoreMessageProverFactory: StatementStoreMessageProver.Factory,
@@ -260,7 +265,7 @@ class HostApiInteractor @Inject constructor(
             return Result.failure(ProductPermissionDeniedException(permission))
         }
 
-        return processNotification(callingProductId, text, deeplink, scheduledAt)
+        return publishNotificationAuthorized(callingProductId, text, deeplink, scheduledAt)
     }
 
     suspend fun cancelNotification(callingProductId: ProductId, notificationId: NotificationId): Result<Unit> {
@@ -269,6 +274,10 @@ class HostApiInteractor @Inject constructor(
             return Result.failure(ProductPermissionDeniedException(permission))
         }
 
+        return cancelNotificationAuthorized(callingProductId, notificationId)
+    }
+
+    suspend fun cancelNotificationAuthorized(callingProductId: ProductId, notificationId: NotificationId): Result<Unit> {
         return productNotificationScheduler.cancel(callingProductId, notificationId)
     }
 
@@ -283,6 +292,27 @@ class HostApiInteractor @Inject constructor(
     ): Result<Boolean> = runCatching {
         val permissions = requests.flatMap { it.toDomainPermissions() }
         permissionGuard.requestPermissionsBatched(callingProductId, permissions)
+    }
+
+    suspend fun requestDevicePermissionDecision(
+        callingProductId: ProductId,
+        capability: DeviceCapabilityType,
+    ): Result<PermissionDecision> = runCatching {
+        val permission = ProductPermission.DeviceCapability(capability)
+        val decision = permissionRequester.prompt(callingProductId, permission)
+        if (decision != PermissionDecision.Deny &&
+            !deviceCapabilityPermissionHandler.requestOsPermissionIfNeeded(capability)
+        ) {
+            throw ProductPermissionDeniedException(permission)
+        }
+        decision
+    }
+
+    suspend fun requestRemotePermissionDecision(
+        callingProductId: ProductId,
+        request: RemotePermissionRequest,
+    ): Result<PermissionDecision> = runCatching {
+        permissionRequester.promptBatched(callingProductId, request.toDomainPermissions())
     }
 
     suspend fun allowWebRtcAccess(callingProductId: ProductId): Result<Boolean> {
@@ -315,7 +345,7 @@ class HostApiInteractor @Inject constructor(
         return requestPaymentUseCase.requestPayment(callingProductId, id, amount, destination)
     }
 
-    private suspend fun processNotification(
+    suspend fun publishNotificationAuthorized(
         callingProductId: ProductId,
         text: String,
         deeplink: String?,

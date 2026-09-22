@@ -3,7 +3,7 @@
 // the client package; Unix endpoints perform the same RFC 6455 protocol over a
 // filesystem socket, which no browser needs and only this CLI speaks.
 import { createHash, randomBytes } from "node:crypto";
-import { connect, type Socket } from "node:net";
+import { connect } from "node:net";
 import {
   createWebSocketProvider,
   type WireProvider,

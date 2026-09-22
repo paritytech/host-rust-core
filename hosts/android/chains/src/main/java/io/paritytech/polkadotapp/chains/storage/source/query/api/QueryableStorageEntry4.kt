@@ -1,8 +1,5 @@
 package io.paritytech.polkadotapp.chains.storage.source.query.api
 
-import io.novasama.substrate_sdk_android.koltinx_serialization_scale.Scale
-import io.novasama.substrate_sdk_android.koltinx_serialization_scale.decode
-import io.novasama.substrate_sdk_android.koltinx_serialization_scale.encode
 import io.novasama.substrate_sdk_android.runtime.metadata.module.StorageEntry
 import io.paritytech.polkadotapp.chains.storage.source.query.StorageKeyComponents
 import io.paritytech.polkadotapp.chains.storage.source.query.StorageQueryContext
@@ -28,21 +25,27 @@ interface QueryableStorageEntry4<I1, I2, I3, I4, T> {
 
 class RealQueryableStorageEntry4<I1, I2, I3, I4, T>(
     private val storageEntry: StorageEntry,
-    private val key1Type: KType,
-    private val key2Type: KType,
-    private val key3Type: KType,
-    private val key4Type: KType,
-    private val valueType: KType
+    key1Type: KType,
+    key2Type: KType,
+    key3Type: KType,
+    key4Type: KType,
+    valueType: KType
 ) : QueryableStorageEntry4<I1, I2, I3, I4, T> {
+    private val key1Codec = ScaleTypeCodec<I1>(key1Type)
+    private val key2Codec = ScaleTypeCodec<I2>(key2Type)
+    private val key3Codec = ScaleTypeCodec<I3>(key3Type)
+    private val key4Codec = ScaleTypeCodec<I4>(key4Type)
+    private val valueCodec = ScaleTypeCodec<T>(valueType)
+
     context(storage: StorageQueryContext)
     override suspend fun query(key1: I1, key2: I2, key3: I3, key4: I4): T? {
         return with(storage) {
             storageEntry.query(
-                Scale.encode(key1Type, key1),
-                Scale.encode(key2Type, key2),
-                Scale.encode(key3Type, key3),
-                Scale.encode(key4Type, key4),
-                binding = { decoded -> decoded?.let { Scale.decode(valueType, it) } }
+                key1Codec.encode(key1),
+                key2Codec.encode(key2),
+                key3Codec.encode(key3),
+                key4Codec.encode(key4),
+                binding = { decoded -> decoded?.let { valueCodec.decode(it) } }
             )
         }
     }
@@ -53,7 +56,7 @@ class RealQueryableStorageEntry4<I1, I2, I3, I4, T>(
             storageEntry.entries(
                 keysArguments = keys.encoded(),
                 keyExtractor = { it.bindKeys() },
-                binding = { decoded, _ -> decoded?.let { Scale.decode(valueType, it) } },
+                binding = { decoded, _ -> decoded?.let { valueCodec.decode(it) } },
             )
         }
     }
@@ -72,19 +75,19 @@ class RealQueryableStorageEntry4<I1, I2, I3, I4, T>(
         val (key1, key2, key3, key4) = values
 
         return StorageKey4(
-            Scale.decode(key1Type, key1),
-            Scale.decode(key2Type, key2),
-            Scale.decode(key3Type, key3),
-            Scale.decode(key4Type, key4),
+            key1Codec.decode(key1),
+            key2Codec.decode(key2),
+            key3Codec.decode(key3),
+            key4Codec.decode(key4),
         )
     }
 
     private fun Collection<StorageKey4<I1, I2, I3, I4>>.encoded() = map {
         listOf(
-            Scale.encode(key1Type, it.first),
-            Scale.encode(key2Type, it.second),
-            Scale.encode(key3Type, it.third),
-            Scale.encode(key4Type, it.fourth)
+            key1Codec.encode(it.first),
+            key2Codec.encode(it.second),
+            key3Codec.encode(it.third),
+            key4Codec.encode(it.fourth)
         )
     }
 }

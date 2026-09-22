@@ -274,19 +274,14 @@ async fn establish_pairing_session(
         device_enc_pub_key,
         root_entropy_source: root_entropy_source(&entropy),
     }));
-    let handshake = encrypt_v2_handshake_response(peer.encryption_public_key, &success)?;
-    let topic = bootstrap_topic(peer.statement_account_id, peer.encryption_public_key);
-    let statement = build_signed_statement(
+    submit_handshake_answer(
+        services,
         &session,
-        topic,
-        topic,
-        handshake.encode(),
-        fresh_statement_expiry(),
-    )?;
-    services
-        .statement_store
-        .submit(statement, "sso-responder handshake")
-        .await?;
+        peer,
+        &success,
+        "sso-responder handshake",
+    )
+    .await?;
     debug!("answered pairing handshake");
 
     Ok(EstablishedPairing {
@@ -370,6 +365,93 @@ fn responder_session_from_identity(
         peer.statement_account_id,
         peer.encryption_public_key,
     )
+}
+
+/// Encrypt `response` to the pairing host and post it on the handshake topic.
+async fn submit_handshake_answer(
+    services: &RuntimeServices,
+    session: &SsoSessionInfo,
+    peer: PairedSsoPeer,
+    response: &v2::EncryptedResponse,
+    context: &'static str,
+) -> Result<(), String> {
+    let handshake = encrypt_v2_handshake_response(peer.encryption_public_key, response)?;
+    let topic = bootstrap_topic(peer.statement_account_id, peer.encryption_public_key);
+    let statement = build_signed_statement(
+        session,
+        topic,
+        topic,
+        handshake.encode(),
+        fresh_statement_expiry(),
+    )?;
+    services.statement_store.submit(statement, context).await
+}
+
+/// The identity and peer a pairing notice went out under.
+///
+/// Carries the responder secret rather than re-deriving it, because the signer
+/// this host is allocating under can rotate between the two notices: the
+/// account that sent the first one is the one already holding an allowance to
+/// send the second.
+// No `Debug`: it holds the responder statement secret.
+pub struct AnnouncedPairing {
+    identity: ResponderIdentity,
+    peer: PairedSsoPeer,
+}
+
+/// Tell the pairing host that allowance allocation is under way, moving it off
+/// its QR screen for however long the allocation takes.
+///
+/// Answering at all needs this host's own statement-store allowance, which is
+/// the `WalletSso` renewal target, so callers register that before calling.
+/// Callers own the matching [`notify_pairing_failed`]: the host has dropped its
+/// QR and waits without a deadline, so an allocation that then fails leaves it
+/// waiting forever unless it is told.
+pub(crate) async fn notify_pairing_allowance_allocation(
+    services: Arc<RuntimeServices>,
+    signing_host: Arc<SigningHost>,
+    deeplink: &str,
+) -> Result<AnnouncedPairing, String> {
+    let peer = PairedSsoPeer::from_deeplink(deeplink)?;
+    let entropy = signing_host
+        .root_entropy()
+        .map_err(|err| format!("signing host has no active local session: {err}"))?;
+    let (identity, _) = derive_responder_identity(&entropy, signing_host.network_suffix())
+        .map_err(|err| format!("responder identity derivation failed: {err}"))?;
+    let session = responder_session_from_identity(&identity, peer)?;
+
+    let pending = v2::EncryptedResponse::Pending(v2::Status::AllowanceAllocation);
+    submit_handshake_answer(
+        &services,
+        &session,
+        peer,
+        &pending,
+        "sso-responder allowance allocation",
+    )
+    .await?;
+    debug!("told pairing host that allowance allocation started");
+    Ok(AnnouncedPairing { identity, peer })
+}
+
+/// Tell the pairing host that pairing failed, so it reports `reason` and offers
+/// a retry rather than waiting on an answer that is never coming.
+pub(crate) async fn notify_pairing_failed(
+    services: Arc<RuntimeServices>,
+    announced: &AnnouncedPairing,
+    reason: String,
+) -> Result<(), String> {
+    let session = responder_session_from_identity(&announced.identity, announced.peer)?;
+    let failed = v2::EncryptedResponse::Failed(reason);
+    submit_handshake_answer(
+        &services,
+        &session,
+        announced.peer,
+        &failed,
+        "sso-responder pairing failure",
+    )
+    .await?;
+    debug!("told pairing host that pairing failed");
+    Ok(())
 }
 
 /// Serve inbound session statements until the session ends.
@@ -1272,6 +1354,46 @@ mod tests {
         // device key makes every device sharing an identity indistinguishable.
         let (_, sso_public) = derive_x25519_keypair_from_entropy(&ENTROPY, SSO_ENCRYPTION_DOMAIN);
         assert_ne!(advertised, sso_public);
+    }
+
+    /// Both handshake notices the signing host sends outside `Success` must be
+    /// readable by the host that advertised the keys, or the pairing host is
+    /// left on a screen no later message can move it off.
+    #[test]
+    fn the_pairing_notices_decode_on_the_pairing_host() {
+        use crate::host_logic::sso::pairing::{
+            VersionedHandshakeResponse, decrypt_v2_handshake_response,
+            generate_pairing_device_identity,
+        };
+
+        // Encrypt to the key a pairing host actually advertises, so each notice
+        // is decrypted with the secret that host kept rather than one the test
+        // chose for both sides.
+        let pairing_identity = generate_pairing_device_identity().unwrap();
+        let peer = PairedSsoPeer {
+            statement_account_id: pairing_identity.statement_store_public_key,
+            encryption_public_key: pairing_identity.encryption_public_key,
+        };
+
+        for response in [
+            v2::EncryptedResponse::Pending(v2::Status::AllowanceAllocation),
+            v2::EncryptedResponse::Failed("no free StatementStore slot".to_string()),
+        ] {
+            let VersionedHandshakeResponse::V2 {
+                encrypted_message,
+                public_key,
+            } = encrypt_v2_handshake_response(peer.encryption_public_key, &response).unwrap();
+
+            assert_eq!(
+                decrypt_v2_handshake_response(
+                    pairing_identity.encryption_secret_key,
+                    public_key,
+                    &encrypted_message,
+                )
+                .unwrap(),
+                response,
+            );
+        }
     }
 
     #[test]

@@ -25,11 +25,11 @@ class RawConnectivityTest {
     }
 
     @Test
-    fun `a device with no internet settles whatever the socket believes`() {
-        assertEquals(RawConnectivity.Settled, connectedSocket.toRawConnectivity(deviceOnline = false))
-        assertEquals(RawConnectivity.Settled, reconnectingSocket.toRawConnectivity(deviceOnline = false))
-        assertEquals(RawConnectivity.Settled, State.Disconnected.toRawConnectivity(deviceOnline = false))
-        assertEquals(RawConnectivity.Settled, null.toRawConnectivity(deviceOnline = false))
+    fun `a device with no internet reads as offline whatever the socket believes`() {
+        assertEquals(RawConnectivity.Offline, connectedSocket.toRawConnectivity(deviceOnline = false))
+        assertEquals(RawConnectivity.Offline, reconnectingSocket.toRawConnectivity(deviceOnline = false))
+        assertEquals(RawConnectivity.Offline, State.Disconnected.toRawConnectivity(deviceOnline = false))
+        assertEquals(RawConnectivity.Offline, null.toRawConnectivity(deviceOnline = false))
     }
 
     @Test
@@ -43,7 +43,7 @@ class RawConnectivityTest {
             advanceTimeBy(300); runCurrent()
         }
 
-        assertEquals(listOf(RawConnectivity.Settled), results)
+        assertEquals(listOf(RawConnectivity.Offline), results)
     }
 
     @Test
@@ -57,12 +57,35 @@ class RawConnectivityTest {
     }
 
     @Test
-    fun `an offline start reaches the output without waiting out the settle delay`() = runTest {
+    fun `an offline start waits out the settle delay like any other loss`() = runTest {
         val online = MutableStateFlow(false)
         val results = collectResolved(online)
         advanceTimeBy(100); runCurrent()
 
-        assertEquals(listOf(RawConnectivity.Settled), results)
+        assertEquals(emptyList<RawConnectivity>(), results)
+
+        advanceTimeBy(1_000); runCurrent()
+
+        assertEquals(listOf(RawConnectivity.Offline), results)
+    }
+
+    // The whole pipeline is re-collected every time the app returns to the foreground, and the
+    // device's flag can still say offline for a moment after the screen comes back on.
+    @Test
+    fun `a stale offline flag on re-collection does not reach the output`() = runTest {
+        val online = MutableStateFlow(true)
+        collectResolved(online)
+        advanceTimeBy(2_000); runCurrent()
+
+        online.value = false
+        val afterResubscribe = collectResolved(online)
+        advanceTimeBy(100); runCurrent()
+        assertEquals(emptyList<RawConnectivity>(), afterResubscribe)
+
+        online.value = true
+        advanceTimeBy(2_000); runCurrent()
+
+        assertEquals(listOf(RawConnectivity.Settled), afterResubscribe)
     }
 
     @Test

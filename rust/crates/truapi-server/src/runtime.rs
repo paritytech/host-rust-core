@@ -42,7 +42,8 @@ mod statement_store_rpc;
 
 use core::future::Future;
 use core::time::Duration;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
@@ -56,11 +57,12 @@ use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use renderer::renderer_access_for;
 pub(crate) use services::RuntimeServices;
+pub use signing_host::{AnnouncedPairing, PairedSsoPeer, ResponderExit};
 pub(crate) use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, disconnect_paired_host,
-    establish_pairing, respond_to_pairing, resume_pairing,
+    establish_pairing, notify_pairing_allowance_allocation, notify_pairing_failed,
+    respond_to_pairing, resume_pairing,
 };
-pub use signing_host::{PairedSsoPeer, ResponderExit};
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 use tracing::{instrument, warn};
@@ -85,8 +87,8 @@ use truapi::versioned::renderer::{
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 use truapi_platform::{
     AccountAccessReview, ChatFieldError, IdentityDisclosureReview, PermissionAuthorizationRequest,
-    PermissionAuthorizationStatus, Platform, ProductContext, ProductStorageKey, SessionUiInfo,
-    UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
+    PermissionAuthorizationStatus, PermissionDecision, Platform, ProductContext, ProductStorageKey,
+    SessionUiInfo, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
     validate_chat_icon, validate_chat_message_content, validate_chat_name,
 };
 #[cfg(target_arch = "wasm32")]
@@ -94,7 +96,7 @@ use web_time::Instant;
 
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::bulletin::preimage_key;
-use crate::host_logic::permissions::PermissionsService;
+use crate::host_logic::permissions::{PermissionsService, TemporaryPermissions};
 use crate::host_logic::product_account::{
     derivation_index_bytes, derive_product_public_key, public_key_from_address,
 };
@@ -107,8 +109,8 @@ use crate::host_logic::sso::pairing::x25519_public_key;
 #[cfg(test)]
 use crate::subscription::Spawner;
 
-/// Error reason surfaced to products when a remote permission is not granted.
-pub(super) const REMOTE_PERMISSION_DENIED_REASON: &str = "Permission denied";
+/// Error reason surfaced to products when a permission is not granted.
+pub(super) const PERMISSION_DENIED_REASON: &str = "Permission denied";
 /// Host-spec B.6.2 recommends timing out unanswered SSO application requests
 /// after 180 seconds:
 /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L303-L307>
@@ -252,6 +254,8 @@ pub struct ProductRuntimeHost {
     chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     /// Live OS permission state for this connection, when the host serves it.
     permission_status: Option<Arc<dyn truapi_platform::PermissionStatusHost>>,
+    /// Permission requests and consuming operations can arrive on different connections.
+    temporary_permissions: Arc<TemporaryPermissions>,
     authority: Arc<dyn ProductAuthority>,
     product: ProductContext,
     /// Stable per-product-runtime id used to scope long-lived chain follow
@@ -260,6 +264,27 @@ pub struct ProductRuntimeHost {
     chat: Arc<ActionChannel<HostChatActionSubscribeItem>>,
     renderer: Arc<ActionChannel<HostRendererActionSubscribeItem>>,
     pocket_platform: Option<Arc<dyn truapi_platform::PocketPlatform>>,
+    /// Host-assigned ids of this connection's open pending operations, each
+    /// holding one worker reference until it ends or the connection is torn
+    /// down.
+    ///
+    /// Scoped to the connection rather than the product, which holds because
+    /// only a Worker execution reaches `begin_operation`/`end_operation` and a
+    /// product has one of those at a time.
+    ///
+    /// The set is unbounded here. Whether a product may hold a thousand open
+    /// operations is the host's call, made in `begin_operation`, since the
+    /// host is what the operations keep running.
+    open_operations: Mutex<HashSet<u32>>,
+}
+
+/// A connection that goes away without ending its operations still owes the
+/// ledger their references, so the host is told to stop rather than keeping a
+/// worker alive for a product that is gone.
+impl Drop for ProductRuntimeHost {
+    fn drop(&mut self) {
+        self.release_open_operations();
+    }
 }
 
 impl ProductRuntimeHost {
@@ -277,12 +302,14 @@ impl ProductRuntimeHost {
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
             permission_status: adapters.permission_status,
+            temporary_permissions: adapters.permission_grants,
             authority,
             product,
             core_instance,
             chat: adapters.chat,
             renderer: adapters.renderer,
             pocket_platform: adapters.pocket_platform,
+            open_operations: Mutex::new(HashSet::new()),
         }
     }
 
@@ -303,6 +330,7 @@ impl ProductRuntimeHost {
     ) -> PermissionsService<'a, dyn Platform, dyn Platform> {
         PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), product_id)
             .with_status_host(self.permission_status.as_deref())
+            .with_temporary_permissions(self.temporary_permissions.clone())
     }
 
     /// Trusted executable kind attached to this product connection.
@@ -402,12 +430,14 @@ impl ProductRuntimeHost {
             platform,
             chat_platform: None,
             permission_status: None,
+            temporary_permissions: Arc::default(),
             authority: pairing_host.clone(),
             product,
             core_instance,
             chat,
             renderer,
             pocket_platform: None,
+            open_operations: Mutex::new(HashSet::new()),
         };
         (host, pairing_host)
     }
@@ -649,7 +679,7 @@ impl ProductRuntimeHost {
         let product_id = self.product_id();
         let service = self.permissions_service(&product_id);
         service
-            .check_or_prompt_remote(v01::RemotePermissionRequest { permission })
+            .authorize_remote(v01::RemotePermissionRequest { permission })
             .await
             .map_err(|err| format!("permission storage failed: {err:?}"))
     }
@@ -694,22 +724,22 @@ impl ProductRuntimeHost {
         // A dismissed/unavailable confirmation has no durable user decision.
         // Fail the current disclosure request closed but keep authorization in
         // the ask/default state so the next request can prompt again.
-        let confirmed = match self
+        let decision = match self
             .platform
-            .confirm_user_action(UserConfirmationReview::IdentityDisclosure(
+            .confirm_permission(UserConfirmationReview::IdentityDisclosure(
                 IdentityDisclosureReview {
                     product_id: product_id.clone(),
                 },
             ))
             .await
         {
-            Ok(confirmed) => confirmed,
+            Ok(decision) => decision,
             Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
         };
-        let status = if confirmed {
-            PermissionAuthorizationStatus::Authorized
-        } else {
-            PermissionAuthorizationStatus::Denied
+        let status = match decision {
+            PermissionDecision::AllowOnce => return Ok(PermissionAuthorizationStatus::Authorized),
+            PermissionDecision::AllowAlways => PermissionAuthorizationStatus::Authorized,
+            PermissionDecision::Deny => PermissionAuthorizationStatus::Denied,
         };
         service
             .set_authorization_status(&request, status)
@@ -790,17 +820,17 @@ async fn account_access_authorization(
         return Ok(cached);
     }
 
-    let confirmed = platform
-        .confirm_user_action(UserConfirmationReview::AccountAccess(AccountAccessReview {
+    let decision = platform
+        .confirm_permission(UserConfirmationReview::AccountAccess(AccountAccessReview {
             requesting_product_id: requesting_product_id.to_string(),
             target_product_id: target_product_id.to_string(),
         }))
         .await
         .map_err(AccountAccessAuthorizationError::Confirmation)?;
-    let status = if confirmed {
-        PermissionAuthorizationStatus::Authorized
-    } else {
-        PermissionAuthorizationStatus::Denied
+    let status = match decision {
+        PermissionDecision::AllowOnce => return Ok(PermissionAuthorizationStatus::Authorized),
+        PermissionDecision::AllowAlways => PermissionAuthorizationStatus::Authorized,
+        PermissionDecision::Deny => PermissionAuthorizationStatus::Denied,
     };
     service
         .set_authorization_status(&request, status)
@@ -842,6 +872,7 @@ fn connected_session_ui_info(session: &SessionInfo) -> SessionUiInfo {
         chat_public_key: session.identity_chat_private_key.map(x25519_public_key),
         device_enc_public_key: session.device_enc_public_key,
         peer_statement_account_id: session.sso.as_ref().map(|sso| sso.identity_account_id),
+        device_statement_account_id: session.sso.as_ref().map(|sso| sso.ss_public_key),
         lite_username: session.lite_username.clone(),
         full_username: session.full_username.clone(),
     }
@@ -1052,6 +1083,97 @@ impl ProductRuntimeHost {
         self.services
             .worker_ledger
             .release(&self.product.product_id);
+    }
+
+    /// Begin a pending operation with the host, on a task this dispatch's
+    /// cancellation cannot reach.
+    ///
+    /// A cancelled dispatch drops whatever it is awaiting, and dropping the
+    /// host's call mid-answer would leave the host holding an operation the
+    /// core never counted and the product never learned the id of, which
+    /// nothing could then end. The call runs to completion either way, and
+    /// ends the operation itself when nobody is left to receive it.
+    pub(crate) async fn begin_operation_with_host(
+        &self,
+        label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let platform = self.platform.clone();
+        let product = self.product.clone();
+        (self.services.spawner)(Box::pin(async move {
+            let begun = platform.begin_operation(&product, label).await;
+            if let Err(Ok(response)) = tx.send(begun) {
+                let _ = platform.end_operation(&product, response.id).await;
+            }
+        }));
+        rx.await.unwrap_or_else(|_| {
+            Err(v01::HostWorkerOperationError::Unknown {
+                reason: "the host did not answer".to_string(),
+            })
+        })
+    }
+
+    /// Record a pending operation and take the worker reference it holds, so
+    /// an operation outliving the product's surface still reads as demand.
+    pub(crate) fn hold_worker_for_operation(&self, id: u32) {
+        if self
+            .open_operations
+            .lock()
+            .expect("open operations mutex poisoned")
+            .insert(id)
+        {
+            self.acquire_worker_reference();
+        }
+    }
+
+    /// Drop every worker reference this connection's open operations hold.
+    ///
+    /// Teardown calls this rather than leaving it to `Drop`: a disposed
+    /// connection can outlive its last `Arc` holder, and a reference kept past
+    /// dispose would leave the host running a worker for a connection that is
+    /// gone.
+    ///
+    /// Telling the host runs on the spawner, so a spawner whose runtime is
+    /// already gone drops that work. The references are still released, and
+    /// the host is shutting down with its own records anyway.
+    pub(crate) fn release_open_operations(&self) {
+        let open = core::mem::take(
+            &mut *self
+                .open_operations
+                .lock()
+                .expect("open operations mutex poisoned"),
+        );
+        if open.is_empty() {
+            return;
+        }
+        for _ in &open {
+            self.release_worker_reference();
+        }
+        // The host holds its own record of each operation, and nothing else
+        // ever ends one for a connection that is gone: left alone they
+        // accumulate against whatever limit the host puts on a product's open
+        // operations. Ending them reaches the host, so it runs off this
+        // thread.
+        let platform = self.platform.clone();
+        let product = self.product.clone();
+        (self.services.spawner)(Box::pin(async move {
+            for id in open {
+                let _ = platform.end_operation(&product, id).await;
+            }
+        }));
+    }
+
+    /// Drop the worker reference a pending operation held. An id that is not
+    /// open releases nothing, which is what keeps `end_operation` idempotent.
+    pub(crate) fn release_worker_for_operation(&self, id: u32) {
+        if self
+            .open_operations
+            .lock()
+            .expect("open operations mutex poisoned")
+            .remove(&id)
+        {
+            self.release_worker_reference();
+        }
     }
 
     /// End the renderer action stream this connection's product is reading.

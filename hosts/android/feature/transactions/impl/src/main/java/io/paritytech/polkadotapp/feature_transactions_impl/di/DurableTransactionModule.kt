@@ -5,6 +5,7 @@ import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.Multibinds
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.AsyncDurableSubmissionPolicy
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTransactionService
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainViewFactory
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TxCompletionOracle
@@ -27,6 +28,10 @@ interface DurableTransactionModule {
      */
     @Multibinds
     fun completionOracles(): Map<String, TxCompletionOracle>
+
+    /** Declared empty so the engine builds with no policies bound — every failure is then terminal. */
+    @Multibinds
+    fun submissionPolicies(): Map<String, AsyncDurableSubmissionPolicy>
 
     @Binds
     @Singleton

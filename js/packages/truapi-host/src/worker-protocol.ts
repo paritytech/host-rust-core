@@ -102,6 +102,7 @@ export type MainToWorker =
       status: PermissionAuthorizationStatus;
     }
   | { kind: "getSessionChatIdentityKey"; requestId: number }
+  | { kind: "getDeviceStatementKey"; requestId: number }
   | { kind: "getDeviceEncryptionKey"; requestId: number }
   | {
       kind: "getProductSubtreePublicKey";
@@ -229,6 +230,18 @@ export type WorkerToMain =
       error: string;
     }
   | {
+      kind: "deviceStatementKeyResponse";
+      requestId: number;
+      ok: true;
+      key: Uint8Array | undefined;
+    }
+  | {
+      kind: "deviceStatementKeyResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
       kind: "productSubtreePublicKeyResponse";
       requestId: number;
       ok: true;
@@ -286,7 +299,7 @@ export type WorkerToMain =
       kind: "subscriptionStart";
       subId: number;
       name: SubscriptionName;
-      payload: Uint8Array | null;
+      payload: Uint8Array | string | null;
     }
   | { kind: "subscriptionStop"; subId: number }
   | { kind: "chainConnectStart"; connId: number; genesisHash: string }

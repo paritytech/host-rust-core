@@ -2,6 +2,10 @@
 //! topic on the statement store (live subscription plus periodic snapshot
 //! queries), and decrypts the wallet's V2 handshake response into a session.
 
+use core::pin::Pin;
+
+use futures::future::Fuse;
+
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
@@ -48,6 +52,30 @@ const PAIRING_QUERY_INTERVAL: Duration = Duration::from_millis(1);
 const PAIRING_QUERY_TIMEOUT_TICKS: u8 = 15;
 #[cfg(test)]
 const PAIRING_QUERY_TIMEOUT_TICKS: u8 = 10;
+
+/// Longest a pairing attempt may spend reaching a wallet handshake: the stored
+/// identity reads, the statement-store connect, the topic subscribe, and the
+/// wait for a decryptable answer. Resolving the session and persisting it carry
+/// their own budgets and are not counted here.
+///
+/// A peer that answers on a different SSO envelope publishes statements this
+/// host cannot open, which is indistinguishable from a peer that has not
+/// answered yet: both are silence on the topic. Without a bound the flow waits
+/// on that silence forever. Generous enough to outlast a QR scan and an
+/// on-device confirmation, so only a pairing that was never going to complete
+/// reaches it.
+#[cfg(not(test))]
+const PAIRING_DEADLINE: Duration = Duration::from_secs(300);
+#[cfg(test)]
+const PAIRING_DEADLINE: Duration = Duration::from_millis(200);
+
+/// Why a pairing attempt was abandoned, named the same way wherever it expires.
+fn pairing_deadline_reason() -> String {
+    let seconds = PAIRING_DEADLINE.as_secs();
+    format!(
+        "pairing did not complete within {seconds}s; the peer may be answering on a different SSO envelope"
+    )
+}
 
 /// Terminal outcome of [`SsoPairingFlow::request_session`].
 pub(super) enum SsoPairingOutcome {
@@ -99,27 +127,39 @@ impl<'a> SsoPairingFlow<'a> {
     pub(super) async fn request_session(
         &self,
     ) -> Result<SsoPairingOutcome, CallError<HostRequestLoginError>> {
-        let (mut pairing_identity, reused_identity) =
-            read_or_create_pairing_device_identity(self.host.platform.as_ref())
-                .await
-                .map_err(|reason| self.fail_before_pairing(reason))?;
-        let last_processed_statement =
-            read_last_processed_pairing_statement(self.host.platform.as_ref())
-                .await
-                .map_err(|reason| self.fail_before_pairing(reason))?;
-        // Pairing success statements are retained by statement-store. Reusing a
-        // previous pairing identity means reusing its topic, where the only
-        // retained response may be the last processed success. Rotate before
-        // presenting QR so every explicit login waits on a fresh wallet scan.
-        if reused_identity {
-            debug!("regenerating stored pairing device identity");
-            pairing_identity = create_fresh_pairing_device_identity(self.host.platform.as_ref())
-                .await
-                .map_err(|reason| self.fail_before_pairing(reason))?;
+        // Armed here rather than inside the flow because the reads below are
+        // host callbacks: a platform whose storage never answers would otherwise
+        // hold the attempt before the flow that bounds it ever starts, which is
+        // the silence this deadline exists to end.
+        let deadline = futures_timer::Delay::new(PAIRING_DEADLINE).fuse();
+        pin_mut!(deadline);
+
+        let prepare = async {
+            let (mut pairing_identity, reused_identity) =
+                read_or_create_pairing_device_identity(self.host.platform.as_ref()).await?;
+            let last_processed_statement =
+                read_last_processed_pairing_statement(self.host.platform.as_ref()).await?;
+            // Pairing success statements are retained by statement-store. Reusing a
+            // previous pairing identity means reusing its topic, where the only
+            // retained response may be the last processed success. Rotate before
+            // presenting QR so every explicit login waits on a fresh wallet scan.
+            if reused_identity {
+                debug!("regenerating stored pairing device identity");
+                pairing_identity =
+                    create_fresh_pairing_device_identity(self.host.platform.as_ref()).await?;
+            }
+            let bootstrap =
+                create_pairing_bootstrap_from_identity(&self.host.host_config, pairing_identity)
+                    .map_err(|err| err.to_string())?;
+            Ok::<_, String>((bootstrap, last_processed_statement))
         }
-        let bootstrap =
-            create_pairing_bootstrap_from_identity(&self.host.host_config, pairing_identity)
-                .map_err(|err| self.fail_before_pairing(err.to_string()))?;
+        .fuse();
+        pin_mut!(prepare);
+
+        let (bootstrap, last_processed_statement) = futures::select! {
+            _ = deadline => return Err(self.fail_before_pairing(pairing_deadline_reason())),
+            prepared = prepare => prepared.map_err(|reason| self.fail_before_pairing(reason))?,
+        };
 
         let Some((cancel_rx, pairing_epoch)) = self
             .host
@@ -145,6 +185,7 @@ impl<'a> SsoPairingFlow<'a> {
                 cancel_rx,
                 pairing_epoch,
                 last_processed_statement,
+                deadline,
             )
             .await
         {
@@ -183,6 +224,7 @@ impl<'a> SsoPairingFlow<'a> {
         cancel_rx: oneshot::Receiver<()>,
         pairing_epoch: u64,
         last_processed_statement: Option<Vec<u8>>,
+        mut deadline: Pin<&mut Fuse<futures_timer::Delay>>,
     ) -> Result<SsoPairingOutcome, String> {
         let mut cancel = cancel_rx.fuse();
         let statement_store = self.host.statement_store.clone();
@@ -191,6 +233,7 @@ impl<'a> SsoPairingFlow<'a> {
 
         let rpc_client = futures::select! {
             _ = cancel => return Ok(SsoPairingOutcome::Cancelled),
+            _ = deadline => return Err(pairing_deadline_reason()),
             connect_result = statement_store_connect => connect_result.map_err(|err| err.to_string())?,
         };
         let subscribe_client = rpc_client.clone();
@@ -200,6 +243,7 @@ impl<'a> SsoPairingFlow<'a> {
         pin_mut!(live_subscription);
         let live_subscription = futures::select! {
             _ = cancel => return Ok(SsoPairingOutcome::Cancelled),
+            _ = deadline => return Err(pairing_deadline_reason()),
             subscribe_result = live_subscription => subscribe_result
                 .map_err(|err| format!("pairing statement-store subscribe failed: {err}"))?,
         };
@@ -221,6 +265,7 @@ impl<'a> SsoPairingFlow<'a> {
 
         let response = futures::select! {
             _ = cancel => return Ok(SsoPairingOutcome::Cancelled),
+            _ = deadline => return Err(pairing_deadline_reason()),
             response_result = pairing_response => response_result?,
         };
         write_last_processed_pairing_statement(self.host.platform.as_ref(), &response.statement)
@@ -609,6 +654,100 @@ mod tests {
         }
     }
 
+    /// A peer on a different SSO envelope publishes statements this host cannot
+    /// open, so the topic stays silent past the subscription exactly as it would
+    /// before the peer answered at all. The flow has to give up on its own and
+    /// say why.
+    #[test]
+    fn request_login_gives_up_when_nothing_decryptable_answers() {
+        let platform = Arc::new(StubPlatform {
+            pairing_silent_after_subscribe: true,
+            ..Default::default()
+        });
+        let (host, _pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        let host = Arc::new(host);
+        let cx = CallContext::default();
+        let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
+        let outcome = futures::executor::block_on(host.request_login(&cx, request));
+
+        let error = outcome.expect_err("a pairing nothing answers must not wait forever");
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("different SSO envelope"),
+            "the failure should name the likely cause, got {rendered}"
+        );
+    }
+
+    /// Nothing answers the subscription request itself, so the flow never gets
+    /// as far as watching the topic. The wait for a live subscription carries
+    /// the same deadline as the wait for a peer on it.
+    #[test]
+    fn request_login_gives_up_when_the_pairing_topic_never_acks() {
+        let platform = stub_platform();
+        let (host, _pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        let host = Arc::new(host);
+        let cx = CallContext::default();
+        let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
+        let outcome = futures::executor::block_on(host.request_login(&cx, request));
+
+        let error = outcome.expect_err("a subscription nothing acknowledges must not wait forever");
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("pairing did not complete within"),
+            "the failure should name the deadline, got {rendered}"
+        );
+    }
+
+    /// The statement-store connection never opens, so the flow parks before it
+    /// has a topic to watch at all. The deadline is armed ahead of that connect,
+    /// not after it.
+    /// The bound has to cover the entry point, not just the flow. These reads
+    /// are host callbacks, so a platform that never answers one would otherwise
+    /// hold `request_login` open before the deadline is armed, which is the
+    /// same silence from the same entry point this whole change exists to end.
+    #[test]
+    fn request_login_gives_up_when_core_storage_never_answers() {
+        let platform = Arc::new(StubPlatform {
+            core_storage_pending: true,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+        let cx = CallContext::default();
+        let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
+
+        let error = futures::executor::block_on(host.request_login(&cx, request))
+            .expect_err("storage that never answers must not hold the attempt open");
+
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("pairing did not complete within"),
+            "the failure should name the deadline, got {rendered}"
+        );
+    }
+
+    #[test]
+    fn request_login_gives_up_when_the_statement_store_never_connects() {
+        let platform = Arc::new(StubPlatform {
+            chain_connect_pending: true,
+            ..Default::default()
+        });
+        let (host, _pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        let host = Arc::new(host);
+        let cx = CallContext::default();
+        let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
+        let outcome = futures::executor::block_on(host.request_login(&cx, request));
+
+        let error = outcome.expect_err("a connect that never opens must not wait forever");
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains("pairing did not complete within"),
+            "the failure should name the deadline, got {rendered}"
+        );
+    }
+
     #[test]
     fn request_login_regenerates_unmarked_pairing_device_identity_between_attempts() {
         let platform = stub_platform();
@@ -841,6 +980,10 @@ mod tests {
         assert_eq!(
             ui_info.peer_statement_account_id,
             Some(peer_statement_keypair().1)
+        );
+        assert_eq!(
+            ui_info.device_statement_account_id,
+            session.sso.as_ref().map(|sso| sso.ss_public_key)
         );
 
         let writes = session_writes

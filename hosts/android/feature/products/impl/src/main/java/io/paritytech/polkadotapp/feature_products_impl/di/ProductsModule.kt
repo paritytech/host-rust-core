@@ -70,6 +70,8 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.browser.RealProduc
 import io.paritytech.polkadotapp.feature_products_impl.domain.deriveEntropy.RealDeriveEntropyUseCase
 import io.paritytech.polkadotapp.feature_products_impl.domain.exploreProducts.ExploreProductsService
 import io.paritytech.polkadotapp.feature_products_impl.domain.exploreProducts.RealExploreProductsService
+import io.paritytech.polkadotapp.feature_products_impl.domain.funding.FundingProductsWarmUp
+import io.paritytech.polkadotapp.feature_products_impl.domain.funding.RealFundingProductsWarmUp
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.allowance.AllowanceKeyStorage
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.allowance.RealAllowanceKeyStorage
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.sponsoring.RealStatementStoreSubmissionSponsoring
@@ -339,6 +341,9 @@ internal interface ProductsModule {
 
     @Binds
     fun bindExploreProductsService(impl: RealExploreProductsService): ExploreProductsService
+
+    @Binds
+    fun bindFundingProductsWarmUp(impl: RealFundingProductsWarmUp): FundingProductsWarmUp
 
     @Binds
     @Singleton

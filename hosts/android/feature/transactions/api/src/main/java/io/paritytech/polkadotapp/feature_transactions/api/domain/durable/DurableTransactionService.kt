@@ -38,16 +38,34 @@ interface DurableTransactionService {
      *
      * A caller that reads a group back as a single outcome needs this — half a group in the ledger looks
      * exactly like a group whose other half failed on chain, and the two mean opposite things.
+     *
+     * A submission carrying a policy is built again by it once an attempt is proven unable to land, rather
+     * than failing.
      */
     suspend fun submitAll(
         domain: TxDomainId,
-        extrinsics: List<EnrichedSendableExtrinsic>,
+        submissions: List<DurableSubmission>,
         groupId: OperationGroupId,
         onRegister: suspend RegistrationScope.(List<DurableTxId>) -> Unit,
     ): Result<List<DurableTxId>>
 
     /**
-     * Ensures recovery is running: one pass per newly seen head, until nothing is left undecided.
+     * Registers transactions that have not been built yet, one per policy, as one operation. Each is built
+     * and submitted by its policy afterwards, and built again as [submitAll] describes.
+     *
+     * What they will consume is locked from the moment this commits. Safe to call inside an enclosing database
+     * transaction: building starts only once the rows are committed.
+     */
+    suspend fun schedule(
+        domain: TxDomainId,
+        groupId: OperationGroupId,
+        policies: List<SubmissionPolicy>,
+        onRegister: suspend RegistrationScope.(List<DurableTxId>) -> Unit,
+    ): Result<List<DurableTxId>>
+
+    /**
+     * Ensures recovery is running: transactions waiting to be built are built, and one pass runs per newly seen
+     * head, until nothing is left undecided.
      *
      * Fire-and-forget and idempotent — a caller states that transactions may need deciding, not that a
      * pass should happen now.

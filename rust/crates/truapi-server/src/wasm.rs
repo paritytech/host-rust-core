@@ -214,7 +214,7 @@ impl<T> Drop for JsSubscriptionStream<T> {
 
 fn invoke_js_subscription<T>(
     fn_: &Function,
-    payload: Option<Vec<u8>>,
+    payload: Option<JsValue>,
     parse_item: fn(JsValue) -> Result<T, String>,
 ) -> BoxStream<'static, Result<T, v01::GenericError>>
 where
@@ -231,15 +231,12 @@ where
     }) as Box<dyn FnMut(JsValue)>);
 
     let call_result = match payload {
-        Some(payload) => {
-            let arg = Uint8Array::from(payload.as_slice());
-            fn_.call3(
-                &JsValue::NULL,
-                &arg,
-                send_item.as_ref().unchecked_ref(),
-                send_error.as_ref().unchecked_ref(),
-            )
-        }
+        Some(arg) => fn_.call3(
+            &JsValue::NULL,
+            &arg,
+            send_item.as_ref().unchecked_ref(),
+            send_error.as_ref().unchecked_ref(),
+        ),
         None => fn_.call2(
             &JsValue::NULL,
             send_item.as_ref().unchecked_ref(),
@@ -986,6 +983,13 @@ impl WasmPairingHostRuntime {
         self.runtime
             .session_chat_identity_key()
             .map(|key| key.to_vec())
+    }
+
+    /// Read the active session's sr25519 statement-store secret, or
+    /// `undefined` when no session is active.
+    #[wasm_bindgen(js_name = deviceStatementKey)]
+    pub fn device_statement_key(&self) -> Option<Vec<u8>> {
+        self.runtime.device_statement_key().map(|key| key.to_vec())
     }
 
     /// Read this device's X25519 encryption secret, generating and persisting

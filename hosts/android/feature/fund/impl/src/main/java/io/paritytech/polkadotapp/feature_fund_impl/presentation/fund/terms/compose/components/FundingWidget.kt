@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.paritytech.polkadotapp.common.R
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.formatters.time.LocalTimeFormatter
 import io.paritytech.polkadotapp.common.presentation.formatters.time.TimeFormatter
 import io.paritytech.polkadotapp.design.components.button.default.PolkadotTextButton
@@ -146,7 +147,7 @@ private fun ConversionRate(conversion: ConversionModel) {
                 precisionFrom = RoundPrecision.FIAT,
                 precisionTo = RoundPrecision.HIGH,
                 approx = true
-            ),
+            ).withCurrencyTickerStyle(PolkadotTheme.typography.body.large),
             style = PolkadotTheme.typography.body.large,
             color = PolkadotTheme.colors.fg.primary,
         )
