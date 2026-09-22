@@ -64,10 +64,13 @@ export interface WorkerPairingHostRuntime {
    * should. Undefined for a core built before the export existed.
    */
   readonly coreWireSchemaHash: string | undefined;
-  createProvider(product: {
-    productId: string;
-    executionKind?: ProductExecutionKind;
-  }, callbacks?: WebWorkerHostCallbacks): Promise<TrUApiProductProvider>;
+  createProvider(
+    product: {
+      productId: string;
+      executionKind?: ProductExecutionKind;
+    },
+    callbacks?: WebWorkerHostCallbacks,
+  ): Promise<TrUApiProductProvider>;
   disconnectSession(): Promise<void>;
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
@@ -435,12 +438,18 @@ const NATIVE_CHAT_FILE_CALLBACKS: Partial<Record<CallbackName, true>> = {
 };
 
 /** Reclaim only undelivered selections; delivered sources belong to durable Host state. */
-async function discardChatFileCallback(state: RuntimeState, name: CallbackName, value: unknown): Promise<void> {
+async function discardChatFileCallback(
+  state: RuntimeState,
+  name: CallbackName,
+  value: unknown,
+): Promise<void> {
   try {
     if (name === "pickChatFiles" && value instanceof Uint8Array) {
-      await Promise.all(Vector(NativeChatPickedFile).dec(value).map(
-        (file) => state.rawCallbacks.releaseChatFile(file.sourceId),
-      ));
+      await Promise.all(
+        Vector(NativeChatPickedFile)
+          .dec(value)
+          .map((file) => state.rawCallbacks.releaseChatFile(file.sourceId)),
+      );
     } else if (name === "beginChatFileExport" && typeof value === "string") {
       state.chatFileExports.delete(value);
       await state.rawCallbacks.cancelChatFileExport(value);
@@ -460,15 +469,19 @@ function handleCallbackRequest(
   },
 ): void {
   if (state.disposed) return;
-  const callbacks = msg.coreId === undefined ? state.rawCallbacks : state.coreCallbacks.get(msg.coreId);
-  const fn = callbacks && Object.hasOwn(callbacks, msg.name)
-    ? (
-        callbacks as unknown as Record<
-          string,
-          (...args: readonly unknown[]) => unknown
-        >
-      )[msg.name]
-    : undefined;
+  const callbacks =
+    msg.coreId === undefined
+      ? state.rawCallbacks
+      : state.coreCallbacks.get(msg.coreId);
+  const fn =
+    callbacks && Object.hasOwn(callbacks, msg.name)
+      ? (
+          callbacks as unknown as Record<
+            string,
+            (...args: readonly unknown[]) => unknown
+          >
+        )[msg.name]
+      : undefined;
   if (!fn) {
     state.worker.postMessage({
       kind: "callbackResponse",
@@ -481,7 +494,8 @@ function handleCallbackRequest(
   Promise.resolve()
     .then(() => {
       if (state.disposed) throw new Error("Host runtime is unavailable");
-      if (msg.coreId !== undefined && !state.coreCallbacks.has(msg.coreId)) throw new Error("Product callbacks are unavailable");
+      if (msg.coreId !== undefined && !state.coreCallbacks.has(msg.coreId))
+        throw new Error("Product callbacks are unavailable");
       return fn(...msg.args);
     })
     .then(
@@ -492,7 +506,10 @@ function handleCallbackRequest(
         }
         if (msg.name === "beginChatFileExport" && typeof value === "string") {
           state.chatFileExports.add(value);
-        } else if (msg.name === "finishChatFileExport" || msg.name === "cancelChatFileExport") {
+        } else if (
+          msg.name === "finishChatFileExport" ||
+          msg.name === "cancelChatFileExport"
+        ) {
           state.chatFileExports.delete(msg.args[0] as string);
         }
         try {
@@ -513,7 +530,11 @@ function handleCallbackRequest(
               error: "Host callback result could not be serialized",
             } satisfies MainToWorker);
           } catch {
-            teardown(state, new Error("Host callback transport is unavailable"), true);
+            teardown(
+              state,
+              new Error("Host callback transport is unavailable"),
+              true,
+            );
           }
         }
       },
@@ -524,10 +545,16 @@ function handleCallbackRequest(
             kind: "callbackResponse",
             requestId: msg.requestId,
             ok: false,
-            error: NATIVE_CHAT_FILE_CALLBACKS[msg.name] ? "Native Chat file operation failed" : errorMessage(err),
+            error: NATIVE_CHAT_FILE_CALLBACKS[msg.name]
+              ? "Native Chat file operation failed"
+              : errorMessage(err),
           } satisfies MainToWorker);
         } catch {
-          teardown(state, new Error("Host callback transport is unavailable"), true);
+          teardown(
+            state,
+            new Error("Host callback transport is unavailable"),
+            true,
+          );
         }
       },
     );
@@ -560,7 +587,10 @@ function handleSubscriptionStart(
   };
   let dispose: (() => void) | void = undefined;
   try {
-    const callbacks = msg.coreId === undefined ? state.rawCallbacks : state.coreCallbacks.get(msg.coreId);
+    const callbacks =
+      msg.coreId === undefined
+        ? state.rawCallbacks
+        : state.coreCallbacks.get(msg.coreId);
     if (!callbacks) throw new Error("Product callbacks are unavailable");
     dispose = startRawSubscription(
       callbacks,
@@ -629,7 +659,12 @@ async function handleChainConnectStart(
   };
   try {
     const conn = await (msg.kind === "hopConnectStart"
-      ? state.rawCallbacks.hopConnect(msg.genesisHash, msg.endpoint, onResponse, onClosed)
+      ? state.rawCallbacks.hopConnect(
+          msg.genesisHash,
+          msg.endpoint,
+          onResponse,
+          onClosed,
+        )
       : state.rawCallbacks.chainConnect(msg.genesisHash, onResponse, onClosed));
     if (state.disposed || entry.closed) {
       state.chainConnections.delete(msg.connId);
@@ -657,7 +692,10 @@ async function handleChainConnectStart(
           kind: "chainConnectAck",
           connId: msg.connId,
           ok: false,
-          error: msg.kind === "hopConnectStart" ? "HOP connection unavailable" : errorMessage(err),
+          error:
+            msg.kind === "hopConnectStart"
+              ? "HOP connection unavailable"
+              : errorMessage(err),
         } satisfies MainToWorker);
       }
     }
@@ -1028,7 +1066,9 @@ function createWebWorkerHostRuntime(
   host: WebWorkerHostCallbacks,
   options: CreateWebWorkerHostRuntimeOptions,
 ): Promise<WorkerPairingHostRuntime & WorkerSigningHostRuntime> {
-  const browserFiles = host.nativeChatFiles ? undefined : createBrowserNativeChatFilesHost();
+  const browserFiles = host.nativeChatFiles
+    ? undefined
+    : createBrowserNativeChatFilesHost();
   const callbacks = createWasmRawCallbacks({
     ...host,
     nativeChatFiles: host.nativeChatFiles ?? browserFiles!,
@@ -1373,7 +1413,8 @@ function buildRuntime(
       }
       return new Promise((resolve, reject) => {
         const coreId = ++state.nextCoreId;
-        if (callbacks) state.coreCallbacks.set(coreId, createWasmRawCallbacks(callbacks));
+        if (callbacks)
+          state.coreCallbacks.set(coreId, createWasmRawCallbacks(callbacks));
         state.pendingCores.set(coreId, {
           productId: product.productId,
           resolve,
@@ -1384,14 +1425,16 @@ function buildRuntime(
             kind: "createCore",
             coreId,
             product,
-            ...(callbacks === undefined ? {} : {
-              capabilities: {
-                chat: callbacks.chat !== undefined,
-                permissionStatus: callbacks.permissionStatus !== undefined,
-                pocket: callbacks.pocket !== undefined,
-                identityBackend: callbacks.identityBackend !== undefined,
-              },
-            }),
+            ...(callbacks === undefined
+              ? {}
+              : {
+                  capabilities: {
+                    chat: callbacks.chat !== undefined,
+                    permissionStatus: callbacks.permissionStatus !== undefined,
+                    pocket: callbacks.pocket !== undefined,
+                    identityBackend: callbacks.identityBackend !== undefined,
+                  },
+                }),
           } satisfies MainToWorker);
         } catch (err) {
           state.pendingCores.delete(coreId);

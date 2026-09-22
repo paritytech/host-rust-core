@@ -86,7 +86,12 @@ export type MainToWorker =
       // frames to it. Null in production, so the host tap stays inert.
       debuggerUrl: string | null;
     }
-  | { kind: "createCore"; coreId: number; product: unknown; capabilities?: OptionalCapabilities }
+  | {
+      kind: "createCore";
+      coreId: number;
+      product: unknown;
+      capabilities?: OptionalCapabilities;
+    }
   | { kind: "disposeCore"; coreId: number }
   | { kind: "setLogLevel"; level: LogLevel }
   | { kind: "frame"; coreId: number; bytes: Uint8Array }

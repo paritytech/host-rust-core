@@ -35,8 +35,8 @@ unset DYLD_LIBRARY_PATH
 # Both crates in one invocation: rustdoc starts once and truapi is documented
 # once for both, rather than a second process re-reading it.
 RUSTDOCFLAGS="-Z unstable-options --output-format json" \
-  cargo +"$NIGHTLY_TOOLCHAIN" doc -p truapi -p truapi-platform --no-deps
-cargo run -p truapi-codegen -- \
+  cargo +"$NIGHTLY_TOOLCHAIN" doc --locked -p truapi -p truapi-platform --no-deps
+cargo run --locked -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
   --playground-output js/packages/truapi/src/playground \
