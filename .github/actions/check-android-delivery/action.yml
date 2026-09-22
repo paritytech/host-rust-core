@@ -70,12 +70,20 @@ runs:
           echo "::error::Could not list tester groups in ${project}"
           printf '%s\n' "${json}" | head -20
           cat "${err}" >&2 || true
+          # The JSON path silences every logger, so the payload above carries
+          # only a summary and the cause is discarded. Asking again without it
+          # turns the console logging back on, which is where the reason the
+          # credentials were refused actually appears. Request and response
+          # lines are logged; authorization headers and token values are not.
+          echo "--- asking again for the reason ---" >&2
+          "${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
+            --project "${project}" --debug >&2 2>&1 || true
           exit 1
         fi
         if ! jq -e . >/dev/null 2>&1 <<<"${json}"; then
           echo "::error::Could not parse the group listing from ${project}"
           printf '%s\n' "${json}" | head -20
-          cat "${err}" >&2 || true
+          tail -60 "${err}" >&2 || true
           exit 1
         fi
 
