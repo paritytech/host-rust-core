@@ -260,12 +260,13 @@ async function main() {
     ...process.env,
     ...installEnvironment(workspace, release.baseUrl),
     TRUAPI_HOST_NO_UPDATE: "1",
-    TRUAPI_SCRIPT_SDK: `file:${join(workspace, "missing-sdk.tgz")}`,
+    TRUAPI_SCRIPT_SDK: "0.0.0-script-sdk-e2e-missing",
     BUN_INSTALL_CACHE_DIR: join(workspace, "bun-cache"),
     VISUAL: "true",
     EDITOR: "true",
   };
   delete environment.TRUAPI_HOST_RUNNER;
+  delete environment.TRUAPI_SCRIPT_SDK_HOST;
   const args = ["pairing-host", "--base-path", state, "--auto-accept"];
   let terminal;
   try {

@@ -34,7 +34,7 @@ The interactive playground lets you browse every method, edit request payloads, 
 curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
 ```
 
-Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. `/script` opens a persistent TypeScript project with Product SDK, pinned dependencies, and editor types for the active host. Use `/script --run` to rerun it or `/script --edit` to edit without running. Projects survive session cleanup. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup, existing project scripts, and the required Product SDK release.
+Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. `/script` opens a persistent TypeScript project with Product SDK, pinned dependencies, and editor types for the active host. Use `/script --run` to rerun it or `/script --edit` to edit without running. Projects survive session cleanup. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup, existing project scripts, local SDK development, and the required Product SDK release. Release checks install and typecheck the default SDK template against the public registry.
 
 ## Usage
 

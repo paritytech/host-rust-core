@@ -55,6 +55,17 @@ pub fn script_types() -> Result<Vec<u8>> {
     fs::read(&path).with_context(|| format!("read host-script types {}", path.display()))
 }
 
+/// Local SDK configuration applies only to this checkout's source runner.
+pub fn script_sdk_config() -> Option<PathBuf> {
+    sdk_config_for_runner(&runner_path())
+}
+
+fn sdk_config_for_runner(runner: &Path) -> Option<PathBuf> {
+    let crate_directory = Path::new(env!("CARGO_MANIFEST_DIR"));
+    (runner == crate_directory.join("js/runner.ts"))
+        .then(|| crate_directory.join("../../../.agent/script-sdk.json"))
+}
+
 /// Locate the host-script runner.
 fn runner_path() -> PathBuf {
     resolve_runner(
@@ -328,6 +339,23 @@ mod tests {
         assert_eq!(
             resolve_runner(None, Some(&executable)),
             Path::new(env!("CARGO_MANIFEST_DIR")).join("js/runner.ts")
+        );
+    }
+
+    #[test]
+    fn packaged_and_custom_runners_do_not_inherit_checkout_sdk_configuration() {
+        let crate_directory = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(
+            [
+                sdk_config_for_runner(&crate_directory.join("js/runner.ts")),
+                sdk_config_for_runner(Path::new("/release/runner.js")),
+                sdk_config_for_runner(Path::new("/custom/runner.ts")),
+            ],
+            [
+                Some(crate_directory.join("../../../.agent/script-sdk.json")),
+                None,
+                None,
+            ]
         );
     }
 

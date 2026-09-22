@@ -358,9 +358,32 @@ also lets execution start immediately. Editor failure preserves the script
 without running it.
 
 New projects pin Product SDK 0.30.0, whose release must precede deployment of
-this CLI feature. During development, set `TRUAPI_SCRIPT_SDK` to a packed SDK
-tarball or package spec before creating a project. It changes only the new
-manifest. Existing project dependencies are never upgraded by a host update.
+this CLI feature. `make check-script-sdk` installs the unchanged template from
+the public registry and checks its types and host binding. CLI releases require
+this check to pass.
+
+For local development, build the SDK workspace and run `pnpm pack` in both
+`packages/sdk` and `packages/host`. Put their absolute archive paths in this
+checkout's `.agent/script-sdk.json`:
+
+```json
+{
+  "sdk": "/absolute/path/parity-product-sdk-0.29.0.tgz",
+  "host": "/absolute/path/parity-product-sdk-host-0.21.0.tgz"
+}
+```
+
+A CLI built from this checkout, including `make headless install`, uses this
+selection for new projects. Packaged releases and custom runners do not read
+the checkout's configuration. New projects copy the archives into `vendor/`
+and override the host package across all SDK dependencies, so they can be
+copied or reinstalled independently of the SDK checkout. Repacking the SDK and
+updating the configuration affects only new projects.
+
+Alternatively, set `TRUAPI_SCRIPT_SDK` and `TRUAPI_SCRIPT_SDK_HOST` to archive
+paths or package specs before starting the CLI. These explicit settings take
+precedence over the checkout configuration. Existing project dependencies are
+never changed by a host update or a new SDK selection.
 
 To verify unpublished SDK changes against the packaged CLI, provide both the
 built umbrella and host package tarballs:
