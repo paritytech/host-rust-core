@@ -25,6 +25,9 @@ concurrency:
 
 permissions:
   contents: read
+  # The run links its archive from the pull request, so a reviewer does not
+  # have to find it in the Actions tab.
+  pull-requests: write
 
 env:
   IOS_BUNDLE_ID: "io.parity.polkadotapp.develop"
@@ -151,9 +154,47 @@ jobs:
           echo "archive=hosts/ios/polkadot-app-${short}.ipa" >> "$GITHUB_OUTPUT"
 
       - name: Upload the device build
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: device-preview-${{ steps.package.outputs.short }}
           path: ${{ steps.package.outputs.archive }}
           retention-days: 14
           if-no-files-found: error
+
+      # The stamp is inside the bundle, so the only way to read it before
+      # downloading is for the pull request to say which commit it came from.
+      - name: Write the preview comment
+        env:
+          SHORT: ${{ steps.package.outputs.short }}
+          URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+
+          # No URL means the upload failed, and that is the upload step's to
+          # report. Writing no body leaves the link step with nothing to post,
+          # which the action treats as nothing to say, so a build that
+          # succeeded is never failed by a comment that could not be composed.
+          if [ -z "${URL}" ]; then
+            echo "no artifact url, so no comment"
+            exit 0
+          fi
+
+          cat > "$RUNNER_TEMP/preview.md" <<EOF
+          ### iOS device preview
+
+          Built from \`${SHORT}\`, stamped with it in \`TrUAPICommit\`.
+
+          [Download it](${URL}). It arrives as a zip around the \`.ipa\`, so it
+          needs unzipping once before installing.
+
+          Installing needs your device registered in the ad hoc profile. If it
+          is not, run \`ios-register-device.yml\` with its UDID, then
+          \`ios-update-signing-data.yml\` to fold it into the profile, and
+          rebuild. Kept for 14 days.
+          EOF
+
+      - uses: ./.github/actions/upsert-pr-comment
+        with:
+          marker: "<!-- ios-device-preview -->"
+          body-file: ${{ runner.temp }}/preview.md
