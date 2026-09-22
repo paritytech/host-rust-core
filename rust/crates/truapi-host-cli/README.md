@@ -355,8 +355,9 @@ is resolved. It is hidden from session completion and listing and cannot be
 selected with `/session default`. User session names contain lowercase ASCII
 letters, digits, `.`, `_`, or `-`; they cannot be paths. Switching prepares the
 target while the old session remains active, then stops all responders for the
-old session, resets product WebSocket connections so clients reconnect against
-the new runtime, and restores every paired device saved for the target session.
+old session, resets product WebSocket connections, and restores every paired
+device saved for the target session. Reload browser dev pages to connect to the
+new runtime.
 
 `/session --mnemonic "<phrase>"` brings an already-onboarded account into the
 session catalog. The host derives its `uid.<tld>` identity, reads any existing
@@ -532,8 +533,8 @@ res.match(
 `localhost` identifier; default
 `headless-playground.dot`) sets the initial product. `/product <id>` changes it
 for the lifetime of the process. Switching disconnects active product
-WebSockets so clients reconnect with a new product context; the network,
-pairing relationship, signing-host session, and wallet identity stay active.
+WebSockets. Reload browser dev pages to use the new product context. The
+network, pairing relationship, signing-host session, and wallet identity stay active.
 Product-owned storage, permissions, and derived product accounts are scoped by
 the selected id, so the newly selected product sees its own state. The next
 `/script` also receives the new id through `host.productId`.
