@@ -48,6 +48,8 @@ pub(crate) struct RuntimeServices {
     pub(crate) worker_ledger: WorkerLedger,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
+    /// People-chain genesis hash, the chain hosting the reserved people rings.
+    pub(crate) people_chain_genesis_hash: [u8; 32],
     /// People-chain statement store RPC client.
     pub(crate) statement_store: StatementStoreRpc,
     /// In-core Bulletin submission over the configured Bulletin chain.
@@ -104,6 +106,7 @@ impl RuntimeServices {
             asset_hub_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
             chain,
+            people_chain_genesis_hash,
             statement_store,
             bulletin,
             #[cfg(not(target_arch = "wasm32"))]
