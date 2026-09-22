@@ -355,7 +355,13 @@ jobs:
     name: Send Failure Notification
     runs-on: ubuntu-latest
     needs: [prepare_build_metadata, check_and_build, check_build_result]
-    if: failure()
+    # Held: the only room configured is the one the release announcements go
+    # to, and a build failure is not news for that audience. Restoring this
+    # wants a room of its own.
+    #
+    # The condition this replaces:
+    # if: failure()
+    if: false
     steps:
       - name: Send failure notification
         uses: novasamatech/github-actions/send-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
