@@ -342,8 +342,8 @@ survive session clearing, including projects created with `--mnemonic`.
 Each contains `script.ts`, host declarations, `package.json`, and `tsconfig.json`.
 The starter runs the Product SDK quickstart: create an app, connect wallet
 accounts, and write and read local storage. The runner supplies the SDK's host
-connection automatically. The first open installs pinned SDK and editor
-dependencies with Bun. Successful setup saves a lockfile; later opens reuse
+connection automatically. The first open installs editor dependencies with
+Bun. Successful setup saves a lockfile; later opens reuse
 the installation without a network request. Setup errors or cancellation keep
 the project so you can fix the problem and retry `/script`.
 

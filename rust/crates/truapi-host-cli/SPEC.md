@@ -210,7 +210,7 @@ A release archive ships `runner.js` and `script-types.d.ts` beside the binary.
 The runner has `@parity/truapi` and the shared web API permission checks bundled
 in, and the declaration file contains the matching generated client and
 injected-global types, so an installed copy runs product scripts with no source
-tree. New SDK projects install their own pinned npm dependencies. A source build
+tree. New projects install their own editor dependencies. A source build
 has no runner bundle and falls back to the checkout copies, whose relative
 `@parity/truapi` import means the runner only works from a built tree.
 
