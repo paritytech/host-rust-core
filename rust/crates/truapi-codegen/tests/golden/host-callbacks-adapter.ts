@@ -34,6 +34,7 @@ import {
   HostChainSet,
   PermissionDecision,
   ProductContext,
+  RingProverDomain,
   UserConfirmationReview,
 } from "./host-callbacks.js";
 import type { RequiredHostCallbacks } from "./host-callbacks.js";
@@ -102,6 +103,9 @@ export interface RawCallbacks {
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  loadRingProverParams?(
+    domain: Uint8Array,
+  ): Promise<Uint8Array | null | undefined>;
   subscribeTheme(
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
@@ -117,6 +121,7 @@ export function createWasmRawCallbacks(
   const chat = callbacks.chat;
   const permissionStatus = callbacks.permissionStatus;
   const pocket = callbacks.pocket;
+  const ringProverParams = callbacks.ringProverParams;
   return {
     authStateChanged: async (state) =>
       await callbacks.auth.authStateChanged(AuthState.dec(state)),
@@ -249,6 +254,14 @@ export function createWasmRawCallbacks(
         (item) => sendItem(HostLocalStorageChangeItem.enc(item)),
         sendError,
       ),
+    ...(ringProverParams
+      ? {
+          loadRingProverParams: async (domain) =>
+            await ringProverParams.loadRingProverParams(
+              RingProverDomain.dec(domain),
+            ),
+        }
+      : {}),
     subscribeTheme: (sendItem, sendError) =>
       driveResultStream(
         callbacks.theme.subscribeTheme(),

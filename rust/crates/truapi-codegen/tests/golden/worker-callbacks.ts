@@ -32,6 +32,7 @@ export const CALLBACK_NAMES = [
   "read",
   "write",
   "clear",
+  "loadRingProverParams",
   "confirmPermission",
   "confirmUserAction",
 ] as const;
@@ -247,6 +248,17 @@ function pocketRawCallbacks(
   };
 }
 
+function ringProverParamsRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "loadRingProverParams">> {
+  return {
+    loadRingProverParams: (domain) =>
+      bridge.callbackRequest("loadRingProverParams", [domain]) as ReturnType<
+        Required<RawCallbacks>["loadRingProverParams"]
+      >,
+  };
+}
+
 /**
  * Optional capabilities the main-thread host actually serves. A
  * capability left out here is not proxied into the worker, so the
@@ -259,6 +271,8 @@ export interface OptionalCapabilities {
   permissionStatus?: boolean;
   /** Whether the host serves this capability. */
   pocket?: boolean;
+  /** Whether the host serves this capability. */
+  ringProverParams?: boolean;
 }
 
 export function createWorkerRawCallbacks(
@@ -274,6 +288,8 @@ export function createWorkerRawCallbacks(
   if (capabilities.permissionStatus)
     Object.assign(callbacks, permissionStatusRawCallbacks(bridge));
   if (capabilities.pocket) Object.assign(callbacks, pocketRawCallbacks(bridge));
+  if (capabilities.ringProverParams)
+    Object.assign(callbacks, ringProverParamsRawCallbacks(bridge));
   return callbacks;
 }
 

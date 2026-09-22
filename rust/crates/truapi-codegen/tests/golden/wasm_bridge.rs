@@ -53,12 +53,14 @@ pub(super) struct JsBridge {
     pub(super) write: Function,
     pub(super) clear: Function,
     pub(super) subscribe_storage: Function,
+    pub(super) load_ring_prover_params: Function,
     pub(super) subscribe_theme: Function,
     pub(super) confirm_permission: Function,
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
     pub(super) permission_status_present: bool,
     pub(super) pocket_present: bool,
+    pub(super) ring_prover_params_present: bool,
 }
 
 impl JsBridge {
@@ -98,6 +100,8 @@ impl JsBridge {
             write: get_function(callbacks, "write")?,
             clear: get_function(callbacks, "clear")?,
             subscribe_storage: get_function(callbacks, "subscribeStorage")?,
+            load_ring_prover_params: get_optional_function(callbacks, "loadRingProverParams")?
+                .unwrap_or_else(|| missing_callback("loadRingProverParams")),
             subscribe_theme: get_function(callbacks, "subscribeTheme")?,
             confirm_permission: get_function(callbacks, "confirmPermission")?,
             confirm_user_action: get_function(callbacks, "confirmUserAction")?,
@@ -109,6 +113,8 @@ impl JsBridge {
                 .is_some(),
             pocket_present: get_optional_function(callbacks, "subscribePocketCards")?.is_some()
                 && get_optional_function(callbacks, "removePocketCard")?.is_some(),
+            ring_prover_params_present: get_optional_function(callbacks, "loadRingProverParams")?
+                .is_some(),
         })
     }
 
@@ -125,6 +131,11 @@ impl JsBridge {
     /// Whether the host supplied every `pocket` callback.
     pub(super) fn has_pocket(&self) -> bool {
         self.pocket_present
+    }
+
+    /// Whether the host supplied every `ring_prover_params` callback.
+    pub(super) fn has_ring_prover_params(&self) -> bool {
+        self.ring_prover_params_present
     }
 }
 
@@ -524,6 +535,22 @@ impl truapi_platform::ProductStorage for WasmPlatform {
             Some(JsValue::from_str(&key)),
             parse_host_local_storage_change_item_item,
         )
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::RingProverParams for WasmPlatform {
+    async fn load_ring_prover_params(
+        &self,
+        domain: truapi_platform::RingProverDomain,
+    ) -> Result<Option<Vec<u8>>, v01::GenericError> {
+        invoke_optional_bytes_return(
+            &self.bridge.load_ring_prover_params,
+            vec![Uint8Array::from(domain.encode().as_slice()).into()],
+            "loadRingProverParams must resolve to Uint8Array, null or undefined",
+        )
+        .await
+        .map_err(generic)
     }
 }
 

@@ -29,6 +29,10 @@ import type {
 } from "./wasm-module.js";
 import { errorMessage } from "./error.js";
 import {
+  createRingProverParamsLoader,
+  type RingProverParamsManifest,
+} from "./ring-prover-params.js";
+import {
   CHAT_ACTION_ENTRY_POINT,
   RENDERER_ACTION_ENTRY_POINT,
   handlePublishAction,
@@ -168,6 +172,32 @@ function chainConnect(
   });
 }
 
+/**
+ * Ring prover parameters live beside the WASM bundle, so this worker answers
+ * the core itself instead of forwarding to the main thread. `force-cache`
+ * serves the HTTP cache when it holds the file, which makes this one download
+ * per browser; the files are named by content, so a cached one is never stale.
+ */
+async function readWasmAsset(file: string): Promise<Response | undefined> {
+  const response = await fetch(new URL(`./wasm/web/${file}`, import.meta.url), {
+    cache: "force-cache",
+  });
+  return response.ok ? response : undefined;
+}
+
+const loadRingProverParams = createRingProverParamsLoader({
+  loadManifest: async () => {
+    const response = await readWasmAsset("srs-manifest.json");
+    return response
+      ? ((await response.json()) as RingProverParamsManifest)
+      : {};
+  },
+  fetchBytes: async (file) => {
+    const response = await readWasmAsset(file);
+    return response ? new Uint8Array(await response.arrayBuffer()) : undefined;
+  },
+});
+
 /** Build the host-level callback object passed to the WASM runtime. */
 function buildRawCallbacks(capabilities: OptionalCapabilities) {
   return {
@@ -179,6 +209,7 @@ function buildRawCallbacks(capabilities: OptionalCapabilities) {
       },
       capabilities,
     ),
+    loadRingProverParams,
     /**
      * Demand on a product's worker crossed zero. Every transition arrives
      * here in ledger order, whether this thread asked for it through

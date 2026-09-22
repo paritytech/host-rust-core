@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::chain_runtime::{ChainRuntime, RuntimeChainProvider, RuntimeFailure};
 use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::bulletin_rpc::BulletinRpc;
+use crate::runtime::ring_prover_params::RingProverParamsCache;
 use crate::runtime::signing_host::DevicePairingObserver;
 use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
@@ -42,6 +43,12 @@ pub(crate) struct RuntimeServices {
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
     pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
+    /// Host source of ring-VRF prover parameters, installed once at startup by
+    /// a host that serves them. Unset leaves this host unable to prove
+    /// locally, which routes those requests to the paired signer.
+    ring_prover_params: OnceLock<Arc<dyn truapi_platform::RingProverParams>>,
+    /// Per-domain parameter installs, shared by every role on this core.
+    ring_prover_params_cache: OnceLock<Arc<RingProverParamsCache>>,
     /// Host observer told when a device finishes pairing with this signing
     /// host. Unset leaves a paired device unannounced.
     device_pairing_observer: OnceLock<Arc<dyn DevicePairingObserver>>,
@@ -105,6 +112,8 @@ impl RuntimeServices {
             chat_platform: None,
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
+            ring_prover_params: OnceLock::new(),
+            ring_prover_params_cache: OnceLock::new(),
             device_pairing_observer: OnceLock::new(),
             asset_hub_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
@@ -195,6 +204,28 @@ impl RuntimeServices {
     /// The host's Pocket adapter, when one is installed.
     pub(crate) fn pocket_platform(&self) -> Option<Arc<dyn truapi_platform::PocketPlatform>> {
         self.pocket_platform.get().cloned()
+    }
+
+    /// Install the host's ring-VRF prover parameter source.
+    pub(crate) fn install_ring_prover_params(
+        &self,
+        params: Arc<dyn truapi_platform::RingProverParams>,
+    ) -> bool {
+        self.ring_prover_params.set(params).is_ok()
+    }
+
+    /// The shared per-domain parameter cache.
+    ///
+    /// Built on first use, so a source installed after construction is still
+    /// picked up.
+    pub(crate) fn ring_prover_params_cache(&self) -> Arc<RingProverParamsCache> {
+        self.ring_prover_params_cache
+            .get_or_init(|| {
+                Arc::new(RingProverParamsCache::new(
+                    self.ring_prover_params.get().cloned(),
+                ))
+            })
+            .clone()
     }
 
     /// Install the host's device-pairing observer.

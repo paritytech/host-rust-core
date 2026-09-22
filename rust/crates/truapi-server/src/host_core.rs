@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
+use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform, RingProverParams};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -287,6 +287,15 @@ impl PairingHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_pocket_platform"))]
     pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
         self.services.install_pocket_platform(platform)
+    }
+
+    /// Install the host's ring-VRF prover parameter source.
+    ///
+    /// Set-once. A host that installs none cannot prove locally: those
+    /// requests reach the paired signer instead.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_ring_prover_params"))]
+    pub fn set_ring_prover_params(&self, params: Arc<dyn RingProverParams>) -> bool {
+        self.services.install_ring_prover_params(params)
     }
 
     /// Build a product-facing runtime from this pairing host.
@@ -639,6 +648,15 @@ impl SigningHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_pocket_platform"))]
     pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
         self.services.install_pocket_platform(platform)
+    }
+
+    /// Install the host's ring-VRF prover parameter source.
+    ///
+    /// Set-once. A host that installs none cannot prove locally: those
+    /// requests reach the paired signer instead.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_ring_prover_params"))]
+    pub fn set_ring_prover_params(&self, params: Arc<dyn RingProverParams>) -> bool {
+        self.services.install_ring_prover_params(params)
     }
 
     /// Install the host's [`DevicePairingObserver`], told whenever a device

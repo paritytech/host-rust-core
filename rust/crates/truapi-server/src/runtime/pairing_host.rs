@@ -2312,6 +2312,21 @@ impl PairingHost {
                     &[MemberCandidate { member }],
                 )
                 .await?;
+            // Proving needs this ring's parameters. A host that serves none
+            // cannot prove here at all, so the request goes to the signer
+            // rather than failing: the same answer this call gives when no
+            // local key backs the handle.
+            if self
+                .services
+                .ring_prover_params_cache()
+                .ensure(resolved.domain_size)
+                .await
+                .is_err()
+            {
+                return self
+                    .remote_create_proof(cx, &private_session, request)
+                    .await;
+            }
             self.current_private_session(session)?;
             let context = development_context_bytes(&request.payload.context);
             let (proof, alias) =

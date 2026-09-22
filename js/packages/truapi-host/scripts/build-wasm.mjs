@@ -109,6 +109,49 @@ function readCustomSectionNames(bytes) {
   return names;
 }
 
+/** Total size of the data section, where large constants land. */
+function dataSectionSize(bytes) {
+  let offset = 8;
+  let total = 0;
+  while (offset < bytes.length) {
+    const sectionId = bytes[offset];
+    offset += 1;
+    const [sectionSize, payloadStart] = readVarUint(bytes, offset);
+    if (sectionId === 11) total += sectionSize;
+    offset = payloadStart + sectionSize;
+  }
+  return total;
+}
+
+// The ring prover SRS is several MiB of incompressible constant, served as a
+// separate asset and installed at runtime. One compiled reference to the
+// proving stack pulls the whole blob back into the core, which this catches:
+// the data section is around 0.5 MiB without it and 5 MiB with it.
+const DATA_SECTION_CEILING = 1024 * 1024;
+
+async function validateDataSection(wasmPath) {
+  if (wasmProfile !== "release") return;
+
+  const size = dataSectionSize(await readFile(wasmPath));
+  if (size > DATA_SECTION_CEILING) {
+    throw new Error(
+      `wasm data section is ${formatBytes(size)}, over ${formatBytes(DATA_SECTION_CEILING)}: ` +
+        "the ring prover SRS is probably compiled in again",
+    );
+  }
+}
+
+/** Emit the per-domain ring prover parameters the host serves at runtime. */
+async function emitRingProverParams(outDir) {
+  process.stdout.write(`ring prover params → ${outDir}\n`);
+  const { stdout } = await execFileAsync(
+    "cargo",
+    ["run", "--release", "-p", "truapi-srs-gen", "--", outDir],
+    { cwd: repoRoot },
+  );
+  process.stdout.write(stdout);
+}
+
 async function validateReleaseWasm(wasmPath) {
   if (wasmProfile !== "release") return;
 
@@ -182,7 +225,9 @@ async function build(target, subdir) {
     rm(`${wasmPath}.gz`, { force: true }),
   ]);
   await validateReleaseWasm(wasmPath);
+  await validateDataSection(wasmPath);
   await writeCompressedSidecars(wasmPath);
+  await emitRingProverParams(outDir);
 }
 
 await build("web", "web");

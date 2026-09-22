@@ -15,6 +15,12 @@ license = "MIT"
 [workspace.dependencies]
 uniffi = "0.32.0"
 
+# The ring-VRF prover parameters are installed at runtime on wasm, which needs
+# `verifiable`'s `prover-srs-embedded` split. Sibling checkout until that is
+# released; replace with a rev in `truapi-server`'s manifest once it is.
+[patch."https://github.com/paritytech/verifiable.git"]
+verifiable = { path = "../verifiable" }
+
 [workspace.lints.rust]
 missing_docs = "warn"
 unsafe_code = "deny"

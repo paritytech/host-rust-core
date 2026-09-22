@@ -24,6 +24,8 @@ mod pairing_host;
 pub(crate) mod product_manifest;
 mod product_subtree;
 mod renderer;
+/// Ring-VRF prover parameters supplied by the host.
+pub(crate) mod ring_prover_params;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
 pub(crate) mod services;

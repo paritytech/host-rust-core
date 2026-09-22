@@ -29,7 +29,7 @@ use truapi_platform::SigningHostConfig;
 use truapi_platform::{
     ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
     PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
-    RuntimeConfigValidationError,
+    RingProverParams, RuntimeConfigValidationError,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -841,6 +841,7 @@ struct WasmPlatformAdapters {
     chat_platform: Option<Arc<dyn ChatPlatform>>,
     status_host: Option<Arc<dyn PermissionStatusHost>>,
     pocket_platform: Option<Arc<dyn PocketPlatform>>,
+    ring_prover_params: Option<Arc<dyn RingProverParams>>,
 }
 
 /// Build the platform and the optional capability adapters supplied by the host.
@@ -848,15 +849,19 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     let has_chat = bridge.has_chat();
     let has_permission_status = bridge.has_permission_status();
     let has_pocket = bridge.has_pocket();
+    let has_ring_prover_params = bridge.has_ring_prover_params();
     let platform = Arc::new(WasmPlatform::new(bridge));
     let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
     let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
     let pocket = has_pocket.then(|| platform.clone() as Arc<dyn PocketPlatform>);
+    let ring_prover_params =
+        has_ring_prover_params.then(|| platform.clone() as Arc<dyn RingProverParams>);
     WasmPlatformAdapters {
         platform,
         chat_platform: chat,
         status_host: status,
         pocket_platform: pocket,
+        ring_prover_params,
     }
 }
 
@@ -919,6 +924,7 @@ impl WasmPairingHostRuntime {
             chat_platform,
             status_host,
             pocket_platform,
+            ring_prover_params,
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
@@ -931,6 +937,9 @@ impl WasmPairingHostRuntime {
         }
         if let Some(pocket_platform) = pocket_platform {
             runtime.set_pocket_platform(pocket_platform);
+        }
+        if let Some(ring_prover_params) = ring_prover_params {
+            runtime.set_ring_prover_params(ring_prover_params);
         }
         install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
@@ -1205,6 +1214,7 @@ impl WasmSigningHostRuntime {
         let WasmPlatformAdapters {
             platform,
             pocket_platform,
+            ring_prover_params,
             ..
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
@@ -1214,6 +1224,9 @@ impl WasmSigningHostRuntime {
         let runtime = SigningHostRuntime::new(platform, host_config, spawner);
         if let Some(pocket_platform) = pocket_platform {
             runtime.set_pocket_platform(pocket_platform);
+        }
+        if let Some(ring_prover_params) = ring_prover_params {
+            runtime.set_ring_prover_params(ring_prover_params);
         }
         install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
@@ -1373,6 +1386,7 @@ impl WasmProductRuntime {
             chat_platform,
             status_host,
             pocket_platform,
+            ring_prover_params,
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
@@ -1387,6 +1401,9 @@ impl WasmProductRuntime {
         }
         if let Some(pocket_platform) = pocket_platform {
             pairing.set_pocket_platform(pocket_platform);
+        }
+        if let Some(ring_prover_params) = ring_prover_params {
+            pairing.set_ring_prover_params(ring_prover_params);
         }
         install_worker_demand_observer(pairing.worker_ledger(), &callbacks)?;
         let core = pairing.product_runtime(product, frame_sink);

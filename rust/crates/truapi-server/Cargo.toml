@@ -64,9 +64,10 @@ tracing = "0.1"
 # `registry` + `std` only: pulls the Registry + per-layer filter/reload, but
 # not `env-filter` (which drags in `regex`, heavy on wasm).
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
-verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native hosts prove in-process, so they keep the compiled-in powers of tau.
+verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff" }
 truapi = { path = "../truapi", features = ["uniffi"] }
 truapi-platform = { path = "../truapi-platform", features = ["uniffi"] }
 futures = { version = "0.3", features = ["thread-pool"] }
@@ -81,6 +82,11 @@ scale-info = { version = "2.11", default-features = false, features = ["decode"]
 base64 = { version = "0.22", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser installs the prover's powers of tau per ring domain at runtime,
+# so they are not compiled in. Dropping `std` also drops rayon, which cannot
+# run in a worker. `secret-split` is kept: it is what makes the prover's scalar
+# multiplication side-channel resistant.
+verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff", default-features = false, features = ["no-std-prover", "secret-split"] }
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
 js-sys = "0.3"
 subxt = { version = "0.50.3", default-features = false, features = ["web"] }

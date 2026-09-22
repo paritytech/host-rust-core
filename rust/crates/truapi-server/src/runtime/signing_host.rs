@@ -1021,6 +1021,16 @@ impl ProductAuthority for SigningHost {
             .ring_resolver
             .resolve(&request.payload.ring_location, &[candidate])
             .await?;
+        // This role has no one to delegate to, so a host that serves no
+        // parameters reports it rather than reaching for a proof it cannot
+        // make.
+        self.services
+            .ring_prover_params_cache()
+            .ensure(resolved.domain_size)
+            .await
+            .map_err(|reason| RingVrfError::Unknown {
+                reason: format!("ring prover parameters unavailable: {reason:?}"),
+            })?;
         // Reject a stale request if the local session disconnected or changed
         // while its chain snapshot was being resolved.
         self.require_current_session(session)?;
