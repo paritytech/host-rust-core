@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import io.paritytech.polkadotapp.database.AppDatabase
 import io.paritytech.polkadotapp.database.model.BlockRefLocal
 import io.paritytech.polkadotapp.database.model.CoinageAssetKindLocal
+import io.paritytech.polkadotapp.database.model.CoinageEntryInputLocal
 import io.paritytech.polkadotapp.database.model.CoinageEntryOutputLocal
 import io.paritytech.polkadotapp.database.model.CoinageHandoffLocal
 import io.paritytech.polkadotapp.database.model.DurableTxLocal
@@ -98,6 +99,40 @@ class LedgerAtomicityTest {
         assertTrue(assetDao.getHandoffs().isEmpty())
     }
 
+    /**
+     * A chat payment schedules its transactions inside the transaction that saves the message, so a failure
+     * anywhere in that outer transaction has to take the scheduled rows with it.
+     */
+    @Test
+    fun aScheduleInsideAnEnclosingTransactionRollsBackWithIt() = runBlocking<Unit> {
+        runCatching {
+            assetDao.withTransaction {
+                txDao.withTransaction {
+                    val id = txDao.insert(scheduled())
+                    assetDao.insertInputs(listOf(input(entryId = id, derivationIndex = 4)))
+                }
+                throw IllegalStateException("message could not be saved")
+            }
+        }
+
+        assertTrue(txDao.getAll(COINAGE).isEmpty())
+        assertTrue(assetDao.filterClaimed(listOf(keyOf(4))).isEmpty())
+    }
+
+    /** Waiting to be built holds the lock and keeps recovery alive, but gives a pass nothing to evaluate. */
+    @Test
+    fun aTransactionWaitingToBeBuiltIsLiveButNotDecidable() = runBlocking<Unit> {
+        txDao.withTransaction {
+            val id = txDao.insert(scheduled())
+            assetDao.insertInputs(listOf(input(entryId = id, derivationIndex = 5)))
+        }
+
+        assertTrue(txDao.hasLiveTransactions())
+        assertTrue(txDao.liveDomains().isEmpty())
+        assertTrue(txDao.getAllSubmitted(COINAGE).isEmpty())
+        assertEquals(1, assetDao.filterClaimed(listOf(keyOf(5))).size)
+    }
+
     // ---- fixtures ----
 
     private fun entry() = DurableTxLocal(
@@ -109,6 +144,30 @@ class LedgerAtomicityTest {
         mortalityBlocks = 64,
         successDetectedAt = null,
         status = DurableTxLocal.Status.PENDING,
+        submissionPolicyId = null,
+        submissionPolicyParams = null,
+    )
+
+    private fun scheduled() = DurableTxLocal(
+        id = DurableTxLocal.UNSAVED_ID,
+        domainId = COINAGE,
+        operationGroupId = "group",
+        txHash = null,
+        checkpoint = null,
+        mortalityBlocks = null,
+        successDetectedAt = null,
+        status = DurableTxLocal.Status.PENDING_SUBMISSION,
+        submissionPolicyId = "coinage-split",
+        submissionPolicyParams = byteArrayOf(0),
+    )
+
+    private fun input(entryId: Long, derivationIndex: Int) = CoinageEntryInputLocal(
+        entryId = entryId,
+        position = 0,
+        assetKind = CoinageAssetKindLocal.COIN,
+        installationId = INSTALLATION,
+        derivationIndex = derivationIndex,
+        onChainKey = keyOf(derivationIndex),
     )
 
     private fun output(entryId: Long, derivationIndex: Int) = CoinageEntryOutputLocal(

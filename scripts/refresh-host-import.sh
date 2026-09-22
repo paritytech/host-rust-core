@@ -28,6 +28,13 @@ set -euo pipefail
 readonly MANIFEST="hosts/imports.json"
 
 die() { echo "error: $*" >&2; exit 1; }
+
+# Every mktemp in this script registers here, so a die path leaks nothing. One
+# of these can be a large binary patch.
+TEMPS=()
+cleanup() { [ ${#TEMPS[@]} -eq 0 ] || rm -f "${TEMPS[@]}"; }
+trap cleanup EXIT
+scratch() { local f; f="$(mktemp)"; TEMPS+=("$f"); printf '%s' "$f"; }
 note() { echo "  $*"; }
 
 repo_root() { git rev-parse --show-toplevel; }
@@ -236,12 +243,21 @@ cmd_refresh() {
   # What this repository changed relative to the tree it imported.
   local base_tree patch
   base_tree="$(upstream_tree_at_prefix "$host" "$recorded")"
-  patch="$(mktemp)"
+  patch="$(scratch)"
+  local deleted_list
+  deleted_list="$(scratch)"
   # --binary, or a patch touching a binary file is rejected outright and git
   # apply, which is all or nothing, then applies none of it.
-  git diff --binary "$base_tree" HEAD -- "hosts/${host}" > "$patch"
+  #
+  # Deletions are excluded here and re-applied separately below. git apply
+  # cannot three-way a whole-file deletion, because there is no post-image to
+  # merge against, so it hard-rejects the moment upstream touches a path this
+  # repository deleted. Kept in this patch, that one rejection would discard
+  # every other adaptation with it.
+  git diff --binary --diff-filter=d "$base_tree" HEAD -- "hosts/${host}" > "$patch"
+  git diff -z --name-only --diff-filter=D "$base_tree" HEAD -- "hosts/${host}" > "$deleted_list"
   local adapted_list
-  adapted_list="$(mktemp)"
+  adapted_list="$(scratch)"
   # NUL-delimited to match the listings it is compared against. --name-only
   # quotes and escapes any path outside ASCII, and one asset in the iOS tree
   # would then never match its own entry and read as dropped work.
@@ -279,6 +295,31 @@ cmd_refresh() {
     note "resolve them, then stage and commit"
   fi
 
+  # Removing a path says the same thing whether the source kept it, changed it
+  # or deleted it too, so this needs no merge and cannot be rejected.
+  if [ -s "$deleted_list" ]; then
+    # -f because read-tree has just staged the source's version of these
+    # paths, and git rm refuses a path whose index entry differs from HEAD.
+    # Discarding that staged content is the whole point.
+    xargs -0 git rm -r -q -f --ignore-unmatch -- < "$deleted_list"
+    note "re-applied $(tr -cd '\0' < "$deleted_list" | wc -c | tr -d ' ') deletions"
+  fi
+
+  # The comparison below cannot see this: a resurrected path matches the source
+  # exactly, so it reads as an adaptation that left no difference rather than as
+  # one that was dropped.
+  local resurrected=0
+  while IFS= read -r -d '' path; do
+    if git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+      [ "$resurrected" -ne 0 ] || note "deleted paths that came back:"
+      resurrected=$((resurrected + 1))
+      note "    ${path}"
+    fi
+  done < "$deleted_list"
+  if [ "$resurrected" -ne 0 ]; then
+    die "${resurrected} path(s) this repository deleted are back in the index. Recover with: git reset --hard HEAD"
+  fi
+
   manifest_set_ref "$host" "$target"
   git add "$MANIFEST"
   echo
@@ -288,7 +329,6 @@ cmd_refresh() {
   note "checking the result against the source"
   local verdict=0
   compare_against_source "$host" "$target" "$adapted_list" || verdict=$?
-  rm -f "$patch" "$adapted_list"
 
   echo
   if [ "$verdict" -ne 0 ]; then

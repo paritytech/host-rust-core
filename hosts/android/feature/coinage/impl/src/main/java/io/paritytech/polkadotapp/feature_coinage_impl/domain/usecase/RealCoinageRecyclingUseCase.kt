@@ -138,6 +138,7 @@ class RealCoinageRecyclingUseCase @Inject constructor(
                 extrinsic = extrinsic,
                 inputs = listOf(CoinageInput.Coin.Own(coin.derivationIndex)),
                 outputs = listOf(OwnAsset.Voucher(voucher.ringVrfKeyIndex)),
+                policy = null,
             )
         }
 

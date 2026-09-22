@@ -1,17 +1,3 @@
-// Host-script runner: the Rust CLI spawns this to drive a headless host from a
-// user-provided JavaScript/TypeScript file.
-//
-// The pairing host serves the product frame protocol on a WebSocket; this
-// runner connects the real `@parity/truapi` client to it, injects it as the
-// global `truapi` (scoped to the host's product id), and evaluates the user
-// script. The script is the product: it calls `truapi.account.requestLogin()`,
-// `truapi.signing.*`, `truapi.localStorage.*`, etc. A thrown error or rejected
-// promise exits non-zero, so `truapi-host pairing-host --script …` is the test.
-//
-// Env (set by the Rust CLI):
-//   TRUAPI_FRAME_URL   ws+unix: or ws:// endpoint of the host frame server
-//   TRUAPI_PRODUCT_ID  product id the host serves (scopes storage etc.)
-//   TRUAPI_SCRIPT      absolute path to the user script
 import { pathToFileURL } from "node:url";
 import { inspect } from "node:util";
 import {
@@ -20,6 +6,11 @@ import {
   type ProductAccountId,
   type TrUApiClient,
 } from "../../../../js/packages/truapi/src/index.ts";
+import { createCliAuthorization } from "./permissions.ts";
+import { installFetchGate } from "../../../../js/container/src/network.ts";
+import { installWebSocketGate } from "../../../../js/container/src/websocket.ts";
+import { installXhrGate } from "../../../../js/container/src/xhr.ts";
+import { reportLockdownFailures } from "../../../../js/container/src/freeze.ts";
 import { wsProvider } from "./ws-provider.ts";
 
 /// The host context injected alongside `truapi`. It only exposes what a script
@@ -44,8 +35,6 @@ declare global {
   var assert: (condition: unknown, ...message: unknown[]) => asserts condition;
 }
 
-const OPEN_TIMEOUT_MS = 15_000;
-
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} must be set`);
@@ -56,10 +45,7 @@ async function main() {
   const frameUrl = requireEnv("TRUAPI_FRAME_URL");
   const productId = requireEnv("TRUAPI_PRODUCT_ID");
   const scriptPath = requireEnv("TRUAPI_SCRIPT");
-
   const provider = wsProvider(frameUrl);
-  const client = createClient(createTransport(provider));
-
   const context: HostContext = {
     productId,
     productAccount: (index = 0) => ({
@@ -67,7 +53,8 @@ async function main() {
       derivationIndex: { tag: "Index", value: index },
     }),
   };
-  globalThis.truapi = client;
+  const transport = createTransport(provider);
+  globalThis.truapi = createClient(transport);
   globalThis.host = context;
   globalThis.assert = (condition: unknown, ...message: unknown[]) => {
     if (condition) return;
@@ -81,19 +68,26 @@ async function main() {
     throw new Error(detail || "assertion failed");
   };
 
+  const authorization = createCliAuthorization(transport);
+  installFetchGate(globalThis, authorization.network);
+  installWebSocketGate(globalThis, authorization.network);
+  installXhrGate(globalThis, authorization.network);
+  reportLockdownFailures();
+
   const timer = setTimeout(() => {
     console.error(`[runner] timed out connecting to ${frameUrl}`);
     process.exit(2);
-  }, OPEN_TIMEOUT_MS);
-  await provider.opened;
-  clearTimeout(timer);
-
+  }, 15_000);
   try {
+    await provider.opened;
+    clearTimeout(timer);
+    if (process.env.TRUAPI_SCRIPT_CWD)
+      process.chdir(process.env.TRUAPI_SCRIPT_CWD);
     const module = await import(pathToFileURL(scriptPath).href);
-    if (typeof module.default === "function") {
-      await module.default(context);
-    }
+    if (typeof module.default === "function") await module.default(context);
   } finally {
+    clearTimeout(timer);
+    transport.dispose();
     provider.dispose();
   }
 }
@@ -101,9 +95,12 @@ async function main() {
 main().then(
   () => process.exit(0),
   (error) => {
-    console.error(
-      `[script error] ${error instanceof Error ? error.stack : String(error)}`,
-    );
+    const message = String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
+    const detail = stack?.includes(message)
+      ? stack
+      : `${message}${stack ? `\n${stack}` : ""}`;
+    console.error(`[script error] ${detail}`);
     process.exit(1);
   },
 );

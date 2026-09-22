@@ -2,7 +2,11 @@ package io.paritytech.polkadotapp.common.presentation.tabbar
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.withResumed
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
@@ -46,15 +50,21 @@ class TabBarVisibilityHolder @Inject constructor() {
 val LocalTabBarVisibility = staticCompositionLocalOf<TabBarVisibilityHolder?> { null }
 
 /**
- * Call inside a screen's composable to show the bar while it is present — outside taps pass through to
- * content (used on Main). Screens that do not call this have no bar at all.
+ * Pins the bar from the host lifecycle's first resume until the composition leaves; outside taps pass through
+ * to content (used on Main). Screens that never call this have no bar.
  */
 @Composable
 fun ForceShowTabBar() {
-    val holder = LocalTabBarVisibility.current ?: return
-    DisposableEffect(holder) {
-        val key = Any()
-        holder.forceShow(key)
-        onDispose { holder.releaseForce(key) }
+    val holder = LocalTabBarVisibility.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    // A back-gesture preview composes the screen unresumed; releasing on pause would republish a zero bar height.
+    val resumed by produceState(false, lifecycle) { lifecycle.withResumed { value = true } }
+
+    if (holder != null && resumed) {
+        DisposableEffect(holder) {
+            val key = Any()
+            holder.forceShow(key)
+            onDispose { holder.releaseForce(key) }
+        }
     }
 }

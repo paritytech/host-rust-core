@@ -52,7 +52,7 @@ class RealCameraQrReader @Inject constructor(
             awaitCancellation()
         } finally {
             imageAnalysis.clearAnalyzer()
-            processCameraProvider.unbindAll()
+            processCameraProvider.unbind(imageAnalysis, preview)
             qrCodeAnalyzer.close()
         }
     }

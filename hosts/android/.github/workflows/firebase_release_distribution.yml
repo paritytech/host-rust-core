@@ -15,6 +15,7 @@ on:
 env:
   APPLICATION_ID: ${{ vars.APPLICATION_ID }}
   APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
+  CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
   CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
   GAME_RESULTS_FALLBACK_URL: ${{ vars.GAME_RESULTS_FALLBACK_URL }}
   LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
@@ -32,14 +33,17 @@ jobs:
     name: Check and Build Release
     runs-on: ubuntu-latest
     # Only run if PR is from a release-* branch (and not closed) OR triggered manually
-    if: (startsWith(github.head_ref, 'release-') && github.event.action != 'closed') || github.event_name == 'workflow_dispatch'
+    # Held: this configuration ships from host-rust-core.
+    # The condition this replaces:
+    #   if: (startsWith(github.head_ref, 'release-') && github.event.action != 'closed') || github.event_name == 'workflow_dispatch'
+    if: false
     outputs:
       new_build: ${{ steps.increment_build.outputs.new_build }}
       marketing_version: ${{ steps.increment_build.outputs.marketing_version }}
 
     steps:
       - name: Security Check - Verify bot-initiated workflow
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           github-token: ${{ github.token }}
           script: |
@@ -81,7 +85,7 @@ jobs:
             console.log('Security checks passed!');
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.release_branch || github.head_ref }}
           token: ${{ github.token }}
@@ -156,7 +160,7 @@ jobs:
         run: ./gradlew assembleGpRelease --no-daemon --stacktrace
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: apk
           path: app/build/outputs/apk/gp/release/
@@ -167,10 +171,10 @@ jobs:
     needs: check_and_build
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download built artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: apk
           path: app
@@ -196,7 +200,7 @@ jobs:
 
       - name: Comment on PR with build info
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           github-token: ${{ github.token }}
           script: |
@@ -227,16 +231,16 @@ jobs:
       S3_REGION: fr-par
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download built artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: apk
           path: apk
 
       - name: Upload to S3
-        uses: novasamatech/github-actions/s3-upload@v5
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: ${{ env.S3_REGION }}
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -246,7 +250,7 @@ jobs:
           destination_path: /android/releases/polkadot-app-${{ needs.check_and_build.outputs.marketing_version }}-${{ needs.check_and_build.outputs.new_build }}.apk
 
       - name: Upload to S3 (static path)
-        uses: novasamatech/github-actions/s3-upload@v5
+        uses: novasamatech/github-actions/s3-upload@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5.4.0
         with:
           s3_region: ${{ env.S3_REGION }}
           s3_access_key: ${{ secrets.SCW_ACCESS_KEY }}
@@ -258,12 +262,15 @@ jobs:
   create_backport_pr:
     name: Create backport PR to source branch
     runs-on: ubuntu-latest
-    # Only run when release PR is merged (closed + merged flag)
-    if: startsWith(github.head_ref, 'release-') && github.event.action == 'closed' && (github.event.pull_request.merged == true)
+    # Held: it carries back the build-number commit that check_and_build
+    # makes, and that job is held, so there is nothing left to carry.
+    # The condition this replaces:
+    #   if: startsWith(github.head_ref, 'release-') && github.event.action == 'closed' && (github.event.pull_request.merged == true)
+    if: false
 
     steps:
       - name: Extract source_ref from PR body and create backport PR
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           github-token: ${{ github.token }}
           script: |

@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check actor permissions
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const allowedActors = [
@@ -63,7 +63,7 @@ jobs:
             }
 
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -283,7 +283,7 @@ jobs:
       - name: Create Pull Request to main
         id: create_pr
         if: steps.decide.outputs.should_release == 'true' && steps.decide.outputs.direct_build != 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
           BRANCH_NAME: ${{ steps.bump_version.outputs.branch_name }}
           NEW_VERSION: ${{ steps.bump_version.outputs.new_version }}
@@ -355,7 +355,7 @@ jobs:
 
       - name: Trigger distribution workflow
         if: steps.decide.outputs.should_release == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
           DIRECT_BUILD: ${{ steps.decide.outputs.direct_build }}
           BRANCH_NAME: ${{ steps.bump_version.outputs.branch_name }}

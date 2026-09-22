@@ -40,6 +40,11 @@
         android:label="LinkedDevicesFragment" />
 
     <fragment
+        android:id="@+id/legalAndSupportFragment"
+        android:name="io.paritytech.polkadotapp.feature_settings_impl.presentation.legalAndSupport.LegalAndSupportFragment"
+        android:label="LegalAndSupportFragment" />
+
+    <fragment
         android:id="@+id/deviceDetailsFragment"
         android:name="io.paritytech.polkadotapp.feature_settings_impl.presentation.deviceDetails.DeviceDetailsFragment"
         android:label="DeviceDetailsFragment" />
@@ -288,6 +293,11 @@
     <action
         android:id="@+id/action_global_to_linkedDevicesFragment"
         app:destination="@id/linkedDevicesFragment" />
+
+    <action
+        android:id="@+id/action_global_to_legalAndSupportFragment"
+        app:destination="@id/legalAndSupportFragment"
+        app:launchSingleTop="true" />
 
     <action
         android:id="@+id/action_global_to_deviceDetailsFragment"

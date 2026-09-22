@@ -69,9 +69,12 @@ struct SPARustRuntimeTests {
 
         // Bootstrap → container → zoom disable, doc-start ordering intact.
         #expect(engine.initializedScripts.count == 3)
-        #expect(engine.initializedScripts[0].content.contains("truapi-native-ready"))
+        #expect(engine.initializedScripts[0]
+            .content == #"window.__truapi_localhost = { url: "ws://127.0.0.1:0/?t=test" };"#)
+        #expect(engine.initializedScripts[0].insertionPoint == .atDocStart)
         #expect(!engine.initializedScripts[0].content.contains("__truapi_policy__"))
         #expect(engine.initializedScripts[1].content.contains("freezeAndDelete"))
+        #expect(engine.initializedScripts[1].insertionPoint == .atDocStart)
         #expect(engine.initializedScripts[2].content.contains("viewport"))
         #expect(engine.initializedScripts[2].insertionPoint == .atDocEnd)
         #expect(engine.initializedScripts[2].frameScope == .mainFrameOnly)
@@ -91,7 +94,8 @@ struct SPARustRuntimeTests {
         #expect(url.scheme == ProductScriptSchemeHandler.scheme)
         #expect(url.host == "test.dot")
         #expect(url.path == "/")
-        #expect(engine.initializedScripts[0].content.contains("truapi-native-ready"))
+        #expect(engine.initializedScripts[0]
+            .content == #"window.__truapi_localhost = { url: "ws://127.0.0.1:0/?t=test" };"#)
 
         await runtime.dispose()
     }

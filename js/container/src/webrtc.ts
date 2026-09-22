@@ -3,8 +3,6 @@
 import { freezeAndDelete, freezeValue } from './freeze.js';
 import type { WebRtcAuthorization } from './network-transport.js';
 
-export const POLICY_GLOBAL = '__truapi_policy__';
-
 export function installWebRtcPolicy(
   win: any,
   authorize: WebRtcAuthorization | false,
@@ -272,11 +270,4 @@ export function installWebRtcPolicy(
     installed.set(prototype, Guarded);
     freezeValue(win, alias, Guarded);
   }
-}
-
-/** Consume the old bootstrap flag retained by hosts that disable WebRTC. */
-export function consumeWebRtcPolicy(win: any): unknown {
-  const allowed = win?.[POLICY_GLOBAL]?.webRtcAllowed;
-  freezeAndDelete(win, POLICY_GLOBAL);
-  return allowed;
 }

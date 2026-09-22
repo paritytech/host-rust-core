@@ -102,9 +102,10 @@ enum BundleResolution {
     Undecided(Vec<String>),
 }
 
-/// One-use authorizations shared by the connections of one product execution.
+/// Permission prompts and one-use grants shared by a product execution's connections.
 #[derive(Default)]
 pub(crate) struct TemporaryPermissions {
+    authorization: futures::lock::Mutex<()>,
     grants: std::sync::Mutex<HashSet<Vec<u8>>>,
 }
 
@@ -488,6 +489,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         permission: HostDevicePermissionRequest,
         consume: bool,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
+        let _guard = self.temporary_permissions.authorization.lock().await;
         let key = CoreStorageKey::device_permission_authorization(self.product_id, &permission);
         if self.os_refuses(permission).await {
             return Ok(PermissionAuthorizationStatus::Denied);
@@ -533,6 +535,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         request: RemotePermissionRequest,
         consume: bool,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
+        let _guard = self.temporary_permissions.authorization.lock().await;
         let Some(domains) = requested_domains(&request).map(<[String]>::to_vec) else {
             let key = CoreStorageKey::remote_permission_authorization(self.product_id, &request);
             match self.cached_remote_authorization(&key, consume).await? {
@@ -718,6 +721,137 @@ mod tests {
 
     fn test_key(key: CoreStorageKey) -> String {
         hex::encode(key.encode())
+    }
+
+    #[test]
+    fn concurrent_remote_operations_recheck_the_first_decision() {
+        futures::executor::block_on(async {
+            for request in [
+                remote_domains(&["cdn.example.com"]),
+                RemotePermissionRequest {
+                    permission: RemotePermission::WebRtc,
+                },
+            ] {
+                for (decision, first_status, second_status, calls) in [
+                    (
+                        PermissionDecision::AllowAlways,
+                        PermissionAuthorizationStatus::Authorized,
+                        PermissionAuthorizationStatus::Authorized,
+                        1,
+                    ),
+                    (
+                        PermissionDecision::Deny,
+                        PermissionAuthorizationStatus::Denied,
+                        PermissionAuthorizationStatus::Denied,
+                        1,
+                    ),
+                    (
+                        PermissionDecision::AllowOnce,
+                        PermissionAuthorizationStatus::Authorized,
+                        PermissionAuthorizationStatus::Denied,
+                        2,
+                    ),
+                ] {
+                    let storage = MemStorage::default();
+                    let prompt =
+                        ScriptedPrompt::decisions(vec![], vec![PermissionDecision::Deny, decision]);
+                    let grants = Arc::default();
+                    let sdk = PermissionsService::new(&storage, &prompt, "product.dot")
+                        .with_temporary_permissions(Arc::clone(&grants));
+                    let native = PermissionsService::new(&storage, &prompt, "product.dot")
+                        .with_temporary_permissions(grants);
+                    let pending_answer = prompt.remote_answers.lock().await;
+                    let mut first = Box::pin(sdk.authorize_remote(request.clone()));
+                    let mut second = Box::pin(native.authorize_remote(request.clone()));
+
+                    assert!(futures::poll!(&mut first).is_pending());
+                    assert!(futures::poll!(&mut second).is_pending());
+                    drop(pending_answer);
+
+                    assert_eq!(
+                        (
+                            first.await.unwrap(),
+                            second.await.unwrap(),
+                            prompt.remote_calls.load(Ordering::SeqCst),
+                        ),
+                        (first_status, second_status, calls),
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn concurrent_device_operations_reuse_a_persisted_decision() {
+        futures::executor::block_on(async {
+            for (decision, expected) in [
+                (
+                    PermissionDecision::AllowAlways,
+                    PermissionAuthorizationStatus::Authorized,
+                ),
+                (
+                    PermissionDecision::Deny,
+                    PermissionAuthorizationStatus::Denied,
+                ),
+            ] {
+                let storage = MemStorage::default();
+                let prompt =
+                    ScriptedPrompt::decisions(vec![PermissionDecision::Deny, decision], vec![]);
+                let service = PermissionsService::new(&storage, &prompt, "product.dot");
+                let pending_answer = prompt.device_answers.lock().await;
+                let mut first =
+                    Box::pin(service.authorize_device(HostDevicePermissionRequest::Camera));
+                let mut second =
+                    Box::pin(service.authorize_device(HostDevicePermissionRequest::Camera));
+
+                assert!(futures::poll!(&mut first).is_pending());
+                assert!(futures::poll!(&mut second).is_pending());
+                drop(pending_answer);
+
+                assert_eq!(
+                    (
+                        first.await.unwrap(),
+                        second.await.unwrap(),
+                        prompt.device_calls.load(Ordering::SeqCst),
+                    ),
+                    (expected, expected, 1),
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn cancelling_a_prompt_releases_waiting_operations_without_blocking_other_products() {
+        futures::executor::block_on(async {
+            let storage = MemStorage::default();
+            let prompt = ScriptedPrompt::decisions(vec![], vec![PermissionDecision::AllowAlways]);
+            let service = PermissionsService::new(&storage, &prompt, "product.dot");
+            let request = remote_domains(&["cdn.example.com"]);
+            let pending_answer = prompt.remote_answers.lock().await;
+            let mut cancelled = Box::pin(service.authorize_remote(request.clone()));
+            let mut waiting = Box::pin(service.authorize_remote(request.clone()));
+            assert!(futures::poll!(&mut cancelled).is_pending());
+            assert!(futures::poll!(&mut waiting).is_pending());
+
+            let other_prompt =
+                ScriptedPrompt::decisions(vec![], vec![PermissionDecision::AllowAlways]);
+            let other = PermissionsService::new(&storage, &other_prompt, "other.dot");
+            let mut independent = Box::pin(other.authorize_remote(request));
+            assert_eq!(
+                futures::poll!(&mut independent),
+                std::task::Poll::Ready(Ok(PermissionAuthorizationStatus::Authorized)),
+            );
+
+            drop(cancelled);
+            drop(pending_answer);
+            assert_eq!(
+                (
+                    waiting.await.unwrap(),
+                    prompt.remote_calls.load(Ordering::SeqCst)
+                ),
+                (PermissionAuthorizationStatus::Authorized, 2),
+            );
+        });
     }
 
     #[test]

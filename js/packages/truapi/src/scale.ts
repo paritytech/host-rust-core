@@ -43,7 +43,6 @@ export {
   Tuple,
   Vector,
   _void,
-  bool,
   compact,
   i8,
   i16,
@@ -57,6 +56,16 @@ export {
   u64,
   u128,
 } from "scale-ts";
+
+/** SCALE boolean, rejecting byte values Rust cannot decode. */
+export const bool: Codec<boolean> = enhanceCodec(
+  u8,
+  (value: boolean) => (value ? 1 : 0),
+  (byte: number) => {
+    if (byte > 1) throw new Error("Invalid SCALE boolean");
+    return byte === 1;
+  },
+);
 
 /**
  * Substrate `OptionBool`: a one-byte `Option<bool>`.

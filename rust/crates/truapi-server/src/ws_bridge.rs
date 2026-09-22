@@ -1053,6 +1053,139 @@ mod tests {
     }
 
     #[test]
+    fn a_vanished_peer_releases_its_connection_slot() {
+        let bridge = start_test_bridge();
+        let endpoint = bridge.register(test_runtime_factory(), no_log());
+        let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
+        let client = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+
+        for _ in 0..=MAX_WS_CONNECTIONS_PER_EXECUTION {
+            let (socket, _) = client
+                .block_on(tokio_tungstenite::connect_async(&url))
+                .expect("reconnect after an abruptly disconnected peer");
+            drop(socket);
+            crate::test_support::wait_until(
+                || bridge.registry.total_connections.load(Ordering::Acquire) == 0,
+                "an abruptly disconnected peer did not release its connection slot",
+            );
+        }
+    }
+
+    /// One `system_feature_supported` exchange on a fresh connection. The
+    /// socket is dropped without a closing handshake when this returns, which
+    /// is how a product's bridge socket dies when its host is suspended.
+    async fn feature_supported_round_trip(url: &str, request_id: &str) -> ProtocolMessage {
+        let ids = request_ids("system_feature_supported").expect("known request method");
+        let (mut ws, _) = tokio_tungstenite::connect_async(url).await.expect("dial");
+        let value = truapi::versioned::system::HostFeatureSupportedRequest::V1(
+            v01::HostFeatureSupportedRequest::Chain {
+                genesis_hash: vec![0u8; 32],
+            },
+        )
+        .encode();
+        let request = ProtocolMessage {
+            request_id: request_id.into(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value,
+            },
+        };
+        ws.send(WsMessage::Binary(request.encode()))
+            .await
+            .expect("send");
+        loop {
+            match ws.next().await {
+                Some(Ok(WsMessage::Binary(bytes))) => {
+                    break ProtocolMessage::decode(&mut &bytes[..]).expect("decode response");
+                }
+                Some(Ok(_)) => continue,
+                Some(Err(err)) => panic!("ws error: {err}"),
+                None => panic!("connection closed before response"),
+            }
+        }
+    }
+
+    /// A product reconnects once per app background for the life of its
+    /// execution. A single reconnect shows the slot is released; only
+    /// repetition shows nothing accumulates behind it and that the bridge is
+    /// still answering on the hundredth one.
+    #[test]
+    fn sustained_reconnect_churn_keeps_the_bridge_serving() {
+        const CYCLES: usize = 100;
+
+        let bridge = start_test_bridge();
+        let endpoint = bridge.register(test_runtime_factory(), no_log());
+        let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        for cycle in 0..CYCLES {
+            let request_id = format!("p:{cycle}");
+            let response = rt.block_on(feature_supported_round_trip(&url, &request_id));
+
+            assert_eq!(
+                (response.request_id, response.payload.message_type),
+                (request_id, crate::frame::MESSAGE_TYPE_RESPONSE),
+                "cycle {cycle} was not served"
+            );
+            crate::test_support::wait_until(
+                || bridge.registry.total_connections.load(Ordering::Acquire) == 0,
+                "a reconnect cycle left its connection slot held",
+            );
+        }
+    }
+
+    /// Several executions reconnecting at once, which is what a host with more
+    /// than one product open does the moment it returns to the foreground.
+    #[test]
+    fn concurrent_reconnect_churn_releases_every_slot() {
+        const EXECUTIONS: usize = 4;
+        const ROUNDS: usize = 8;
+
+        let bridge = start_test_bridge();
+        let endpoints: Vec<_> = (0..EXECUTIONS)
+            .map(|_| bridge.register(test_runtime_factory(), no_log()))
+            .collect();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        for round in 0..ROUNDS {
+            rt.block_on(async {
+                let mut tasks = Vec::new();
+                for endpoint in &endpoints {
+                    let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
+                    let request_id = format!("p:{round}");
+                    tasks.push(tokio::spawn(async move {
+                        feature_supported_round_trip(&url, &request_id).await
+                    }));
+                }
+                for task in tasks {
+                    let response = task.await.expect("round trip task");
+                    assert_eq!(
+                        response.payload.message_type,
+                        crate::frame::MESSAGE_TYPE_RESPONSE
+                    );
+                }
+            });
+        }
+
+        crate::test_support::wait_until(
+            || bridge.registry.total_connections.load(Ordering::Acquire) == 0,
+            "concurrent reconnect churn left connection slots held",
+        );
+    }
+
+    #[test]
     fn two_executions_share_one_port_with_isolated_tokens() {
         let bridge = start_test_bridge();
         let first = bridge.register(test_runtime_factory(), no_log());

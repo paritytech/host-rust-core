@@ -29,12 +29,14 @@ import io.paritytech.polkadotapp.common.R as RCommon
 @Composable
 fun PermissionPromptScreen(contract: PermissionPromptContract) {
     val state by contract.state.collectAsStateWithLifecycle()
-    PermissionPromptScreenInternal(
-        state = state,
-        onAllowOnceClicked = contract::onAllowOnceClicked,
-        onAllowAlwaysClicked = contract::onAllowAlwaysClicked,
-        onDenyClicked = contract::onDenyClicked,
-    )
+    state?.let {
+        PermissionPromptScreenInternal(
+            state = it,
+            onAllowOnceClicked = contract::onAllowOnceClicked,
+            onAllowAlwaysClicked = contract::onAllowAlwaysClicked,
+            onDenyClicked = contract::onDenyClicked,
+        )
+    }
 }
 
 @Composable

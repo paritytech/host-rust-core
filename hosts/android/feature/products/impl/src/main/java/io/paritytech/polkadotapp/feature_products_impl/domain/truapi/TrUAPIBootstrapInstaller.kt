@@ -3,6 +3,8 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 import android.webkit.WebView
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import io.parity.truapi.ContainerScriptBundle
+import io.paritytech.polkadotapp.feature_products_impl.domain.webView.ProductWebChromeClient
 import javax.inject.Inject
 
 /**
@@ -19,6 +21,12 @@ class TrUAPIBootstrapInstaller @Inject constructor() {
             "WebView lacks DOCUMENT_START_SCRIPT; cannot run a TrUAPI product"
         }
 
-        return { bootstrap -> WebViewCompat.addDocumentStartJavaScript(webView, bootstrap, origins) }
+        val container = "window.__truapi_localhost = {...window.__truapi_localhost, nativeHttp: true};\n" +
+            ContainerScriptBundle.load(webView.context)
+        return { bootstrap ->
+            WebViewCompat.addDocumentStartJavaScript(webView, "if (window === window.top) {\n$bootstrap\n}", origins)
+            WebViewCompat.addDocumentStartJavaScript(webView, container, setOf("*"))
+            (webView.webChromeClient as? ProductWebChromeClient)?.useContainerPermissions()
+        }
     }
 }

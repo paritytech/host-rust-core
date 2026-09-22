@@ -3,6 +3,7 @@ package io.paritytech.polkadotapp.feature_wallet_impl.presentation.enterAmount.d
 import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.Chain
 import io.paritytech.polkadotapp.chains.util.fullId
 import io.paritytech.polkadotapp.chains.util.planksFromAmount
+import io.paritytech.polkadotapp.common.data.time.TimeProvider
 import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.common.domain.model.intoAccountId
 import io.paritytech.polkadotapp.common.domain.validation.Validation
@@ -32,6 +33,7 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.PrepareCoina
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.PreparedTransferMemo
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TotalBalanceUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.prepareMemo
+import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.prepareScheduledMemo
 import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetProvider
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
 import io.paritytech.polkadotapp.feature_transactions.api.data.origins.FreeTransactionOrigins
@@ -57,7 +59,8 @@ import java.math.BigDecimal
 import java.util.UUID
 import java.util.concurrent.TimeoutException
 import javax.inject.Inject
-import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
 import io.paritytech.polkadotapp.common.R as RCommon
 
 interface SendEnterAmountInteractor {
@@ -95,11 +98,21 @@ class RealSendEnterAmountInteractor @Inject constructor(
     private val coinagePaymentStatusUseCase: CoinagePaymentStatusUseCase,
     private val coinageDebugSettings: CoinageDebugSettings,
     private val coroutineDispatchers: CoroutineDispatchers,
+    private val timeProvider: TimeProvider,
     override val sendValidation: SendValidation
 ) : SendEnterAmountInteractor {
     companion object {
         private const val WALLET_PAYMENT_ORIGIN = "native-payment"
-        private val SETTLEMENT_TIMEOUT = 30.seconds
+
+        /** A merchant payment's transactions keep being rebuilt within this window, so the screen waits as long. */
+        private val MERCHANT_PAYMENT_RETRY_WINDOW = 5.minutes
+        private val SETTLEMENT_TIMEOUT = MERCHANT_PAYMENT_RETRY_WINDOW
+
+        /**
+         * How long a chat payment's transactions keep being rebuilt while their inputs are gone from the chain.
+         * The same window the recipient's claim gets, so neither side gives up while the other still tries.
+         */
+        private val CHAT_PAYMENT_RETRY_WINDOW = 6.hours
     }
 
     override suspend fun asset(): Chain.Asset = chainAssetProvider.asset()
@@ -165,7 +178,7 @@ class RealSendEnterAmountInteractor @Inject constructor(
     context(diagnostics: StalenessReportCollector)
     private suspend fun sendCoinage(recipient: AccountId, value: BigDecimal): Result<Unit> =
         diagnostics.markRegion(RCommon.string.wallet_stall_sending) {
-            prepareCoinageTransferUseCase.prepareMemo(value)
+            prepareCoinageTransferUseCase.prepareScheduledMemo(value, retryUntil = timeProvider.now() + CHAT_PAYMENT_RETRY_WINDOW)
                 .map { prepared -> sendChatMessage(recipient, prepared) }
                 .onSuccess { Timber.d("CoinageTransfer: Successful") }
                 .logFailure("Coinage transfer failed")
@@ -202,7 +215,7 @@ class RealSendEnterAmountInteractor @Inject constructor(
         }
 
         diagnostics.markRegion(RCommon.string.wallet_stall_sending) {
-            prepareCoinageTransferUseCase.prepareMemo(value)
+            prepareCoinageTransferUseCase.prepareMemo(value, retryUntil = timeProvider.now() + MERCHANT_PAYMENT_RETRY_WINDOW)
                 .flatMap { prepared -> handOverToSubmitter(submitter, prepared, value, method) }
                 .logFailure("Coins submission via '${method.submitterId}' failed")
                 .onSuccess { memo -> emitAll(settlementStates(memo)) }
@@ -238,8 +251,9 @@ class RealSendEnterAmountInteractor @Inject constructor(
             withTimeoutOrNull(SETTLEMENT_TIMEOUT) {
                 coinagePaymentStatusUseCase.subscribeStatuses(accountIds)
                     .transformWhile { states ->
-                        emit(states.toSendState())
-                        states.values.any { it.status.isPending }
+                        val state = states.toSendState(accountIds)
+                        emit(state)
+                        !state.isTerminal
                     }
                     .catch { error ->
                         if (error is CancellationException) throw error
@@ -257,7 +271,8 @@ class RealSendEnterAmountInteractor @Inject constructor(
     /**
      * The message row is what carries the keys and what will be delivered from, so it is the moment the
      * handoff becomes real. Committing inside its transaction is the only placement where a crash cannot
-     * either strand the coins or release keys a peer already has.
+     * either strand the coins or release keys a peer already has — and the commit also registers the
+     * payment's transactions, which are built and submitted once this transaction has committed.
      */
     private suspend fun sendChatMessage(recipient: AccountId, prepared: PreparedTransferMemo) {
         val chatId = ChatId.fromContact(recipient)
@@ -275,7 +290,7 @@ class RealSendEnterAmountInteractor @Inject constructor(
 }
 
 private fun Result<*>.toTerminalState(): SendState = fold(
-    onSuccess = { SendState.Complete },
+    onSuccess = { SendState.Complete(unfinalizedCoins = null) },
     onFailure = { SendState.Failed(it) }
 )
 
@@ -284,13 +299,13 @@ private fun Result<*>.toTerminalState(): SendState = fold(
  * one not on chain yet means we have not. An empty map is not agreement that nothing is left — it is not
  * knowing yet.
  */
-private fun Map<AccountId, CoinagePaymentState>.toSendState(): SendState = when {
+private fun Map<AccountId, CoinagePaymentState>.toSendState(coins: List<AccountId>): SendState = when {
     isEmpty() -> SendState.Detecting
 
     values.any { it.status == CoinagePaymentStatus.AwaitingClaim } -> SendState.Detected
 
-    // Proven claims only: one seen in a best-chain block can be forked away, and this state is final.
-    values.all { (it.status as? CoinagePaymentStatus.Claimed)?.finalized == true } -> SendState.Complete
+    // A best-block claim is enough, although a fork can still undo it: finality is too long to keep the payer waiting.
+    values.all { it.status is CoinagePaymentStatus.Claimed } -> SendState.Complete(unfinalizedCoins = coins)
 
     values.any { it.status == CoinagePaymentStatus.Failed } ->
         SendState.Failed(IllegalStateException("Coins to settle were never minted on chain"))
@@ -298,5 +313,5 @@ private fun Map<AccountId, CoinagePaymentState>.toSendState(): SendState = when 
     else -> SendState.Detecting
 }
 
-private val CoinagePaymentStatus.isPending: Boolean
-    get() = this == CoinagePaymentStatus.AwaitingClaim || this == CoinagePaymentStatus.Detecting
+private val SendState.isTerminal: Boolean
+    get() = this is SendState.Complete || this is SendState.Failed

@@ -14,16 +14,23 @@ import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.EntryAsse
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.LedgerAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.data.transaction.LedgerEntry
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.COINAGE_DOMAIN
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.CheckpointBlock
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxEntry
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxId
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxState
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.OperationGroupId
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.RegistrationScope
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.ScheduledDurableTx
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.SubmissionPolicy
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.SubmissionPolicyId
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TxDomainId
 import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.Verdict
+import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionHash
+import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.DurableTxAttempt
 import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.DurableTxRegistration
 import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.DurableTxRepository
+import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.DurableTxSchedule
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
@@ -49,6 +56,10 @@ class InMemoryLedger {
     internal val revisions = MutableStateFlow(0)
 
     internal var rows: List<DurableTxEntry> = emptyList()
+
+    /** Rows scheduled and never built. They sit in [rows] with a placeholder attempt nothing may read. */
+    internal var unbuilt: Set<DurableTxId> = emptySet()
+    internal var policies: Map<DurableTxId, SubmissionPolicy> = emptyMap()
     internal var assets: Map<CoinageTransactionId, EntryAssets> = emptyMap()
     internal var handoffs: Map<AssetPublicKey, HandoffRow> = emptyMap()
     internal var nextId = 1L
@@ -76,6 +87,8 @@ class InMemoryLedger {
 
     internal suspend fun <T> transaction(block: suspend () -> T): Result<T> = mutex.withLock {
         val rowsBefore = rows
+        val unbuiltBefore = unbuilt
+        val policiesBefore = policies
         val assetsBefore = assets
         val handoffsBefore = handoffs
         val nextIdBefore = nextId
@@ -84,6 +97,8 @@ class InMemoryLedger {
             .onSuccess { revisions.value++ }
             .onFailure {
                 rows = rowsBefore
+                unbuilt = unbuiltBefore
+                policies = policiesBefore
                 assets = assetsBefore
                 handoffs = handoffsBefore
                 nextId = nextIdBefore
@@ -154,11 +169,72 @@ private class InMemoryDurableTxRepository(private val store: InMemoryLedger) : D
         ids
     }
 
-    override suspend fun getEntry(id: DurableTxId): Result<DurableTxEntry?> =
-        store.read { store.rows.firstOrNull { it.id == id } }
+    override suspend fun schedule(
+        schedules: List<DurableTxSchedule>,
+        onRegister: suspend RegistrationScope.(List<DurableTxId>) -> Unit,
+    ): Result<List<DurableTxId>> = store.transaction {
+        val ids = schedules.map { store.insertScheduled(it) }
+        RegistrationScope.onRegister(ids)
 
-    override suspend fun getAllEntries(domainId: TxDomainId): Result<List<DurableTxEntry>> =
-        store.read { store.rows.filter { it.domainId == domainId }.sortedBy { it.id.value } }
+        ids
+    }
+
+    override suspend fun getEntry(id: DurableTxId): Result<DurableTxEntry?> =
+        store.read { store.rows.firstOrNull { it.id == id && it.id !in store.unbuilt } }
+
+    override suspend fun getAllEntries(domainId: TxDomainId): Result<List<DurableTxEntry>> = store.read {
+        store.rows
+            .filter { it.domainId == domainId && it.status != DurableTxStatus.PENDING_SUBMISSION }
+            .sortedBy { it.id.value }
+    }
+
+    override suspend fun getSubmissionPolicy(id: DurableTxId): Result<SubmissionPolicy?> =
+        store.read { store.policies[id] }
+
+    override fun subscribePendingSubmissions(): Flow<List<ScheduledDurableTx>> =
+        store.revisions.map { store.pendingSubmissions { true } }
+
+    override suspend fun getPendingSubmissions(
+        policyId: SubmissionPolicyId,
+        groupId: OperationGroupId?,
+    ): Result<List<ScheduledDurableTx>> = store.read {
+        store.pendingSubmissions { it.policy.id == policyId && it.groupId == groupId }
+    }
+
+    override suspend fun startAttempt(id: DurableTxId, attempt: DurableTxAttempt): Result<Boolean> = store.transaction {
+        val current = store.rows.firstOrNull { it.id == id }
+
+        if (current?.status != DurableTxStatus.PENDING_SUBMISSION) {
+            false
+        } else {
+            store.rows = store.rows.map {
+                if (it.id == id) {
+                    it.copy(
+                        txHash = attempt.txHash,
+                        checkpoint = attempt.checkpoint,
+                        mortalityBlocks = attempt.mortalityBlocks,
+                        status = DurableTxStatus.PENDING,
+                        successDetectedAt = null,
+                    )
+                } else {
+                    it
+                }
+            }
+            store.unbuilt = store.unbuilt - id
+            true
+        }
+    }
+
+    override suspend fun abandonSubmission(id: DurableTxId): Result<Boolean> = store.transaction {
+        val current = store.rows.firstOrNull { it.id == id }
+
+        if (current?.status != DurableTxStatus.PENDING_SUBMISSION) {
+            false
+        } else {
+            store.rows = store.rows.map { if (it.id == id) it.copy(status = DurableTxStatus.FAILURE) else it }
+            true
+        }
+    }
 
     override suspend fun getStatus(id: DurableTxId): Result<DurableTxStatus?> =
         store.read { store.rows.firstOrNull { it.id == id }?.status }
@@ -169,11 +245,12 @@ private class InMemoryDurableTxRepository(private val store: InMemoryLedger) : D
     override suspend fun compareAndSetStatus(
         id: DurableTxId,
         observed: DurableTxStatus,
+        observedTxHash: TransactionHash,
         verdict: Verdict,
     ): Result<Boolean> = store.transaction {
         val current = store.rows.firstOrNull { it.id == id }
 
-        if (current == null || current.status != observed) {
+        if (current == null || current.status != observed || current.txHash != observedTxHash) {
             false
         } else {
             store.rows = store.rows.map {
@@ -191,7 +268,7 @@ private class InMemoryDurableTxRepository(private val store: InMemoryLedger) : D
         store.read { store.rows.any { it.status.isLive } }
 
     override suspend fun liveDomains(): Result<List<TxDomainId>> =
-        store.read { store.rows.filter { it.status.isLive }.map { it.domainId }.distinct() }
+        store.read { store.rows.filter { it.status.awaitsVerdict }.map { it.domainId }.distinct() }
 
     override suspend fun getGroupStates(
         domainId: TxDomainId,
@@ -288,6 +365,10 @@ private class InMemoryCoinageAssetLedger(private val store: InMemoryLedger) : Co
         store.handoffs = store.handoffs.filterValues { it.committed }
     }
 
+    override suspend fun releaseUncommittedHandoffs(keys: List<AssetPublicKey>): Result<Unit> = store.transaction {
+        store.handoffs = store.handoffs.filter { (key, row) -> row.committed || key !in keys }
+    }
+
     override suspend fun getHandoffKeys(): Result<Set<AssetPublicKey>> = store.read { store.handoffs.keys.toSet() }
 
     override suspend fun assetsOf(
@@ -326,15 +407,43 @@ private fun InMemoryLedger.insert(registration: DurableTxRegistration): DurableT
         id = id,
         domainId = registration.domainId,
         groupId = registration.groupId,
-        txHash = registration.txHash,
-        checkpoint = registration.checkpoint,
-        mortalityBlocks = registration.mortalityBlocks,
+        txHash = registration.attempt.txHash,
+        checkpoint = registration.attempt.checkpoint,
+        mortalityBlocks = registration.attempt.mortalityBlocks,
         status = DurableTxStatus.PENDING,
         successDetectedAt = null,
     )
+    registration.policy?.let { policies = policies + (id to it) }
 
     return id
 }
+
+private fun InMemoryLedger.insertScheduled(schedule: DurableTxSchedule): DurableTxId {
+    val id = DurableTxId(nextId++)
+
+    rows = rows + DurableTxEntry(
+        id = id,
+        domainId = schedule.domainId,
+        groupId = schedule.groupId,
+        txHash = "",
+        checkpoint = CheckpointBlock(blockNumber = 0, blockHash = ""),
+        mortalityBlocks = 0,
+        status = DurableTxStatus.PENDING_SUBMISSION,
+        successDetectedAt = null,
+    )
+    unbuilt = unbuilt + id
+    policies = policies + (id to schedule.policy)
+
+    return id
+}
+
+private fun InMemoryLedger.pendingSubmissions(filter: (ScheduledDurableTx) -> Boolean): List<ScheduledDurableTx> =
+    rows.filter { it.status == DurableTxStatus.PENDING_SUBMISSION }
+        .sortedBy { it.id.value }
+        .mapNotNull { row ->
+            policies[row.id]?.let { ScheduledDurableTx(row.id, row.domainId, row.groupId, it) }
+        }
+        .filter(filter)
 
 private fun InMemoryLedger.groupRows(domainId: TxDomainId, groupId: OperationGroupId) =
     rows.filter { it.domainId == domainId && it.groupId == groupId }.sortedBy { it.id.value }

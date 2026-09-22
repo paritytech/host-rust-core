@@ -36,6 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scri
 
 Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for the commands, the terminal UI, and product scripts.
 
+Product scripts and `truapi-host dev` use the same web API permission checks from `js/container`. Dev loads the container through a blocking script tag in your existing browser. Scripts run in Bun and retain filesystem, environment and process access.
+
 ## Usage
 
 `@parity/truapi` is the low-level generated protocol client. Product apps should normally use a higher-level product SDK, such as [`paritytech/product-sdk`](https://github.com/paritytech/product-sdk), while SDK and host-integration layers can depend on this package directly.
@@ -65,6 +67,8 @@ requests after a bounded deadline; pass `requestTimeoutMs` to `createTransport` 
 See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full client reference.
 
 The [permission model](docs/rfcs/0002-permission-model.md) separates outbound domain access from `OpenUrl` external navigation and requires `Notifications` for push delivery. Hosts preserve the user's `AllowOnce`, `AllowAlways`, or `Deny` choice; Rust owns one-use grants for Rust-backed executions.
+Android permission prompts belong to one request and close when it finishes or is cancelled,
+including cancellation while the app is backgrounded.
 
 ## Repository layout
 
@@ -134,6 +138,9 @@ dependency. The UniFFI bindings and the container bundle are gitignored build
 outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
+The container publishes the shared client and a temporary MessagePort adapter for
+older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
+CLI and iframe MessagePort transports remain supported.
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
 On iOS, a wallet host that manages its own statement-store SSO session can call
@@ -213,7 +220,7 @@ so `make dev` leaves the board empty with no error.
 
 1. The protocol is defined as Rust traits in [`rust/crates/truapi/`](rust/crates/truapi/), with each trait tagged `#[wire_trait(id = N)]` and each method tagged `#[wire(id = N)]` for a stable byte-level `(trait, method)` dispatch table. Every method's doc comment must carry a ` ```ts ` example, which codegen extracts into the playground's EXAMPLE tab; the build fails if any method is missing one.
 2. `truapi-codegen` reads rustdoc JSON for that crate and generates the TypeScript client under git-ignored paths in `js/packages/truapi/`.
-3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over `MessagePort` (or `postMessage` in iframe mode) to the host.
+3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over WebSocket, `MessagePort`, or `postMessage` in iframe mode to the host.
 4. The host decodes the frame, dispatches to the matching trait method, encodes the response, and ships it back.
 
 Wire ids are append-only per trait: a trait id is never reassigned and a method id is never renumbered or reused within its trait, so deployed products stay compatible across protocol revisions. New methods take the next free method ids in their own trait and leave every other trait untouched. Trait 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.
@@ -286,9 +293,18 @@ reaches it through a development-only `<script>` tag:
 )}
 ```
 
-The host serves that script itself, so the page needs no package, no imports,
-and no environment variables. It installs the same `window.__HOST_API_PORT__`
-that native webview hosts inject, and the SDK adopts it unchanged. TCP frame
+The host serves that script itself, with no imports or environment variables
+needed. It installs the shared client and browser container before product code
+runs. Keep the tag before application scripts, without `async` or `defer`.
+SDK calls and permission checks share one connection. Updated SDKs reuse the
+injected client across reconnects; older SDKs can still start through the
+MessagePort adapter but require a page reload after a disconnect.
+After a failed reconnect, the next API call or return to a visible page tries again.
+The container routes fetch, XHR and WebSocket permission checks to Rust.
+WebRTC and camera/microphone access use the same live permission checks.
+`/script` shares these wrappers for the APIs available in Bun. CLI permission
+checks support development testing; product code can deliberately bypass them.
+Native hosts retain their separate authorization protection. TCP frame
 connections are accepted only from loopback peers, and browser WebSocket
 origins must also name localhost or a loopback IP. WebSocket is not subject to
 CORS, and confirmations here are auto-approved.
@@ -395,6 +411,67 @@ Installing it needs the device's UDID in the ad-hoc provisioning profile, which
 is Apple bookkeeping rather than CI. The workflows that register a device and
 regenerate the profile are held until the cutover, tracked on #764; the device
 preview itself is tracked on #681.
+
+### An Android build that installs on a phone
+
+Label a pull request `android-device-build` and `android-device-preview.yml`
+attaches an installable APK to the run. Android needs no provisioning, so it
+installs on any phone rather than only on registered devices, and it is signed
+with the shared develop key so a new build replaces the last one rather than
+asking to be uninstalled first.
+
+It builds the flavour that ships. The other one substitutes stubs for Google
+auth, Firebase auth, push and backup, so a preview built from it cannot sign in.
+A pull request opened from a fork cannot reach the configuration and signing key
+this needs, and is told so rather than handed a build that misleads. Push the
+branch to this repository to get one.
+
+### Android builds that reach testers
+
+Two workflows deliver through Firebase App Distribution, which reaches a named
+tester group rather than anyone holding a link. That matters beyond
+convenience: these builds carry configuration that should not be public, so
+attaching them to a release is not an option.
+
+`android-nightly.yml` runs on weekdays at 22:00 UTC, two hours after the iOS
+nightly starts, so the two never overlap. `android-debug-distribution.yml` runs
+when a pull request merges to `main`, and answers what `main` does right now.
+It builds the merge commit rather than the pull request's merge preview, which
+is computed while the request is open and would otherwise ship a tree missing
+whatever landed first.
+
+Both authenticate by federation. The run proves its identity with its OIDC
+token and receives a short lived credential, so no long lived key for that
+project is stored here. Both check the delivery target before building, since
+an hour is an expensive place to discover a renamed tester group. That check
+cannot prove the upload will be permitted: listing groups is available to a
+role that cannot write, and only an upload proves an upload.
+
+Both verify the certificate that signed the APK rather than only that one did,
+because a rotated keystore otherwise produces a build every tester's device
+rejects on install, behind a green run.
+
+Release distribution stays in the app repository. It signs with a release
+keystore this repository does not hold.
+
+#### What they read
+
+Secrets: `GOOGLE_SERVICES_JSON_BASE64`, `CI_GITHUB_KEYSTORE_KEY_FILE`,
+`CI_KEYSTORE_PASS`, `CI_KEYSTORE_KEY_ALIAS`, `CI_KEYSTORE_KEY_PASS`,
+`FIRESTORE_DATABASE_ID`, `GOOGLE_OAUTH_ID`, `GOOGLE_PROJECT_ID`,
+`NIGHTLY_FUNDING_MNEMONIC`, `SENTRY_DSN`, `ANDROID_FIREBASE_NIGHTLY_APP_ID`,
+`ANDROID_FIREBASE_APP_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
+`GCP_SERVICE_ACCOUNT`.
+
+Variables: `APPLICATION_ID`, `APPLICATION_NAME`, `CURRENCY_SYMBOL`,
+`LOG_COLLECTION_EMAIL`, `PRIVACY_POLICY_URL`, `TERMS_OF_USE_URL`,
+`SENTRY_ORG`, `SENTRY_PROJECT`, `GAME_RESULTS_FALLBACK_URL`,
+`REFERRAL_WEB_HOST`, `ANDROID_FIREBASE_GROUP`, `ANDROID_FIREBASE_DEBUG_GROUP`.
+
+`GOOGLE_PROJECT_ID` carries an `L` suffix. It is interpolated into a Java
+`long` literal, and a twelve digit project number overflows an `int` without
+one. Everything the app needs at runtime beyond these comes from Firebase
+Remote Config, keyed on an `environment` signal the build sets.
 
 ### Building the standalone iOS host app
 

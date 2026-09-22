@@ -452,6 +452,12 @@ pub fn generate(
     let client_code = generate_client(api, target_version, codec_version)?;
     fs::write(Path::new(output_dir).join("client.ts"), client_code)?;
 
+    let internal_client = generate_client_view(api, target_version, codec_version, true)?;
+    fs::write(
+        Path::new(output_dir).join("internal-client.ts"),
+        internal_client,
+    )?;
+
     let index_code = generate_index();
     fs::write(Path::new(output_dir).join("index.ts"), index_code)?;
 
@@ -1158,9 +1164,61 @@ fn generate_type_bindings(
 }
 
 fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) -> Result<String> {
+    generate_client_view(api, target_version, codec_version, false)
+}
+
+fn generate_client_view(
+    api: &ApiDefinition,
+    target_version: u32,
+    codec_version: u8,
+    internal: bool,
+) -> Result<String> {
     validate_versioned_wrapper_shapes(api)?;
+    let wrappers = collect_versioned_wrappers(api);
+    let mut services = Vec::new();
+    let mut uses_hex_string = false;
+    for service in public_services(api)? {
+        let methods = included_wire_methods(service.trait_def, &wrappers, target_version)?
+            .into_iter()
+            .filter(|method| method.wire.internal == internal)
+            .collect::<Vec<_>>();
+        for method in &methods {
+            if let Some(version) = method_wire_version(method, &wrappers, target_version)? {
+                uses_hex_string |= method_versioned_wrappers(method, &wrappers)
+                    .iter()
+                    .filter_map(|name| wrappers[name].variants.get(&version))
+                    .any(|variant| match &variant.kind {
+                        VersionedKind::Tuple(inner) => type_ref_uses_hex_string(inner),
+                        VersionedKind::Unit => false,
+                    });
+            }
+        }
+        if !methods.is_empty() {
+            services.push((service.trait_def, methods));
+        }
+    }
+    let has_subscriptions = services.iter().any(|(_, methods)| {
+        methods
+            .iter()
+            .any(|method| method.kind == MethodKind::Subscription)
+    });
+    let has_host_initiated = services
+        .iter()
+        .any(|(_, methods)| methods.iter().any(|method| method.wire.host_initiated));
+    let hex_import = if uses_hex_string {
+        "import type { HexString } from '../scale.js';"
+    } else {
+        ""
+    };
+    let registration_import = if has_host_initiated {
+        "HostInitiatedSubscriptionRegistration, "
+    } else {
+        ""
+    };
+    let method_ids_import = if has_subscriptions { "MethodIds, " } else { "" };
 
     let schema_hash = wire_schema_hash(api, target_version, codec_version)?;
+    let types_module = if internal { "internal" } else { "types" };
     let mut out = String::new();
     writedoc!(
         out,
@@ -1169,10 +1227,10 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
 
         import {{ ResultAsync, type Result }} from 'neverthrow';
         import * as S from '../scale.js';
-        import type {{ HexString }} from '../scale.js';
+        {hex_import}
         import {{ SubscriptionError }} from '../transport.js';
-        import type {{ CallOptions, HostInitiatedSubscriptionHandler, HostInitiatedSubscriptionRegistration, MethodIds, ObservableLike, Observer, Subscription, TrUApiTransport }} from '../transport.js';
-        import * as T from './types.js';
+        import type {{ CallOptions, HostInitiatedSubscriptionHandler, {registration_import}{method_ids_import}ObservableLike, Observer, Subscription, TrUApiTransport }} from '../transport.js';
+        import * as T from './{types_module}.js';
         import * as W from './wire-table.js';
 
         export {{ ResultAsync, SubscriptionError }};
@@ -1181,6 +1239,121 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         export const TRUAPI_CODEC_VERSION = {codec_version} as const;
         export const TRUAPI_WIRE_SCHEMA_HASH = "{schema_hash}" as const;
 
+        "#
+    )
+    .unwrap();
+    if has_subscriptions {
+        write_subscription_helpers(&mut out);
+        write_observable_helper(&mut out);
+    }
+
+    for (trait_def, methods) in &services {
+        let public_docs = trait_def.public_docs();
+        write_jsdoc(&mut out, "", public_docs.as_deref());
+        let export = if internal { "" } else { "export " };
+        writeln!(out, "{export}class {}Client {{", trait_def.name).unwrap();
+        let uses_transport = methods.iter().any(|method| !method.wire.host_initiated);
+        if uses_transport {
+            writeln!(out, "  readonly #transport: TrUApiTransport;").unwrap();
+        }
+        for method in methods
+            .iter()
+            .copied()
+            .filter(|method| method.wire.host_initiated)
+        {
+            emit_host_initiated_field(&mut out, method, &wrappers, target_version)?;
+        }
+        writeln!(out, "  constructor(transport: TrUApiTransport) {{").unwrap();
+        if uses_transport {
+            writeln!(out, "    this.#transport = transport;").unwrap();
+        }
+        for method in methods
+            .iter()
+            .copied()
+            .filter(|method| method.wire.host_initiated)
+        {
+            emit_host_initiated_registration(
+                &mut out,
+                api,
+                trait_def,
+                method,
+                &wrappers,
+                target_version,
+            )?;
+        }
+        writeln!(out, "  }}\n").unwrap();
+
+        for method in methods {
+            emit_method(&mut out, api, trait_def, method, &wrappers, target_version)?;
+            writeln!(out).unwrap();
+        }
+        writeln!(out, "}}\n").unwrap();
+        if internal {
+            writeln!(out, "Object.freeze({}Client.prototype);\n", trait_def.name).unwrap();
+        }
+    }
+
+    let client_type = if internal {
+        "InternalTrUApiClient"
+    } else {
+        "TrUApiClient"
+    };
+    writeln!(out, "export interface {client_type} {{").unwrap();
+    for (trait_def, _) in &services {
+        let field = to_camel_case(&trait_def.name);
+        let namespace_type = format!("{}Client", trait_def.name);
+        let namespace_type = if internal {
+            format!("Readonly<{namespace_type}>")
+        } else {
+            namespace_type
+        };
+        writeln!(out, "  readonly {field}: {namespace_type};").unwrap();
+    }
+    writeln!(out, "}}\n").unwrap();
+    if !internal {
+        writeln!(out, "export type Client = TrUApiClient;\n").unwrap();
+    }
+    let factory = if internal {
+        "createInternalClient"
+    } else {
+        "createClient"
+    };
+    let freeze = if internal { "Object.freeze(" } else { "" };
+    let close = if internal { ")" } else { "" };
+    writedoc!(
+        out,
+        r#"
+        /** Creates the generated client facade by binding each service namespace to the
+         * shared transport instance. */
+        export function {factory}(transport: TrUApiTransport): {client_type} {{
+          return {freeze}{{
+        "#
+    )
+    .unwrap();
+    for (trait_def, _) in &services {
+        let field = to_camel_case(&trait_def.name);
+        writeln!(
+            out,
+            "    {field}: {freeze}new {name}Client(transport){close},",
+            name = trait_def.name
+        )
+        .unwrap();
+    }
+    writedoc!(
+        out,
+        r#"
+          }}{close};
+        }}
+        "#
+    )
+    .unwrap();
+    Ok(out)
+}
+
+fn write_subscription_helpers(out: &mut String) {
+    writedoc!(
+        out,
+        r#"
         function toSubscriptionError<Reason = never>(error: unknown): SubscriptionError<Reason> {{
           if (error instanceof SubscriptionError) return error as SubscriptionError<Reason>;
           const cause = error instanceof Error ? error : new Error(String(error));
@@ -1228,108 +1401,6 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         "#
     )
     .unwrap();
-    write_observable_helper(&mut out);
-
-    let wrappers = collect_versioned_wrappers(api);
-    let services = public_services(api)?;
-
-    for service in &services {
-        let trait_def = service.trait_def;
-        let methods = included_methods(trait_def, &wrappers, target_version)?;
-        if methods.is_empty() {
-            continue;
-        }
-
-        let public_docs = trait_def.public_docs();
-        write_jsdoc(&mut out, "", public_docs.as_deref());
-        writeln!(out, "export class {}Client {{", trait_def.name).unwrap();
-        for method in methods
-            .iter()
-            .copied()
-            .filter(|method| method.wire.host_initiated)
-        {
-            emit_host_initiated_field(&mut out, method, &wrappers, target_version)?;
-        }
-        writeln!(
-            out,
-            "  constructor(private readonly transport: TrUApiTransport) {{"
-        )
-        .unwrap();
-        for method in methods
-            .iter()
-            .copied()
-            .filter(|method| method.wire.host_initiated)
-        {
-            emit_host_initiated_registration(
-                &mut out,
-                api,
-                trait_def,
-                method,
-                &wrappers,
-                target_version,
-            )?;
-        }
-        writeln!(out, "  }}\n").unwrap();
-
-        for method in methods {
-            emit_method(&mut out, api, trait_def, method, &wrappers, target_version)?;
-            writeln!(out).unwrap();
-        }
-
-        writeln!(out, "}}\n").unwrap();
-    }
-
-    writeln!(out, "export interface TrUApiClient {{").unwrap();
-    for service in &services {
-        let trait_def = service.trait_def;
-        if included_methods(trait_def, &wrappers, target_version)?.is_empty() {
-            continue;
-        }
-        let field = to_camel_case(&trait_def.name);
-        writeln!(
-            out,
-            "  readonly {field}: {name}Client;",
-            name = trait_def.name
-        )
-        .unwrap();
-    }
-    writedoc!(
-        out,
-        r#"
-        }}
-
-        export type Client = TrUApiClient;
-
-        /** Creates the generated client facade by binding each service namespace to the
-         * shared transport instance. */
-        export function createClient(transport: TrUApiTransport): TrUApiClient {{
-          return {{
-        "#
-    )
-    .unwrap();
-    for service in &services {
-        let trait_def = service.trait_def;
-        if included_methods(trait_def, &wrappers, target_version)?.is_empty() {
-            continue;
-        }
-        let field = to_camel_case(&trait_def.name);
-        writeln!(
-            out,
-            "    {}: new {}Client(transport),",
-            field, trait_def.name
-        )
-        .unwrap();
-    }
-    writedoc!(
-        out,
-        r#"
-          }};
-        }}
-        "#
-    )
-    .unwrap();
-
-    Ok(out)
 }
 
 /// Generates the dev-only wire decode table (`wire-decode.ts`): a map from a
@@ -1885,7 +1956,7 @@ fn emit_method(
                 out,
                 "
                   {ts_method_name}({arg_decl}): ResultAsync<{ok_type}, {err_type}> {{
-                    return this.transport.request<{ok_type}, {err_type}>({{
+                    return this.#transport.request<{ok_type}, {err_type}>({{
                       ids: W.{wire_const},
                       payload: {request_codec}.enc({{ tag: \"V{version}\", value: {request_expr} }}),
                       signal: options?.signal,
@@ -1950,7 +2021,10 @@ fn emit_method(
 }
 
 fn host_registration_field(method: &MethodDef) -> String {
-    format!("{}Registration", to_camel_case(&strip_prefix(&method.name)))
+    format!(
+        "#{}Registration",
+        to_camel_case(&strip_prefix(&method.name))
+    )
 }
 
 fn emit_host_initiated_types(
@@ -1983,7 +2057,7 @@ fn emit_host_initiated_field(
         emit_host_initiated_types(method, wrappers, target_version)?;
     writeln!(
         out,
-        "  private readonly {}: HostInitiatedSubscriptionRegistration<{}, {}, {}>;",
+        "  readonly {}: HostInitiatedSubscriptionRegistration<{}, {}, {}>;",
         host_registration_field(method),
         payload.inner_type_ts,
         response.inner_type_ts,
@@ -2127,7 +2201,7 @@ fn emit_subscribe_method(
         "
         {signature}
             return createObservable<{observable_args}>({{
-              transport: this.transport,
+              transport: this.#transport,
               ids: W.{wire_const},
               payload: {start_payload},
         "
@@ -3035,6 +3109,87 @@ mod tests {
             generate_index(),
             "export * from './types.js';\nexport * from './client.js';\n"
         );
+    }
+
+    #[test]
+    fn internal_bindings_keep_typed_calls_separate_and_immutable() {
+        let api = internal_api_fixture();
+        let directory = tempfile::tempdir().unwrap();
+        generate(&api, directory.path().to_str().unwrap(), 1, 2).unwrap();
+        let internal = fs::read_to_string(directory.path().join("internal-client.ts")).unwrap();
+        assert!(internal.contains("import * as T from './internal.js'"));
+        assert!(
+            internal
+                .contains("createInternalClient(transport: TrUApiTransport): InternalTrUApiClient")
+        );
+        assert!(
+            internal.contains("return this.#transport.request<T.SharedResponse, T.SharedError>"),
+            "{internal}"
+        );
+        assert!(internal.contains("ids: W.THING_DO_THING"));
+        assert!(internal.contains("T.VersionedHiddenRequest.enc"));
+        assert!(
+            internal.contains(
+                "S.Result(T.VersionedSharedResponse, T.VersionedSharedError).dec(payload)"
+            )
+        );
+        assert!(internal.contains("signal: options?.signal"));
+        assert!(internal.contains("Object.freeze(ThingClient.prototype)"));
+        assert!(internal.contains("thing: Object.freeze(new ThingClient(transport))"));
+        assert!(internal.contains("return Object.freeze({"));
+        assert!(!internal.contains("readShared"));
+        assert!(!internal.contains("export class ThingClient"));
+        assert!(!internal.contains("createObservable"));
+    }
+
+    #[test]
+    fn public_clients_hide_shared_transport_without_freezing_the_api() {
+        let source = generate_client(&internal_api_fixture(), 1, 2).unwrap();
+        assert!(source.contains("readonly #transport: TrUApiTransport"));
+        assert!(source.contains("this.#transport = transport"));
+        assert!(source.contains("return this.#transport.request"));
+        assert!(!source.contains("this.transport"));
+        assert!(!source.contains("Object.freeze"));
+        assert!(
+            source.contains(
+                "S.Result(T.VersionedSharedResponse, T.VersionedSharedError).dec(payload)"
+            )
+        );
+
+        let mut method = request_method_with_wrappers(
+            "render",
+            Some(0),
+            "RenderRequest",
+            "RenderItem",
+            "RenderError",
+        );
+        let ReturnType::Result { ok, err } = method.return_type else {
+            unreachable!();
+        };
+        method.kind = MethodKind::Subscription;
+        method.return_type = ReturnType::Subscription {
+            item: ok,
+            interrupt: err,
+        };
+        method.wire.host_initiated = true;
+        let mut api = api(vec![method]);
+        api.public_trait_order = vec!["Example".to_string()];
+        for name in ["RenderRequest", "RenderItem", "RenderError"] {
+            let inner = format!("V01{name}");
+            api.types
+                .push(versioned_tuple_wrapper_variants(name, &[(1, &inner)]));
+            api.types.push(empty_struct(&inner));
+        }
+        let source = generate_client(&api, 1, 2).unwrap();
+        assert!(
+            source.contains("readonly #renderRegistration: HostInitiatedSubscriptionRegistration"),
+            "{source}"
+        );
+        assert!(
+            source
+                .contains("this.#renderRegistration = transport.registerHostInitiatedSubscription")
+        );
+        assert!(source.contains("return this.#renderRegistration.setHandler(handler)"));
     }
 
     #[test]

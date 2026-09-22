@@ -17,6 +17,7 @@ import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.CallingProductIdProvider
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.getProductIdOrNull
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionGuard
+import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.DeviceCapabilityPermissionHandler
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.DeviceCapabilityType
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +26,7 @@ import timber.log.Timber
 
 class ProductWebChromeClient @AssistedInject constructor(
     private val permissionGuard: ProductPermissionGuard,
+    private val devicePermissionHandler: DeviceCapabilityPermissionHandler,
     private val contextManager: ContextManager,
     private val fileProvider: FileProvider,
     @Assisted private val logPrefix: String,
@@ -32,6 +34,8 @@ class ProductWebChromeClient @AssistedInject constructor(
     @Assisted private val scope: CoroutineScope,
     @Assisted private val onTitleReceived: ((String) -> Unit)?,
 ) : WebChromeClient() {
+    private var containerPermissions = false
+
     @AssistedFactory
     interface Factory {
         fun create(
@@ -40,6 +44,10 @@ class ProductWebChromeClient @AssistedInject constructor(
             scope: CoroutineScope,
             onTitleReceived: ((String) -> Unit)?,
         ): ProductWebChromeClient
+    }
+
+    fun useContainerPermissions() {
+        containerPermissions = true
     }
 
     override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
@@ -108,6 +116,7 @@ class ProductWebChromeClient @AssistedInject constructor(
     }
 
     private suspend fun consumeCapability(productId: ProductId, capability: DeviceCapabilityType): Boolean {
+        if (containerPermissions) return devicePermissionHandler.requestOsPermissionIfNeeded(capability)
         val permission = ProductPermission.DeviceCapability(capability)
         return permissionGuard.consumePermission(productId, permission)
     }

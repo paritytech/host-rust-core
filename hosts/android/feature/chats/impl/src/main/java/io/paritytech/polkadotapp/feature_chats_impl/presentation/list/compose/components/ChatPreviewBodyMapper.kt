@@ -10,6 +10,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import io.paritytech.polkadotapp.common.R
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.CallOutlined
@@ -17,6 +18,7 @@ import io.paritytech.polkadotapp.design.components.icon.vectors.FileOutlined
 import io.paritytech.polkadotapp.design.components.icon.vectors.PhotoSolid
 import io.paritytech.polkadotapp.design.components.icon.vectors.VideoOutlined
 import io.paritytech.polkadotapp.design.components.text.ensureAnnotatedString
+import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.design.utils.withBold
 import io.paritytech.polkadotapp.feature_chats_api.domain.middleware.bot.asAnyRenderer
 import io.paritytech.polkadotapp.feature_chats_api.presentation.model.ChatMessageUiModel
@@ -38,7 +40,9 @@ data class ChatPreviewBody(
 @Composable
 internal fun ChatPreviewUiModel.toPreviewBody(username: String): ChatPreviewBody {
     return when (this) {
-        is CustomChatPreviewUiModel<*> -> renderer.formatChatPreview(data).coverUnsupportedMessage().asPlainBody()
+        is CustomChatPreviewUiModel<*> ->
+            renderer.formatChatPreview(data).coverUnsupportedMessage()
+                .withCurrencyTickerStyle(PolkadotTheme.typography.paragraph.medium).asPlainBody()
 
         is DraftPreviewUiModel -> draftPreviewBody(text)
 
@@ -98,7 +102,7 @@ private fun LastMessageUiModel.toPreviewBody(username: String): ChatPreviewBody 
                 stringResource(incomingRes, username, value)
             } else {
                 stringResource(R.string.chat_last_message_payment_outgoing, value)
-            }.withBold(value)
+            }.withBold(value).withCurrencyTickerStyle(PolkadotTheme.typography.paragraph.medium)
             text.asPlainBody()
         }
 
@@ -126,6 +130,7 @@ private fun LastMessageUiModel.toPreviewBody(username: String): ChatPreviewBody 
             renderer.asAnyRenderer()
                 .formatChatPreview(this as LastMessageUiModel.Custom<Any?>)
                 .coverUnsupportedMessage()
+                .withCurrencyTickerStyle(PolkadotTheme.typography.paragraph.medium)
                 .asPlainBody()
         }
 

@@ -9,9 +9,8 @@
 // `LocalhostBridgeBootstrap` helper used to publish an execution's WS endpoint.
 //
 // Products running inside a `WKWebView` connect to the Rust core via the
-// localhost WebSocket bridge. The bootstrap script publishes the URL
-// (`ws://127.0.0.1:<port>/?t=<token>`) and a MessagePort-shaped compatibility
-// object that proxies the product's existing webview transport onto it.
+// localhost WebSocket bridge. The bootstrap publishes its endpoint in
+// `window.__truapi_localhost` for the shared container to consume.
 
 import Foundation
 
@@ -109,107 +108,10 @@ public struct ProductExecutionConfig: Sendable, Equatable {
 /// Bootstrap helper for the native localhost WebSocket bridge that a product
 /// execution starts when the cdylib is built with the `ws-bridge` feature.
 public enum LocalhostBridgeBootstrap {
-    /// Returns a `<script>`-injectable snippet that publishes the endpoint
-    /// metadata on `window.__truapi_localhost`, exposes the legacy
-    /// `window.__HOST_API_PORT__` webview transport shape, and fires a
-    /// `truapi-native-ready` event.
+    /// Publishes the WebSocket endpoint for the product's SDK.
+    /// Inject at document start, before the container and product scripts.
     public static func script(port: UInt16, token: String) -> String {
-        let url = "ws://127.0.0.1:\(port)/?t=\(token)"
-        let safeUrl = jsStringLiteral(url)
-        let safeToken = jsStringLiteral(token)
-        return """
-        (function() {
-          var endpoint = { url: \(safeUrl), token: \(safeToken) };
-
-          function createWebSocketMessagePort(url) {
-            var socket = null;
-            var started = false;
-            var queue = [];
-
-            var port = {
-              onmessage: null,
-              onmessageerror: null,
-
-              postMessage: function(message) {
-                if (!started) {
-                  port.start();
-                }
-
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                  socket.send(message);
-                } else {
-                  queue.push(message);
-                }
-              },
-
-              start: function() {
-                if (started) return;
-                started = true;
-
-                socket = new WebSocket(url);
-                socket.binaryType = "arraybuffer";
-
-                socket.onopen = function() {
-                  var pending = queue;
-                  queue = [];
-                  pending.forEach(function(message) {
-                    socket.send(message);
-                  });
-                };
-
-                socket.onmessage = function(event) {
-                  if (typeof port.onmessage === "function") {
-                    port.onmessage({ data: new Uint8Array(event.data) });
-                  }
-                };
-
-                socket.onerror = function() {
-                  if (typeof port.onmessageerror === "function") {
-                    port.onmessageerror();
-                  }
-                };
-
-                socket.onclose = function() {
-                  if (typeof port.onmessageerror === "function") {
-                    port.onmessageerror();
-                  }
-                };
-              },
-
-              close: function() {
-                queue = [];
-                if (socket) {
-                  socket.close();
-                }
-              }
-            };
-
-            return port;
-          }
-
-          window.__truapi_localhost = endpoint;
-          window.__HOST_WEBVIEW_MARK__ = true;
-          window.__HOST_API_PORT__ = createWebSocketMessagePort(endpoint.url);
-          window.dispatchEvent(new Event('truapi-native-ready'));
-        })();
-        """
-    }
-
-    /// Encodes `value` as a complete double-quoted JavaScript string literal,
-    /// safe to embed inside a `<script>` body. `JSONEncoder` escapes quotes,
-    /// backslashes, control characters, and forward slashes (closing `</script`
-    /// tags); U+2028 / U+2029 are escaped explicitly because JSON leaves them
-    /// raw while JS treats them as line terminators. Falls back to an empty
-    /// literal if encoding ever fails.
-    private static func jsStringLiteral(_ value: String) -> String {
-        guard let data = try? JSONEncoder().encode(value),
-              let encoded = String(data: data, encoding: .utf8)
-        else {
-            return "\"\""
-        }
-        return encoded
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+        localhostBridgeBootstrapScript(port: port, token: token)
     }
 }
 
@@ -349,6 +251,18 @@ public protocol HostBridge: AnyObject, Sendable {
     /// succeeds, so a retry after an ambiguous failure is safe.
     func endOperation(productId: String, id: UInt32) async throws
 
+    /// A device finished pairing with this signing host.
+    ///
+    /// The core has no chat of its own, so announcing the new device to the
+    /// user's existing contacts is the host's to do. At least once per
+    /// pairing, and the host keeps its own record of which devices it has
+    /// already seen: a resumed pairing reports nothing and the core has no
+    /// list to replay. Arrives on the thread answering the handshake, while
+    /// the pairing call is still running: hand the device off rather than
+    /// announcing it inline. Defaults to a no-op for a host that answers no
+    /// pairing.
+    func devicePaired(device: PairedSsoPeer)
+
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
 
@@ -442,6 +356,7 @@ public extension HostBridge {
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
+    func devicePaired(device: PairedSsoPeer) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
     /// Defaults opt out of worker keep-alive; override to run background work
@@ -579,6 +494,10 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
 
     func workerDemandChanged(productId: String, transition: WorkerTransition) {
         bridge.workerDemandChanged(productId: productId, transition: transition)
+    }
+
+    func devicePaired(device: PairedSsoPeer) {
+        bridge.devicePaired(device: device)
     }
 
     func navigateTo(url: String) async throws {
@@ -841,6 +760,77 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// host may stop the worker. Releasing with none held is a no-op.
     public func releaseWorker(productId: String) {
         inner.releaseWorker(productId: productId)
+    }
+
+    /// Tell the pairing host behind `deeplink` that allowance allocation is
+    /// under way, so it leaves its QR screen while the allocation runs.
+    ///
+    /// Answering needs this host's own statement-store allowance, so register
+    /// the `WalletSso` renewal target first. The peer's own device statement
+    /// account is the other target, read with ``parsePairingDeeplink(deeplink:)``
+    /// and tracked before ``establishPairing(deeplink:)`` runs; the allocation
+    /// this notice covers is what that call waits on. The returned handle is
+    /// owed a ``notifyPairingFailed(announced:reason:)`` if pairing then
+    /// fails: the peer has dropped its QR and waits without a deadline of its
+    /// own, and the handle holds the responder secret until it is released.
+    public func notifyPairingAllowanceAllocation(
+        deeplink: String
+    ) async throws -> NativeAnnouncedPairing {
+        try await inner.notifyPairingAllowanceAllocation(deeplink: deeplink)
+    }
+
+    /// Tell a pairing host that already dropped its QR why pairing stopped.
+    ///
+    /// Takes the handle from
+    /// ``notifyPairingAllowanceAllocation(deeplink:)``, so the notice is
+    /// signed by the account that already reached that peer even if this
+    /// host's signer has rotated since.
+    public func notifyPairingFailed(
+        announced: NativeAnnouncedPairing,
+        reason: String
+    ) async throws {
+        try await inner.notifyPairingFailed(announced: announced, reason: reason)
+    }
+
+    /// Answer a pairing host's handshake deeplink, without serving the session
+    /// it opens.
+    ///
+    /// The answer is signed by this host's own SSO statement identity, so the
+    /// `.walletSso` renewal target has to be allocated for it to reach the
+    /// Statement Store at all. The peer's device statement account is the
+    /// other tracked target, since this host allocates the allowance the peer
+    /// authors its own session statements under; read it from the deeplink
+    /// with ``parsePairingDeeplink(deeplink:)``. A pairing that fails after
+    /// that leaves the peer's target to untrack again, unless the device was
+    /// already paired and the target still carries a live pairing.
+    ///
+    /// A device that pairs here reaches ``HostBridge/devicePaired(device:)``.
+    /// Serving the session is ``resumePairing(peer:)``, called with the peer
+    /// this host persisted.
+    public func establishPairing(deeplink: String) async throws {
+        try await inner.establishPairing(deeplink: deeplink)
+    }
+
+    /// Serve a paired host's SSO session until it ends.
+    ///
+    /// Runs for the life of the session, so give it its own task. Only
+    /// `.peerDisconnected` authorises dropping the stored pairing; after
+    /// `.subscriptionEnded` or a thrown error the peer is still paired and
+    /// this can be called again.
+    public func resumePairing(peer: PairedSsoPeer) async throws -> ResponderExit {
+        try await inner.resumePairing(peer: peer)
+    }
+
+    /// Tell a paired host this signing host is ending their SSO session.
+    ///
+    /// Submits the disconnect notice and nothing else. The local side is the
+    /// caller's: cancel that peer's ``resumePairing(peer:)`` task, which
+    /// otherwise keeps answering a host this one no longer considers paired,
+    /// and untrack its device statement account, which otherwise keeps being
+    /// renewed every period. Dropping the stored pairing alone leaves both
+    /// running.
+    public func disconnectPairedHost(peer: PairedSsoPeer) async throws {
+        try await inner.disconnectPairedHost(peer: peer)
     }
 
     public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
