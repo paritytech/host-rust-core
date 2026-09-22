@@ -475,7 +475,7 @@ console.log(JSON.stringify({
                 std::ffi::OsStr::new(EMPTY_BUN_CONFIG),
                 std::ffi::OsStr::new("--no-env-file"),
                 std::ffi::OsStr::new("--no-macros"),
-                std::ffi::OsStr::new("--no-install"),
+                std::ffi::OsStr::new("--install=fallback"),
                 std::ffi::OsStr::new("run"),
                 runner.as_os_str(),
             ]
