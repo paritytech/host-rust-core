@@ -41,15 +41,6 @@ impl Signing for ProductRuntimeHost {
                 v01::HostSignPayloadError::PermissionDenied,
             ))
         })?;
-        let Some(owner) = self
-            .authorized_product_account(&inner.account.dot_ns_identifier, cx)
-            .await
-        else {
-            return Err(CallError::Domain(HostSignPayloadError::V1(
-                v01::HostSignPayloadError::PermissionDenied,
-            )));
-        };
-        inner.account.dot_ns_identifier = owner;
         self.require_chain_submit(HostSignPayloadError::V1(
             v01::HostSignPayloadError::PermissionDenied,
         ))
@@ -59,6 +50,15 @@ impl Signing for ProductRuntimeHost {
                 v01::HostSignPayloadError::Rejected,
             )));
         };
+        let Some(owner) = self
+            .authorized_product_account(&inner.account.dot_ns_identifier, cx)
+            .await
+        else {
+            return Err(CallError::Domain(HostSignPayloadError::V1(
+                v01::HostSignPayloadError::PermissionDenied,
+            )));
+        };
+        inner.account.dot_ns_identifier = owner;
         let grant = self
             .auto_signing_status(&session, &inner.account)
             .await
@@ -67,7 +67,10 @@ impl Signing for ProductRuntimeHost {
             let confirmed = self
                 .platform
                 .confirm_user_action(UserConfirmationReview::SignPayload(
-                    SignPayloadReview::Product(inner.clone()),
+                    SignPayloadReview::Product {
+                        calling_product_id: Some(self.product_id()),
+                        request: inner.clone(),
+                    },
                 ))
                 .await
                 .map_err(|err| CallError::HostFailure {
@@ -128,15 +131,6 @@ impl Signing for ProductRuntimeHost {
                 v01::HostCreateTransactionError::PermissionDenied,
             ))
         })?;
-        let Some(owner) = self
-            .authorized_product_account(&inner.signer.dot_ns_identifier, cx)
-            .await
-        else {
-            return Err(CallError::Domain(HostCreateTransactionError::V1(
-                v01::HostCreateTransactionError::PermissionDenied,
-            )));
-        };
-        inner.signer.dot_ns_identifier = owner;
         self.require_chain_submit(HostCreateTransactionError::V1(
             v01::HostCreateTransactionError::PermissionDenied,
         ))
@@ -146,6 +140,15 @@ impl Signing for ProductRuntimeHost {
                 v01::HostCreateTransactionError::Rejected,
             )));
         };
+        let Some(owner) = self
+            .authorized_product_account(&inner.signer.dot_ns_identifier, cx)
+            .await
+        else {
+            return Err(CallError::Domain(HostCreateTransactionError::V1(
+                v01::HostCreateTransactionError::PermissionDenied,
+            )));
+        };
+        inner.signer.dot_ns_identifier = owner;
         let grant = self
             .auto_signing_status(&session, &inner.signer)
             .await
@@ -154,7 +157,10 @@ impl Signing for ProductRuntimeHost {
             let confirmed = self
                 .platform
                 .confirm_user_action(UserConfirmationReview::CreateTransaction(
-                    CreateTransactionReview::Product(inner.clone()),
+                    CreateTransactionReview::Product {
+                        calling_product_id: Some(self.product_id()),
+                        payload: inner.clone(),
+                    },
                 ))
                 .await
                 .map_err(|err| CallError::HostFailure {
@@ -386,15 +392,6 @@ impl ProductRuntimeHost {
                 v01::HostSignPayloadError::PermissionDenied,
             ))
         })?;
-        let Some(owner) = self
-            .authorized_product_account(&inner.account.dot_ns_identifier, cx)
-            .await
-        else {
-            return Err(CallError::Domain(HostSignRawError::V1(
-                v01::HostSignPayloadError::PermissionDenied,
-            )));
-        };
-        inner.account.dot_ns_identifier = owner;
         self.require_chain_submit(HostSignRawError::V1(
             v01::HostSignPayloadError::PermissionDenied,
         ))
@@ -404,6 +401,15 @@ impl ProductRuntimeHost {
                 v01::HostSignPayloadError::Rejected,
             )));
         };
+        let Some(owner) = self
+            .authorized_product_account(&inner.account.dot_ns_identifier, cx)
+            .await
+        else {
+            return Err(CallError::Domain(HostSignRawError::V1(
+                v01::HostSignPayloadError::PermissionDenied,
+            )));
+        };
+        inner.account.dot_ns_identifier = owner;
         // The deprecated unwatermarked API is never grant-covered: its
         // signatures are not domain-separated from transaction signatures, so a
         // standing grant would waive the prompt on the one surface that can
@@ -419,6 +425,7 @@ impl ProductRuntimeHost {
             let confirmed = self
                 .platform
                 .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product {
+                    calling_product_id: Some(self.product_id()),
                     request: inner.clone(),
                     watermarked,
                 }))

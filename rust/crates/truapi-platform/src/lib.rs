@@ -2939,7 +2939,15 @@ pub trait AuthPresenter: Send + Sync {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum SignPayloadReview {
     /// Product-account signing request.
-    Product(HostSignPayloadRequest),
+    Product {
+        /// Product that asked, when the request carries a caller. Absent on a
+        /// relayed request, which carries no caller identity. A caller other
+        /// than the account's own product is acting under that product's
+        /// `context` grant, and the user is the one who has to see that.
+        calling_product_id: Option<String>,
+        /// Signing request.
+        request: HostSignPayloadRequest,
+    },
     /// Legacy-account signing request.
     LegacyAccount(HostSignPayloadWithLegacyAccountRequest),
 }
@@ -2952,6 +2960,9 @@ pub enum SignPayloadReview {
 pub enum SignRawReview {
     /// Product-account raw signing request.
     Product {
+        /// Product that asked, when the request carries a caller. See
+        /// [`SignPayloadReview::Product`].
+        calling_product_id: Option<String>,
         /// Raw signing request.
         request: HostSignRawRequest,
         /// Whether the signer applies the `<Bytes>` transaction-payload protection.
@@ -2973,6 +2984,9 @@ pub enum SignRawReview {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct StatementStoreProductSignReview {
+    /// Product that asked, when the request carries a caller. See
+    /// [`SignPayloadReview::Product`].
+    pub calling_product_id: Option<String>,
     /// Product account that will sign the statement payload.
     pub account: ProductAccountId,
     /// Exact unsigned statement payload to be signed.
@@ -2984,7 +2998,13 @@ pub struct StatementStoreProductSignReview {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum CreateTransactionReview {
     /// Product-account transaction request.
-    Product(ProductAccountTxPayload),
+    Product {
+        /// Product that asked, when the request carries a caller. See
+        /// [`SignPayloadReview::Product`].
+        calling_product_id: Option<String>,
+        /// Transaction request.
+        payload: ProductAccountTxPayload,
+    },
     /// Legacy-account transaction request.
     LegacyAccount(LegacyAccountTxPayload),
 }

@@ -453,36 +453,31 @@ fn sign_with_wallets_account(host: &ProductRuntimeHost) -> CallError<HostSignPay
     .expect_err("no session is connected, so nothing signs here")
 }
 
-fn is_permission_denied(error: &CallError<HostSignPayloadError>) -> bool {
-    matches!(
-        error,
-        CallError::Domain(HostSignPayloadError::V1(
-            v01::HostSignPayloadError::PermissionDenied
-        ))
-    )
-}
-
+/// The grant is consulted after the session, so a caller with no session is
+/// told the same thing whether or not the account it named would have admitted
+/// it. Consulting the grant first made the pair of refusals a probe for which
+/// products grant which, and reached the chain to answer it.
 #[test]
-fn signing_with_an_ungranted_products_account_is_refused() {
-    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
-    assert!(is_permission_denied(&sign_with_wallets_account(&host)));
-}
+fn a_caller_without_a_session_cannot_tell_a_granted_account_from_an_ungranted_one() {
+    let granting = stub_platform();
+    cache_manifest(&granting, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    let granted = ProductRuntimeHost::new_compat(granting, test_spawner());
 
-/// The gate is what this pins: with the grant the request is no longer refused
-/// for whose account it names, and goes on to be refused for having no session
-/// like any other. Without it, the product looked healthy until its first
-/// signature.
-#[test]
-fn a_context_grant_gets_a_signature_past_the_account_gate() {
-    let platform = stub_platform();
-    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
-    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let withholding = stub_platform();
+    cache_manifest(&withholding, "wallet.dot", r#"{"stash":["context"]}"#, 0);
+    let ungranted = ProductRuntimeHost::new_compat(withholding, test_spawner());
 
-    let error = sign_with_wallets_account(&host);
-    assert!(
-        !is_permission_denied(&error),
-        "the grant admits the account, so the refusal must not be about permission: {error:?}"
-    );
+    for host in [&granted, &ungranted] {
+        assert!(
+            matches!(
+                sign_with_wallets_account(host),
+                CallError::Domain(HostSignPayloadError::V1(
+                    v01::HostSignPayloadError::Rejected
+                ))
+            ),
+            "a session-less caller learns only that there is no session",
+        );
+    }
 }
 
 #[test]

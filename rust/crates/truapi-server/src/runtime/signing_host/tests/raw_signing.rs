@@ -202,6 +202,7 @@ fn assert_review_watermark(platform: &StubPlatform, legacy: bool, watermarked: b
         SignRawReview::Product {
             request,
             watermarked,
+            ..
         } => (false, *watermarked, &request.payload),
         SignRawReview::LegacyAccount {
             request,
