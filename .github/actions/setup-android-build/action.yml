@@ -8,6 +8,13 @@ description: >-
   Three workflows build this tree and a version that moves in only two of them
   fails in a way that looks like a credential problem.
 
+outputs:
+  build_id:
+    description: >-
+      Monotonic build number for this run. The tree falls back to a constant
+      when it is absent, which would have every build claim the same version.
+    value: ${{ steps.build.outputs.id }}
+
 inputs:
   google_services_json_base64:
     description: >-
@@ -21,6 +28,26 @@ inputs:
       configuration.
     required: false
     default: ""
+  keystore_pass:
+    description: Store password for the keystore above.
+    required: false
+    default: ""
+  keystore_alias:
+    description: Key alias within the keystore.
+    required: false
+    default: ""
+  keystore_key_pass:
+    description: Key password within the keystore.
+    required: false
+    default: ""
+  require_inputs:
+    description: >-
+      Whether this job signs and configures the application. A job that does
+      and finds nothing fails here, rather than twenty minutes later inside a
+      Gradle plugin, which reads as a broken branch instead of a missing
+      credential.
+    required: false
+    default: "false"
   save_cache:
     description: >-
       Whether this job writes the Rust cache the others read. One job should,
@@ -81,6 +108,12 @@ runs:
 
     # Skipped by jobs that only compile. Requiring them would make every such
     # job carry credentials it has no use for.
+    # Expressions have no arithmetic, so this is computed once here.
+    - name: Compute the build number
+      id: build
+      shell: bash
+      run: echo "id=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_OUTPUT"
+
     - name: Decode the build inputs
       if: inputs.google_services_json_base64 != '' || inputs.keystore_base64 != ''
       shell: bash
@@ -88,14 +121,30 @@ runs:
       env:
         GOOGLE_SERVICES_JSON_BASE64: ${{ inputs.google_services_json_base64 }}
         KEYSTORE_BASE64: ${{ inputs.keystore_base64 }}
+        KEYSTORE_PASS: ${{ inputs.keystore_pass }}
+        KEYSTORE_ALIAS: ${{ inputs.keystore_alias }}
+        KEYSTORE_KEY_PASS: ${{ inputs.keystore_key_pass }}
       run: |
         set -euo pipefail
         umask 077
-        for name in GOOGLE_SERVICES_JSON_BASE64 KEYSTORE_BASE64; do
-          if [ -z "${!name-}" ]; then
-            echo "::error::${name} is not set, so this build cannot be signed or configured"
-            exit 1
+        # All of them or none. A partial set produces an obscure signing
+        # failure deep in Gradle rather than naming what is missing, and on a
+        # fork the whole set is empty, which is worth saying plainly.
+        present=0
+        for name in GOOGLE_SERVICES_JSON_BASE64 KEYSTORE_BASE64 \
+                    KEYSTORE_PASS KEYSTORE_ALIAS KEYSTORE_KEY_PASS; do
+          if [ -n "${!name-}" ]; then
+            present=$((present + 1))
           fi
         done
+
+        if [ "${present}" -eq 0 ]; then
+          echo "::error::This build signs and configures the application, and none of the five values it needs are set. A pull request opened from a fork cannot reach them, so push the branch to this repository instead."
+          exit 1
+        fi
+        if [ "${present}" -ne 5 ]; then
+          echo "::error::Signing is partly configured, ${present} of 5 values are set. Set all five or none."
+          exit 1
+        fi
         printf '%s' "${GOOGLE_SERVICES_JSON_BASE64}" | base64 --decode > app/google-services.json
         printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > develop_key.jks

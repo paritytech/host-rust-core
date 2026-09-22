@@ -49,10 +49,15 @@ jobs:
           persist-credentials: false
 
       - name: Set up the Android build
+        id: setup
         uses: ./.github/actions/setup-android-build
         with:
+          require_inputs: "true"
           google_services_json_base64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
           keystore_base64: ${{ secrets.CI_GITHUB_KEYSTORE_KEY_FILE }}
+          keystore_pass: ${{ secrets.CI_KEYSTORE_PASS }}
+          keystore_alias: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          keystore_key_pass: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
 
       # Configuration rather than credentials. The app tree reads each of these
       # from the environment when local.properties does not carry it, so a

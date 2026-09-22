@@ -63,17 +63,22 @@ jobs:
           persist-credentials: false
 
       - name: Set up the Android build
+        id: setup
         uses: ./.github/actions/setup-android-build
         with:
+          require_inputs: "true"
           google_services_json_base64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
           keystore_base64: ${{ secrets.CI_GITHUB_KEYSTORE_KEY_FILE }}
+          keystore_pass: ${{ secrets.CI_KEYSTORE_PASS }}
+          keystore_alias: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+          keystore_key_pass: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
 
       # versionCode comes from the environment; the tree falls back to a
       # constant when it is absent, which would collide across runs.
       - name: Build the nightly APKs
         working-directory: hosts/android
         env:
-          CI_BUILD_ID: ${{ steps.build.outputs.id }}
+          CI_BUILD_ID: ${{ steps.setup.outputs.build_id }}
           APPLICATION_ID: ${{ vars.APPLICATION_ID }}
           APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
           CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
@@ -103,7 +108,7 @@ jobs:
         id: package
         working-directory: hosts/android
         env:
-          BUILD_ID: ${{ steps.build.outputs.id }}
+          BUILD_ID: ${{ steps.setup.outputs.build_id }}
           EXPECTED_SIGNER: a25eb8df5e015651d6d52849f79b8450b9b36353921600c22e454d4f00372fc6
         run: |
           set -euo pipefail
@@ -163,7 +168,7 @@ jobs:
           APP_ID: ${{ secrets.ANDROID_FIREBASE_NIGHTLY_APP_ID }}
           GROUP: ${{ vars.ANDROID_FIREBASE_GROUP }}
           SHORT: ${{ steps.package.outputs.short }}
-          BUILD_ID: ${{ steps.build.outputs.id }}
+          BUILD_ID: ${{ steps.setup.outputs.build_id }}
         run: |
           set -euo pipefail
 

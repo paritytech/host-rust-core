@@ -519,6 +519,7 @@ jobs:
       # configuration or keystore, and it is the one that writes the cache the
       # others read.
       - name: Set up the Android build
+        id: setup
         uses: ./.github/actions/setup-android-build
         with:
           save_cache: ${{ github.event_name == 'push' }}
