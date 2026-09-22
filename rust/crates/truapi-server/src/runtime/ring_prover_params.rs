@@ -204,10 +204,14 @@ mod tests {
         );
     }
 
+    /// Native only: it cuts the parameters from the compiled-in SRS, which a
+    /// wasm build does not have. That is the point of the pinning.
+    ///
     /// Doubles as the check that the pinned hashes are the ones
     /// `truapi-srs-gen` emits: these parameters are cut from the compiled-in
     /// SRS the same way, so a mismatch fails here rather than in a browser.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn genuine_parameters_install_once_and_are_not_fetched_again() {
         let host = ScriptedParams::serving(domain11_params());
         let cache = RingProverParamsCache::new(Some(host.clone()));
@@ -222,6 +226,7 @@ mod tests {
     }
 
     /// Domain11 parameters, built the way `truapi-srs-gen` builds them.
+    #[cfg(not(target_arch = "wasm32"))]
     fn domain11_params() -> Vec<u8> {
         use verifiable::ring::RingCurveParams;
         use verifiable::ring::ark_vrf::reexports::ark_serialize::CanonicalSerialize;

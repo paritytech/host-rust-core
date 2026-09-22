@@ -5,9 +5,8 @@
 
 use parity_scale_codec::{Decode, Encode};
 use schnorrkel::{ExpansionMode, MiniSecretKey};
-use truapi_platform::{
-    CoreStorageKey, HostDevicePermissionRequest, HostInfo, PairingHostConfig, PlatformInfo,
-};
+use truapi::latest::HostDevicePermissionRequest;
+use truapi_platform::{CoreStorageKey, HostInfo, PairingHostConfig, PlatformInfo};
 use truapi_server::host_logic::entropy::derive_product_entropy;
 use truapi_server::host_logic::product_account::{
     derive_product_public_key, derive_product_subtree_keypair, derive_root_keypair_from_entropy,
@@ -221,4 +220,30 @@ fn wasm_core_storage_descriptors_are_strict_and_stable() {
     let mut trailing = CoreStorageKey::AuthSession.encode();
     trailing.push(0);
     assert!(truapi_server::wasm::describe_core_storage_key_for_wasm(trailing).is_err());
+}
+
+/// The browser core ships without the ring-VRF prover's powers of tau: they
+/// are several MiB of incompressible data for a capability a session only
+/// reaches while holding an AutoSigning grant, so the host serves them per
+/// ring domain instead.
+///
+/// The parameters leave the bundle by dead code elimination rather than by a
+/// flag, so nothing in the build stops a future reference from pulling them
+/// back in. `make wasm` measures the data section for that; this pins the
+/// runtime half, that a prover with no installed parameters says so instead of
+/// proving with something improvised.
+#[wasm_bindgen_test]
+fn proving_without_installed_parameters_reports_the_missing_setup() {
+    use verifiable::GenerateVerifiable;
+    use verifiable::ring::RingDomainSize;
+    use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
+
+    let secret = BandersnatchVrfVerifiable::new_secret([4u8; 32]);
+    let member = BandersnatchVrfVerifiable::member_from_secret(&secret);
+
+    assert_eq!(
+        BandersnatchVrfVerifiable::open(RingDomainSize::Domain11, &member, [member].into_iter())
+            .unwrap_err(),
+        verifiable::Error::SrsUnavailable,
+    );
 }
