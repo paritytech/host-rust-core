@@ -288,8 +288,12 @@ jobs:
     name: Simulator preview build
     needs: [check-skip-label, core]
     if: needs.check-skip-label.outputs.skip == 'false' && !startsWith(github.head_ref, 'release/')
-    runs-on: macos-26-xlarge
-    timeout-minutes: 30
+    # This job produces an artifact for someone to install; it validates
+    # nothing that build and test do not already cover, so it has nothing to
+    # gain from finishing first. It runs alongside them, so a slower job here
+    # does not hold up the result.
+    runs-on: macos-26
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
