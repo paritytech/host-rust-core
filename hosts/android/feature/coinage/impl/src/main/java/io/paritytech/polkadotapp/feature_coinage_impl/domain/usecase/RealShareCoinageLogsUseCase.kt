@@ -13,8 +13,6 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.model.tokenAmount
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.ShareCoinageLogsUseCase
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.CoinRepository
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.VoucherRepository
-import io.paritytech.polkadotapp.feature_coinage_impl.domain.COINAGE_LOG_TAG
-import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DURABILITY_LOG_TAG
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -40,12 +38,7 @@ class RealShareCoinageLogsUseCase @Inject constructor(
         const val EXPORT_SUBJECT = "Coinage Diagnostics"
         const val REPORT_ENTRY_NAME = "coinage_report.txt"
         const val LOG_SNAPSHOT_NAME = "coinage_log_snapshot.log"
-        const val MAX_LOG_LINES = 5_000
         const val CENTS_PER_DOLLAR = 100.0
-
-        // Durability lines carry the engine's tag: the verdicts and the reads behind them live there now, and
-        // a coinage export without them shows a status changing for no reason.
-        val EXPORTED_LOG_TAGS = setOf(COINAGE_LOG_TAG, DURABILITY_LOG_TAG)
 
         val FILE_NAME_TIMESTAMP_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
         val REPORT_TIMESTAMP_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -86,7 +79,7 @@ class RealShareCoinageLogsUseCase @Inject constructor(
             zipStream.bufferedWriter().run {
                 appendLine("=== COINAGE DIAGNOSTICS ===")
                 appendLine("Generated (UTC): ${REPORT_TIMESTAMP_FORMAT.format(generatedAt)}")
-                appendLine("Log lines: ${logLines.size} (most recent, capped at $MAX_LOG_LINES)")
+                appendLine("Log lines: ${logLines.size}")
 
                 appendLine()
                 appendLine("=== COINS (${coins.size}) ===")
@@ -119,16 +112,16 @@ class RealShareCoinageLogsUseCase @Inject constructor(
     // Copied before reading because the logger keeps appending to the live file, which otherwise ends the
     // export on a half-written line.
     private fun readCoinageLogLines(): List<String> {
-        val appLogFile = fileProvider.getFileInScopedStorage(
-            "${LoggerConstants.LOGS_DIR}/${LoggerConstants.LOGS_FILE_NAME}"
+        val coinageLogFile = fileProvider.getFileInScopedStorage(
+            "${LoggerConstants.LOGS_DIR}/${LoggerConstants.COINAGE_LOGS_FILE_NAME}"
         )
-        if (!appLogFile.exists()) return emptyList()
+        if (!coinageLogFile.exists()) return emptyList()
 
         val snapshotFile = fileProvider.getFileInInternalCacheStorage(LOG_SNAPSHOT_NAME)
 
         return try {
-            appLogFile.copyTo(snapshotFile, overwrite = true)
-            snapshotFile.useLines { it.filterLogEntries(EXPORTED_LOG_TAGS, MAX_LOG_LINES) }
+            coinageLogFile.copyTo(snapshotFile, overwrite = true)
+            snapshotFile.readLines()
         } finally {
             snapshotFile.delete()
         }

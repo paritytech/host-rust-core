@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import {
-  POLICY_GLOBAL,
-  consumeWebRtcPolicy,
-  installWebRtcPolicy,
-} from './webrtc.js';
+import { installWebRtcPolicy } from './webrtc.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -380,13 +376,6 @@ describe('an unsupported host stays disabled', () => {
       undefined,
       undefined,
     ]);
-  });
-
-  it('removes the old startup policy after reading it', () => {
-    const win = realm();
-    win[POLICY_GLOBAL] = { webRtcAllowed: false };
-    expect(consumeWebRtcPolicy(win)).toBe(false);
-    expect(win[POLICY_GLOBAL]).toBeUndefined();
   });
 
   it('cannot be restored by assignment or redefining the property', () => {

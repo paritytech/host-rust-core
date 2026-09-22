@@ -44,4 +44,3 @@ jobs:
       source_ref: ${{ inputs.source_ref }}
       increment_step: ${{ inputs.increment_step }}
       distribution_workflow: ios-release-distribution.yml
-    secrets: inherit

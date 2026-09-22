@@ -49,6 +49,9 @@ Walk this checklist for any file path that touches an architectural seam. Cite t
 - **major** — New transfer strategy implemented outside `TransferPlanner`; should be a new `tryGet*Plan()` method.
 - **major** — `ExternalPaymentService` wiring that doesn't route through coinage's transfer planner and submission use case.
 - **major** — Chat-extension watching on-chain coinage events but holding state inside the bot class (use a `*StateHolder`).
+- **blocking** — A coinage retry that mints fresh outputs instead of re-arming the row with its registered ones (claims, in-chat sends).
+- **major** — A transfer strategy that builds or registers extrinsics itself instead of returning transactions to schedule.
+- **major** — A coinage submission policy that reimplements the wait / build / give-up / retry decisions instead of composing `InputGatedSubmissionPolicy` with a `CoinageRebuild`.
 
 ## Statement-store communication (`architecture/statement-store-communication.md`)
 
@@ -109,6 +112,10 @@ Walk this checklist for any file path that touches an architectural seam. Cite t
 - **major** — Multi-extrinsic batches missing `ExtrinsicBuilderSequence` and managing nonces by hand.
 - **major** — Inheritance from `AsPersonTransactionExtension` (or similar base) when composition via `SetTransactionExtensionOrigin` is enough.
 - **minor** — Polling chain state instead of subscribing (`observe`).
+- **blocking** — A durable verdict about a submitted attempt written outside `DurableVerdictWriter`.
+- **blocking** — `AsyncDurableSubmissionPolicy.canRetry` retrying `DISPATCH_FAILED` / `REJECTED` failures without a bound (`architecture/transactions.md` rule 11).
+- **blocking** — A policy rebuild that consumes or mints anything other than the assets registered for its row.
+- **major** — `canRetry` reading the chain; work shared by a bucket repeated per transaction in `prepareSubmission`.
 
 ## Chain integration (`architecture/chain-integration.md`)
 

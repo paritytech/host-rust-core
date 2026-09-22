@@ -92,6 +92,7 @@ class RealCoinageOnboardingSubmissionUseCase @Inject constructor(
                         extrinsic = extrinsic,
                         inputs = emptyList(),
                         outputs = listOf(OwnAsset.Voucher(vouchers[index].ringVrfKeyIndex)),
+                        policy = null,
                     )
                 }
 

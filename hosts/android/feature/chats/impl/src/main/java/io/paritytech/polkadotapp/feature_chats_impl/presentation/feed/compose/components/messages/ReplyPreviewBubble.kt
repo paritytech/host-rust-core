@@ -18,6 +18,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -81,7 +83,7 @@ fun ReplyPreviewBubble(
                 )
 
                 NovaText(
-                    text = preview.content.subtitle(),
+                    text = preview.content.subtitle(PolkadotTheme.typography.body.smallEmphasized),
                     style = PolkadotTheme.typography.body.smallEmphasized,
                     color = textColor,
                     maxLines = 2,
@@ -130,13 +132,13 @@ private fun ReplyAccentBar() {
 }
 
 @Composable
-private fun ReplyPreview.Content.subtitle(): String {
+private fun ReplyPreview.Content.subtitle(style: TextStyle): AnnotatedString {
     return when (this) {
-        is ReplyPreview.Content.Text -> text
-        is ReplyPreview.Content.Image -> caption ?: stringResource(RCommon.string.chat_attachment_name_image)
-        is ReplyPreview.Content.Video -> caption ?: stringResource(RCommon.string.chat_attachment_name_video)
-        is ReplyPreview.Content.File -> caption ?: fileName
-        is ReplyPreview.Content.Payment -> paymentSubtitle()
+        is ReplyPreview.Content.Text -> AnnotatedString(text)
+        is ReplyPreview.Content.Image -> AnnotatedString(caption ?: stringResource(RCommon.string.chat_attachment_name_image))
+        is ReplyPreview.Content.Video -> AnnotatedString(caption ?: stringResource(RCommon.string.chat_attachment_name_video))
+        is ReplyPreview.Content.File -> AnnotatedString(caption ?: fileName)
+        is ReplyPreview.Content.Payment -> paymentSubtitle(style)
     }
 }
 

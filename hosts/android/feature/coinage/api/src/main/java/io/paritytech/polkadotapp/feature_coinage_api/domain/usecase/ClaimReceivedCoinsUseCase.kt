@@ -19,11 +19,11 @@ interface ClaimReceivedCoinsUseCase {
      * emitting until the claim is over — so a fork that takes an inclusion away is reported too, as a return
      * to [CoinageTransferDetection.Detected].
      *
-     * Claiming is not one-shot. A coin visible on chain that no claim of ours has taken is money the peer has
-     * already parted with, and nothing else in the app will collect it, so a claim that failed is submitted
-     * again whenever the chain still shows its coin unclaimed. The flow completes only when every coin has a
-     * finalized claim, or when [retryUntil] has passed — and never before at least one attempt has been made,
-     * so a message first seen after its window has closed is still tried once rather than abandoned.
+     * Each coin's claim is registered once, as soon as the chain shows the coin, and a claim that fails is built
+     * again by its submission policy into the same coin until [retryUntil] allows no more. The flow completes
+     * once every coin has a claim that can no longer change, or when [retryUntil] has passed on coins that never
+     * appeared — and never before at least one attempt has been made, so a message first seen after its window
+     * has closed is still tried once rather than abandoned.
      *
      * Because it ends only when nothing further will be attempted, completion is what tells a caller the
      * payment is finished. No status emitted along the way means that, a partial

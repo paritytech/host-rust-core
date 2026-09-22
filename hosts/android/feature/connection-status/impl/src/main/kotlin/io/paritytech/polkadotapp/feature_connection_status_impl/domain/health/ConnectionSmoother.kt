@@ -21,6 +21,7 @@ enum class RawConnectivity {
     Connected,
     Pending,
     Settled,
+    Offline,
 }
 
 data class ConnectionSmoothingConfig(
@@ -79,6 +80,9 @@ class ConnectionSmoother internal constructor(
                         everConnected = true
                         emit(ChainConnectionPresentation.Connected)
                     }
+
+                    // No cooldown: a device with no network has a known cause, unlike a socket that merely went quiet.
+                    current == RawConnectivity.Offline -> emit(ChainConnectionPresentation.Offline)
 
                     current == RawConnectivity.Settled -> {
                         emit(ChainConnectionPresentation.Connecting)

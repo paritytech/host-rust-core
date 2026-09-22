@@ -124,7 +124,7 @@ class SetAliasState(
 
     private fun ExtrinsicExecutionResult.canContinue(): Boolean {
         // Attempt to set alias after successful previous attempt will result in "AccountInUse" error
-        // https://github.com/paritytech/individuality/blob/132421e16d85535afe570a0a32feaecfb5c8e5f4/substrate/frame/people/src/lib.rs#L421
+        // https://github.com/paritytech/individuality-community/blob/fce93ef38a15c673a8b0b208362bc46ae755c7d7/pallets/people-multi/src/lib.rs#L292
         return outcome.isOk() || outcome.isModuleError(Modules.PEOPLE, "AccountInUse")
     }
 }

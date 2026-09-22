@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -27,11 +28,13 @@ import io.paritytech.polkadotapp.feature_transactions.api.presentation.outcome.T
 fun TransactionOutcomeScreen(
     contract: TransactionOutcomeContract,
     config: TransactionOutcomeUiConfig,
+    details: @Composable ColumnScope.() -> Unit = {},
 ) {
     BackHandler { contract.onBackClick() }
     TransactionOutcomeScreenInternal(
         config = config,
         onButtonClick = contract::onButtonClick,
+        details = details,
     )
 }
 
@@ -39,6 +42,7 @@ fun TransactionOutcomeScreen(
 fun TransactionOutcomeScreenInternal(
     config: TransactionOutcomeUiConfig,
     onButtonClick: () -> Unit,
+    details: @Composable ColumnScope.() -> Unit = {},
 ) {
     PolkadotSurface {
         Box(
@@ -80,6 +84,8 @@ fun TransactionOutcomeScreenInternal(
                         color = PolkadotTheme.colors.fg.secondary
                     )
                 }
+
+                details()
             }
 
             PolkadotTextButton(

@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.feature_connection_status_impl.domain.health.probe
 
+import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.ChainId
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.ChainConnectionPresentation
 import io.paritytech.polkadotapp.feature_connection_status_api.domain.model.ChainMetricReading
 import kotlinx.coroutines.flow.Flow
@@ -10,6 +11,7 @@ import kotlin.time.Duration
  * reading the same one do not open duplicate subscriptions or run duplicate timers.
  */
 data class ChainMetricContext(
+    val chainId: ChainId,
     val bestBlockNumber: Flow<Int>,
     val expectedBlockTime: Duration,
     // Requests currently pending on the socket, as stable identities (Sendable has no id, so tracked

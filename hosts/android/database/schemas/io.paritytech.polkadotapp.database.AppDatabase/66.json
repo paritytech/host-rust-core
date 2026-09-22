@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 66,
-    "identityHash": "c9f0def3e18657b0c6d24c2bd2c3b79f",
+    "identityHash": "9bfb715099bdabde3e8e93f8e3d8ac49",
     "entities": [
       {
         "tableName": "product_funding_operations",
@@ -2739,7 +2739,7 @@
       },
       {
         "tableName": "durable_tx",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `domainId` TEXT NOT NULL, `operationGroupId` TEXT, `txHash` TEXT NOT NULL, `mortalityBlocks` INTEGER NOT NULL, `status` TEXT NOT NULL, `checkpointblockNumber` INTEGER NOT NULL, `checkpointblockHash` TEXT NOT NULL, `successDetectedblockNumber` INTEGER, `successDetectedblockHash` TEXT)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `domainId` TEXT NOT NULL, `operationGroupId` TEXT, `txHash` TEXT, `mortalityBlocks` INTEGER, `status` TEXT NOT NULL, `submissionPolicyId` TEXT, `submissionPolicyParams` BLOB, `checkpointblockNumber` INTEGER, `checkpointblockHash` TEXT, `successDetectedblockNumber` INTEGER, `successDetectedblockHash` TEXT)",
         "fields": [
           {
             "fieldPath": "id",
@@ -2761,14 +2761,12 @@
           {
             "fieldPath": "txHash",
             "columnName": "txHash",
-            "affinity": "TEXT",
-            "notNull": true
+            "affinity": "TEXT"
           },
           {
             "fieldPath": "mortalityBlocks",
             "columnName": "mortalityBlocks",
-            "affinity": "INTEGER",
-            "notNull": true
+            "affinity": "INTEGER"
           },
           {
             "fieldPath": "status",
@@ -2777,16 +2775,24 @@
             "notNull": true
           },
           {
+            "fieldPath": "submissionPolicyId",
+            "columnName": "submissionPolicyId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "submissionPolicyParams",
+            "columnName": "submissionPolicyParams",
+            "affinity": "BLOB"
+          },
+          {
             "fieldPath": "checkpoint.blockNumber",
             "columnName": "checkpointblockNumber",
-            "affinity": "INTEGER",
-            "notNull": true
+            "affinity": "INTEGER"
           },
           {
             "fieldPath": "checkpoint.blockHash",
             "columnName": "checkpointblockHash",
-            "affinity": "TEXT",
-            "notNull": true
+            "affinity": "TEXT"
           },
           {
             "fieldPath": "successDetectedAt.blockNumber",
@@ -3118,73 +3124,11 @@
             "topUpId"
           ]
         }
-      },
-      {
-        "tableName": "pocket_cards",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`productId` TEXT NOT NULL, `cardId` TEXT NOT NULL, `title` TEXT NOT NULL, PRIMARY KEY(`productId`, `cardId`))",
-        "fields": [
-          {
-            "fieldPath": "productId",
-            "columnName": "productId",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "cardId",
-            "columnName": "cardId",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "title",
-            "columnName": "title",
-            "affinity": "TEXT",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": false,
-          "columnNames": [
-            "productId",
-            "cardId"
-          ]
-        }
-      },
-      {
-        "tableName": "pocket_card_faces",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`productId` TEXT NOT NULL, `cardId` TEXT NOT NULL, `faceJson` TEXT NOT NULL, PRIMARY KEY(`productId`, `cardId`))",
-        "fields": [
-          {
-            "fieldPath": "productId",
-            "columnName": "productId",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "cardId",
-            "columnName": "cardId",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "faceJson",
-            "columnName": "faceJson",
-            "affinity": "TEXT",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": false,
-          "columnNames": [
-            "productId",
-            "cardId"
-          ]
-        }
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'c9f0def3e18657b0c6d24c2bd2c3b79f')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9bfb715099bdabde3e8e93f8e3d8ac49')"
     ]
   }
 }
