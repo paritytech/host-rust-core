@@ -487,7 +487,7 @@ impl SigningHost {
         ])
     }
 
-    async fn ensure_personhood_keys(
+    async fn register_builtin_personhood_keys_if_needed(
         &self,
         session: &AuthoritySession,
         owner: &str,
@@ -1192,7 +1192,8 @@ impl ProductAuthority for SigningHost {
             }
         }
 
-        self.ensure_personhood_keys(session, &owner).await?;
+        self.register_builtin_personhood_keys_if_needed(session, &owner)
+            .await?;
         let mut entries = self
             .ring_vrf_registry
             .owner_entries(session.public_key, &owner)
