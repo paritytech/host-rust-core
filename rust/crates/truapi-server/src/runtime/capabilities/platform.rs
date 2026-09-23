@@ -77,7 +77,7 @@ impl System for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "system.navigate_to"))]
     async fn navigate_to(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         request: HostNavigateToRequest,
     ) -> Result<HostNavigateToResponse, CallError<HostNavigateToError>> {
         let HostNavigateToRequest::V1(v01::HostNavigateToRequest { url }) = request;
@@ -111,6 +111,13 @@ impl System for ProductRuntimeHost {
                 url
             }
         };
+        if let Some(reason) = cx.cancel().reason() {
+            return Err(CallError::Domain(HostNavigateToError::V1(
+                v01::HostNavigateToError::Unknown {
+                    reason: format!("navigation {reason}"),
+                },
+            )));
+        }
         self.platform
             .navigate_to(resolved)
             .await
@@ -418,7 +425,7 @@ impl Notifications for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "notifications.send_push_notification"))]
     async fn send_push_notification(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         request: HostPushNotificationRequest,
     ) -> Result<HostPushNotificationResponse, CallError<HostPushNotificationError>> {
         let HostPushNotificationRequest::V1(inner) = request;
@@ -434,6 +441,13 @@ impl Notifications for ProductRuntimeHost {
             return Err(CallError::Domain(HostPushNotificationError::V1(
                 v01::HostPushNotificationError::Unknown {
                     reason: PERMISSION_DENIED_REASON.to_string(),
+                },
+            )));
+        }
+        if let Some(reason) = cx.cancel().reason() {
+            return Err(CallError::Domain(HostPushNotificationError::V1(
+                v01::HostPushNotificationError::Unknown {
+                    reason: format!("notification {reason}"),
                 },
             )));
         }
