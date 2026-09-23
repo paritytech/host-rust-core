@@ -473,9 +473,13 @@ jobs:
             bundle exec fastlane run_unit_tests
           fi
 
-      # Upload test artifacts for debugging - only when DEBUG_CI is enabled
+        # Kept on every failure, not only when debugging is switched on. The
+        # suite stalls intermittently: two or three suites start, never report,
+        # and everything queued behind them counts as failed without running.
+        # Which test stalled is recorded in the .xcresult and nowhere else, so
+        # discarding it leaves the run undiagnosable afterwards.
       - name: Upload test artifacts
-        if: env.DEBUG_CI == 'true' && (failure() || success())
+        if: failure() || env.DEBUG_CI == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-artifacts-${{ github.run_number }}
