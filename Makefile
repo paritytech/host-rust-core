@@ -67,14 +67,11 @@ build: check-generated ## Build the Rust workspace and the TypeScript client.
 	cd $(TRUAPI_PKG) && npm run build
 	cd $(HOST_WASM_PKG) && npm run build
 
-headless: check-generated ## Build the truapi-host CLI and generated TypeScript client.
-	# The client build shells out to tsc, which `ensure-generated.sh` looks for at
-	# the root or in the package. Install workspace deps when neither is present so
-	# this target works on a checkout that has not run `make setup`.
-	@[ -x node_modules/.bin/tsc ] || [ -x $(TRUAPI_PKG)/node_modules/.bin/tsc ] \
+headless: ## Build the truapi-host CLI and generated TypeScript client.
+	@[ -x node_modules/.bin/tsc ] && [ -x node_modules/.bin/prettier ] \
 		|| npm ci --ignore-scripts
+	./scripts/codegen.sh
 	cargo build -p truapi-host-cli
-	cd $(TRUAPI_PKG) && npm run build
 	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
 install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `make headless install`.
@@ -98,6 +95,8 @@ CLI_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p' | sed 's/-linux-gnu$$/-l
 CLI_VERSION ?= $(shell awk -F'"' '/^version = /{print $$2; exit}' rust/crates/truapi-host-cli/Cargo.toml)
 CLI_ARCHIVE = truapi-host-$(CLI_VERSION)-$(CLI_TARGET).tar.gz
 CLI_RUNNER := $(CLI_DIST_DIR)/runner.js
+CLI_SCRIPT_TYPES_SOURCE := rust/crates/truapi-host-cli/js/script-types.d.ts
+CLI_SCRIPT_TYPES := $(CLI_DIST_DIR)/script-types.d.ts
 CLI_CONTAINER := $(CLI_DIST_DIR)/sandbox-assets/container.js
 CLI_STAGE = $(CLI_DIST_DIR)/$(CLI_TARGET)
 # macOS ships shasum, most Linux images ship only sha256sum.
@@ -108,20 +107,25 @@ SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo "sha256sum" || ec
 $(CLI_RUNNER): $(CLI_CONTAINER)
 	@test -f "$@" || bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
+$(CLI_SCRIPT_TYPES): $(CLI_SCRIPT_TYPES_SOURCE)
+	mkdir -p $(CLI_DIST_DIR)
+	cp $< $@
+
 $(CLI_CONTAINER):
 	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
-cli-runner: ## Bundle the product-script runner and browser sandbox into target/dist.
+cli-runner: $(CLI_SCRIPT_TYPES) ## Bundle the product-script runner, browser sandbox, and script types into target/dist.
 	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
+	node scripts/check-host-script-types.mjs
 
-cli-dist: check-generated $(CLI_RUNNER) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
+cli-dist: check-generated $(CLI_RUNNER) $(CLI_SCRIPT_TYPES) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
 	rustup target add $(CLI_TARGET)
 	$(CARGO) build -p truapi-host-cli --release --target $(CLI_TARGET)
 	rm -rf $(CLI_STAGE)
 	mkdir -p $(CLI_STAGE)
-	cp target/$(CLI_TARGET)/release/truapi-host $(CLI_RUNNER) $(CLI_STAGE)/
+	cp target/$(CLI_TARGET)/release/truapi-host $(CLI_RUNNER) $(CLI_SCRIPT_TYPES) $(CLI_STAGE)/
 	cp -R $(CLI_DIST_DIR)/sandbox-assets $(CLI_STAGE)/
-	tar -czf $(CLI_DIST_DIR)/$(CLI_ARCHIVE) -C $(CLI_STAGE) truapi-host runner.js sandbox-assets
+	tar -czf $(CLI_DIST_DIR)/$(CLI_ARCHIVE) -C $(CLI_STAGE) truapi-host runner.js script-types.d.ts sandbox-assets
 	cd $(CLI_DIST_DIR) && $(SHA256) $(CLI_ARCHIVE) > $(CLI_ARCHIVE).sha256
 	@echo "packaged $(CLI_DIST_DIR)/$(CLI_ARCHIVE)"
 
@@ -166,10 +170,10 @@ uniffi: check-generated ## Generate Swift bindings from the truapi-server cdylib
 IOS_HOST ?= ../polkadot-app-ios-v2
 IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
 IOS_CONFIGURATION ?= Debug
-IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E
+IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E -DTRUAPI_RUNTIME_DEFAULT
 IOS_SIMULATOR_DEVICE ?=
 IOS_XCODE_DESTINATION ?= generic/platform=iOS Simulator
-IOS_BUNDLE ?= io.pcf.polkadotapp.develop
+IOS_BUNDLE ?= io.parity.polkadotapp.develop
 IOS_GOOGLE_SERVICE_PLIST ?= $(IOS_HOST)/polkadot-app/GoogleService/GoogleService-Info-Release.plist
 IOS_PRODUCT_HOST ?= truapi-playground.dot
 IOS_PRODUCT_URL ?= http://localhost:3100
@@ -395,7 +399,7 @@ dev-link-check: dotli-link ## Verify dotli can resolve the local @parity/truapi-
 	@node -e 'const fs = require("node:fs"); const checks = [["$(DOTLI_TRUAPI_LINK)/package.json", "@parity/truapi"], ["$(DOTLI_HOST_WASM_LINK)/package.json", "@parity/truapi-host"]]; for (const [path, name] of checks) { const pkg = JSON.parse(fs.readFileSync(path, "utf8")); if (pkg.name !== name) { console.error(path + " resolves " + pkg.name + ", expected local " + name + ". Run: make dotli-link"); process.exit(1); } }'
 	cd $(DOTLI_UI) && bun -e 'await import("@parity/truapi-host"); await import("@parity/truapi-host/web");'
 
-dev-cli: ## Start the playground (:3000) against the local signing-host CLI; open http://localhost:3000
+dev-cli: cli-runner ## Start the playground (:3000) against the local signing-host CLI; open http://localhost:3000
 	cargo build --release -p truapi-host-cli
 	cd $(PLAYGROUND) && "$(abspath target/release/truapi-host)" dev -- yarn dev
 
@@ -411,7 +415,7 @@ e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local s
 	cargo build -p truapi-host-cli
 	cd $(PLAYGROUND) && bun tests/e2e/dotli-diagnosis.ts
 
-e2e-cli-diagnosis: ## Full playground diagnosis in a plain browser tab, hosted by `truapi-host dev`.
+e2e-cli-diagnosis: cli-runner ## Full playground diagnosis in a plain browser tab, hosted by `truapi-host dev`.
 	cargo build --release -p truapi-host-cli
 	cd $(PLAYGROUND) && TRUAPI_HOST_BIN="$(abspath target/release/truapi-host)" bun tests/e2e/cli-diagnosis.ts
 

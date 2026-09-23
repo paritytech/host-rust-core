@@ -1,10 +1,13 @@
-# A nightly Android build, delivered to Firebase App Distribution.
+# A nightly Android build, delivered to Firebase App Distribution and
+# published as a GitHub prerelease asset.
 #
 # The iOS nightly goes to TestFlight; App Distribution is this platform's
 # equivalent, and it reaches a named tester group rather than anyone with the
-# link. That matters here beyond convenience: the build embeds configuration
-# that should not be world readable, so a public release asset is not an
-# option.
+# link. That remains the channel for testers.
+#
+# The asset exists because paritytech/triangle-e2e installs the nightly on an
+# emulator and App Distribution gives it nothing to download. Same shape as the
+# `simulator-*` prereleases its iOS shard already consumes from this repo.
 #
 # Authentication is federated. The job proves its identity with the run's OIDC
 # token and receives a short lived credential, so no long lived key for this
@@ -24,8 +27,8 @@ concurrency:
 
 permissions:
   # id-token to mint the OIDC assertion the identity exchange consumes.
-  # Nothing is written back to the repository, so contents stays read.
-  contents: read
+  # contents: write to cut the prerelease that carries the APK.
+  contents: write
   id-token: write
 
 jobs:
@@ -51,6 +54,7 @@ jobs:
           app_id: ${{ secrets.ANDROID_FIREBASE_NIGHTLY_APP_ID }}
           groups: ${{ vars.ANDROID_FIREBASE_GROUP }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
 
   nightly:
     name: Build and publish
@@ -82,6 +86,7 @@ jobs:
           APPLICATION_ID: ${{ vars.APPLICATION_ID }}
           APPLICATION_NAME: ${{ vars.APPLICATION_NAME }}
           CURRENCY_SYMBOL: ${{ vars.CURRENCY_SYMBOL }}
+          CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
           LOG_COLLECTION_EMAIL: ${{ vars.LOG_COLLECTION_EMAIL }}
           PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
           TERMS_OF_USE_URL: ${{ vars.TERMS_OF_USE_URL }}
@@ -194,8 +199,67 @@ jobs:
           # version name and code, which the two flavours share, so uploading
           # both to one app would have the second replace the first and report
           # success. Vanilla needs its own app before it can be distributed.
+          # On success the CLI prints a signed URL that downloads the APK with
+          # no credential of its own. This repository is public and its build
+          # log is too, and the binary carries configuration that must not be,
+          # so the output is held back until every token in it is registered as
+          # a secret. Registering one only affects what is written afterwards,
+          # which is why none of this is streamed. The line itself is dropped:
+          # a one hour download link serves no purpose in a log that outlives
+          # it by years.
+          out="${RUNNER_TEMP}/distribute.log"
+          status=0
           "${cli}/node_modules/.bin/firebase" appdistribution:distribute \
             "polkadot-app-gp-${BUILD_ID}-${SHORT}.apk" \
             --app "${APP_ID}" \
             --groups "${GROUP}" \
-            --release-notes "Build ${BUILD_ID}, from ${GITHUB_SHA}."
+            --release-notes "Build ${BUILD_ID}, from ${GITHUB_SHA}." > "${out}" 2>&1 || status=$?
+
+          tokens="$(grep -oE 'token=[^&"[:space:]]+' "${out}" \
+            | cut -d= -f2- | sort -u || true)"
+          if [ -n "${tokens}" ]; then
+            while IFS= read -r token; do
+              [ -n "${token}" ] && echo "::add-mask::${token}"
+            done <<< "${tokens}"
+          fi
+
+          grep -v 'Download the release binary' "${out}" || true
+          exit "${status}"
+
+      # Tag shape mirrors ios-nightly-simulator-release.yml.
+      - name: Compute release tag + name
+        id: release-tag
+        run: |
+          set -euo pipefail
+          DATE_TAG=$(date -u +%Y%m%d-%H%M)
+          DATE_NAME=$(date -u +'%d.%m.%Y %H:%M')
+          SHORT_SHA=${GITHUB_SHA:0:7}
+          {
+            echo "tag=android-${DATE_TAG}-${SHORT_SHA}"
+            echo "name=Nightly Android ${DATE_NAME} UTC"
+          } >> "$GITHUB_OUTPUT"
+
+      # The name polkadot-android-community used, so consumers need no change.
+      - name: Name the asset for consumers
+        id: release-asset
+        working-directory: hosts/android
+        env:
+          SHORT: ${{ steps.package.outputs.short }}
+          BUILD_ID: ${{ steps.setup.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          cp "polkadot-app-gp-${BUILD_ID}-${SHORT}.apk" app-gp-nightly.apk
+          ls -la app-gp-nightly.apk
+          echo "path=hosts/android/app-gp-nightly.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ steps.release-tag.outputs.tag }}
+          name: ${{ steps.release-tag.outputs.name }}
+          generate_release_notes: true
+          body: |
+            Google-Play (`gp`) nightly, build `${{ steps.setup.outputs.build_id }}`.
+            Same APK the Firebase release above carries.
+          prerelease: true
+          files: ${{ steps.release-asset.outputs.path }}

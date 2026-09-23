@@ -28,7 +28,11 @@ dwarf-debug-info = false
 [features]
 default = ["wasm-signing-host"]
 wasm-signing-host = []
-ws-bridge = ["dep:tokio", "dep:tokio-tungstenite", "dep:rand", "dep:base64"]
+# Test-host-only shortcuts a shipping host must not carry, such as answering
+# resource allocation as granted without allocating anything.
+test-host = []
+debug-sink = ["dep:tokio", "dep:tokio-tungstenite", "dep:base64"]
+ws-bridge = ["debug-sink", "dep:rand"]
 
 [dependencies]
 truapi = { path = "../truapi" }
@@ -40,6 +44,10 @@ futures = "0.3"
 futures-timer = "3"
 parity-scale-codec = { version = "3", features = ["derive"] }
 scale-decode = { version = "0.16", features = ["derive"] }
+# Metadata decoding backs allowance registration, which both the native and the
+# wasm host perform, so these are not target-gated.
+frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
+scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
@@ -72,12 +80,10 @@ truapi-platform = { path = "../truapi-platform", features = ["uniffi"] }
 futures = { version = "0.3", features = ["thread-pool"] }
 rand = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"], optional = true }
-tokio-tungstenite = { version = "0.21", default-features = false, features = ["handshake"], optional = true }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
 uniffi.workspace = true
 subxt = { version = "0.50.3", default-features = false, features = ["native"] }
 subxt-rpcs = { version = "0.50.3", default-features = false, features = ["jsonrpsee", "native"] }
-frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
-scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 base64 = { version = "0.22", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -94,13 +100,14 @@ web-sys = { version = "0.3", features = ["console"] }
 
 [dev-dependencies]
 scale-info = "2.11"
+truapi-platform = { path = "../truapi-platform", features = ["mock"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
-tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "handshake"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 
 [lints]
 workspace = true

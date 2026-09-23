@@ -116,12 +116,25 @@ const unsubscribe = subscribeConnectionStatus((status) => {
 | `subscribeConnectionStatus(cb): () => void` | Connected / disconnected status listener.       |
 | `connectWebSocketHost(url): TrUApiClient`   | Use a host that serves frames over a WebSocket. |
 
+Native and CLI browser hosts inject a shared SDK client. Keep the client
+returned by `getClientSync()`:
+it remains usable when the host replaces a disconnected connection. Interrupted
+requests reject with `ConnectionResetError`; subscriptions end with that error
+as their cause. Nothing is replayed. Recreate read/watch subscriptions and discard
+old chain handles before resuming work. Registered host-initiated handlers remain
+installed. Older SDKs use a small MessagePort adapter and require a page reload
+after disconnect.
+
+The shared connection attempts one immediate reconnect. If that fails, the next
+API call or return to a visible page tries again. A product that stays visible
+and only waits for connection status will not trigger further retries.
+
 ### Hosts on a WebSocket
 
-Some hosts serve protocol frames on a loopback WebSocket rather than injecting a `MessagePort`:
-the Rust core's `ws-bridge`, and `truapi-host signing-host --frame-listen`. Point the sandbox at
-that endpoint once, before anything else touches the client, and every export above behaves as it
-does inside a webview:
+For a direct connection to a loopback host such as
+`truapi-host signing-host --frame-listen`, set the endpoint before anything else
+touches the client. Native and CLI browser bootstrap already provide the client
+and need no explicit endpoint:
 
 ```ts
 import { connectWebSocketHost } from "@parity/truapi/sandbox";
@@ -131,7 +144,9 @@ connectWebSocketHost("ws://127.0.0.1:9955");
 
 This is what makes a real host usable from an ordinary browser tab during development. For a
 transport without the sandbox's caching and detection, `createWebSocketProvider(url)` from the
-package root returns the bare `WireProvider`.
+package root returns the bare `WireProvider`. Direct WebSocket providers close
+permanently on disconnect. When using `connectWebSocketHost`, call `getClientSync()`
+again to obtain a new direct client, then recreate its subscriptions.
 
 ## Observability / debugging
 

@@ -34,9 +34,24 @@ The interactive playground lets you browse every method, edit request payloads, 
 curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
 ```
 
-Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for the commands, the terminal UI, and product scripts.
+Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. `/script` opens a persistent TypeScript project with the Product SDK quickstart, pinned published dependencies, and editor types. Use `/script --run` to rerun it or `/script --edit` to edit without running. Projects survive session cleanup. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup and existing project scripts. Release checks install and typecheck the default SDK template against the public registry.
+
+The signing host registers its built-in full and lite personhood keys when an
+authorized product first lists `peopl.<network suffix>` (for example,
+`peopl.paseo`). The first listing reads People-chain metadata; later listings
+reuse the saved registrations, including after restart. Registration makes the
+handles discoverable; proof creation still checks permission and ring membership.
+The `listRingVrfKeys` example checks that both built-in keys are discoverable
+under `peopl.paseo` on Paseo.
 
 Product scripts and `truapi-host dev` use the same web API permission checks from `js/container`. Dev loads the container through a blocking script tag in your existing browser. Scripts run in Bun and retain filesystem, environment and process access.
+
+To build from source, run `make headless install` with stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and
+Bun installed. The target installs missing workspace build tools and regenerates the Rust and TypeScript sources before
+compiling. CI tests this command in both a fresh checkout and one with stale generated files, then runs a product script
+through the installed CLI. Code generation and the workspace documentation check reject rustdoc warnings. These checks
+are part of the required `CI Status` gate. CLI packaging tests also build an isolated runner and verify it outside the
+source checkout.
 
 ## Usage
 
@@ -67,6 +82,8 @@ requests after a bounded deadline; pass `requestTimeoutMs` to `createTransport` 
 See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full client reference.
 
 The [permission model](docs/rfcs/0002-permission-model.md) separates outbound domain access from `OpenUrl` external navigation and requires `Notifications` for push delivery. Hosts preserve the user's `AllowOnce`, `AllowAlways`, or `Deny` choice; Rust owns one-use grants for Rust-backed executions.
+Android permission prompts belong to one request and close when it finishes or is cancelled,
+including cancellation while the app is backgrounded.
 
 ## Repository layout
 
@@ -82,7 +99,10 @@ js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
-                          `/worker-runtime`
+                          `/worker-runtime`, and the test host: `/testing`
+                          (createMockHost), `/testing/playwright`,
+                          `/testing/server`, `/testing/client`,
+                          `/testing/dev-accounts`, `/testing/host-page`
   truapi-provider/         @parity/truapi-provider: WASM ChainProvider backends
                           (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
@@ -136,6 +156,9 @@ dependency. The UniFFI bindings and the container bundle are gitignored build
 outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
+The container publishes the shared client and a temporary MessagePort adapter for
+older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
+CLI and iframe MessagePort transports remain supported.
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
 On iOS, a wallet host that manages its own statement-store SSO session can call
@@ -193,7 +216,7 @@ control of quota and of whether the bytes are backed up or encrypted.
 
 1. The protocol is defined as Rust traits in [`rust/crates/truapi/`](rust/crates/truapi/), with each trait tagged `#[wire_trait(id = N)]` and each method tagged `#[wire(id = N)]` for a stable byte-level `(trait, method)` dispatch table. Every method's doc comment must carry a ` ```ts ` example, which codegen extracts into the playground's EXAMPLE tab; the build fails if any method is missing one.
 2. `truapi-codegen` reads rustdoc JSON for that crate and generates the TypeScript client under git-ignored paths in `js/packages/truapi/`.
-3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over `MessagePort` (or `postMessage` in iframe mode) to the host.
+3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over WebSocket, `MessagePort`, or `postMessage` in iframe mode to the host.
 4. The host decodes the frame, dispatches to the matching trait method, encodes the response, and ships it back.
 
 Wire ids are append-only per trait: a trait id is never reassigned and a method id is never renumbered or reused within its trait, so deployed products stay compatible across protocol revisions. New methods take the next free method ids in their own trait and leave every other trait untouched. Trait 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.
@@ -266,9 +289,13 @@ reaches it through a development-only `<script>` tag:
 )}
 ```
 
-The host serves that script itself, so the page needs no SDK update, no imports,
-and no environment variables. It installs the SDK bridge and the shared browser
-container before product code runs. Keep the tag before application scripts, without `async` or `defer`.
+The host serves that script itself, with no imports or environment variables
+needed. It installs the shared client and browser container before product code
+runs. Keep the tag before application scripts, without `async` or `defer`.
+SDK calls and permission checks share one connection. Updated SDKs reuse the
+injected client across reconnects; older SDKs can still start through the
+MessagePort adapter but require a page reload after a disconnect.
+After a failed reconnect, the next API call or return to a visible page tries again.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission

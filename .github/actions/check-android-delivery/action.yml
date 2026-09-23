@@ -20,6 +20,13 @@ inputs:
   service_account:
     description: Service account the identity exchange impersonates
     required: true
+  workload_identity_provider:
+    description: >-
+      Provider the exchange authenticated through. Read only when a refusal
+      needs explaining, as the audience the identity token is requested under,
+      so the claims shown are the ones the exchange itself saw.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -29,6 +36,7 @@ runs:
         APP_ID: ${{ inputs.app_id }}
         GROUPS: ${{ inputs.groups }}
         SERVICE_ACCOUNT: ${{ inputs.service_account }}
+        PROVIDER: ${{ inputs.workload_identity_provider }}
       run: |
         set -euo pipefail
 
@@ -60,8 +68,56 @@ runs:
         npm install --prefix "${cli}" --no-save --no-audit --no-fund \
           --ignore-scripts firebase-tools@14.11.1
 
-        json="$("${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
-          --project "${project}" --json)"
+        # Under --json the CLI reports failures as a JSON payload on stdout and
+        # logs nothing to the console, so a failed call is silent unless what
+        # it returned is printed. stderr carries only a progress spinner and is
+        # kept out of the capture, then shown if anything goes wrong.
+        err="${RUNNER_TEMP}/firebase-groups.err"
+        if ! json="$("${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
+          --project "${project}" --json 2>"${err}")"; then
+          echo "::error::Could not list tester groups in ${project}"
+          printf '%s\n' "${json}" | head -20 || true
+          cat "${err}" >&2 || true
+          # The JSON path silences every logger, so the payload above carries
+          # only a summary and the cause is discarded. Asking again without it
+          # turns the console logging back on, which is where the reason the
+          # credentials were refused actually appears. Request and response
+          # lines are logged; authorization headers and token values are not.
+          echo "--- asking again for the reason ---" >&2
+          "${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
+            --project "${project}" --debug >&2 2>&1 || true
+
+          # A refusal to impersonate is matched against the identity this
+          # run presents, and the binding that grants it names one exact
+          # string, so the two have to be compared rather than guessed at.
+          # Requested under the provider as audience, which is what the
+          # exchange itself uses, so these are the claims it saw. Identity
+          # claims rather than a credential; the token is never printed.
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            audience="${PROVIDER:-https://iam.googleapis.com}"
+            token="$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" \
+              | jq -r '.value // ""')" || true
+            if [ -n "${token}" ]; then
+              segment="$(cut -d. -f2 <<<"${token}")"
+              case $(( ${#segment} % 4 )) in
+                2) segment="${segment}==" ;;
+                3) segment="${segment}=" ;;
+              esac
+              claims="$(tr '_-' '/+' <<<"${segment}" | base64 -d 2>/dev/null || true)"
+              echo "--- the identity this run presented ---" >&2
+              jq '{sub, repository, ref, event_name, environment,
+                   workflow_ref, job_workflow_ref}' <<<"${claims}" >&2 || true
+            fi
+          fi
+          exit 1
+        fi
+        if ! jq -e . >/dev/null 2>&1 <<<"${json}"; then
+          echo "::error::Could not parse the group listing from ${project}"
+          printf '%s\n' "${json}" | head -20 || true
+          tail -60 "${err}" >&2 || true
+          exit 1
+        fi
 
         # Group resource names carry the project number, and so does the
         # application id. If they disagree the upload would look for these
@@ -76,10 +132,12 @@ runs:
         # Aliases matched exactly. The table output would match a display
         # name, a column heading or a row count just as readily.
         available="$(jq -r '[.result.groups[]?.name | split("/") | last] | join(", ")' <<<"${json}")"
+        # Split the way the CLI does, on commas and newlines, trimming only the
+        # edges. Splitting on commas alone left every alias after a newline
+        # unchecked, and stripping interior space renamed one that has it.
         missing=()
-        IFS=',' read -ra wanted <<<"${GROUPS}"
-        for raw in "${wanted[@]}"; do
-          alias="${raw//[[:space:]]/}"
+        mapfile -t wanted < <(printf '%s\n' "${GROUPS}" | tr ',' '\n' | awk '{$1=$1};NF')
+        for alias in "${wanted[@]}"; do
           [ -n "${alias}" ] || continue
           if ! jq -e --arg a "${alias}" \
             '[.result.groups[]?.name | split("/") | last] | index($a) != null' \

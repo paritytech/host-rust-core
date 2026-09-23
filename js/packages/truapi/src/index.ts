@@ -15,6 +15,7 @@ export type {
   WireProvider,
 } from "./transport.js";
 export {
+  ConnectionResetError,
   MESSAGE_TYPE_CANCEL,
   MESSAGE_TYPE_INTERRUPT,
   MESSAGE_TYPE_RECEIVE,

@@ -5,6 +5,47 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.20.0] - 2026-09-23
+
+### Added
+
+- chat modality on the shared TrUAPI core (#840)
+
+### Fixed
+
+- repair source installs and gate rustdoc (#917)
+- stop freezing built-in prototypes (#915)
+
+## [0.19.0] - 2026-09-22
+
+### Added
+
+- add typed script projects (#549)
+- a TrUAPI-native test host (#294)
+- report a newly paired device to the host (#851)
+- let an Android preview name the commit it came from (#882)
+- distribute Android nightly and debug builds (#864)
+- build an installable Android APK on demand (#858)
+
+### Changed
+
+- @parity/truapi 0.19.0, @parity/truapi-host 0.19.0 (#904)
+- Sandbox CLI product scripts by default (#829)
+- @parity/truapi-provider 0.2.1 (#871)
+
+### Fixed
+
+- mask the signed download link the distributor prints (#906)
+- pass CONTACT_EMAIL to the Android builds (#903)
+- balance the delivery preflight, and shellcheck inline action shell (#902)
+- reconnect the localhost bridge after its socket dies (#872)
+- say why the delivery check refused (#894)
+- generate the bindings for every build type, not two (#884)
+- hand each reusable workflow the secrets it reads (#860)
+- use the application id the Google configuration is built for (#863)
+- re-apply deleted paths by removing them, not by patching (#859)
+- take the light client's full-node statement replay (#870)
+
 ## [0.18.0] - 2026-09-21
 
 ### RFCs
@@ -24,6 +65,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.18.0, @parity/truapi-host 0.18.0 (#869)
 - Authorize browser APIs through Rust permissions (#828)
 - Preserve permission decisions in the Rust core (#827)
 - Share one localhost WS listener across native product executions (#600)

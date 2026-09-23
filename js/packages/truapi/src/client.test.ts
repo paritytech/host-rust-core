@@ -46,6 +46,7 @@ function providerFixture() {
     const sent: Uint8Array[] = [];
     let listener: (message: Uint8Array) => void = () => {};
     let closeListener: (error: Error) => void = () => {};
+    let resetListener: (error: Error) => void = () => {};
     return {
         sent,
         provider: {
@@ -60,6 +61,12 @@ function providerFixture() {
                 closeListener = callback;
                 return () => {};
             },
+            subscribeReset(callback: (error: Error) => void) {
+                resetListener = callback;
+                return () => {
+                    resetListener = () => {};
+                };
+            },
             dispose() {},
         },
         receive(message: Uint8Array) {
@@ -67,6 +74,9 @@ function providerFixture() {
         },
         close(error: Error) {
             closeListener(error);
+        },
+        reset(error: Error) {
+            resetListener(error);
         },
     };
 }
@@ -1427,5 +1437,448 @@ describe("generated client transport", () => {
         expect(errors[0].message).toBe("provider closed");
         expect((errors[0] as SubscriptionError).reason).toBeUndefined();
         expect(errors[0].cause).toBe(providerError);
+    });
+});
+
+describe("connection preparation", () => {
+    const requestIds = { trait: 200, method: 194, kind: "request" as const };
+    const request = {
+        ids: requestIds,
+        payload: new Uint8Array(),
+        decodeResponse: () => ({ success: true as const, value: undefined }),
+    };
+
+    function readiness() {
+        let resolve!: () => void;
+        let reject!: (error: Error) => void;
+        const promise = new Promise<void>((ready, failed) => {
+            resolve = ready;
+            reject = failed;
+        });
+        return { promise, resolve, reject };
+    }
+
+    it("keeps dispatch synchronous when preparation is absent", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const response = transport.request(request);
+        createClient(transport).theme.subscribe().subscribe();
+        expect(fixture.sent.map(toHex)).toEqual(
+            [
+                wireFrame("p:1", requestIds, MESSAGE_TYPE_REQUEST),
+                wireFrame("p:2", W.THEME_SUBSCRIBE, MESSAGE_TYPE_START, new Uint8Array([0])),
+            ].map(toHex),
+        );
+        fixture.receive(wireFrame("p:1", requestIds, MESSAGE_TYPE_RESPONSE));
+        expect((await response)._unsafeUnwrap()).toBeUndefined();
+        transport.dispose();
+    });
+
+    it("prepares requests and subscriptions through the same readiness promise", async () => {
+        const fixture = providerFixture();
+        const ready = readiness();
+        const prepared: { trait: number; method: number }[] = [];
+        const transport = createTransport(fixture.provider, {
+            prepare(ids) {
+                prepared.push({ trait: ids.trait, method: ids.method });
+                return ready.promise;
+            },
+        });
+        const response = transport.request(request);
+        createClient(transport).theme.subscribe().subscribe();
+        const beforeReady = [...fixture.sent];
+        ready.resolve();
+        await ready.promise;
+        expect({ beforeReady, prepared, sent: fixture.sent.map(toHex) }).toEqual({
+            beforeReady: [],
+            prepared: [
+                { trait: requestIds.trait, method: requestIds.method },
+                { trait: W.THEME_SUBSCRIBE.trait, method: W.THEME_SUBSCRIBE.method },
+            ],
+            sent: [
+                wireFrame("p:1", requestIds, MESSAGE_TYPE_REQUEST),
+                wireFrame("p:2", W.THEME_SUBSCRIBE, MESSAGE_TYPE_START, new Uint8Array([0])),
+            ].map(toHex),
+        });
+        fixture.receive(wireFrame("p:1", requestIds, MESSAGE_TYPE_RESPONSE));
+        await response;
+        transport.dispose();
+    });
+
+    it("abandons an aborted request before readiness without contacting the host", async () => {
+        const fixture = providerFixture();
+        const ready = readiness();
+        const transport = createTransport(fixture.provider, { prepare: () => ready.promise });
+        const controller = new AbortController();
+        const cancelled = new Error("request withdrawn while opening");
+        const response = Promise.resolve(
+            transport.request({ ...request, signal: controller.signal }),
+        ).catch((error) => error);
+        controller.abort(cancelled);
+        ready.resolve();
+        await ready.promise;
+        expect({ outcome: await response, sent: fixture.sent }).toEqual({
+            outcome: cancelled,
+            sent: [],
+        });
+        transport.dispose();
+    });
+
+    it("does not send a timed-out request after readiness arrives", async () => {
+        jest.useFakeTimers();
+        const fixture = providerFixture();
+        const ready = readiness();
+        const transport = createTransport(fixture.provider, {
+            prepare: () => ready.promise,
+            requestTimeoutMs: 25,
+        });
+        try {
+            const response = Promise.resolve(transport.request(request)).catch((error) => error);
+            jest.advanceTimersByTime(26);
+            ready.resolve();
+            await ready.promise;
+            expect({ outcome: await response, sent: fixture.sent }).toEqual({
+                outcome: new RequestTimeoutError("p:1", requestIds.trait, requestIds.method, 25),
+                sent: [],
+            });
+        } finally {
+            transport.dispose();
+            jest.useRealTimers();
+        }
+    });
+
+    it("keeps a sent prepared request pending for the host's cancellation response", async () => {
+        const fixture = providerFixture();
+        const ready = readiness();
+        const transport = createTransport(fixture.provider, { prepare: () => ready.promise });
+        const controller = new AbortController();
+        let settled = false;
+        const response = transport
+            .request({
+                ...request,
+                signal: controller.signal,
+                decodeResponse: () => ({
+                    success: false as const,
+                    value: { tag: "Cancelled" as const },
+                }),
+            })
+            .then((result) => {
+                settled = true;
+                return result;
+            });
+        ready.resolve();
+        await ready.promise;
+        controller.abort();
+        await Promise.resolve();
+        expect({ settled, sent: fixture.sent.map(toHex) }).toEqual({
+            settled: false,
+            sent: [
+                wireFrame("p:1", requestIds, MESSAGE_TYPE_REQUEST),
+                wireFrame("p:1", requestIds, MESSAGE_TYPE_CANCEL),
+            ].map(toHex),
+        });
+        fixture.receive(wireFrame("p:1", requestIds, MESSAGE_TYPE_RESPONSE));
+        expect((await response)._unsafeUnwrapErr()).toEqual({ tag: "Cancelled" });
+        transport.dispose();
+    });
+
+    it("does not send work interrupted while opening and allows a later operation", async () => {
+        const fixture = providerFixture();
+        const ready = readiness();
+        const transport = createTransport(fixture.provider, { prepare: () => ready.promise });
+        const response = Promise.resolve(transport.request(request)).catch((error) => error);
+        const errors: unknown[] = [];
+        createClient(transport)
+            .theme.subscribe()
+            .subscribe({ error: (error) => errors.push(error.cause) });
+        const interrupted = new Error("opening connection interrupted");
+        fixture.reset(interrupted);
+        ready.resolve();
+        await ready.promise;
+        const fresh = transport.request(request);
+        await Promise.resolve();
+        fixture.receive(wireFrame("p:3", requestIds, MESSAGE_TYPE_RESPONSE));
+        expect({
+            outcome: await response,
+            errors,
+            sent: fixture.sent.map(toHex),
+            fresh: (await fresh)._unsafeUnwrap(),
+        }).toEqual({
+            outcome: interrupted,
+            errors: [interrupted],
+            sent: [toHex(wireFrame("p:3", requestIds, MESSAGE_TYPE_REQUEST))],
+            fresh: undefined,
+        });
+        transport.dispose();
+    });
+
+    it("does not start or stop a subscription cancelled before readiness", async () => {
+        const fixture = providerFixture();
+        const ready = readiness();
+        const transport = createTransport(fixture.provider, { prepare: () => ready.promise });
+        const subscription = createClient(transport).theme.subscribe().subscribe();
+        subscription.unsubscribe();
+        ready.resolve();
+        await ready.promise;
+        expect(fixture.sent).toEqual([]);
+        transport.dispose();
+    });
+
+    it("fails only the operation whose preparation rejects", async () => {
+        const fixture = providerFixture();
+        const requestReady = readiness();
+        const subscriptionReady = readiness();
+        const transport = createTransport(fixture.provider, {
+            prepare: (ids) =>
+                ids.kind === "request" ? requestReady.promise : subscriptionReady.promise,
+        });
+        const response = Promise.resolve(transport.request(request)).catch((error) => error);
+        const errors: unknown[] = [];
+        const subscription = createClient(transport)
+            .theme.subscribe()
+            .subscribe({ error: (error) => errors.push(error.cause) });
+        const failed = new Error("request preparation failed");
+        requestReady.reject(failed);
+        expect(await response).toBe(failed);
+        subscriptionReady.resolve();
+        await subscriptionReady.promise;
+        expect({ errors, sent: fixture.sent.map(toHex) }).toEqual({
+            errors: [],
+            sent: [
+                toHex(wireFrame("p:2", W.THEME_SUBSCRIBE, MESSAGE_TYPE_START, new Uint8Array([0]))),
+            ],
+        });
+        subscription.unsubscribe();
+        transport.dispose();
+    });
+
+    it("ends a subscription whose preparation rejects without sending a stop", async () => {
+        const fixture = providerFixture();
+        const ready = readiness();
+        const transport = createTransport(fixture.provider, { prepare: () => ready.promise });
+        const errors: unknown[] = [];
+        const subscription = createClient(transport)
+            .theme.subscribe()
+            .subscribe({ error: (error) => errors.push(error.cause) });
+        const failed = new Error("subscription preparation failed");
+        ready.reject(failed);
+        await ready.promise.catch(() => {});
+        subscription.unsubscribe();
+        expect({ errors, sent: fixture.sent }).toEqual({ errors: [failed], sent: [] });
+        transport.dispose();
+    });
+
+    it("settles requests and subscriptions when preparation throws synchronously", async () => {
+        const fixture = providerFixture();
+        const failed = new Error("connection creation failed");
+        const transport = createTransport(fixture.provider, {
+            prepare() {
+                throw failed;
+            },
+        });
+        const response = Promise.resolve(transport.request(request)).catch((error) => error);
+        const errors: unknown[] = [];
+        createClient(transport)
+            .theme.subscribe()
+            .subscribe({ error: (error) => errors.push(error.cause) });
+        expect({ outcome: await response, errors, sent: fixture.sent }).toEqual({
+            outcome: failed,
+            errors: [failed],
+            sent: [],
+        });
+        transport.dispose();
+    });
+
+    it.each(["request", "subscription"] as const)(
+        "settles a prepared %s when sending fails",
+        async (kind) => {
+            const fixture = providerFixture();
+            const ready = readiness();
+            const failed = new Error("socket closed before dispatch");
+            fixture.provider.postMessage = () => {
+                throw failed;
+            };
+            const transport = createTransport(fixture.provider, { prepare: () => ready.promise });
+            const outcome =
+                kind === "request"
+                    ? Promise.resolve(transport.request(request)).catch((error) => error)
+                    : new Promise((resolve) => {
+                          transport.subscribeRaw({
+                              ids: W.THEME_SUBSCRIBE,
+                              payload: new Uint8Array([0]),
+                              onReceive() {},
+                              onClose: resolve,
+                          });
+                      });
+            ready.resolve();
+            await ready.promise;
+            expect({ outcome: await outcome, sent: fixture.sent }).toEqual({
+                outcome: failed,
+                sent: [],
+            });
+            transport.dispose();
+        },
+    );
+});
+
+describe("recoverable connection resets", () => {
+    it("never restarts a subscription that deletes a purse", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const errors: unknown[] = [];
+        const request = { target: 1, drainInto: 2 };
+        client.coinPayment
+            .deletePurse({ request })
+            .subscribe({ error: (error) => errors.push(error.cause) });
+        const interruption = new Error("connection interrupted");
+        fixture.reset(interruption);
+        client.theme.subscribe().subscribe();
+        expect({ errors, frames: fixture.sent.map(toHex) }).toEqual({
+            errors: [interruption],
+            frames: [
+                wireFrame(
+                    "p:1",
+                    W.COIN_PAYMENT_DELETE_PURSE,
+                    MESSAGE_TYPE_START,
+                    T.VersionedHostCoinPaymentDeletePurseRequest.enc({ tag: "V1", value: request }),
+                ),
+                wireFrame("p:2", W.THEME_SUBSCRIBE, MESSAGE_TYPE_START, new Uint8Array([0])),
+            ].map(toHex),
+        });
+        transport.dispose();
+    });
+
+    it("rejects interrupted calls and subscriptions without replaying them", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const outcome = Promise.resolve(client.system.handshake()).catch((error: unknown) => error);
+        const errors: unknown[] = [];
+        const oldSubscription = client.theme
+            .subscribe()
+            .subscribe({ error: (error) => errors.push(error.cause) });
+        const reset = new Error("connection interrupted");
+        fixture.reset(reset);
+
+        expect(await outcome).toBe(reset);
+        expect(errors).toEqual([reset]);
+        const nextSubscription = client.theme.subscribe().subscribe();
+        oldSubscription.unsubscribe();
+        expect(fixture.sent.map(toHex)).toEqual(
+            [
+                wireFrame(
+                    "p:1",
+                    W.SYSTEM_HANDSHAKE,
+                    MESSAGE_TYPE_REQUEST,
+                    T.VersionedHostHandshakeRequest.enc({
+                        tag: "V1",
+                        value: { codecVersion: TRUAPI_CODEC_VERSION },
+                    }),
+                ),
+                wireFrame("p:2", W.THEME_SUBSCRIBE, MESSAGE_TYPE_START, new Uint8Array([0])),
+                wireFrame("p:3", W.THEME_SUBSCRIBE, MESSAGE_TYPE_START, new Uint8Array([0])),
+            ].map(toHex),
+        );
+        expect(nextSubscription.subscriptionId).toBe("p:3");
+        transport.dispose();
+    });
+
+    it("does not erase work started by interruption callbacks", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const values: unknown[] = [];
+        let freshId = "";
+        client.theme.subscribe().subscribe({
+            error() {
+                freshId = client.theme
+                    .subscribe()
+                    .subscribe({ next: (value) => values.push(value) }).subscriptionId;
+            },
+        });
+        fixture.reset(new Error("connection interrupted"));
+        fixture.receive(
+            wireFrame(
+                freshId,
+                W.THEME_SUBSCRIBE,
+                MESSAGE_TYPE_RECEIVE,
+                T.VersionedHostThemeSubscribeItem.enc({
+                    tag: "V1",
+                    value: { name: { tag: "Default" }, variant: "Dark" },
+                }),
+            ),
+        );
+        expect({ freshId, values }).toEqual({
+            freshId: "p:2",
+            values: [{ name: { tag: "Default" }, variant: "Dark" }],
+        });
+        transport.dispose();
+    });
+
+    it("preserves render registrations but ends old instances and buffered starts", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const request: T.ProductRendererRenderRequest = {
+            context: {
+                tag: "ChatMessage",
+                value: { roomId: "room", messageId: "message", messageType: "vote" },
+            },
+            payload: "0x",
+        };
+        fixture.receive(rendererStart("h:buffered", request));
+        fixture.reset(new Error("connection interrupted"));
+        const handled: unknown[] = [];
+        const emitters: ((node: T.RendererNode) => void)[] = [];
+        let teardowns = 0;
+        client.renderer.onRender((value, send) => {
+            handled.push(value);
+            emitters.push(send);
+            return () => {
+                teardowns += 1;
+            };
+        });
+        fixture.receive(rendererStart("h:1", request));
+        fixture.reset(new Error("connection interrupted"));
+        emitters[0]!({ tag: "String", value: { text: "stale" } });
+        fixture.receive(rendererStart("h:1", request));
+        const node = { tag: "String", value: { text: "fresh" } } as const;
+        emitters[1]!(node);
+        expect({ handled, teardowns, sent: fixture.sent.map(toHex) }).toEqual({
+            handled: [request, request],
+            teardowns: 1,
+            sent: [toHex(rendererReceive("h:1", node))],
+        });
+        transport.dispose();
+    });
+
+    it("does not revive an explicitly disposed transport", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        transport.dispose();
+        fixture.reset(new Error("connection interrupted"));
+        await expect(Promise.resolve(client.system.handshake())).rejects.toThrow(
+            "transport disposed",
+        );
+        expect(fixture.sent).toEqual([]);
+    });
+
+    it("notifies the other subscriptions when an interruption callback throws", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        client.theme.subscribe().subscribe({
+            error() {
+                throw new Error("broken observer");
+            },
+        });
+        const errors: unknown[] = [];
+        client.theme.subscribe().subscribe({ error: (error) => errors.push(error.cause) });
+        const interruption = new Error("connection interrupted");
+        expect(() => fixture.reset(interruption)).not.toThrow();
+        expect(errors).toEqual([interruption]);
+        transport.dispose();
     });
 });

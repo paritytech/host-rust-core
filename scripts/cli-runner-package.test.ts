@@ -4,18 +4,33 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import {
-  createClient,
-  createMessagePortProvider,
-  createTransport,
   decodeWireMessage,
   encodeWireMessage,
   MESSAGE_TYPE_RESPONSE,
+  type ProtocolMessage,
   scale,
   VersionedRemotePermissionRequest,
   VersionedRemotePermissionResponse,
   VersionedRemotePermissionError,
+  VersionedHostHandshakeResponse,
+  VersionedHostHandshakeError,
 } from "@parity/truapi";
-import { PERMISSIONS_AUTHORIZE_REMOTE_PERMISSION } from "../js/packages/truapi/src/generated/wire-table.ts";
+import { PERMISSIONS_AUTHORIZE_REMOTE_PERMISSION, SYSTEM_HANDSHAKE } from "../js/packages/truapi/src/generated/wire-table.ts";
+
+function replyToHealth(socket: { send(bytes: Uint8Array): unknown }, request: ProtocolMessage): boolean {
+  if (request.payload.traitId !== SYSTEM_HANDSHAKE.trait ||
+      request.payload.methodId !== SYSTEM_HANDSHAKE.method) return false;
+  socket.send(encodeWireMessage({
+    ...request,
+    payload: {
+      ...request.payload,
+      messageType: MESSAGE_TYPE_RESPONSE,
+      value: scale.Result(VersionedHostHandshakeResponse, scale.CallError(VersionedHostHandshakeError))
+        .enc({ success: true, value: { tag: "V1", value: undefined } }),
+    },
+  })._unsafeUnwrap());
+  return true;
+}
 
 const repository = resolve(import.meta.dir, "..");
 let directory: string;
@@ -33,7 +48,7 @@ beforeAll(async () => {
     },
   );
   if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-});
+}, 60_000);
 
 afterAll(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
@@ -63,7 +78,7 @@ it("resolves the packaged runner without a source checkout", async () => {
   }
 });
 
-it("shares web permissions with installed scripts and the existing browser SDK", async () => {
+it("shares web permissions with installed scripts and the injected browser client", async () => {
   const authorizations: unknown[] = [];
   const decisions: boolean[] = [];
   const requests: string[] = [];
@@ -99,6 +114,7 @@ it("shares web permissions with installed scripts and the existing browser SDK",
         const request = decodeWireMessage(
           new Uint8Array(message as Buffer),
         )._unsafeUnwrap();
+        if (replyToHealth(socket, request)) return;
         if (!respond) return;
         let allowed = true;
         if (
@@ -139,6 +155,9 @@ it("shares web permissions with installed scripts and the existing browser SDK",
     `
     import { readFileSync, writeFileSync } from 'node:fs';
     import { join } from 'node:path';
+    assert(window === window.top && window.__HOST_WEBVIEW_MARK__);
+    assert(window.__HOST_API_CLIENT__.client === truapi);
+    assert(window.__HOST_API_PORT__ instanceof MessagePort);
     assert(Object.getOwnPropertyDescriptor(globalThis, 'fetch').configurable === false);
     const expected: string = process.env.PACKAGED_TEST_VALUE!;
     const report = join(import.meta.dir, 'report.txt');
@@ -241,13 +260,15 @@ it("shares web permissions with installed scripts and the existing browser SDK",
       DOMException,
       Blob,
       fetch,
+      performance,
       setTimeout,
       clearTimeout,
       navigator: {},
-      document: { createElement: () => ({}) },
+      document: Object.assign(new EventTarget(), { createElement: () => ({}), visibilityState: "hidden" }),
       location: { href: "https://product.example/" },
       addEventListener: events.addEventListener.bind(events),
       removeEventListener: events.removeEventListener.bind(events),
+      dispatchEvent: events.dispatchEvent.bind(events),
       __truapi_localhost: { url: `ws://127.0.0.1:${server.port}/frames` },
     });
     runInContext("window = globalThis", context);
@@ -255,9 +276,7 @@ it("shares web permissions with installed scripts and the existing browser SDK",
       await readFile(join(directory, "sandbox-assets/container.js"), "utf8"),
       context,
     );
-    const provider = createMessagePortProvider(context.__HOST_API_PORT__);
-    const transport = createTransport(provider);
-    const client = createClient(transport);
+    const client = context.__HOST_API_CLIENT__.client;
     const permission = {
       permission: { tag: "Remote" as const, value: { domains: ["127.0.0.1"] } },
     };
@@ -284,22 +303,18 @@ it("shares web permissions with installed scripts and the existing browser SDK",
       expect({
         sdkFailed: await sdk,
         denied: await denied,
-        port: context.__HOST_API_PORT__,
         requests,
         decisions,
         connections,
       }).toEqual({
         sdkFailed: true,
         denied: "Network access is not allowed",
-        port: undefined,
         requests: ["/allowed", "/browser"],
         decisions: [true, false, true, true, false],
         connections: 2,
       });
     } finally {
       events.dispatchEvent(new Event("pagehide"));
-      transport.dispose();
-      provider.dispose();
     }
   } finally {
     clearTimeout(timeout);
@@ -307,3 +322,146 @@ it("shares web permissions with installed scripts and the existing browser SDK",
     server.stop(true);
   }
 }, 20_000);
+
+it("keeps browser SDK calls and one-use permissions on the same connection", async () => {
+  const sdk = await Bun.build({
+    entrypoints: [join(repository, "js/packages/truapi/src/sandbox.ts")],
+    target: "browser",
+    format: "esm",
+  });
+  if (!sdk.success) throw new Error(sdk.logs.join("\n"));
+  await Bun.write(join(directory, "sdk.js"), sdk.outputs[0]!);
+  let connections = 0;
+  let frames = 0;
+  const requests: string[] = [];
+  const decisions: boolean[] = [];
+  const server = Bun.serve<{ granted: boolean }>({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request, server) {
+      if (server.upgrade(request, { data: { granted: false } })) return;
+      requests.push(new URL(request.url).pathname);
+      return new Response("http-ok");
+    },
+    websocket: {
+      open() {
+        connections++;
+      },
+      message(socket, message) {
+        const request = decodeWireMessage(
+          new Uint8Array(message as Buffer),
+        )._unsafeUnwrap();
+        if (replyToHealth(socket, request)) return;
+        frames++;
+        if (frames > 3 && frames <= 5) {
+          if (frames === 5) socket.close();
+          return;
+        }
+        const consume =
+          request.payload.methodId ===
+          PERMISSIONS_AUTHORIZE_REMOTE_PERMISSION.method;
+        const granted = consume ? socket.data.granted : true;
+        socket.data.granted = !consume;
+        if (consume) decisions.push(granted);
+        socket.send(
+          encodeWireMessage({
+            ...request,
+            payload: {
+              ...request.payload,
+              messageType: MESSAGE_TYPE_RESPONSE,
+              value: scale
+                .Result(
+                  VersionedRemotePermissionResponse,
+                  scale.CallError(VersionedRemotePermissionError),
+                )
+                .enc({
+                  success: true,
+                  value: { tag: "V1", value: { granted } },
+                }),
+            },
+          })._unsafeUnwrap(),
+        );
+      },
+    },
+  });
+  const script = join(directory, "browser-product.ts");
+  await writeFile(
+    script,
+    `
+    import { getClientSync, subscribeConnectionStatus } from './sdk.js';
+    import { strict as assert } from 'node:assert';
+    const events = new EventTarget();
+    Object.assign(globalThis, {
+      window: globalThis,
+      top: globalThis,
+      document: Object.assign(new EventTarget(), { createElement: () => ({}), visibilityState: "hidden" }),
+      navigator: {},
+      location: { href: 'https://product.example/' },
+      addEventListener: events.addEventListener.bind(events),
+      removeEventListener: events.removeEventListener.bind(events),
+      dispatchEvent: events.dispatchEvent.bind(events),
+      __truapi_localhost: { url: 'ws://127.0.0.1:${server.port}/frames' },
+    });
+    await import('./sandbox-assets/container.js');
+    const client = getClientSync();
+    assert(client);
+    let status;
+    subscribeConnectionStatus((value) => status = value);
+    const permission = { permission: { tag: 'Remote', value: { domains: ['127.0.0.1'] } } };
+    assert((await client.permissions.requestRemotePermission(permission))._unsafeUnwrap().granted);
+    assert.equal(await (await fetch('http://127.0.0.1:${server.port}/allowed')).text(), 'http-ok');
+    await assert.rejects(fetch('http://127.0.0.1:${server.port}/denied'), /Network access is not allowed/);
+    const pendingSdk = Promise.resolve(client.permissions.requestRemotePermission(permission)).then(
+      (result) => result.isErr(), () => true,
+    );
+    const pendingFetch = fetch('http://127.0.0.1:${server.port}/pending').then(() => false, () => true);
+    const sdkFailed = await pendingSdk;
+    const fetchFailed = await pendingFetch;
+    assert.equal(getClientSync(), client);
+    assert((await client.permissions.requestRemotePermission(permission))._unsafeUnwrap().granted);
+    assert.equal(await (await fetch('http://127.0.0.1:${server.port}/recovered')).text(), 'http-ok');
+    await assert.rejects(fetch('http://127.0.0.1:${server.port}/denied-again'), /Network access is not allowed/);
+    console.log(JSON.stringify({ sdkFailed, fetchFailed, status }));
+    events.dispatchEvent(new Event('pagehide'));
+  `,
+  );
+  const child = Bun.spawn([process.execPath, script], {
+    cwd: directory,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const timeout = setTimeout(() => child.kill(), 10_000);
+  try {
+    const [status, output, error] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(
+      {
+        status,
+        output: output.trim(),
+        connections,
+        frames,
+        requests,
+        decisions,
+      },
+      error,
+    ).toEqual({
+      status: 0,
+      output: JSON.stringify({
+        sdkFailed: true,
+        fetchFailed: true,
+        status: "connected",
+      }),
+      connections: 2,
+      frames: 8,
+      requests: ["/allowed", "/recovered"],
+      decisions: [true, false, true, false],
+    });
+  } finally {
+    clearTimeout(timeout);
+    child.kill();
+    server.stop(true);
+  }
+}, 15_000);

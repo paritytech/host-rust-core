@@ -1,5 +1,38 @@
 # @parity/truapi
 
+## 0.20.0
+
+### Minor Changes
+
+- 5f3dc71: Regenerate Rust and TypeScript sources before building the headless CLI so source installation works in fresh
+  and updated checkouts. Fix invalid documentation links and reject rustdoc warnings during code generation and CI.
+- Stop freezing built-in prototypes in the container so Next.js products hydrate in the CLI and native web views.
+
+## 0.19.0
+
+### Minor Changes
+
+- a78d73c: Keep the same client after a native host connection is interrupted. The shared SDK transport replaces its
+  WebSocket, while pending calls and subscriptions fail with `ConnectionResetError` without replay. Providers can
+  recreate their read/watch subscriptions after reconnection. Older SDKs still start through the MessagePort but need a
+  page reload after connection loss.
+
+  Browser permission checks use generated internal SDK calls. Hosts protect their shared authorization dependencies
+  before product code runs; public SDK methods remain replaceable, but products cannot patch the protected built-in
+  prototypes.
+
+  SCALE boolean decoding rejects values other than 0 and 1.
+
+- 303b163: Share the container's web API permission checks between CLI scripts and the development bootstrap tag.
+  Scripts remain in Bun with filesystem, environment, subprocess and import access. Dev keeps its existing app URL,
+  assets and hot reload. Public SDK calls and permission checks share one product execution.
+
+### Patch Changes
+
+- 5d5fd1c: Add reusable `/script` projects with dependency installation, editor types and TypeScript checking. Edit,
+  rerun or create projects from the CLI. Missing npm imports use Bun's runtime fallback, and Product SDK scripts
+  discover the active host automatically.
+
 ## 0.18.0
 
 ### Minor Changes

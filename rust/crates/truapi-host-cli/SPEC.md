@@ -168,6 +168,8 @@ release pointer, downloads the archive for the detected target
 
 ```
 $XDG_DATA_HOME/truapi-host/versions/<version>/truapi-host
+$XDG_DATA_HOME/truapi-host/versions/<version>/runner.js
+$XDG_DATA_HOME/truapi-host/versions/<version>/script-types.d.ts
 $XDG_DATA_HOME/truapi-host/current -> versions/<version>
 ~/.local/bin/truapi-host -> $XDG_DATA_HOME/truapi-host/current/truapi-host
 ```
@@ -204,11 +206,23 @@ next to the running binary, then `js/runner.ts` in the source checkout
 fails instead of falling back to source code. After an update moves `current`,
 the running binary continues using the runner from its own version directory.
 
-A release archive ships a self-contained `runner.js` with `@parity/truapi` and
-the shared web API gates bundled in, plus `sandbox-assets/container.js` for dev.
-Source dev reads that asset from `target/dist/sandbox-assets`; installed dev
-reads it beside the runner. Scripts require neither browser assets nor a
-browser installation. Bun executes both the runner and the user script.
+A release archive ships `runner.js` and `script-types.d.ts` beside the binary.
+The runner has `@parity/truapi` and the shared web API permission checks bundled
+in, and the declaration file contains the matching generated client and
+injected-global types, so an installed copy runs product scripts with no source
+tree. New projects install their own SDK and editor dependencies. A source build
+has no runner bundle and falls back to the checkout copies, whose relative
+`@parity/truapi` import means the runner only works from a built tree.
+
+The archive also ships `sandbox-assets/container.js` for dev. Source dev reads
+that asset from `target/dist/sandbox-assets`; installed dev reads it beside the
+runner. Scripts require neither browser assets nor a browser installation.
+
+A `TRUAPI_HOST_RUNNER` override must provide a compatible
+`script-types.d.ts` beside the selected runner when bare `/script` needs to
+create an editor project.
+
+Bun executes both the runner and the user script.
 
 The binary has `--help` and `--version`.
 
@@ -259,7 +273,7 @@ when it points inside the version store.
 ## 4. Top-level command line
 
 ```text
-truapi-host [--log-level <level>] <command>
+truapi-host [--log-level <level>] [--debugger <url>] <command>
 ```
 
 Commands:
@@ -294,6 +308,25 @@ If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup
 and the status bar shows its trimmed value. The interactive `/log` command
 atomically saves the selected CLI level, replaces the active filter, and
 updates the status bar to that level.
+
+### 4.2 Global wire-debugger option
+
+`--debugger <url>` streams every product frame to a wire debugger at a loopback
+`ws://` address. `TRUAPI_DEBUGGER_URL` supplies the same value; clap resolves an
+explicit flag over it.
+
+The option is global, but only `pairing-host`, `dev` and `signing-host` resolve
+it: the remaining commands emit no frames and open no sink. Resolution happens
+before the frame listener binds, so a URL that is not `ws://` on `127.0.0.1`,
+`localhost` or `[::1]` fails startup. A reachable debugger is not required, since
+the sink dials lazily and reconnects.
+
+Each of those three commands reports the outcome once, as a lifecycle event
+rather than a log line: `Streaming wire frames to a debugger` with the endpoint
+and the switch clap read it from, or `Wire debugger off`.
+
+Each accepted connection gets its own channel id, `<product-id>#<n>`, so
+concurrent peers under one host do not share a trace key.
 
 ## 5. `pairing-host`
 
@@ -472,10 +505,15 @@ The product includes a development-only blocking tag before product code:
 <script src="http://127.0.0.1:9955/bootstrap.js"></script>
 ```
 
-The JavaScript creates a `MessageChannel`, connects its private side to the
-same-port WebSocket, assigns the public side to `window.__HOST_API_PORT__`, sets
-the native-webview marker, and dispatches `truapi-native-ready`. Frames posted
-before the WebSocket opens are queued. Production builds must omit the tag.
+The script installs the shared browser container and publishes
+`window.__HOST_API_CLIENT__`. SDK calls and authorization requests use this
+stable client, sharing one WebSocket and one Rust execution. The container
+consumes `window.__truapi_localhost` during startup. HTTP and WebSocket share the
+same TCP port. After a disconnect, the SDK replaces the socket. Interrupted calls
+fail, subscriptions end, and neither is replayed. Older SDKs use the compatibility
+`window.__HOST_API_PORT__` MessagePort, which requires a page reload after a
+disconnect.
+Production builds must omit the tag.
 
 On Unix the wrapped command is the leader of a process group retained by the
 CLI. A natural direct-launcher exit preserves its status and still cleans up
@@ -485,9 +523,10 @@ child, then send SIGKILL and wait again if any group member remains. On
 non-Unix platforms the CLI stops and reaps the direct child.
 
 The first blocking bridge tag installs the shared `js/container` bundle before
-application code. The existing SDK message-port interface requires no product
-dependency update. SDK calls and authorization requests share one WebSocket and
-Rust execution. `/script` imports the same web API permission wrappers
+application code. Existing SDKs can start without a product dependency update;
+recovery through a retained client requires the updated SDK. SDK calls and
+authorization requests share one WebSocket and Rust execution. `/script` imports
+the same web API permission wrappers
 into Bun. Dev preserves the app server URL, native assets and hot reload; no
 app proxy is involved.
 
@@ -525,8 +564,8 @@ change:
 - the SSO relationship; or
 - another product's stored data.
 
-Changing the product invalidates all active product WebSockets. Clients must
-reconnect; new connections receive the new product context. Selecting the
+Changing the product invalidates all active product WebSockets. Reload browser
+dev pages; new connections receive the new product context. Selecting the
 already-current normalized id does not reset connections.
 
 Product-scoped entropy is intentionally different for different product ids
@@ -538,8 +577,11 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 
 | Command | Pairing host | Signing host | Behavior |
 | --- | :---: | :---: | --- |
-| `/script` | yes | yes | Edit and run the remembered script, creating a scratch script when needed. |
+| `/script` | yes | yes | Edit and run the remembered script, creating a project when needed. |
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
+| `/script --run` | yes | yes | Run the remembered script without editing. |
+| `/script --edit` | yes | yes | Edit without running. |
+| `/script --new [directory]` | yes | yes | Create a project in a new directory, then edit and run. |
 | `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
 | `/pair` | no | yes | Wait for a pairing QR image from Ctrl-V, terminal paste, or drag-and-drop. TUI only. |
@@ -703,7 +745,7 @@ from link generation through authentication to its final state.
 - Up/Down navigates process-local command history when completion is closed.
 - Tab accepts the selected completion.
 - Enter first accepts a differing selected completion; a later Enter submits.
-- `/script` followed by a space completes filesystem entries.
+- `/script` followed by a space completes actions and filesystem entries.
 - `/devices` followed by a space completes `--list` and `--remove` for the
   signing host.
 - `/approval` followed by a space completes `manual` and `automatic` for the
@@ -802,11 +844,13 @@ Before importing it, the runner:
 1. reads its required environment;
 2. opens the product-frame WebSocket over its Unix or TCP endpoint, with a
    15-second connection timeout;
-3. creates the public `@parity/truapi` client;
+3. creates the public `@parity/truapi` client and exposes the standard host
+   discovery interface for SDK imports;
 4. injects the script globals;
 5. installs the shared container's fetch and WebSocket permission wrappers,
    plus its XHR wrapper when that API exists; and
-6. restores the caller's working directory and imports the absolute script URL.
+6. switches to the managed project root, or restores the caller's working
+   directory for an unmanaged script, and imports the absolute script URL.
 
 Top-level module code is awaited. If the module's default export is a function,
 the runner calls and awaits it with the host context.
@@ -815,6 +859,11 @@ Public SDK calls and authorization requests share one transport and Rust
 execution, preserving Allow once, Allow always and Deny semantics. These wrappers
 are also used by the full browser container loaded by dev's first blocking
 bootstrap tag.
+
+The runner exposes `window.__HOST_WEBVIEW_MARK__`, `__HOST_API_CLIENT__`, and
+the legacy `__HOST_API_PORT__` adapter over that same connection. Published Product
+SDK imports discover the host automatically. Scripts using an older SDK's
+legacy port must be rerun after a host disconnect.
 
 Scripts retain Bun/Node filesystem, environment, subprocess and module imports.
 Native networking APIs can bypass the web API wrappers; this is not
@@ -854,13 +903,15 @@ The Rust parent sets:
 | `TRUAPI_PRODUCT_ID` | Normalized active product id. |
 | `TRUAPI_SCRIPT` | Canonical absolute script path. |
 | `TRUAPI_CLI_HOST_ROLE` | `pairing-host` or `signing-host`. |
-| `TRUAPI_SCRIPT_CWD` | Caller working directory, restored before importing the script. |
+| `TRUAPI_SCRIPT_CWD` | Managed project root, or caller working directory for an unmanaged script, selected before importing it. |
 
 These variables are runner internals, not CLI configuration inputs.
 
 The launcher runs from its trusted directory with automatic Bun config,
-dotenv loading, macros, and package installation disabled. Product-side
-configuration cannot run code before the web API wrappers are installed.
+dotenv loading, and macros disabled. `--install=fallback` uses installed
+packages first, then downloads missing npm imports into Bun's cache.
+Product-side configuration cannot run code before the web API wrappers are
+installed. Editor types still require dependencies installed in the project.
 
 ### 10.4 Script status
 
@@ -868,8 +919,8 @@ configuration cannot run code before the web API wrappers are installed.
 - A thrown error or rejected promise is printed as `[script error] ...` and
   exits `1`.
 - Failure to open the product socket within 15 seconds exits `2`.
-- Failure to locate the runner, canonicalize the script, or spawn Bun is a CLI
-  error.
+- Failure to locate the runner or its declaration bundle, canonicalize the
+  script, or spawn Bun is a CLI error.
 
 The CLI emits `Script running` before Bun starts and `Script finished` or
 `Script failed` afterward.
@@ -888,10 +939,10 @@ session, and runs it.
 A later bare `/script`:
 
 1. reuses the remembered file when it still exists;
-2. otherwise creates a unique `script-<time>-<pid>-<sequence>.ts` under the
-   current state directory's `scripts/`;
+2. otherwise creates a unique project under `<base-path>/scripts/`, where
+   base-path is the configured/default base before the `v2` suffix;
 3. stores that selection;
-4. leaves the TUI;
+4. installs missing managed dependencies with visible progress, then leaves the TUI;
 5. opens the file in the configured editor;
 6. restores the TUI; and
 7. runs the script when the editor exits successfully.
@@ -908,18 +959,49 @@ directly, without a shell. Values such as `EDITOR='code --wait'` work.
 
 An editor failure retains the script and does not run it.
 
-Scratch scripts store only their filename in `session.json`, so they remain
-valid if a session directory is promoted. Explicit scripts outside the session
-store their absolute path. A missing remembered file is ignored and replaced
-by a new scratch file.
+Legacy session-local scripts still store their filename in `session.json`.
+Managed projects and other external scripts store absolute paths. Projects
+survive both session promotion and clearing. Mnemonic sessions also create
+durable projects, but remember their selection only for the current process.
+A missing managed entrypoint can be recovered through the project's
+`truapiHost.script` metadata after an intentional rename. Otherwise bare
+`/script` creates a new project; `--run` reports a missing selection instead.
 
-The default scratch file is a dependency-free Bun script that calls
-`truapi.account.getUserId()` and prints `user id` followed by the returned
-value. It does not emit terminal styling.
+A new project contains `script.ts`, `script.types.d.ts` copied from the
+selected runner, `package.json`, and `tsconfig.json`. The manifest marks the
+project with `"truapiHost": { "script": "script.ts" }`. This entry must name
+a relative path inside the project. When the nearest package.json carries
+this metadata, its directory is the execution cwd, whether invoked explicitly
+or through remembered state.
+Ordinary package directories without this metadata retain the inherited cwd
+and are never installed or modified by the CLI.
 
-Mnemonic-backed ephemeral signing sessions remember a path only for the
-current process and create scratch files under the system temporary
-`truapi-host/scripts` directory.
+The starter uses the Product SDK quickstart unchanged: `createApp` with
+`name: "my-app"` and `logLevel: "info"`, `wallet.connect()`, and a local-storage
+write and read of `lastVisit`. The host product id must match `my-app.dot`.
+Default cloud storage uses Paseo, also the CLI's default network. A signed-out
+wallet can return an empty account list.
+
+The template requests `latest` for the Product SDK, TypeScript, and Bun editor
+types, with resolved versions recorded in the project's lockfile. It has no
+protocol override. Users can choose their SDK version with `bun add`.
+SDK imports resolve from the local installation, which also provides editor
+types and `bun run typecheck`. The editor opens from the managed project root.
+Raw TrUAPI scripts can import the adjacent declarations locally, allowing
+multiple scripts to compile together.
+
+Dependency setup runs `bun install`, with `--frozen-lockfile` when a Bun
+lockfile exists. Only a successful installation records its manifest and
+lockfile fingerprint under `node_modules`; missing packages, a changed
+manifest/lockfile, or an interrupted install triggers setup again. Reopening
+a complete installation does not invoke the package manager. Failed or
+cancelled setup preserves source files and remains retryable. Host updates
+never rewrite existing manifests, lockfiles, scripts, or declaration files.
+
+`--edit` stops after the editor closes. `--new [directory]` creates another
+project and refuses to overwrite an existing destination. Recognized flags
+are reserved; `/script -- <path>` selects a path that begins with one.
+Path arguments retain spaces without shell tokenization.
 
 The top-level `--script` option does not update remembered `/script` state.
 
@@ -1578,11 +1660,13 @@ consistent. The HTTP response does not grant cross-origin access; browser frame
 access is enforced during the later WebSocket handshake.
 
 The browser SDK and sandbox permission checks share one WebSocket and its
-`ProductRuntime`, as `/script` does. Browser routing uses the SDK's wire codecs
-to correlate authorization replies separately from app messages. CLI checks
-support permission testing, not protection against deliberate product-code
-bypasses. Native hosts retain their separate authorization protection.
-Each page load or script run opens a fresh connection with independent
+`ProductRuntime`, as `/script` does. The shared SDK transport owns the socket
+and uses `host:` request IDs for public calls and internal authorization methods.
+The compatibility MessagePort cannot send or receive frames using those IDs.
+Generated internal methods and their shared JavaScript dependencies are frozen
+before product code runs; public SDK methods remain mutable. The CLI remains a local
+development tool; `/script` retains its Bun/Node capabilities.
+Each page load, reconnect or script run opens a fresh connection with independent
 temporary permissions.
 
 Each accepted WebSocket:
@@ -2043,6 +2127,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | Variable | Scope |
 | --- | --- |
 | `TRUAPI_HOST_LOG` | Per-process `--log-level` override. |
+| `TRUAPI_DEBUGGER_URL` | Default `--debugger` dial. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `TRUAPI_HOST_NO_UPDATE` | Any value disables the self-update check. |

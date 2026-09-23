@@ -2812,6 +2812,7 @@ dependencies = [
  "base64",
  "digest 0.9.0",
  "hmac-drbg",
+ "lazy_static",
  "libsecp256k1-core",
  "libsecp256k1-gen-ecmult",
  "libsecp256k1-gen-genmult",
@@ -5217,18 +5218,6 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c83b561d025642014097b66e6c1bb422783339e0909e4429cde4749d1990bc38"
-dependencies = [
- "futures-util",
- "log",
- "tokio",
- "tungstenite 0.21.0",
-]
-
-[[package]]
-name = "tokio-tungstenite"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
@@ -5239,7 +5228,7 @@ dependencies = [
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
- "tungstenite 0.24.0",
+ "tungstenite",
  "webpki-roots 0.26.11",
 ]
 
@@ -5433,7 +5422,7 @@ dependencies = [
 
 [[package]]
 name = "truapi"
-version = "0.18.0"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "derive_more 2.1.1",
@@ -5460,7 +5449,7 @@ dependencies = [
 
 [[package]]
 name = "truapi-host-cli"
-version = "0.18.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5492,7 +5481,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "truapi",
@@ -5520,6 +5509,7 @@ dependencies = [
  "derive_more 2.1.1",
  "futures",
  "parity-scale-codec",
+ "sp-crypto-hashing",
  "truapi",
  "unicode-normalization",
  "uniffi",
@@ -5542,6 +5532,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
+ "libsecp256k1",
  "log",
  "pin-project",
  "rand 0.8.7",
@@ -5552,7 +5543,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-rustls",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "truapi",
@@ -5602,7 +5593,7 @@ dependencies = [
  "subxt-rpcs",
  "thiserror 1.0.69",
  "tokio",
- "tokio-tungstenite 0.21.0",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "truapi",
@@ -5640,25 +5631,6 @@ dependencies = [
  "target-tuple",
  "termcolor",
  "toml",
-]
-
-[[package]]
-name = "tungstenite"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ef1a641ea34f399a848dea702823bbecfb4c486f911735368f1f137cb8257e1"
-dependencies = [
- "byteorder",
- "bytes",
- "data-encoding",
- "http",
- "httparse",
- "log",
- "rand 0.8.7",
- "sha1",
- "thiserror 1.0.69",
- "url",
- "utf-8",
 ]
 
 [[package]]

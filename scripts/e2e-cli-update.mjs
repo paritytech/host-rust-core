@@ -110,6 +110,14 @@ async function main() {
       true,
     );
     check(
+      "the matching product-script types ship beside the runner",
+      readFileSync(join(root, `versions/${version}/script-types.d.ts`), "utf8"),
+      readFileSync(
+        join(repoRoot, "rust/crates/truapi-host-cli/js/script-types.d.ts"),
+        "utf8",
+      ),
+    );
+    check(
       "the dev container ships beside the runner",
       existsSync(join(root, `versions/${version}/sandbox-assets/container.js`)),
       true,

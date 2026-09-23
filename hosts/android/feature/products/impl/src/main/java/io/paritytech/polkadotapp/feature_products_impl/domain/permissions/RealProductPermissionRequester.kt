@@ -5,8 +5,10 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission.RemotePermission
 import io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductsRouter
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -37,10 +39,16 @@ class RealProductPermissionRequester @Inject constructor(
         val context = ProductPermissionContext(productId, permissions)
         try {
             permissionContextHolder.set(context)
-            productsRouter.openPermissionPrompt()
+            productsRouter.openPermissionPrompt(context.id)
             context.awaitDecision()
         } finally {
-            permissionContextHolder.clear()
+            withContext(NonCancellable) {
+                try {
+                    productsRouter.closePermissionPrompt(context.id)
+                } finally {
+                    permissionContextHolder.clear()
+                }
+            }
         }
     }
 }

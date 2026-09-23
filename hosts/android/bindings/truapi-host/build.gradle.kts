@@ -80,6 +80,8 @@ android {
         // (runtime-guarded via Class.forName). See lint.xml.
         lintConfig = file("lint.xml")
     }
+
+    packaging.resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
 }
 
 // truapi owns the `io.parity.truapi` host shell. Sync it from the checkout at
@@ -182,7 +184,7 @@ val buildHostCdylib by tasks.registering(Exec::class) {
     workingDir = file(truapiDir)
     commandLine("cargo", "build", "-p", "truapi-server", "--profile", "codegen", "--features", "ws-bridge")
     inputs.files(
-        fileTree("$truapiDir/rust/crates") { include("**/*.rs", "**/Cargo.toml") },
+        fileTree("$truapiDir/rust/crates") { include("**/*.rs", "**/*.js", "**/Cargo.toml") },
         "$truapiDir/Cargo.toml",
         "$truapiDir/Cargo.lock",
     ).withPropertyName("rustSources")
@@ -214,6 +216,9 @@ val generateUniffiKotlin by tasks.registering(Exec::class) {
 tasks.matching { it.name.startsWith("cargoBuild") }
     .configureEach { dependsOn(generateCoreDispatcher) }
 
+extra["truapiSourceDir"] = file(truapiDir)
+apply(from = file("$truapiDir/android/truapi-container.gradle"))
+
 dependencies {
     // UniFFI Kotlin bindings use JNA for FFI.
     api("net.java.dev.jna:jna:5.14.0@aar")
@@ -226,4 +231,6 @@ dependencies {
 
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.webkit)
+    androidTestImplementation(libs.squareup.okhttp3.mockwebserver)
 }
