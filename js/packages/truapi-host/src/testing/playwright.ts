@@ -38,6 +38,10 @@ export {
 export { DEV_ACCOUNT_NAMES } from "./dev-accounts.js";
 export type { DevAccount, DevAccountName } from "./dev-accounts.js";
 
+// A suite that annotates a `genesisHash` reaches for this name from the same
+// path `@parity/host-api-test-sdk/playwright` offers it on.
+export type { HexString } from "@parity/truapi";
+
 // Log entry types under the names `@parity/host-api-test-sdk` exports them by,
 // so a suite that annotates a control-surface result compiles unchanged.
 export type {
@@ -197,6 +201,14 @@ export interface TestHost {
    * than the full namespaced string, which is an internal shape.
    */
   findProductStorage(key: string): Promise<Uint8Array | undefined>;
+  /**
+   * The value the product stored under `key`, decoded as UTF-8.
+   *
+   * `@parity/host-api-test-sdk` spells this `getProductStorageValue` and
+   * returns a string, so a migrating suite's storage assertions compile
+   * unchanged. Use {@link findProductStorage} for a value that is not text.
+   */
+  getProductStorageValue(key: string): Promise<string | undefined>;
   clearPreimages(): Promise<void>;
   getTheme(): Promise<string>;
   setTheme(variant: string): Promise<void>;
@@ -416,16 +428,36 @@ export function fromNetworks(
       runtimeConfig[split.configKey] = { genesisHash: entry.genesisHash };
     }
   }
+  // Only the People chain carries the statement store, so serving it locally on
+  // the hub as well would claim a store where none exists. A suite that declares
+  // no People chain has no such proxy to carry it, and a single unhashed proxy
+  // takes every request -- so that one serves the store instead. With several
+  // chains and no People among them there is no request this could attach to,
+  // and attaching it to a hub would answer statement reads a real hub refuses.
+  const peopleChains = networks.filter(
+    (entry) => splitChainId(entry.id).identifier === "People",
+  );
+  if (loopbackStatements && peopleChains.length === 0 && networks.length > 1) {
+    throw new Error(
+      "testHost `loopbackStatements` needs a People chain in `networks`, or a " +
+        "single chain whose proxy takes every request. Several chains are " +
+        "declared and none is a People chain, so there is no proxy the " +
+        "statement store belongs on: the store would answer reads that the " +
+        "declared chains refuse. Add the People chain, or drop to one chain.",
+    );
+  }
+  const servesStatements = (entry: NetworkConfig): boolean =>
+    loopbackStatements &&
+    (peopleChains.length > 0
+      ? splitChainId(entry.id).identifier === "People"
+      : true);
+
   return {
     mock: {
       chainProxies: networks.map((entry) => ({
         ...(networks.length > 1 ? { genesisHash: entry.genesisHash } : {}),
         rpcUrl: entry.rpcUrl,
-        // Only the People chain carries the statement store, so serving it
-        // locally on the hub as well would claim a store where none exists.
-        ...(loopbackStatements && splitChainId(entry.id).identifier === "People"
-          ? { loopbackStatements: true }
-          : {}),
+        ...(servesStatements(entry) ? { loopbackStatements: true } : {}),
       })),
       supportedChains: { network, chains },
     } as Pick<MockHostConfig, "chainProxies" | "supportedChains">,
@@ -599,6 +631,12 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           );
           return match?.[1];
         },
+        getProductStorageValue: async (key: string) =>
+          page.evaluate((storageKey) => {
+            const host = window.__TRUAPI_TEST_HOST__;
+            if (!host) throw new Error("test host is not running on this page");
+            return host.getProductStorageValue(storageKey);
+          }, key),
         getPreimages: async () => {
           const raw = await page.evaluate(() => {
             const host = window.__TRUAPI_TEST_HOST__;

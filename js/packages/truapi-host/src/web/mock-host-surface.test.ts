@@ -62,6 +62,8 @@ const JS_ONLY: Record<string, string> = {
   getIsAuthenticated: "host-api-test-sdk reader over the auth-state log",
   getConnectionStatus: "host-api-test-sdk alias over the chain status",
   getSigningLog: "host-api-test-sdk shape over the confirmation reviews",
+  getProductStorageValue:
+    "host-api-test-sdk reader over `getProductStorage`, decoded as UTF-8",
   setPermissionBehavior:
     "host-api-test-sdk name for the policy Rust sets through MockConfig",
   statements: "loopback statement store, refused on both sides",

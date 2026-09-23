@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { createTestHostFixture, fromNetworks } from "./playwright.js";
+import { createMockClient } from "./create-mock-client.js";
+import { wasmIsBuilt } from "./require-wasm.js";
 import { PASEO_ASSET_HUB, LIVE_CHAINS } from "./dev-accounts.js";
 
 const SAMPLE_CHAIN = {
@@ -178,6 +180,130 @@ describe("proxy routing across several chains", () => {
 
   it("leaves a lone proxy unhashed, so a chain reset cannot break it", () => {
     const { mock } = fromNetworks([SAMPLE_CHAIN]);
+    expect(mock.chainProxies).toEqual([{ rpcUrl: SAMPLE_CHAIN.rpcUrl }]);
+  });
+});
+
+describe("reading a stored value back the way the old package spelled it", () => {
+  // `@parity/host-api-test-sdk` spells this `getProductStorageValue`, returns a
+  // string, and publishes it on the in-page host, where a suite compares the
+  // result inside a `page.waitForFunction` predicate. All three matter: a
+  // promise, or a node-only member, fails such a predicate rather than the
+  // assertion under it.
+  const suite = wasmIsBuilt("testing/truapi_server.js") ? describe : describe.skip;
+
+  suite("against the real core", () => {
+    it("decodes what the product wrote, matching on the product's own key", async () => {
+      const { client, host, dispose } = await createMockClient();
+      try {
+        // "hi" as the hex the generated client takes.
+        const written = await client.localStorage.write({
+          key: "greeting",
+          value: "0x6869",
+        });
+        expect(written.isOk()).toBe(true);
+
+        // The core namespaced the key before the host saw it, so a suite
+        // asking for its own key has to still find the value.
+        expect(Object.keys(host.getProductStorage())).not.toContain("greeting");
+        expect(host.getProductStorageValue("greeting")).toBe("hi");
+      } finally {
+        dispose();
+      }
+    });
+
+    it("keeps a prefixed store distinct from an unprefixed one", async () => {
+      // A product writing `demo:mykey` and `mykey` produces two namespaced keys
+      // that both end in `:mykey`. A suffix search answers either with whichever
+      // it reaches first, so a suite asserting the two stores do not collide
+      // passes whatever the host does. This is that assertion.
+      const { client, host, dispose } = await createMockClient();
+      try {
+        // "hi" and "jj" as the hex the generated client takes.
+        await client.localStorage.write({ key: "demo:mykey", value: "0x6869" });
+        await client.localStorage.write({ key: "mykey", value: "0x6a6a" });
+
+        expect(host.getProductStorageValue("demo:mykey")).toBe("hi");
+        expect(host.getProductStorageValue("mykey")).toBe("jj");
+      } finally {
+        dispose();
+      }
+    });
+
+    it("does not answer a bare key with a prefixed entry", async () => {
+      const { client, host, dispose } = await createMockClient();
+      try {
+        await client.localStorage.write({ key: "demo:only", value: "0x6869" });
+        expect(host.getProductStorageValue("only")).toBeUndefined();
+      } finally {
+        dispose();
+      }
+    });
+
+    it("returns synchronously, not a promise", async () => {
+      const { host, dispose } = await createMockClient();
+      try {
+        expect(host.getProductStorageValue("greeting")).not.toBeInstanceOf(
+          Promise,
+        );
+      } finally {
+        dispose();
+      }
+    });
+
+    it("keeps a key the product never wrote undefined", async () => {
+      const { host, dispose } = await createMockClient();
+      try {
+        // Not an empty string: "stored nothing" and "stored nothing here" are
+        // different claims, and a suite asserting a cleared key wants the latter.
+        expect(host.getProductStorageValue("never-written")).toBeUndefined();
+      } finally {
+        dispose();
+      }
+    });
+  });
+});
+
+describe("where the loopback statement store attaches", () => {
+  const PEOPLE = {
+    id: "paseo-people",
+    name: "Paseo People",
+    genesisHash: "0xpeople",
+    rpcUrl: "wss://people.example",
+  };
+
+  it("serves the store on the only chain when no People chain is declared", () => {
+    // A suite declaring a hub alone still has to be able to publish: its single
+    // proxy is unhashed, so it takes the statement requests too. Without this
+    // the statements reach the hub, which has no store, and the suite waits out
+    // its timeout with nothing to show for it.
+    const { mock } = fromNetworks([SAMPLE_CHAIN], true);
+    expect(mock.chainProxies).toEqual([
+      { rpcUrl: SAMPLE_CHAIN.rpcUrl, loopbackStatements: true },
+    ]);
+  });
+
+  it("serves it only on People when one is declared", () => {
+    const { mock } = fromNetworks([SAMPLE_CHAIN, PEOPLE], true);
+    expect(mock.chainProxies).toEqual([
+      { genesisHash: SAMPLE_CHAIN.genesisHash, rpcUrl: SAMPLE_CHAIN.rpcUrl },
+      {
+        genesisHash: PEOPLE.genesisHash,
+        rpcUrl: PEOPLE.rpcUrl,
+        loopbackStatements: true,
+      },
+    ]);
+  });
+
+  it("refuses several chains with no People among them, rather than silently serving nothing", () => {
+    const second = { ...SAMPLE_CHAIN, id: "paseo-bulletin", genesisHash: "0xb" };
+    expect(() => fromNetworks([SAMPLE_CHAIN, second], true)).toThrow(
+      /needs a People chain/,
+    );
+  });
+
+  it("attaches nothing when the store is not asked for", () => {
+    const { mock } = fromNetworks([SAMPLE_CHAIN], false);
     expect(mock.chainProxies).toEqual([{ rpcUrl: SAMPLE_CHAIN.rpcUrl }]);
   });
 });

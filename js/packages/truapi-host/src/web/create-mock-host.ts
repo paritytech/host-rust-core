@@ -53,6 +53,18 @@ import type { ProductRuntimeConfig } from "../runtime.js";
 export type PermissionPolicy = "allow-all" | "deny-all";
 
 /**
+ * The core's product-storage key shape, whose tail is the product's own key.
+ *
+ * Matching on that tail rather than on any `:key` suffix is what keeps a
+ * prefixed store distinct from an unprefixed one: a product writing `demo:mykey`
+ * and `mykey` produces two keys that both end in `:mykey`, so a suffix search
+ * for `mykey` answers with whichever comes first and a test asserting they do
+ * not collide can never fail. The shape is the core's, and knowing it here is
+ * the point: a suite must not have to.
+ */
+const CORE_PRODUCT_STORAGE_KEY = /^truapi:product-storage:v\d+:\d+:[^:]+:(.+)$/;
+
+/**
  * A chain the host will proxy to, rather than answer from memory.
  *
  * Matched on `genesisHash`: the core asks for a chain by hash, so the hash here
@@ -477,6 +489,15 @@ export interface MockHost {
    * impossible to replace.
    */
   getProductStorage(): Record<string, Uint8Array>;
+  /**
+   * The value the product stored under `key`, decoded as UTF-8.
+   *
+   * Synchronous, because `@parity/host-api-test-sdk` publishes it that way and
+   * a suite compares the result inside a `page.waitForFunction` predicate.
+   * The core namespaces the key before the host sees it, so this matches on
+   * the product's own key as a suffix rather than the internal shape.
+   */
+  getProductStorageValue(key: string): string | undefined;
   /** Seeded preimage values. */
   getPreimages(): Uint8Array[];
   /** Drop the recorded navigations. */
@@ -1347,6 +1368,20 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
         if (key.startsWith(prefix)) entries[key.slice(prefix.length)] = value;
       }
       return entries;
+    },
+    getProductStorageValue: (key: string) => {
+      const prefix = productKey("");
+      for (const [stored, value] of storage) {
+        if (!stored.startsWith(prefix)) continue;
+        const local = stored.slice(prefix.length);
+        const namespaced = CORE_PRODUCT_STORAGE_KEY.exec(local);
+        // Falls back to the whole key for a value written straight through the
+        // host seam, which never passed through the core's namespacing.
+        if ((namespaced?.[1] ?? local) === key) {
+          return new TextDecoder().decode(value);
+        }
+      }
+      return undefined;
     },
     getPreimages: () => [...preimages.values()],
     clearNavigationLog: () => {
