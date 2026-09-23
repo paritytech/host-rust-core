@@ -9,9 +9,6 @@
 use parity_scale_codec::{Decode, DecodeAll, Encode};
 use sp_crypto_hashing::{blake2_256, twox_128};
 use thiserror::Error;
-use verifiable::Error as VerifiableError;
-use verifiable::GenerateVerifiable;
-use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 use super::StatementAllowanceError;
 use super::collection::PersonhoodCollection;
@@ -55,7 +52,7 @@ pub enum SlotError {
         /// Alias context name.
         context: &'static str,
         /// Alias derivation failure.
-        error: VerifiableError,
+        error: String,
     },
     /// No free statement-store slot was found.
     #[error("no free StatementStore slot in period {period} (max {max})")]
@@ -208,57 +205,63 @@ pub fn derive_long_term_storage_context(
 }
 
 /// The slot alias for our `entropy` at `(period, seq)`.
-pub fn slot_alias(
+pub async fn slot_alias(
     entropy: [u8; 32],
     network_suffix: &[u8],
     period: u32,
     seq: u32,
 ) -> Result<[u8; 32], StatementAllowanceError> {
-    let secret = BandersnatchVrfVerifiable::new_secret(entropy);
     let context = derive_slot_context(network_suffix, period, seq);
-    BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
-        SlotError::AliasInContext {
-            context: "statement-store slot",
-            error: err,
-        }
-        .into()
-    })
+    crate::runtime::vrf::load()
+        .await
+        .and_then(|vrf| vrf.alias(&entropy, &context))
+        .map_err(|err| {
+            SlotError::AliasInContext {
+                context: "statement-store slot",
+                error: err.to_string(),
+            }
+            .into()
+        })
 }
 
 /// The PGAS claim alias for our `entropy` at `(day, slot_index)`.
-pub fn pgas_alias(
+pub async fn pgas_alias(
     entropy: [u8; 32],
     network_suffix: &[u8],
     day: u32,
     slot_index: u32,
 ) -> Result<[u8; 32], StatementAllowanceError> {
-    let secret = BandersnatchVrfVerifiable::new_secret(entropy);
     let context = derive_pgas_context(network_suffix, day, slot_index);
-    BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
-        SlotError::AliasInContext {
-            context: "PGAS claim slot",
-            error: err,
-        }
-        .into()
-    })
+    crate::runtime::vrf::load()
+        .await
+        .and_then(|vrf| vrf.alias(&entropy, &context))
+        .map_err(|err| {
+            SlotError::AliasInContext {
+                context: "PGAS claim slot",
+                error: err.to_string(),
+            }
+            .into()
+        })
 }
 
 /// The long-term-storage slot alias for our `entropy` at `(period, counter)`.
-pub fn long_term_storage_alias(
+pub async fn long_term_storage_alias(
     entropy: [u8; 32],
     network_suffix: &[u8],
     period: u32,
     counter: u8,
 ) -> Result<[u8; 32], StatementAllowanceError> {
-    let secret = BandersnatchVrfVerifiable::new_secret(entropy);
     let context = derive_long_term_storage_context(network_suffix, period, counter);
-    BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
-        SlotError::AliasInContext {
-            context: "long-term-storage slot",
-            error: err,
-        }
-        .into()
-    })
+    crate::runtime::vrf::load()
+        .await
+        .and_then(|vrf| vrf.alias(&entropy, &context))
+        .map_err(|err| {
+            SlotError::AliasInContext {
+                context: "long-term-storage slot",
+                error: err.to_string(),
+            }
+            .into()
+        })
 }
 
 /// `Resources.StatementStoreAllowances[period][alias]` storage key.
@@ -431,7 +434,7 @@ pub async fn read_slot_account_at(
     seq: u32,
     block_hash: &str,
 ) -> Result<Option<[u8; 32]>, StatementAllowanceError> {
-    let alias = slot_alias(entropy, network_suffix, period, seq)?;
+    let alias = slot_alias(entropy, network_suffix, period, seq).await?;
     let key = statement_store_allowance_key(period, &alias);
     Ok(rpc
         .get_storage_at(&key, block_hash)
@@ -502,7 +505,7 @@ pub async fn scan_slot_excluding(
     let mut excluded_free = false;
     let mut occupied = Vec::new();
     for seq in 0..max {
-        let alias = slot_alias(entropy, network_suffix, period, seq)?;
+        let alias = slot_alias(entropy, network_suffix, period, seq).await?;
         let key = statement_store_allowance_key(period, &alias);
         match rpc.get_storage(&key).await? {
             None => {
@@ -581,13 +584,11 @@ async fn scan_pgas_slot_in(
         if batch.is_empty() {
             continue;
         }
-        let keys = batch
-            .iter()
-            .map(|&slot_index| {
-                pgas_alias(entropy, network_suffix, day, slot_index)
-                    .map(|alias| claimed_gas_alias_key(day, &alias))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut keys = Vec::with_capacity(batch.len());
+        for &slot_index in &batch {
+            let alias = pgas_alias(entropy, network_suffix, day, slot_index).await?;
+            keys.push(claimed_gas_alias_key(day, &alias));
+        }
         let claimed = rpc.get_storage_many(&keys).await?;
         if let Some(slot_index) = batch
             .iter()
@@ -614,7 +615,7 @@ pub async fn pgas_slot_is_claimed_at(
     slot_index: u32,
     block_hash: &str,
 ) -> Result<bool, StatementAllowanceError> {
-    let alias = pgas_alias(entropy, network_suffix, day, slot_index)?;
+    let alias = pgas_alias(entropy, network_suffix, day, slot_index).await?;
     let key = claimed_gas_alias_key(day, &alias);
     Ok(rpc.get_storage_at(&key, block_hash).await?.is_some())
 }
@@ -634,7 +635,7 @@ pub async fn scan_long_term_storage_counter_excluding(
         if excluded.contains(&counter) {
             continue;
         }
-        let alias = long_term_storage_alias(entropy, network_suffix, period, counter)?;
+        let alias = long_term_storage_alias(entropy, network_suffix, period, counter).await?;
         let key = spent_long_term_storage_alias_key(period, &alias);
         if rpc.get_storage(&key).await?.is_none() {
             return Ok(counter);
@@ -951,7 +952,13 @@ mod tests {
         // keys that exist, so the absent ones are simply missing from `changes`.
         let claimed: Vec<String> = (0..3u32)
             .map(|slot_index| {
-                let alias = pgas_alias(ENTROPY, NETWORK_SUFFIX, DAY, slot_index).unwrap();
+                let alias = futures::executor::block_on(pgas_alias(
+                    ENTROPY,
+                    NETWORK_SUFFIX,
+                    DAY,
+                    slot_index,
+                ))
+                .unwrap();
                 format!(
                     r#"["0x{}","0x"]"#,
                     hex::encode(claimed_gas_alias_key(DAY, &alias))
@@ -1176,7 +1183,10 @@ mod tests {
         .unwrap();
         let calls = (0..=1)
             .map(|counter| {
-                let alias = long_term_storage_alias(ENTROPY, SUFFIX, PERIOD, counter).unwrap();
+                let alias = futures::executor::block_on(long_term_storage_alias(
+                    ENTROPY, SUFFIX, PERIOD, counter,
+                ))
+                .unwrap();
                 (
                     "state_getStorage".to_string(),
                     format!(

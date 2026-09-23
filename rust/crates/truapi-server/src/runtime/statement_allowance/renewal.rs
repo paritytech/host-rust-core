@@ -410,7 +410,7 @@ mod tests {
             entropy,
             ring: RingParams {
                 collection: PersonhoodCollection::LitePeople,
-                members: vec![proof::member_key(entropy)],
+                members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
                 exponent: 9,
                 ring_index: 0,
                 block_hash: "0xfinal".to_string(),
@@ -506,7 +506,7 @@ mod tests {
             entropy,
             ring: RingParams {
                 collection: PersonhoodCollection::LitePeople,
-                members: vec![proof::member_key(entropy)],
+                members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
                 exponent: 9,
                 ring_index: 0,
                 block_hash: "0xfinal".to_string(),
@@ -606,7 +606,7 @@ mod tests {
             entropy,
             ring: RingParams {
                 collection: PersonhoodCollection::LitePeople,
-                members: vec![proof::member_key(entropy)],
+                members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
                 exponent: 9,
                 ring_index: 0,
                 block_hash: "0xfinal".to_string(),

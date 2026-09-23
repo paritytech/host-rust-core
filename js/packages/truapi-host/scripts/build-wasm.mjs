@@ -13,9 +13,14 @@
 //             shortcuts a shipping host must not have. Shipped under the
 //             `./testing` subpath so a product bundling `./web` never pulls it
 //             in.
+//
+// Each carries its own copy of `verifiable/`, the ring-VRF module the core
+// loads on first use. It is built first, and both cores are built against its
+// hash.
 
 import { execFile } from "node:child_process";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -35,11 +40,9 @@ const gunzipAsync = promisify(gunzip);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, "..");
 const repoRoot = resolve(pkgRoot, "../../..");
-const rustCrate = resolve(repoRoot, "rust/crates/truapi-server");
 const wasmProfile = process.env.TRUAPI_WASM_PROFILE ?? "release";
-const wasmFileName = "truapi_server_bg.wasm";
 
-function args(target, outDir, features = []) {
+function args(crate, target, outDir, features = []) {
   const command = [
     "build",
     "--target",
@@ -47,7 +50,7 @@ function args(target, outDir, features = []) {
     "--out-dir",
     outDir,
     "--out-name",
-    "truapi_server",
+    crate.replaceAll("-", "_"),
   ];
   if (wasmProfile === "dev") {
     command.push("--dev");
@@ -58,7 +61,10 @@ function args(target, outDir, features = []) {
       `Unsupported TRUAPI_WASM_PROFILE=${wasmProfile}; expected release, dev, or profiling`,
     );
   }
-  command.push(rustCrate, "--no-default-features");
+  command.push(
+    resolve(repoRoot, "rust/crates", crate),
+    "--no-default-features",
+  );
   if (features.length > 0) {
     command.push("--features", features.join(","));
   }
@@ -171,16 +177,17 @@ async function writeCompressedSidecars(wasmPath) {
   );
 }
 
-async function build(target, subdir, features = []) {
+async function build(crate, target, subdir, features = [], env = {}) {
   const outDir = resolve(pkgRoot, "dist/wasm", subdir);
   process.stdout.write(
-    `wasm-pack build --target ${target} --${wasmProfile}${
+    `wasm-pack build ${crate} --target ${target} --${wasmProfile}${
       features.length > 0 ? ` --features ${features.join(",")}` : ""
     } → ${outDir}\n`,
   );
   try {
-    await execFileAsync("wasm-pack", args(target, outDir, features), {
+    await execFileAsync("wasm-pack", args(crate, target, outDir, features), {
       cwd: repoRoot,
+      env: { ...process.env, ...env },
     });
   } catch (err) {
     if (err?.code === "ENOENT") {
@@ -195,14 +202,37 @@ async function build(target, subdir, features = []) {
   // wasm-pack writes a nested `.gitignore: *`; the repo-level ignore already
   // owns generated WASM outputs.
   await rm(resolve(outDir, ".gitignore"), { force: true });
-  const wasmPath = resolve(outDir, wasmFileName);
+  const wasmPath = resolve(outDir, `${crate.replaceAll("-", "_")}_bg.wasm`);
   await Promise.all([
     rm(`${wasmPath}.br`, { force: true }),
     rm(`${wasmPath}.gz`, { force: true }),
   ]);
   await validateReleaseWasm(wasmPath);
   await writeCompressedSidecars(wasmPath);
+  return wasmPath;
 }
 
-await build("web", "web");
-await build("web", "testing", ["wasm-signing-host", "test-host"]);
+// The cores are built against this hash and load no other module.
+const verifiableWasm = await build(
+  "truapi-verifiable",
+  "web",
+  "web/verifiable",
+);
+const env = {
+  TRUAPI_VERIFIABLE_SHA256: createHash("sha256")
+    .update(await readFile(verifiableWasm))
+    .digest("hex"),
+};
+await build("truapi-server", "web", "web", [], env);
+await build(
+  "truapi-server",
+  "web",
+  "testing",
+  ["wasm-signing-host", "test-host"],
+  env,
+);
+await cp(
+  resolve(pkgRoot, "dist/wasm/web/verifiable"),
+  resolve(pkgRoot, "dist/wasm/testing/verifiable"),
+  { recursive: true },
+);

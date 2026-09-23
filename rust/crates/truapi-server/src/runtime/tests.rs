@@ -4316,7 +4316,10 @@ fn auto_signing_ring_vrf_requires_registration_and_signs_locally() {
         &domain,
         &handle.derivation_index,
     );
-    let public_key = crate::runtime::signing_host::ring_vrf::member_from_entropy(&entropy).unwrap();
+    let public_key = futures::executor::block_on(crate::runtime::vrf::load())
+        .expect("verifiable is linked")
+        .member(&entropy)
+        .unwrap();
     futures::executor::block_on(pairing_host.register_ring_vrf_key_for_tests(
         &session,
         handle.clone(),

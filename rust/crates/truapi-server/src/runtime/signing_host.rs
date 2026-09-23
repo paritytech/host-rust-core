@@ -69,9 +69,9 @@ use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
 use crate::runtime::statement_allowance::CollectionCandidate;
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
+use crate::runtime::vrf::{self, Vrf};
 use ring_vrf::{
-    ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
-    development_context_bytes, member_from_entropy, sign_from_entropy,
+    ChainRingResolver, MemberCandidate, RingResolver, create_proof, development_context_bytes,
 };
 use sso_replay::SsoReplayLocks;
 
@@ -577,7 +577,7 @@ impl SigningHost {
             return Err(RingVrfError::KeyNotInRing);
         }
         let entropy = self.ring_vrf_entropy(session, handle)?;
-        Self::require_matching_registered_public_key(&entry, &entropy)?;
+        Self::require_matching_registered_public_key(&vrf::load().await?, &entry, &entropy)?;
         Ok(entropy)
     }
 
@@ -591,15 +591,16 @@ impl SigningHost {
             .await?
             .ok_or(RingVrfError::KeyNotRegistered)?;
         let entropy = self.ring_vrf_entropy(session, handle)?;
-        Self::require_matching_registered_public_key(&entry, &entropy)?;
+        Self::require_matching_registered_public_key(&vrf::load().await?, &entry, &entropy)?;
         Ok(entropy)
     }
 
     fn require_matching_registered_public_key(
+        vrf: &Vrf,
         entry: &v01::RegisteredRingVrfKey,
         entropy: &[u8; 32],
     ) -> Result<(), RingVrfError> {
-        if entry.public_key != Some(member_from_entropy(entropy)?) {
+        if entry.public_key != Some(vrf.member(entropy)?) {
             return Err(RingVrfError::Unknown {
                 reason: "registered ring-VRF public key does not match the active wallet"
                     .to_string(),
@@ -610,10 +611,11 @@ impl SigningHost {
 
     fn ring_vrf_member_candidate(
         &self,
+        vrf: &Vrf,
         entropy: &[u8; 32],
     ) -> Result<MemberCandidate, RingVrfError> {
         Ok(MemberCandidate {
-            member: member_from_entropy(entropy)?,
+            member: vrf.member(entropy)?,
         })
     }
 
@@ -1075,8 +1077,9 @@ impl ProductAuthority for SigningHost {
         self.ring_resolver
             .validate(&request.payload.ring_location)
             .await?;
+        let vrf = vrf::load().await?;
         let context = development_context_bytes(&request.payload.context);
-        let alias = alias_from_entropy(&entropy, &context)?;
+        let alias = vrf.alias(&entropy, &context)?;
         Ok(v01::ContextualAlias {
             context,
             alias: alias.to_vec(),
@@ -1106,7 +1109,8 @@ impl ProductAuthority for SigningHost {
         let entropy = self
             .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
             .await?;
-        let candidate = self.ring_vrf_member_candidate(&entropy)?;
+        let vrf = vrf::load().await?;
+        let candidate = self.ring_vrf_member_candidate(&vrf, &entropy)?;
         let resolved = self
             .ring_resolver
             .resolve(&request.payload.ring_location, &[candidate])
@@ -1115,7 +1119,13 @@ impl ProductAuthority for SigningHost {
         // while its chain snapshot was being resolved.
         self.require_current_session(session)?;
         let context = development_context_bytes(&request.payload.context);
-        let (proof, alias) = create_proof(&entropy, &resolved, &context, &request.payload.message)?;
+        let (proof, alias) = create_proof(
+            &vrf,
+            &entropy,
+            &resolved,
+            &context,
+            &request.payload.message,
+        )?;
         Ok(v01::HostAccountCreateProofResponse {
             proof,
             contextual_alias: v01::ContextualAlias {
@@ -1145,7 +1155,7 @@ impl ProductAuthority for SigningHost {
             derivation_index: request.payload.index,
         };
         let entropy = self.ring_vrf_entropy(session, &handle)?;
-        let public_key = member_from_entropy(&entropy)?;
+        let public_key = vrf::load().await?.member(&entropy)?;
         self.ring_vrf_registry
             .register(session.public_key, handle, request.payload.ring, public_key)
             .await?;
@@ -1220,7 +1230,7 @@ impl ProductAuthority for SigningHost {
         let entropy = self
             .resolve_registered_ring_vrf_key(session, &key_handle)
             .await?;
-        sign_from_entropy(&entropy, &request.payload.message)
+        vrf::load().await?.sign(&entropy, &request.payload.message)
     }
 
     async fn allocate_resources(
@@ -1411,7 +1421,7 @@ mod tests {
     };
     use super::super::{ProductAuthority, ProductRuntimeHost, RuntimeServices, SigningHostRole};
     use super::TEST_NETWORK_SUFFIX;
-    use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
+    use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver};
     use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
@@ -1437,7 +1447,6 @@ mod tests {
     use truapi::versioned::signing::{HostSignRawError, HostSignRawRequest, HostSignRawResponse};
     use truapi::{CallContext, CallError, v01};
     use truapi_platform::{HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig};
-    use verifiable::ring::RingDomainSize;
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
 
@@ -1604,7 +1613,10 @@ mod tests {
         let full_entropy =
             derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(0))
                 .expect("full-person entropy");
-        let full_member = member_from_entropy(&full_entropy).expect("full-person member");
+        let full_member = futures::executor::block_on(crate::runtime::vrf::load())
+            .expect("verifiable is linked")
+            .member(&full_entropy)
+            .expect("full-person member");
         Arc::new(StubRingResolver {
             collection: *b"pop:polkadot.network/people     ",
             ring: ResolvedRing {
@@ -1613,7 +1625,7 @@ mod tests {
                 },
                 ring_index: 7,
                 ring_revision: 11,
-                domain_size: RingDomainSize::Domain11,
+                domain_size: 1 << 11,
                 members: vec![full_member],
             },
         })

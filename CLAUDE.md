@@ -16,6 +16,7 @@ rust/crates/
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
+  truapi-verifiable/     ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
   truapi-host-cli/       CLI pairing/signing hosts; Bun scripts share the container web API gates
 js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
@@ -121,6 +122,14 @@ scripts/cli-runner-package.test.ts
   (`%40parity%2Ftruapi%40<version>`). `make cli-dist CLI_TARGET=<triple>`
   reproduces one archive locally, and `make e2e-cli-update` installs and
   self-updates it against a loopback release server.
+- The browser core does not link `verifiable`, whose ring prover compiles in
+  4.5 MiB of powers of tau. `truapi-verifiable` holds the four ring-VRF
+  operations truapi-server uses (member, sign, alias, prove). Native builds link
+  it; the browser core loads it as a separate WASM module, from the
+  `verifiable/` directory of its own bundle (`dist/wasm/web/` or
+  `dist/wasm/testing/`), in the background once a pairing session connects or
+  when one of them first runs, through `truapi-server/src/runtime/vrf.rs`. `make wasm` builds the module first and
+  compiles its SHA-256 into both cores, which load no other.
 - `truapi-server` WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever

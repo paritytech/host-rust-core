@@ -38,6 +38,7 @@ pub mod statement_allowance;
 /// `StatementStore` surface: proofs plus submit and subscribe flows.
 pub(crate) mod statement_store;
 mod statement_store_rpc;
+mod vrf;
 
 use core::future::Future;
 use core::time::Duration;

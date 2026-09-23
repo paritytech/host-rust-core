@@ -10,17 +10,13 @@ use std::sync::Arc;
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::product_account::derivation_index_bytes;
 use crate::host_logic::sso::messages::RingVrfError;
+use crate::runtime::vrf::Vrf;
 use async_trait::async_trait;
 use subxt::dynamic;
 use subxt::ext::scale_decode::DecodeAsType;
 use truapi::v01::{ProductProofContext, RingLocation, RingLocationJunction};
-use verifiable::GenerateVerifiable;
-use verifiable::ring::RingDomainSize;
-use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 const MEMBERS_PALLET: &str = "Members";
-
-type RingMember = <BandersnatchVrfVerifiable as GenerateVerifiable>::Member;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::runtime) struct MemberCandidate {
@@ -32,7 +28,7 @@ pub(in crate::runtime) struct ResolvedRing {
     pub(in crate::runtime) selected: MemberCandidate,
     pub(in crate::runtime) ring_index: u32,
     pub(in crate::runtime) ring_revision: u32,
-    pub(in crate::runtime) domain_size: RingDomainSize,
+    pub(in crate::runtime) domain_size: u32,
     pub(in crate::runtime) members: Vec<[u8; 32]>,
 }
 
@@ -260,67 +256,21 @@ pub(in crate::runtime) fn context_bytes(context: &ProductProofContext) -> [u8; 3
     blake2b_256(&input, None)
 }
 
-pub(in crate::runtime) fn member_from_entropy(
-    entropy: &[u8; 32],
-) -> Result<[u8; 32], RingVrfError> {
-    use parity_scale_codec::Encode;
-
-    let secret = BandersnatchVrfVerifiable::new_secret(*entropy);
-    BandersnatchVrfVerifiable::member_from_secret(&secret)
-        .encode()
-        .try_into()
-        .map_err(|member: Vec<u8>| RingVrfError::Unknown {
-            reason: format!(
-                "Bandersnatch member encoded to {} bytes instead of 32",
-                member.len()
-            ),
-        })
-}
-
-pub(in crate::runtime) fn sign_from_entropy(
-    entropy: &[u8; 32],
-    message: &[u8],
-) -> Result<Vec<u8>, RingVrfError> {
-    let secret = BandersnatchVrfVerifiable::new_secret(*entropy);
-    BandersnatchVrfVerifiable::sign(&secret, message)
-        .map(|signature| signature.to_vec())
-        .map_err(unknown)
-}
-
-pub(in crate::runtime) fn alias_from_entropy(
-    entropy: &[u8; 32],
-    context: &[u8],
-) -> Result<[u8; 32], RingVrfError> {
-    let secret = BandersnatchVrfVerifiable::new_secret(*entropy);
-    BandersnatchVrfVerifiable::alias_in_context(&secret, context).map_err(unknown)
-}
-
 pub(in crate::runtime) fn create_proof(
+    vrf: &Vrf,
     entropy: &[u8; 32],
     resolved: &ResolvedRing,
     context: &[u8],
     message: &[u8],
 ) -> Result<(Vec<u8>, [u8; 32]), RingVrfError> {
-    use parity_scale_codec::Decode;
-
-    let mut selected_bytes = &resolved.selected.member[..];
-    let selected = RingMember::decode(&mut selected_bytes).map_err(unknown)?;
-    let members = resolved
-        .members
-        .iter()
-        .map(|member| {
-            let mut bytes = &member[..];
-            RingMember::decode(&mut bytes).map_err(unknown)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let secret = BandersnatchVrfVerifiable::new_secret(*entropy);
-    let prover =
-        BandersnatchVrfVerifiable::open(resolved.domain_size, &selected, members.into_iter())
-            .map_err(|_| RingVrfError::NotMember)?;
-    let (proof, alias) =
-        BandersnatchVrfVerifiable::create(prover, &secret, context, message).map_err(unknown)?;
-    Ok((proof.to_vec(), alias))
+    vrf.prove(
+        entropy,
+        resolved.domain_size,
+        &resolved.selected.member,
+        &resolved.members,
+        context,
+        message,
+    )
 }
 
 fn collection_id(location: &RingLocation) -> Result<[u8; 32], RingVrfError> {
@@ -390,11 +340,11 @@ enum RingExponent {
 }
 
 impl RingExponent {
-    fn domain_size(self) -> RingDomainSize {
+    fn domain_size(self) -> u32 {
         match self {
-            Self::R2e9 => RingDomainSize::Domain11,
-            Self::R2e10 => RingDomainSize::Domain12,
-            Self::R2e14 => RingDomainSize::Domain16,
+            Self::R2e9 => 1 << 11,
+            Self::R2e10 => 1 << 12,
+            Self::R2e14 => 1 << 16,
         }
     }
 }
