@@ -86,8 +86,10 @@ pub trait Account: Send + Sync {
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
-    /// const PEOPLE_COLLECTION_ID =
-    ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465" as const;
+    /// const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Array.from(
+    ///   new TextEncoder().encode("pop:polkadot.network/people-lite"),
+    ///   (byte) => byte.toString(16).padStart(2, "0"),
+    /// ).join("")}`;
     /// const keyHandle = {
     ///   dotNsIdentifier: productContext.value.productId,
     ///   derivationIndex: { tag: "Index" as const, value: 0 },
@@ -130,8 +132,10 @@ pub trait Account: Send + Sync {
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
-    /// const PEOPLE_COLLECTION_ID =
-    ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
+    /// const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Array.from(
+    ///   new TextEncoder().encode("pop:polkadot.network/people-lite"),
+    ///   (byte) => byte.toString(16).padStart(2, "0"),
+    /// ).join("")}`;
     ///
     /// const result = await truapi.account.createAccountProof({
     ///   keyHandle: {
@@ -214,8 +218,10 @@ pub trait Account: Send + Sync {
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
-    /// const PEOPLE_COLLECTION_ID =
-    ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
+    /// const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Array.from(
+    ///   new TextEncoder().encode("pop:polkadot.network/people-lite"),
+    ///   (byte) => byte.toString(16).padStart(2, "0"),
+    /// ).join("")}`;
     ///
     /// const result = await truapi.account.registerRingVrfKey({
     ///   index: { tag: "Index", value: 0 },
@@ -242,16 +248,52 @@ pub trait Account: Send + Sync {
     /// List registered ring-VRF keys owned by a product.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
+    ///
+    /// const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Array.from(
+    ///   new TextEncoder().encode("pop:polkadot.network/people-lite"),
+    ///   (byte) => byte.toString(16).padStart(2, "0"),
+    /// ).join("")}`;
+    /// const index = { tag: "Index" as const, value: 0 };
+    /// const registration = await truapi.account.registerRingVrfKey({
+    ///   index,
+    ///   ring: {
+    ///     chainId: people.value.genesisHash,
+    ///     junctions: [{ tag: "CollectionId", value: PEOPLE_COLLECTION_ID }],
+    ///   },
+    /// });
+    /// assert(registration.isOk(), "registerRingVrfKey failed:", registration);
+    ///
+    /// const ownKeys = await truapi.account.listRingVrfKeys({
+    ///   owner: productContext.value.productId,
+    ///   disclosure: "PublicKey",
+    /// });
+    /// assert(ownKeys.isOk(), "listRingVrfKeys failed:", ownKeys);
+    /// const entry = ownKeys.value.find(
+    ///   (candidate) =>
+    ///     candidate.handle.dotNsIdentifier === productContext.value.productId &&
+    ///     candidate.handle.derivationIndex.value === index.value,
+    /// );
+    /// assert(
+    ///   entry?.publicKey === registration.value,
+    ///   "registered key missing from listRingVrfKeys:",
+    ///   ownKeys.value,
+    /// );
+    ///
     /// const result = await truapi.account.listRingVrfKeys({
     ///   owner: "peopl.paseo",
     ///   disclosure: "Anonymized",
     /// });
     /// assert(result.isOk(), "listRingVrfKeys failed:", result);
     /// assert(
-    ///   [0, 1].every((index) => result.value.some(({ handle }) =>
+    ///   [0, 1].every((i) => result.value.some(({ handle }) =>
     ///     handle.dotNsIdentifier === "peopl.paseo"
     ///     && handle.derivationIndex.tag === "Index"
-    ///     && handle.derivationIndex.value === index,
+    ///     && handle.derivationIndex.value === i,
     ///   )),
     ///   "Expected built-in full and lite personhood keys:",
     ///   result.value,
