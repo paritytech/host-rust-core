@@ -6,9 +6,14 @@ import io.paritytech.polkadotapp.common.domain.model.AccountId
 typealias PaymentId = String
 typealias PaymentOrigin = String
 
-data class PaymentContext(
-    val id: PaymentId,
+/** Ids are chosen by the origin, so they are only unique within it. */
+data class ExternalPaymentKey(
     val origin: PaymentOrigin,
+    val id: PaymentId,
+)
+
+data class PaymentContext(
+    val key: ExternalPaymentKey,
     val amount: Balance,
     val destination: AccountId,
 )
@@ -16,5 +21,12 @@ data class PaymentContext(
 sealed interface PaymentStatus {
     data object Processing : PaymentStatus
     data object Completed : PaymentStatus
+    data class PartiallyClaimed(val claimed: Balance) : PaymentStatus
     data class Failed(val reason: String) : PaymentStatus
+}
+
+sealed class ExternalPaymentError(message: String) : RuntimeException(message) {
+    class AlreadyExists(key: ExternalPaymentKey) : ExternalPaymentError("Payment $key already exists")
+
+    class NotFound(key: ExternalPaymentKey) : ExternalPaymentError("Payment $key not found")
 }

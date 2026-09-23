@@ -132,6 +132,7 @@ internal class RealResolveProductUseCase @Inject constructor(
             appVersion = SemVer.ZERO,
             includesChat = true,
             includesPocket = false,
+            pocketCards = emptyList(),
         )
 
     // A read failure fails the whole resolution, so a transient one is retried rather than cached

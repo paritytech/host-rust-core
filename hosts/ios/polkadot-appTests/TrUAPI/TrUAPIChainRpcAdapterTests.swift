@@ -231,6 +231,38 @@ struct TrUAPIChainRpcAdapterTests {
         #expect(try object(#require(delegate.produced.last))["result"] as? Bool == false)
     }
 
+    @Test func statementStoreSubscriptionForwardsPages() throws {
+        let (adapter, engine, delegate) = makeAdapter()
+
+        adapter.handle(
+            request: #"{"jsonrpc":"2.0","id":8,"method":"statement_subscribeStatement","params":[{"matchAny":["0x11"]}]}"#
+        )
+
+        let subscription = try #require(engine.subscriptions.values.first)
+        #expect(subscription.unsubscribeMethod == "statement_unsubscribeStatement")
+        #expect(delegate.produced.isEmpty)
+
+        subscription.onSubscribed?(.string("stmt-1"))
+        #expect(object(delegate.produced[0])["result"] as? String == "stmt-1")
+
+        try subscription.update(JSONDecoder().decode(JSON.self, from: Data(
+            #"{"jsonrpc":"2.0","method":"statement_subscribeStatement","params":{"subscription":"stmt-1","result":{"event":"newStatements","data":{"statements":["0x00"],"remaining":0}}}}"#
+                .utf8
+        )))
+
+        let update = object(delegate.produced[1])
+        let params = try #require(update["params"] as? [String: Any])
+        #expect(params["subscription"] as? String == "stmt-1")
+        let result = try #require(params["result"] as? [String: Any])
+        #expect(result["event"] as? String == "newStatements")
+        #expect(engine.cancelled.isEmpty)
+
+        adapter.handle(
+            request: #"{"jsonrpc":"2.0","id":9,"method":"statement_unsubscribeStatement","params":["stmt-1"]}"#
+        )
+        #expect(try object(#require(delegate.produced.last))["result"] as? Bool == true)
+    }
+
     // MARK: terminal events
 
     /// A node-sent terminal event is forwarded, then the engine subscription

@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.Alert
@@ -109,7 +110,7 @@ private fun AppNotificationItem(notification: AppNotification) {
 
             NovaText(
                 modifier = Modifier.weight(1f),
-                text = notification.message,
+                text = notification.message.withCurrencyTickerStyle(PolkadotTheme.typography.title.small),
                 color = PolkadotTheme.colors.fg.primary,
                 style = PolkadotTheme.typography.title.small,
             )

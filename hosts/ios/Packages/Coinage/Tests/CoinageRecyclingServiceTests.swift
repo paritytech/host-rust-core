@@ -88,7 +88,7 @@ struct CoinageRecyclingServiceTests {
         try await sut.service.recycleCoins([coin(index: 7)], groupId: "g")
         let mintedIndices = try await sut.txService.getOperationGroupStatuses("g")
             .flatMap(\.outputs)
-            .compactMap { output -> DerivationIndex? in
+            .compactMap { output -> CoinageKeyIndex? in
                 guard case let .recyclerVoucher(index, _) = output else { return nil }
                 return index
             }
@@ -132,15 +132,15 @@ private extension CoinageRecyclingServiceTests {
         return SUT(service: service, txService: txService)
     }
 
-    func key(_ index: DerivationIndex) -> Data {
-        Data(repeating: UInt8(truncatingIfNeeded: index), count: 32)
+    func key(_ index: CoinageKeyIndex) -> Data {
+        Data(repeating: UInt8(truncatingIfNeeded: index.item), count: 32)
     }
 
-    func coin(index: DerivationIndex) -> Coin {
+    func coin(index: CoinageKeyIndex) -> Coin {
         Coin(exponent: 3, derivationIndex: index, age: 14, isOnchain: true, publicKey: key(index))
     }
 
-    func voucher(index: DerivationIndex) -> Voucher {
+    func voucher(index: CoinageKeyIndex) -> Voucher {
         Voucher(
             exponent: 3,
             derivationIndex: index,

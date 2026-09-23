@@ -93,7 +93,12 @@ impl NativeChatFilesHost for Files {
 
 async fn authorize_upload(platform: &StubPlatform) {
     set_product_grants(platform, PRODUCT, PermissionAuthorizationStatus::Authorized).await;
-    crate::host_logic::permissions::PermissionsService::new(platform, platform, PRODUCT)
+    let product = truapi_platform::ProductContext::new_with_execution(
+        PRODUCT.to_owned(),
+        truapi_platform::ProductExecutionKind::Worker,
+    )
+    .expect("product id is valid");
+    crate::host_logic::permissions::PermissionsService::new(platform, platform, &product)
         .set_authorization_status(
             &PermissionAuthorizationRequest::Remote(RemotePermissionRequest {
                 permission: RemotePermission::PreimageSubmit,
@@ -335,7 +340,7 @@ fn attachment_preparation_retries_exact_upload_and_restores_download_custody() {
                     &identity,
                     &peer,
                     "another-forward",
-                    &[forwarded.clone()],
+                    std::slice::from_ref(&forwarded),
                 ),
             )
             .await

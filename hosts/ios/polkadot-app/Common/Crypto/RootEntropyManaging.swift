@@ -5,6 +5,6 @@ import KeyDerivation
 extension RootEntropyManager {
     static let shared = RootEntropyManager(
         keychain: Keychain(),
-        userDefaults: SharedContainerGroup.userDefaults
+        installationKeyIdStore: InstallationKeyIdStore()
     )
 }

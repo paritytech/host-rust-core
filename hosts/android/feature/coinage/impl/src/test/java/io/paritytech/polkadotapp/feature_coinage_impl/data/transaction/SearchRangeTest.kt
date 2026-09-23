@@ -1,15 +1,12 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.data.transaction
 
-import io.paritytech.polkadotapp.bandersnatch_crypto.BandersnatchPublicKey
 import io.paritytech.polkadotapp.chains.multiNetwork.runtime.repository.ExtrinsicOutcome
 import io.paritytech.polkadotapp.chains.network.binding.BlockHash
-import io.paritytech.polkadotapp.common.domain.model.AccountId
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CheckpointBlock
-import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainAliasState
-import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainCoinInfo
-import io.paritytech.polkadotapp.feature_members_api.data.model.RingPosition
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.CheckpointBlock
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.PinnedChainView
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.TransactionSearchResult
 import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionHash
+import io.paritytech.polkadotapp.feature_transactions_impl.data.durable.searchRange
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -122,7 +119,7 @@ private class FakeChainView(
     private val blocks: Map<Long, List<TransactionHash>?>,
     private val unreadableBodies: Set<Long>,
     private val outcome: ExtrinsicOutcome?,
-) : CoinageChainView {
+) : PinnedChainView {
     override val finalizedHead = CheckpointBlock(0, "0xunused")
 
     override val bestHead = CheckpointBlock(0, "0xunused")
@@ -146,26 +143,6 @@ private class FakeChainView(
         txHash: TransactionHash,
     ) = searchRange(fromBlockNumber, toBlockNumber, txHash)
 
-    override suspend fun coinsAt(at: BlockHash, coins: List<AccountId>): Result<Map<AccountId, OnChainCoinInfo?>> =
-        notScripted()
-
-    override suspend fun aliasStatesAt(
-        at: BlockHash,
-        keys: List<RecyclerAliasKey>,
-    ): Result<Map<RecyclerAliasKey, OnChainAliasState?>> = notScripted()
-
-    override suspend fun blockNumberAt(hash: BlockHash): Result<Long?> = notScripted()
-
-    override suspend fun recyclerMembershipsAt(
-        at: BlockHash,
-        memberKeys: List<BandersnatchPublicKey>,
-    ): Result<Map<BandersnatchPublicKey, ValueExponent?>> = notScripted()
-
-    override suspend fun ringPositionsAt(
-        at: BlockHash,
-        memberships: Map<BandersnatchPublicKey, ValueExponent>,
-    ): Result<Map<BandersnatchPublicKey, RingPosition?>> = notScripted()
-
-    /** Nothing the search touches, so a call is a bug in the test rather than a chain that said no. */
-    private fun <T> notScripted(): Result<T> = Result.failure(UnsupportedOperationException("not scripted"))
+    override suspend fun blockNumberAt(hash: BlockHash): Result<Long?> =
+        Result.failure(UnsupportedOperationException("not scripted"))
 }

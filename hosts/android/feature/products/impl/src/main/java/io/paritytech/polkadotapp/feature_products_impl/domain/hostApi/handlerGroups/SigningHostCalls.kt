@@ -85,7 +85,7 @@ private data class SignPayloadParams(
     val mode: Int?,
     val withSignedTransaction: Boolean?,
 ) {
-    fun toDomain(): SignerPayloadJson = SignerPayloadJson(
+    fun toDomain(): SignerPayloadJson<ProductAccountId> = SignerPayloadJson(
         account = account,
         blockHash = blockHash.fromHex(),
         blockNumber = blockNumber.fromHex(),

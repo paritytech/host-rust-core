@@ -20,10 +20,12 @@ final class MainTabBarInteractor {
     private let deferredLinkHandler: DeferredLinkHandling
     private let extensionWidgetStreamProvider: ChatExtensionWidgetStreaming
     private let browserCoordinator: SPABrowserCoordinating
+    private let tabBarLabelsStore: any TabBarLabelsProviding
 
     private var availabilityObserver: NSObjectProtocol?
     private var extensionWidgetSubscription: Task<Void, Never>?
     private var chainStatusSubscription: Task<Void, Never>?
+    private var tabBarLabelsSubscription: Task<Void, Never>?
 
     init(
         serviceCoordinator: ServiceCoordinatorProtocol,
@@ -36,7 +38,8 @@ final class MainTabBarInteractor {
         notificationCenter: NotificationCenter = .default,
         logger: LoggerProtocol = Logger.shared,
         eventCenter: EventCenterProtocol = EventCenter.shared,
-        extensionWidgetStreamProvider: ChatExtensionWidgetStreaming? = nil
+        extensionWidgetStreamProvider: ChatExtensionWidgetStreaming? = nil,
+        tabBarLabelsStore: any TabBarLabelsProviding = TabBarLabelsStore.shared
     ) {
         self.serviceCoordinator = serviceCoordinator
         self.chainStatusProvider = chainStatusProvider
@@ -52,6 +55,7 @@ final class MainTabBarInteractor {
             registry: serviceCoordinator.chatExtensionsRegistry,
             logger: logger
         )
+        self.tabBarLabelsStore = tabBarLabelsStore
     }
 
     deinit {
@@ -59,6 +63,7 @@ final class MainTabBarInteractor {
         serviceCoordinator.throttle()
         removeBackupObservers()
         chainStatusSubscription?.cancel()
+        tabBarLabelsSubscription?.cancel()
     }
 }
 
@@ -73,6 +78,7 @@ extension MainTabBarInteractor: MainTabBarInteractorInputProtocol {
         deferredLinkHandler.register(urlHandlingService)
         subscribeToSPATabs()
         subscribeToChainStatus()
+        subscribeToTabBarLabels()
     }
 }
 
@@ -171,6 +177,18 @@ private extension MainTabBarInteractor {
     func subscribeToSPATabs() {
         MainActor.assumeIsolated {
             browserCoordinator.addObserver(self, sendOnSubscription: true)
+        }
+    }
+
+    func subscribeToTabBarLabels() {
+        tabBarLabelsSubscription = Task { [weak self, tabBarLabelsStore, logger] in
+            do {
+                for try await isEnabled in tabBarLabelsStore.stream() {
+                    await self?.presenter?.didReceiveTabBarLabelsEnabled(isEnabled)
+                }
+            } catch {
+                logger.error("Tab bar labels subscription error: \(error)")
+            }
         }
     }
 }

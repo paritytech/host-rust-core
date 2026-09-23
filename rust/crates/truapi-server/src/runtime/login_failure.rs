@@ -16,7 +16,7 @@ use truapi_platform::LoginFailureKind;
 /// Whether `text` reports an allowance period with no slot left.
 ///
 /// The one rule for that question: the signing host reads it to rotate an
-/// exhausted auto-managed account, and [`classify_login_failure`] reads it to
+/// exhausted auto-managed account, and `classify_login_failure` reads it to
 /// type a wallet's refusal. It mirrors the
 /// [`SlotError`](crate::runtime::statement_allowance::slot::SlotError)
 /// `Display` strings, which a test beside those strings pins, and lives here

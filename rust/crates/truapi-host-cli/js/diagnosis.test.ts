@@ -50,7 +50,7 @@ describe("generated-example battery", () => {
   });
 
   test("classifies only the committed unsupported CLI services as expected", () => {
-    const unsupported = new Set(["Chat", "Coin Payment", "Payment"]);
+    const unsupported = new Set(["Coin Payment", "Payment"]);
 
     for (const service of services) {
       const expected = unsupported.has(service.name)

@@ -61,6 +61,9 @@ fun DebugMenuScreen(contract: DebugMenuContract) {
         onClearJWTTokenClick = contract::onClearJWTTokenClick,
         onSimulateGameResultsClick = contract::onSimulateGameResultsClick,
         onCoinageDebugWidgetsToggled = contract::onCoinageDebugWidgetsToggled,
+        onTruapiRuntimeToggled = contract::onTruapiRuntimeToggled,
+        onRuntimeRestartConfirmed = contract::onRuntimeRestartConfirmed,
+        onRuntimeRestartCancelled = contract::onRuntimeRestartCancelled,
     )
 }
 
@@ -84,6 +87,9 @@ private fun DebugMenuScreenInternal(
     onClearJWTTokenClick: () -> Unit,
     onSimulateGameResultsClick: () -> Unit,
     onCoinageDebugWidgetsToggled: (Boolean) -> Unit,
+    onTruapiRuntimeToggled: (Boolean) -> Unit,
+    onRuntimeRestartConfirmed: () -> Unit,
+    onRuntimeRestartCancelled: () -> Unit,
 ) {
     PolkadotSurface {
         Column(
@@ -107,6 +113,14 @@ private fun DebugMenuScreenInternal(
                 title = stringResource(RCommon.string.debug_menu_coinage_debug_widgets),
                 checked = state.coinageDebugWidgetsEnabled,
                 onCheckedChange = onCoinageDebugWidgetsToggled
+            )
+
+            VerticalSpacer { large }
+
+            DebugMenuToggleItem(
+                title = stringResource(RCommon.string.debug_menu_truapi_runtime),
+                checked = state.truapiRuntimeEnabled,
+                onCheckedChange = onTruapiRuntimeToggled
             )
 
             VerticalSpacer { extraLargeIncreased }
@@ -219,6 +233,60 @@ private fun DebugMenuScreenInternal(
             onDismiss = onSpaBrowserDialogDismissed,
             onConfirm = onSpaBrowserUrlEntered,
         )
+    }
+
+    if (state.runtimeRestartRevertsTo != null) {
+        RuntimeRestartDialog(
+            onDismiss = onRuntimeRestartCancelled,
+            onConfirm = onRuntimeRestartConfirmed,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RuntimeRestartDialog(
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    BasicAlertDialog(onDismissRequest = onDismiss) {
+        PolkadotSurface(
+            color = PolkadotTheme.colors.bg.surface.container,
+            shape = RoundedCornerShape(28.dp),
+            shadowElevation = 5.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(PolkadotTheme.spacings.large),
+            ) {
+                NovaText(
+                    text = stringResource(RCommon.string.debug_menu_runtime_restart_title),
+                    style = PolkadotTheme.typography.headline.small,
+                    color = PolkadotTheme.colors.fg.primary
+                )
+
+                VerticalSpacer { mediumIncreased }
+
+                NovaText(
+                    text = stringResource(RCommon.string.debug_menu_runtime_restart_message),
+                    style = PolkadotTheme.typography.body.large,
+                    color = PolkadotTheme.colors.fg.secondary
+                )
+
+                VerticalSpacer { large }
+
+                Row(modifier = Modifier.align(Alignment.End)) {
+                    PolkadotTextButton(
+                        text = stringResource(RCommon.string.common_cancel),
+                        onClick = onDismiss,
+                    )
+
+                    PolkadotTextButton(
+                        text = stringResource(RCommon.string.debug_menu_runtime_restart_confirm),
+                        onClick = onConfirm,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -338,6 +406,9 @@ private fun DebugMenuScreenPreview() {
             onClearJWTTokenClick = {},
             onSimulateGameResultsClick = {},
             onCoinageDebugWidgetsToggled = {},
+            onTruapiRuntimeToggled = {},
+            onRuntimeRestartConfirmed = {},
+            onRuntimeRestartCancelled = {},
         )
     }
 }

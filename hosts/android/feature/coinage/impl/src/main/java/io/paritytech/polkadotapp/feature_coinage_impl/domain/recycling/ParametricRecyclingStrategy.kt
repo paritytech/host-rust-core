@@ -7,8 +7,6 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinRecyclingS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclingVerdicts
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ageOrNull
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.isInRecycler
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.recyclerMembersOrZero
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.BalanceEvaluationMode
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.CoinRecyclingStrategy
 import io.paritytech.polkadotapp.feature_coinage_api.domain.recycling.RecyclingParams
@@ -53,15 +51,20 @@ class ParametricRecyclingStrategy(
     }
 
     override fun isVoucherUsable(voucher: RecyclerVoucher, context: VoucherUsabilityContext): Boolean {
-        if (!voucher.isInRecycler()) return false
+        val location = voucher.location as? RecyclerVoucher.Location.InRecycler ?: return false
 
         val requiredMembers = context.capacityFor(voucher.recyclerValue)
             .toBigDecimal()
-            .multiply(params.requiredRingFill.fraction)
+            .multiply(params.voucherReadiness.requiredRingFill.fraction)
             .setScale(0, RoundingMode.CEILING)
             .toInt()
 
-        return voucher.recyclerMembersOrZero() >= requiredMembers
+        if (location.recyclerMembers >= requiredMembers) return true
+
+        val requirements = params.voucherReadiness.memberAndAgeRequirements ?: return false
+        val enteredAt = location.enteredAt ?: return false
+        return location.recyclerMembers >= requirements.minimumMembers &&
+            context.now - enteredAt >= requirements.delay
     }
 
     override fun allowsConfirmedSpend(): Boolean = params.allowsConfirmedSpend

@@ -124,6 +124,7 @@ where
         CallError::Unsupported => CallError::Unsupported,
         CallError::MalformedFrame { reason } => CallError::MalformedFrame { reason },
         CallError::HostFailure { reason } => CallError::HostFailure { reason },
+        CallError::Cancelled => CallError::Cancelled,
     }
 }
 
@@ -151,6 +152,23 @@ pub const MESSAGE_TYPE_RECEIVE: u8 = 1;
 pub const MESSAGE_TYPE_INTERRUPT: u8 = 2;
 /// A subscription's cancellation, product → host. Carries no payload at all.
 pub const MESSAGE_TYPE_STOP: u8 = 3;
+/// A request's withdrawal, travelling in the same direction as its `Request`
+/// and correlated by the same `requestId`. Carries no payload at all. The
+/// call still settles with exactly one `Response`; this only fires the
+/// handler's [`truapi::CancellationToken`].
+pub const MESSAGE_TYPE_CANCEL: u8 = 4;
+
+/// Encode `Err(CallError::Cancelled)`, the terminal response of a call the
+/// peer withdrew.
+///
+/// Valid for every request method without knowing either of its payload types:
+/// the `Ok` arm is never reached, and `Cancelled` carries nothing, so the
+/// bytes depend on neither `{Method}Response` nor `{Method}Error`. Built from
+/// the enum rather than written as a literal so it tracks the variant's index.
+/// Pair it with [`MESSAGE_TYPE_RESPONSE`].
+pub fn encode_cancelled_response() -> Vec<u8> {
+    Err::<(), CallError<()>>(CallError::Cancelled).encode()
+}
 
 /// Encode `Interrupt(Ok(()))`, a subscription's natural (error-free)
 /// completion. `Ok(())` always encodes as a single `0` byte, so a clean

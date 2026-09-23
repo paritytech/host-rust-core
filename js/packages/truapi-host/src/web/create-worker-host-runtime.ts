@@ -19,17 +19,21 @@ import type {
 import {
   HostChatActionSubscribeItem as HostChatActionSubscribeItemCodec,
   HostRendererActionSubscribeItem as HostRendererActionSubscribeItemCodec,
+  HostWorkerBeginOperationResponse as HostWorkerBeginOperationResponseCodec,
   ProductRendererRenderRequest as ProductRendererRenderRequestCodec,
   RendererNode as RendererNodeCodec,
 } from "@parity/truapi";
 import {
   NativeChatPickedFile,
   PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec,
+  PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec,
+  ProductContext as ProductContextCodec,
 } from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type { RawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type {
   CallbackName,
+  HostRole,
   LocalIdentity,
   LocalIdentityProgress,
   MainToWorker,
@@ -91,6 +95,14 @@ export interface WorkerPairingHostRuntime {
    */
   activateExternalSession(blob: Uint8Array): Promise<void>;
   /**
+   * Establish a session from host-held BIP-39 entropy.
+   *
+   * Signing hosts only. A pairing host has no local secret and rejects this:
+   * it waits for a wallet to answer over the statement-store channel instead.
+   */
+  activateLocalSession(secret: Uint8Array, liteUsername?: string): Promise<void>;
+  setGrantAllowancesUnchecked(granted: boolean): Promise<void>;
+  /**
    * Drop the active paired session without notifying the peer. Rejects on a
    * disposed runtime, as
    * {@link WorkerPairingHostRuntime.activateStoredSession} does.
@@ -110,6 +122,7 @@ export interface WorkerPairingHostRuntime {
     status: PermissionAuthorizationStatus,
   ): Promise<void>;
   getSessionChatIdentityKey(): Promise<Uint8Array | undefined>;
+  getDeviceStatementKey(): Promise<Uint8Array | undefined>;
   getDeviceEncryptionKey(): Promise<Uint8Array>;
   getProductSubtreePublicKey(
     productId: string,
@@ -200,9 +213,27 @@ interface RuntimeState {
     }
   >;
   subscriptionDisposers: Map<number, () => void>;
-  chainConnections: Map<number, RpcConnectionEntry>;
   chatFileExports: Set<string>;
   disposeNativeChatFiles: () => void;
+  /**
+   * Open `worker.beginOperation` holds. A non-empty set defers `dispose()`.
+   * Worker-wide rather than per-core, since a `callbackRequest` carries no core
+   * id, so entries are product-scoped: `OperationId` is only unique per product
+   * and two products sharing this worker may be handed the same id.
+   */
+  openOperations: Set<string>;
+  /** A dispose() arrived while operations were open; run it once they drain. */
+  disposePending: boolean;
+  /**
+   * Fires if those operations never drain. A worker that never sends its
+   * `endOperation` would otherwise keep the core running for a product the
+   * user has closed, still free to raise host prompts, with no way for the
+   * caller to force teardown.
+   */
+  disposeGraceTimer: ReturnType<typeof setTimeout> | undefined;
+  /** How long `dispose()` waits for open operations before forcing teardown. */
+  operationGraceMs: number;
+  chainConnections: Map<number, ChainConnection>;
   pendingDisconnects: Map<
     number,
     { resolve: () => void; reject: (error: Error) => void }
@@ -236,6 +267,13 @@ interface RuntimeState {
     { resolve: () => void; reject: (error: Error) => void }
   >;
   pendingSessionChatIdentityKeys: Map<
+    number,
+    {
+      resolve: (key: Uint8Array | undefined) => void;
+      reject: (error: Error) => void;
+    }
+  >;
+  pendingDeviceStatementKeys: Map<
     number,
     {
       resolve: (key: Uint8Array | undefined) => void;
@@ -277,6 +315,7 @@ function debugLoggingEnabled(state: RuntimeState): boolean {
 let nextDisconnectRequestId = 0;
 let nextPermissionAuthorizationRequestId = 0;
 let nextSessionChatIdentityKeyRequestId = 0;
+let nextDeviceStatementKeyRequestId = 0;
 let nextDeviceEncryptionKeyRequestId = 0;
 let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
@@ -459,6 +498,32 @@ async function discardChatFileCallback(
     }
   } catch {
     // A closed/failed backing store is unavailable; never log private handles or payloads.
+/**
+ * Key one pending-operation hold. `OperationId` is unique per product, not per
+ * worker, so the product a `beginOperation`/`endOperation` arrived for has to be
+ * part of the key. Returns null if the encoded product will not decode, which
+ * drops the hold rather than letting it pin the worker forever.
+ */
+/**
+ * Read the host-assigned id out of a `beginOperation` response. Returns null if
+ * the response will not decode, so a hold that cannot be keyed is dropped
+ * rather than escaping and leaving the worker's call unanswered.
+ */
+function operationIdFrom(value: unknown): number | null {
+  if (!(value instanceof Uint8Array)) return null;
+  try {
+    return HostWorkerBeginOperationResponseCodec.dec(value).id;
+  } catch {
+    return null;
+  }
+}
+
+function operationHold(encodedProduct: unknown, id: number): string | null {
+  if (!(encodedProduct instanceof Uint8Array)) return null;
+  try {
+    return `${ProductContextCodec.dec(encodedProduct).productId}\u0000${id}`;
+  } catch {
+    return null;
   }
 }
 
@@ -545,6 +610,30 @@ function handleCallbackRequest(
             );
           }
         }
+      (value) => {
+        // Tracked in the success arm only: a rejected begin must not leave a
+        // hold that nothing will ever release.
+        if (msg.name === "beginOperation") {
+          const id = operationIdFrom(value);
+          const hold = id === null ? null : operationHold(msg.args[0], id);
+          if (hold !== null) state.openOperations.add(hold);
+        } else if (msg.name === "endOperation") {
+          const id = msg.args[1];
+          const hold =
+            typeof id === "number" ? operationHold(msg.args[0], id) : null;
+          if (hold !== null) state.openOperations.delete(hold);
+          if (state.openOperations.size === 0 && state.disposePending) {
+            state.disposePending = false;
+            clearDisposeGrace(state);
+            teardown(state, new Error("runtime disposed"), false);
+          }
+        }
+        state.worker.postMessage({
+          kind: "callbackResponse",
+          requestId: msg.requestId,
+          ok: true,
+          value,
+        } satisfies MainToWorker);
       },
       (err) => {
         if (state.disposed) return;
@@ -576,7 +665,7 @@ function handleSubscriptionStart(
     subId: number;
     coreId?: number;
     name: SubscriptionName;
-    payload: Uint8Array | null;
+    payload: Uint8Array | string | null;
   },
 ): void {
   const sendItem = (value?: unknown): void => {
@@ -863,6 +952,19 @@ function handleSessionChatIdentityKeyResponse(
   );
 }
 
+function handleDeviceStatementKeyResponse(
+  state: RuntimeState,
+  msg:
+    | { requestId: number; ok: true; key: Uint8Array | undefined }
+    | { requestId: number; ok: false; error: string },
+): void {
+  settlePending(
+    state.pendingDeviceStatementKeys,
+    msg.requestId,
+    msg.ok ? { ok: true, value: msg.key } : { ok: false, error: msg.error },
+  );
+}
+
 function handleProductSubtreePublicKeyResponse(
   state: RuntimeState,
   msg:
@@ -897,6 +999,7 @@ function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingPermissionAuthorizationStatusBatches, error);
   rejectAll(state.pendingSetPermissionAuthorizationStatuses, error);
   rejectAll(state.pendingSessionChatIdentityKeys, error);
+  rejectAll(state.pendingDeviceStatementKeys, error);
   rejectAll(state.pendingDeviceEncryptionKeys, error);
   rejectAll(state.pendingProductSubtreePublicKeys, error);
   rejectAll(state.pendingActions, error);
@@ -981,9 +1084,17 @@ function closeCoreState(core: CoreState, error: Error): void {
   core.closeListeners.clear();
 }
 
+/** Drop the ceiling armed by a deferred `dispose()`, if one is pending. */
+function clearDisposeGrace(state: RuntimeState): void {
+  if (state.disposeGraceTimer === undefined) return;
+  clearTimeout(state.disposeGraceTimer);
+  state.disposeGraceTimer = undefined;
+}
+
 function teardown(state: RuntimeState, error: Error, fault: boolean): void {
   if (state.disposed) return;
   state.disposed = true;
+  clearDisposeGrace(state);
   state.closedError = error;
   rejectPendingRuntimeRequests(state, error);
   for (const core of state.cores.values()) {
@@ -1034,17 +1145,28 @@ interface CreateWebWorkerHostRuntimeOptions {
   logLevel?: LogLevel;
   hostConfig: WebWorkerHostConfig | WebWorkerSigningHostConfig;
   initTimeoutMs?: number;
-  runtimeKind?: "pairing" | "signing";
+  /**
+   * Host role the worker constructs. Omitted means `"pairing"`.
+   *
+   * `"signing"` requires a worker loading the `testing` WASM bundle, the only
+   * one built with a signing host in it.
+   */
+  role?: HostRole;
+  /**
+   * How long `dispose()` waits for open `worker.beginOperation` holds before
+   * tearing down anyway. Defaults to 30s.
+   */
+  operationGraceMs?: number;
 }
 
 export interface CreateWebWorkerPairingHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
   hostConfig: WebWorkerHostConfig;
-  runtimeKind?: "pairing";
+  role?: "pairing";
 }
 
 export interface CreateWebWorkerSigningHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
   hostConfig: WebWorkerSigningHostConfig;
-  runtimeKind?: "signing";
+  role?: "signing";
 }
 
 export type WebWorkerHostCallbacks = RequiredHostCallbacks;
@@ -1056,7 +1178,7 @@ export function createWebWorkerPairingHostRuntime(
 ): Promise<WorkerPairingHostRuntime> {
   return createWebWorkerHostRuntime(worker, host, {
     ...options,
-    runtimeKind: "pairing",
+    role: "pairing",
   });
 }
 
@@ -1067,7 +1189,7 @@ export function createWebWorkerSigningHostRuntime(
 ): Promise<WorkerSigningHostRuntime> {
   return createWebWorkerHostRuntime(worker, host, {
     ...options,
-    runtimeKind: "signing",
+    role: "signing",
   });
 }
 
@@ -1092,6 +1214,10 @@ function createWebWorkerHostRuntime(
       cores: new Map(),
       pendingCores: new Map(),
       subscriptionDisposers: new Map(),
+      openOperations: new Set(),
+      disposePending: false,
+      disposeGraceTimer: undefined,
+      operationGraceMs: options.operationGraceMs ?? 30_000,
       chainConnections: new Map(),
       chatFileExports: new Set(),
       disposeNativeChatFiles: () => browserFiles?.dispose(),
@@ -1103,6 +1229,7 @@ function createWebWorkerHostRuntime(
       pendingSetPermissionAuthorizationStatuses: new Map(),
       pendingSessionChatIdentityKeys: new Map(),
       pendingProductSubtreePublicKeys: new Map(),
+      pendingDeviceStatementKeys: new Map(),
       pendingDeviceEncryptionKeys: new Map(),
       pendingActions: new Map(),
       renders: new Map(),
@@ -1189,6 +1316,9 @@ function createWebWorkerHostRuntime(
           break;
         case "sessionChatIdentityKeyResponse":
           handleSessionChatIdentityKeyResponse(state, msg);
+          break;
+        case "deviceStatementKeyResponse":
+          handleDeviceStatementKeyResponse(state, msg);
           break;
         case "deviceEncryptionKeyResponse":
           handleDeviceEncryptionKeyResponse(state, msg);
@@ -1308,7 +1438,7 @@ function createWebWorkerHostRuntime(
           kind: "init",
           logLevel: devLogLevelOverride ?? options.logLevel ?? "off",
           hostConfig: options.hostConfig,
-          runtimeKind: options.runtimeKind,
+          role: options.role,
           capabilities: {
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
@@ -1317,6 +1447,7 @@ function createWebWorkerHostRuntime(
             coinageWallet: callbacks.nativeCoinage !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,
+          role: options.role,
         } satisfies MainToWorker);
       } else if (msg.kind === "ready") {
         state.coreWireSchemaHash = msg.schema;
@@ -1480,6 +1611,15 @@ function buildRuntime(
         (requestId) => ({ kind: "getSessionChatIdentityKey", requestId }),
       );
     },
+    getDeviceStatementKey(): Promise<Uint8Array | undefined> {
+      return sendWorkerRequest<Uint8Array | undefined>(
+        state,
+        state.pendingDeviceStatementKeys,
+        () => ++nextDeviceStatementKeyRequestId,
+        undefined,
+        (requestId) => ({ kind: "getDeviceStatementKey", requestId }),
+      );
+    },
     getDeviceEncryptionKey(): Promise<Uint8Array> {
       // A key has no safe empty value: callers encrypt with what they get back,
       // so a disposed runtime must fail rather than hand out a zero-length one.
@@ -1547,6 +1687,24 @@ function buildRuntime(
         kind: "activateExternalSession",
         requestId,
         blob,
+      }));
+    },
+    activateLocalSession(
+      secret: Uint8Array,
+      liteUsername?: string,
+    ): Promise<void> {
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "activateLocalSession",
+        requestId,
+        secret,
+        liteUsername,
+      }));
+    },
+    setGrantAllowancesUnchecked(granted: boolean): Promise<void> {
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "setGrantAllowancesUnchecked",
+        requestId,
+        granted,
       }));
     },
     resetSessionState(): Promise<void> {
@@ -1648,6 +1806,18 @@ function buildRuntime(
     },
     dispose(): void {
       devGlobalTargets.delete(runtime);
+      // Let a background task (e.g. a funding transaction) finish; the last
+      // endOperation runs the teardown. Fault teardown is never deferred.
+      if (state.openOperations.size > 0) {
+        state.disposePending = true;
+        state.disposeGraceTimer ??= setTimeout(() => {
+          state.disposeGraceTimer = undefined;
+          if (!state.disposePending) return;
+          state.disposePending = false;
+          teardown(state, new Error("runtime disposed"), false);
+        }, state.operationGraceMs);
+        return;
+      }
       teardown(state, new Error("runtime disposed"), false);
     },
   };
@@ -1800,6 +1970,10 @@ function buildProvider(
       if (core.disposed) return undefined;
       const key = await runtime.getSessionChatIdentityKey();
       return key && bytesToHex(key);
+    },
+    async getDeviceStatementKey(): Promise<Uint8Array | undefined> {
+      if (core.disposed) return undefined;
+      return runtime.getDeviceStatementKey();
     },
     async getDeviceEncryptionKey(): Promise<Bytes32> {
       if (core.disposed) {

@@ -109,20 +109,20 @@ private extension CoinageSummaryTests {
         CoinageAssetState(handedOff: false, consumerStatus: nil, minterStatus: nil)
     }
 
-    func coin(_ index: DerivationIndex, exponent: Int16) -> TrackedCoin {
+    func coin(_ index: CoinageKeyIndex, exponent: Int16) -> TrackedCoin {
         TrackedCoin(
             coin: Coin(
                 exponent: exponent,
                 derivationIndex: index,
                 age: 1,
                 isOnchain: true,
-                publicKey: Data(repeating: UInt8(truncatingIfNeeded: index), count: 32)
+                publicKey: Data(repeating: UInt8(truncatingIfNeeded: index.item), count: 32)
             ),
             state: freeState
         )
     }
 
-    func voucher(_ index: DerivationIndex, exponent: Int16, isPlaced: Bool) -> TrackedVoucher {
+    func voucher(_ index: CoinageKeyIndex, exponent: Int16, isPlaced: Bool) -> TrackedVoucher {
         TrackedVoucher(
             voucher: Voucher(
                 exponent: exponent,
@@ -132,7 +132,7 @@ private extension CoinageSummaryTests {
                 remoteState: isPlaced
                     ? .inRecycler(.init(index: 1, membersCount: 16))
                     : .onboarding,
-                publicKey: Data(repeating: UInt8(truncatingIfNeeded: index), count: 32)
+                publicKey: Data(repeating: UInt8(truncatingIfNeeded: index.item), count: 32)
             ),
             state: freeState
         )

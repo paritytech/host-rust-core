@@ -100,6 +100,10 @@ extension MainTabBarPresenter: MainTabBarInteractorOutputProtocol {
         chainStatusRows = rows
         showConnectionStatusPanel()
     }
+
+    func didReceiveTabBarLabelsEnabled(_ isEnabled: Bool) {
+        view?.setLabels(visible: isEnabled)
+    }
 }
 
 private extension MainTabBarPresenter {

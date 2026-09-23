@@ -71,7 +71,10 @@ pub struct RpcClient {
 }
 
 impl RpcClient {
-    /// Open a native JSON-RPC connection to `url`.
+    /// Open a JSON-RPC connection to `url`.
+    ///
+    /// Native only. A browser cannot dial a URL from Rust; there the host
+    /// supplies the connection and the client is built with [`Self::new`].
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect(url: &str) -> Result<Self, StatementAllowanceError> {
         let inner = NativeRpcClient::from_insecure_url(url)

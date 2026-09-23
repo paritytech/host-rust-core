@@ -18,7 +18,7 @@ extension CoreDataMapperTests {
         }
 
         /// Helper: a voucher with no ring yet, which is how one is minted.
-        private func unlocatedVoucher(index: DerivationIndex) -> Voucher {
+        private func unlocatedVoucher(index: CoinageKeyIndex) -> Voucher {
             let now = Date(timeIntervalSinceReferenceDate: 3_000_000)
 
             return Voucher(

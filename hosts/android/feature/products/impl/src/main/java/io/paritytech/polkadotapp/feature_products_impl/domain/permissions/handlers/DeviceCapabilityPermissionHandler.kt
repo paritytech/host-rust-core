@@ -44,7 +44,7 @@ class DeviceCapabilityPermissionHandler @Inject constructor(
         repository.revoke(productId, permission)
     }
 
-    private suspend fun requestOsPermissionIfNeeded(capability: DeviceCapabilityType): Boolean {
+    suspend fun requestOsPermissionIfNeeded(capability: DeviceCapabilityType): Boolean {
         val manifestPermission = capability.toManifestPermission() ?: return true
         val result = permissionAsker.askPermission(manifestPermission)
         return result == PermissionResult.GRANTED

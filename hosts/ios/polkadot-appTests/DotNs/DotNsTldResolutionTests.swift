@@ -72,7 +72,10 @@ struct DotNsTldResolutionTests {
 
 private extension DotNsTldResolutionTests {
     func makeEntropyManager() throws -> RootEntropyManaging {
-        let manager = RootEntropyManager(keychain: InMemoryKeychain(), entropyIdStore: MockEntropyIdStore())
+        let manager = RootEntropyManager(
+            keychain: InMemoryKeychain(),
+            installationKeyIdStore: MockInstallationKeyIdStore()
+        )
         try manager.createRootEntropy(Data.randomOrError(of: 32))
         return manager
     }

@@ -12,11 +12,11 @@ private let testKeyFactory = CoinKeypairFactory(
 
 /// Caches derived keys: mnemonic derivation is costly and ``testKey`` is called throughout the
 /// suites; the lock keeps it safe under parallel test execution.
-private let testKeyCache = OSAllocatedUnfairLock<[DerivationIndex: PublicKey]>(initialState: [:])
+private let testKeyCache = OSAllocatedUnfairLock<[CoinageKeyIndex: PublicKey]>(initialState: [:])
 
 /// A deterministic, valid public key from a derivation index — distinct per index and stable across
 /// calls, so the DAG, evidence, dedup, and handoff marks key consistently in tests.
-func testKey(_ index: DerivationIndex) -> PublicKey {
+func testKey(_ index: CoinageKeyIndex) -> PublicKey {
     testKeyCache.withLock { cache in
         if let cached = cache[index] { return cached }
         guard let key = try? testKeyFactory.derivePublicKey(index: index) else {

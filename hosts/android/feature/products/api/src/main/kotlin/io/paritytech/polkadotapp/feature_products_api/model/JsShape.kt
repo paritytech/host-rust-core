@@ -18,4 +18,8 @@ sealed interface JsShape {
     @Serializable
     @SerialName("circle")
     data object Circle : JsShape
+
+    @Serializable
+    @SerialName("square")
+    data object Square : JsShape
 }

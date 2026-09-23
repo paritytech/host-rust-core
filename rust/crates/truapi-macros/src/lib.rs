@@ -32,6 +32,9 @@ pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
 /// subscription): which leg a frame carries is named by its `message_type`
 /// byte, not by a separate wire id.
 ///
+/// `#[wire(id = N, internal)]` keeps a method out of the generated product
+/// SDK while retaining host dispatch. It does not authenticate the caller.
+///
 /// Expands to the original method plus hidden doc tags that `truapi-codegen`
 /// extracts from rustdoc JSON to build the wire table and versioned clients.
 #[proc_macro_attribute]

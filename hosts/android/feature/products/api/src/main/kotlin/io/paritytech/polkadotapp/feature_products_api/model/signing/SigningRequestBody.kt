@@ -18,7 +18,7 @@ sealed interface SigningRequestBody {
         val account: AccountId
     }
 
-    class Transaction(val payload: SignerPayloadJson) : ResultHasSignature {
+    class Transaction(val payload: SignerPayloadJson<ProductAccountId>) : ResultHasSignature {
         override val account: ProductAccountId get() = payload.account
     }
 
@@ -38,6 +38,15 @@ sealed interface SigningRequestBody {
     ) : ProductAccountSigning
 
     class RawLegacy(val payload: SigningRawLegacyPayload) : LegacyAccountSigning {
+        override val account: AccountId get() = payload.account
+    }
+
+    /**
+     * Extrinsic-payload signing with a non-product account. Reachable only from
+     * the TrUAPI core's `signing_sign_payload_with_legacy_account`; the native
+     * host API exposes no equivalent call.
+     */
+    class TransactionLegacy(val payload: SignerPayloadJson<AccountId>) : LegacyAccountSigning {
         override val account: AccountId get() = payload.account
     }
 

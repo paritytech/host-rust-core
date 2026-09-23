@@ -45,8 +45,27 @@ curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scri
 ```
 
 Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps
-itself up to date. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for the commands, the
-terminal UI, and product scripts.
+itself up to date. `/script` opens a persistent TypeScript project with the Product SDK quickstart, pinned published
+dependencies, and editor types. Use `/script --run` to rerun it or `/script --edit` to edit without running. Projects
+survive session cleanup. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup and existing
+project scripts. Release checks install and typecheck the default SDK template against the public registry.
+
+The signing host registers its built-in full and lite personhood keys when an authorized product first lists
+`peopl.<network suffix>` (for example, `peopl.paseo`). The first listing reads People-chain metadata; later listings
+reuse the saved registrations, including after restart. Registration makes the handles discoverable; proof creation
+still checks permission and ring membership. The `listRingVrfKeys` example checks that both built-in keys are
+discoverable under `peopl.paseo` on Paseo.
+
+Product scripts and `truapi-host dev` use the same web API permission checks from `js/container`. Dev loads the
+container through a blocking script tag in your existing browser. Scripts run in Bun and retain filesystem, environment
+and process access.
+
+To build from source, run `make headless install` with stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and
+Bun installed. The target installs missing workspace build tools and regenerates the Rust and TypeScript sources before
+compiling. CI tests this command in both a fresh checkout and one with stale generated files, then runs a product script
+through the installed CLI. Code generation and the workspace documentation check reject rustdoc warnings. These checks
+are part of the required `CI Status` gate. CLI packaging tests also build an isolated runner and verify it outside the
+source checkout.
 
 ## Usage
 
@@ -137,6 +156,11 @@ Native Chat wire, cryptography, attachment codecs, and secret-zeroization change
 Distributing the runtime also requires the exact modified Corresponding Source, not only the base repository URLs in the
 notices.
 
+The [permission model](docs/rfcs/0002-permission-model.md) separates outbound domain access from `OpenUrl` external
+navigation and requires `Notifications` for push delivery. Hosts preserve the user's `AllowOnce`, `AllowAlways`, or
+`Deny` choice; Rust owns one-use grants for Rust-backed executions. Android permission prompts belong to one request and
+close when it finishes or is cancelled, including cancellation while the app is backgrounded.
+
 ## Repository layout
 
 ```
@@ -153,7 +177,10 @@ js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
-                          `/worker-runtime`
+                          `/worker-runtime`, and the test host: `/testing`
+                          (createMockHost), `/testing/playwright`,
+                          `/testing/server`, `/testing/client`,
+                          `/testing/dev-accounts`, `/testing/host-page`
   truapi-provider/         @parity/truapi-provider: WASM ChainProvider backends
                           (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
@@ -207,15 +234,17 @@ The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server UniF
 [`ios/truapi-host/`](ios/truapi-host), with its SPM manifest at the repo root (`Package.swift`) so apps can consume it
 as a git-URL dependency. The UniFFI bindings and the container bundle are gitignored build outputs; `scripts/rebuild.sh`
 regenerates them along with the xcframework (`make xcframework` + `make uniffi`); see
-[`ios/truapi-host/README.md`](ios/truapi-host/README.md). Native bindings expose the canonical Rust domain and protocol
-value types; native-only adapter types are limited to lifecycle and callback behavior. On iOS, a wallet host that
-manages its own statement-store SSO session can call `handleSsoRequest` (routes one decrypted remote message through the
-core, returning a typed outcome: response bytes to post back, a disconnect marker, or ignored) and
-`prepareDisconnectRequest` (builds the SCALE-encoded wire message for a wallet-initiated disconnect) on
-`TrUAPIHostRuntime`. Response posting and session-record cleanup remain on the wallet side. See the core's
-[inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso) for typed handlers, canonical resource
-types, and consent bound to the signing session. Product and SSO signing share canonical payloads and the one-byte
-`OptionBool` encoding for `with_signed_transaction`.
+[`ios/truapi-host/README.md`](ios/truapi-host/README.md). The container publishes the shared client and a temporary
+MessagePort adapter for older SDKs. The adapter's removal is tracked in
+[#881](https://github.com/paritytech/host-rust-core/issues/881); CLI and iframe MessagePort transports remain supported.
+Native bindings expose the canonical Rust domain and protocol value types; native-only adapter types are limited to
+lifecycle and callback behavior. On iOS, a wallet host that manages its own statement-store SSO session can call
+`handleSsoRequest` (routes one decrypted remote message through the core, returning a typed outcome: response bytes to
+post back, a disconnect marker, or ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message for a
+wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and session-record cleanup remain on the wallet
+side. See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso) for typed handlers,
+canonical resource types, and consent bound to the signing session. Product and SSO signing share canonical payloads and
+the one-byte `OptionBool` encoding for `with_signed_transaction`.
 
 ### JS Host SDKs
 
@@ -328,10 +357,16 @@ the host already live. The product reaches it through a development-only `<scrip
 }
 ```
 
-The host serves that script itself, so the page needs no package, no imports, and no environment variables. It installs
-the same `window.__HOST_API_PORT__` that native webview hosts inject, and the SDK adopts it unchanged. TCP frame
-connections are accepted only from loopback peers, and browser WebSocket origins must also name localhost or a loopback
-IP. WebSocket is not subject to CORS, and confirmations here are auto-approved.
+The host serves that script itself, with no imports or environment variables needed. It installs the shared client and
+browser container before product code runs. Keep the tag before application scripts, without `async` or `defer`. SDK
+calls and permission checks share one connection. Updated SDKs reuse the injected client across reconnects; older SDKs
+can still start through the MessagePort adapter but require a page reload after a disconnect. After a failed reconnect,
+the next API call or return to a visible page tries again. The container routes fetch, XHR and WebSocket permission
+checks to Rust. WebRTC and camera/microphone access use the same live permission checks. `/script` shares these wrappers
+for the APIs available in Bun. CLI permission checks support development testing; product code can deliberately bypass
+them. Native hosts retain their separate authorization protection. TCP frame connections are accepted only from loopback
+peers, and browser WebSocket origins must also name localhost or a loopback IP. WebSocket is not subject to CORS, and
+confirmations here are auto-approved.
 
 The CLI owns the wrapped command's process group on Unix. On shutdown it sends SIGTERM to the group, waits up to five
 seconds, then sends SIGKILL if a descendant still remains. This prevents a package-manager child from keeping a
@@ -355,6 +390,7 @@ moving. `hosts/imports.json` records where each tree came from and at which revi
 ```bash
 scripts/refresh-host-import.sh status ios     # how far behind, and what differs
 scripts/refresh-host-import.sh refresh ios    # take the new tree, re-apply adaptations
+scripts/refresh-host-import.sh backport ios   # what this tree owes the source
 ```
 
 `refresh` replaces the tree with the source's, re-applies this repository's adaptations on top as a three-way patch,
@@ -363,6 +399,14 @@ upstream work that was dropped; an adaptation that left no difference either did
 
 A clean apply is staged for review. A conflicted one is left unmerged, so git refuses to commit it until someone decides
 which side is right.
+
+`refresh` moves changes one way, from the source into this tree. `backport` answers the other direction: of everything
+this tree has changed, which is app code the source does not have. The rest, the CI actions and the manifests that
+resolve the core from here, exists because the tree lives in this repository, and is listed per host in
+`hosts/imports.json` under `infrastructure`.
+
+`--patch <file>` writes the owed changes with the `hosts/<host>/` prefix stripped, so they apply at the root of the
+source repository.
 
 ### Working on the iOS host
 
@@ -409,6 +453,70 @@ bundle, including the nested extension, still validates.
 Installing it needs the device's UDID in the ad-hoc provisioning profile, which is Apple bookkeeping rather than CI. The
 workflows that register a device and regenerate the profile are held until the cutover, tracked on #764; the device
 preview itself is tracked on #681.
+
+### An Android build that installs on a phone
+
+Label a pull request `android-device-build` and `android-device-preview.yml` attaches an installable APK to the run.
+Android needs no provisioning, so it installs on any phone rather than only on registered devices, and it is signed with
+the shared develop key so a new build replaces the last one rather than asking to be uninstalled first.
+
+It builds the flavour that ships. The other one substitutes stubs for Google auth, Firebase auth, push and backup, so a
+preview built from it cannot sign in. A pull request opened from a fork cannot reach the configuration and signing key
+this needs, and is told so rather than handed a build that misleads. Push the branch to this repository to get one.
+
+### Android builds that reach testers
+
+Two workflows deliver through Firebase App Distribution, which reaches a named tester group rather than anyone holding a
+link. That matters beyond convenience: these builds carry configuration that should not be public, so attaching them to
+a release is not an option.
+
+`android-nightly.yml` runs on weekdays at 22:00 UTC, two hours after the iOS nightly starts, so the two never overlap.
+`android-debug-distribution.yml` runs when a pull request merges to `main`, and answers what `main` does right now. It
+builds the merge commit rather than the pull request's merge preview, which is computed while the request is open and
+would otherwise ship a tree missing whatever landed first.
+
+Both authenticate by federation. The run proves its identity with its OIDC token and receives a short lived credential,
+so no long lived key for that project is stored here. Both check the delivery target before building, since an hour is
+an expensive place to discover a renamed tester group. That check cannot prove the upload will be permitted: listing
+groups is available to a role that cannot write, and only an upload proves an upload.
+
+Both verify the certificate that signed the APK rather than only that one did, because a rotated keystore otherwise
+produces a build every tester's device rejects on install, behind a green run.
+
+Release distribution stays in the app repository. It signs with a release keystore this repository does not hold.
+
+#### What they read
+
+Secrets: `GOOGLE_SERVICES_JSON_BASE64`, `CI_GITHUB_KEYSTORE_KEY_FILE`, `CI_KEYSTORE_PASS`, `CI_KEYSTORE_KEY_ALIAS`,
+`CI_KEYSTORE_KEY_PASS`, `FIRESTORE_DATABASE_ID`, `GOOGLE_OAUTH_ID`, `GOOGLE_PROJECT_ID`, `NIGHTLY_FUNDING_MNEMONIC`,
+`SENTRY_DSN`, `ANDROID_FIREBASE_NIGHTLY_APP_ID`, `ANDROID_FIREBASE_APP_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
+`GCP_SERVICE_ACCOUNT`.
+
+Variables: `APPLICATION_ID`, `APPLICATION_NAME`, `CURRENCY_SYMBOL`, `LOG_COLLECTION_EMAIL`, `PRIVACY_POLICY_URL`,
+`TERMS_OF_USE_URL`, `SENTRY_ORG`, `SENTRY_PROJECT`, `GAME_RESULTS_FALLBACK_URL`, `REFERRAL_WEB_HOST`, `CONTACT_EMAIL`,
+`ANDROID_FIREBASE_GROUP`, `ANDROID_FIREBASE_DEBUG_GROUP`.
+
+`GOOGLE_PROJECT_ID` carries an `L` suffix. It is interpolated into a Java `long` literal, and a twelve digit project
+number overflows an `int` without one. Everything the app needs at runtime beyond these comes from Firebase Remote
+Config, keyed on an `environment` signal the build sets.
+
+### Instrumented tests
+
+`android-instrumented-tests.yml` boots an emulator and runs the app module's connected tests. It starts from the
+`android-instrumented-tests` label rather than from every commit, because the runner is macOS and a cold emulator costs
+minutes before the first assertion. `workflow_dispatch` runs it without a pull request to carry the label.
+
+It is not part of the required set, so a red run reports rather than blocks.
+
+### Credentials, checked before a release needs them
+
+Certificates, provisioning profiles and store keys expire, and a release is the most expensive place to discover it.
+`validate-signing-credentials.yml` runs on weekday mornings, authenticates each platform, and proves the credential is
+live without building or publishing: Android reuses the delivery check the nightly runs before it builds, and iOS reads
+one page of applications through the store key then fetches the signing material read only.
+
+Each job removes what it materialised, and the last verdict is carried into the pull request summary, so it is visible
+before someone starts a release rather than after. A workflow that has never run reports as never run, not as healthy.
 
 ### Building the standalone iOS host app
 

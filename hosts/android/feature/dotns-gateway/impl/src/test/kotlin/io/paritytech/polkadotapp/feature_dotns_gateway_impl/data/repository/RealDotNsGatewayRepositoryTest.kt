@@ -24,6 +24,7 @@ import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.mockito.ArgumentMatchers.isNull
 import org.mockito.Mockito.mock
 import org.web3j.abi.FunctionEncoder
 import org.web3j.abi.TypeReference
@@ -101,7 +102,7 @@ class RealDotNsGatewayRepositoryTest {
             listOf(DynamicBytes(key)),
             listOf(object : TypeReference<DynamicBytes>() {})
         )
-        whenever(reviveContractApi.callReadOnly(eq(CHAIN_ID), eq(RESOLVER), any()))
+        whenever(reviveContractApi.callReadOnly(eq(CHAIN_ID), eq(RESOLVER), any(), isNull()))
             .thenReturn(Result.success(output.toDataByteArray()))
     }
 
@@ -110,7 +111,7 @@ class RealDotNsGatewayRepositoryTest {
             listOf(Bool(reserved), Address("0x" + holder.toHexString())),
             listOf(object : TypeReference<Bool>() {}, object : TypeReference<Address>() {})
         )
-        whenever(reviveContractApi.callReadOnly(eq(CHAIN_ID), eq(CONTROLLER), any()))
+        whenever(reviveContractApi.callReadOnly(eq(CHAIN_ID), eq(CONTROLLER), any(), isNull()))
             .thenReturn(Result.success(output.toDataByteArray()))
     }
 

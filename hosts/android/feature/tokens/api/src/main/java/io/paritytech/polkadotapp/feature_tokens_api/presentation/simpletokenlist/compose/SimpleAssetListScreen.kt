@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.Chain.Asset
 import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.Chain.Asset.Type
 import io.paritytech.polkadotapp.common.R
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.Close
 import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
@@ -74,7 +75,8 @@ private fun SimpleAssetListScreenInternal(
                 modifier = Modifier
                     .padding(horizontal = PolkadotTheme.spacings.mediumIncreased)
                     .fillMaxWidth(),
-                text = stringResource(config.titleRes, *config.titleArgs.toTypedArray()),
+                text = stringResource(config.titleRes, *config.titleArgs.toTypedArray())
+                    .withCurrencyTickerStyle(PolkadotTheme.typography.headline.large),
                 style = PolkadotTheme.typography.headline.large,
                 color = PolkadotTheme.colors.fg.primary,
                 textAlign = TextAlign.Center

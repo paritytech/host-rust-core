@@ -319,6 +319,9 @@ private actor NativeReviewHarness: TrUAPIConfirmationPresenting {
         self.suspended = suspended
     }
     func confirm(review _: UserConfirmationReview, from _: String) -> Bool { approved }
+    func confirmPermission(review _: UserConfirmationReview, from _: String) async -> TrUAPIPermissionDecision {
+        approved ? .allowAlways : .deny
+    }
     func confirmNativeCoinage(review: MainPurseChatPaymentReview, requiresPrivacyConfirmation: Bool) async -> Bool {
         reviews.append((review, requiresPrivacyConfirmation))
         reviewWaiter?.resume()

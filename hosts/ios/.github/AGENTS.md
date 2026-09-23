@@ -292,7 +292,7 @@ Signing notes:
 ## Practical Notes for Agents
 
 - Nightly and release share reusable workflows: `_prepare_pipeline.yml` (prepare) and `_build_distribute.yml` (build/distribute). The build mode (`Nightly`/`Release`, external group) is passed by the caller as inputs — do not reintroduce parsing it from PR metadata
-- Reusable workflows need `secrets: inherit` from every caller; the prepare callers also need an explicit `permissions:` write block (env context is unavailable in a reusable-workflow `with:` block)
+- Reusable workflows declare the secrets they read, and every caller passes exactly those; the prepare callers also need an explicit `permissions:` write block (env context is unavailable in a reusable-workflow `with:` block)
 - When editing the build flow, remember that shared build metadata lives in `prepare_build_metadata`; do not move build number calculation back into each matrix job unless you intentionally want variant divergence
 - When touching `distribute-testflight`, verify both callers still pass `build_number`
 - Every CI Xcode build/test entry point must run `configure-google-services` after its final checkout; the TestFlight composite action owns both its Dev test config and Release archive config

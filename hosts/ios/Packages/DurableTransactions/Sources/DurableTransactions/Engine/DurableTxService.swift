@@ -141,8 +141,8 @@ public extension DurableTxService {
             throw DurableTxError.unregisteredDomain(domain)
         }
 
-        let operationFactory = try chainTools.extrinsicOperationFactory(for: chainId)
-        let submitter = try chainTools.extrinsicSubmitter(for: chainId)
+        let operationFactory = try await chainTools.extrinsicOperationFactory(for: chainId)
+        let submitter = try await chainTools.extrinsicSubmitter(for: chainId)
 
         // Build every extrinsic before registering any, so a build failure aborts before a single
         // extrinsic is broadcast. The batch then registers atomically; only then is each tracked.

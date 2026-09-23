@@ -2,11 +2,13 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harnes
 
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageInput
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageRegistrationError
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FAILURE
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.FINALIZED
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.IN_BEST
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUBMISSION
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -20,7 +22,7 @@ class AssetScenariosTest {
         mintCoinsOnChain(COIN_A, finality = FINALIZED)
         val id = givenEntryExecutedOnChain(inputCoin = COIN_A, outputCoin = COIN_B, finality = FINALIZED)
 
-        service.preCommitHandoff(listOf(OwnAsset.Coin(COIN_B))).getOrThrow().commit().getOrThrow()
+        service.preCommitHandoff(listOf(OwnAsset.Coin(testKey(COIN_B)))).getOrThrow().commit().getOrThrow()
         consumeCoinOnChain(COIN_B, finality = IN_BEST)
         // This makes windowClosed to be true and thus challenges noPotentialConsumers against handoff
         chainReachesMortalityOf(id, finality = FINALIZED)
@@ -121,6 +123,26 @@ class AssetScenariosTest {
         assertEquals(FAILURE, statusOf(third))
     }
 
+    /**
+     * A chat payment is saved and its split is scheduled, but not built yet.
+     * A second payment picks the same coin before the first one's extrinsic exists.
+     * The second registration is refused.
+     *
+     * The lock is what scheduling buys: an input is claimed from the moment the payment is saved, not from
+     * the moment its proofs are ready — otherwise every slow build would be a window for a double spend.
+     */
+    @Test
+    fun `inputs of a transaction waiting to be built are refused to a second registration`() = scenario {
+        mintCoinsOnChain(COIN_A, finality = FINALIZED)
+        givenSubmissionPolicy(PolicyBehaviour.HOLD)
+        scheduleRetriable(inputCoin = COIN_A, COIN_B)
+
+        val second = register(inputCoin = COIN_A, outputCoin = COIN_C)
+
+        assertTrue(second.exceptionOrNull() is CoinageRegistrationError.InputAlreadyClaimed)
+        assertEquals(PENDING_SUBMISSION, assetStateOf(COIN_A).consumerStatus)
+    }
+
     @Test
     fun `a received key not yet on chain is registrable and a second claim is refused`() = scenario {
         // Deliberately never put on chain: a peer's transfer may not be included yet when we claim it.
@@ -129,7 +151,7 @@ class AssetScenariosTest {
         val first = service.submitTransaction(
             extrinsic = extrinsicAnchoredAtFinalizedHead(),
             inputs = listOf(CoinageInput.Coin.Received(peerKey)),
-            outputs = listOf(OwnAsset.Coin(COIN_B)),
+            outputs = listOf(OwnAsset.Coin(testKey(COIN_B))),
             groupId = null,
         )
         assertTrue(first.isSuccess)
@@ -137,7 +159,7 @@ class AssetScenariosTest {
         val second = service.submitTransaction(
             extrinsic = extrinsicAnchoredAtFinalizedHead(),
             inputs = listOf(CoinageInput.Coin.Received(peerKey)),
-            outputs = listOf(OwnAsset.Coin(COIN_C)),
+            outputs = listOf(OwnAsset.Coin(testKey(COIN_C))),
             groupId = null,
         )
 

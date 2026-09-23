@@ -13,16 +13,19 @@ interface ExternalPaymentDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(payment: ExternalPaymentLocal)
 
-    @Query("SELECT * FROM external_payments WHERE id = :id")
-    suspend fun getById(id: String): ExternalPaymentLocal?
+    @Query("SELECT * FROM external_payments WHERE origin = :origin AND id = :id")
+    suspend fun getById(origin: String, id: String): ExternalPaymentLocal?
 
-    @Query("SELECT * FROM external_payments WHERE id = :id")
-    fun observeById(id: String): Flow<ExternalPaymentLocal?>
+    @Query("SELECT EXISTS(SELECT 1 FROM external_payments WHERE origin = :origin AND id = :id)")
+    suspend fun exists(origin: String, id: String): Boolean
+
+    @Query("SELECT * FROM external_payments WHERE origin = :origin AND id = :id")
+    fun observeById(origin: String, id: String): Flow<ExternalPaymentLocal?>
 
     @Query(
         """
         SELECT * FROM external_payments
-        WHERE stage NOT IN ('COMPLETED', 'FAILED')
+        WHERE stage NOT IN ('COMPLETED', 'PARTIALLY_COMPLETED', 'FAILED')
         ORDER BY createdAt ASC LIMIT 1
         """
     )
@@ -34,16 +37,19 @@ interface ExternalPaymentDao {
             stage = :stage,
             selectedVoucherKeys = :selectedVoucherKeys,
             surplusPlanks = :surplusPlanks,
+            claimedPlanks = :claimedPlanks,
             failureReason = :failureReason,
             updatedAt = :updatedAt
-        WHERE id = :id
+        WHERE origin = :origin AND id = :id
         """
     )
     suspend fun updateStage(
+        origin: String,
         id: String,
         stage: ExternalPaymentLocal.Stage,
         selectedVoucherKeys: String?,
         surplusPlanks: BigInteger?,
+        claimedPlanks: BigInteger?,
         failureReason: String?,
         updatedAt: Long,
     )

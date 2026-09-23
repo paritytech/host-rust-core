@@ -6,6 +6,7 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.Ow
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.FINALIZED
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.AliasRead
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.recovery.ChainPresence
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -91,8 +92,8 @@ class ChainEvidenceCollectionTest {
     private suspend fun DurabilityHarness.voucherEntry(): CoinageTransactionId {
         val id = service.submitTransaction(
             extrinsic = extrinsicAnchoredAtFinalizedHead(),
-            inputs = listOf(CoinageInput.Voucher(VOUCHER)),
-            outputs = listOf(OwnAsset.Coin(COIN_B)),
+            inputs = listOf(CoinageInput.Voucher(testKey(VOUCHER))),
+            outputs = listOf(OwnAsset.Coin(testKey(COIN_B))),
             groupId = null,
         ).getOrThrow()
         releaseSubmissions()

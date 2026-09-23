@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.feature_sso_impl.domain.signTransaction
 
+import io.paritytech.polkadotapp.common.utils.flatMap
 import io.paritytech.polkadotapp.feature_products_api.model.signing.SignedTransaction
 import io.paritytech.polkadotapp.feature_products_api.model.signing.SigningAccount
 import io.paritytech.polkadotapp.feature_products_api.model.signing.SigningContext
@@ -21,7 +22,10 @@ class SsoSigningContext(
     override val requesterName: String = sessionData.name
     override val requesterIconUrl: String = sessionData.icon
 
-    override suspend fun deliverSignedResult(signedTransaction: SignedTransaction): Result<Unit> {
+    override suspend fun approve(sign: suspend () -> Result<SignedTransaction>): Result<Unit> =
+        sign().flatMap { signedTransaction -> deliverSignedResult(signedTransaction) }
+
+    private suspend fun deliverSignedResult(signedTransaction: SignedTransaction): Result<Unit> {
         Timber.d("Delivering signed result to $requesterName")
         val responseContent = when (signedTransaction) {
             is SignedTransaction.GeneralTransaction -> SsoSessionResponse.Content.SignedGeneralTransaction(signedTransaction.signedTx)
@@ -48,6 +52,7 @@ class SsoSigningContext(
             is SigningRequestBody.Transaction, is SigningRequestBody.Raw -> SsoSessionResponse.Content.FailedToSignTransaction("Rejected")
             is SigningRequestBody.CreateTransaction -> SsoSessionResponse.Content.FailedToCreateTransaction("Rejected")
             is SigningRequestBody.RawLegacy -> SsoSessionResponse.Content.FailedToSignRawLegacy("Rejected")
+            is SigningRequestBody.TransactionLegacy -> SsoSessionResponse.Content.FailedToSignTransaction("Rejected")
             is SigningRequestBody.CreateTransactionLegacy -> SsoSessionResponse.Content.FailedToCreateTransaction("Rejected")
             // Unreachable, see deliverSignedResult.
             is SigningRequestBody.SignVrf -> return Result.failure(

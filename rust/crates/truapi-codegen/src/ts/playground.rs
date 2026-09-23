@@ -297,7 +297,11 @@ pub fn explorer_type_id_set(
     aliases: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
+    let internal_types = internal_type_names(api);
     for ty in &api.types {
+        if internal_types.contains(&ty.name) {
+            continue;
+        }
         if detect_versioned_wrapper(ty).is_some() {
             continue;
         }

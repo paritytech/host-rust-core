@@ -53,6 +53,7 @@ export interface WorkerHostRuntime extends PermissionAuthorizationRuntime {
   ): WorkerProductRuntime;
   disconnectSession(): Promise<void>;
   sessionChatIdentityKey(): Uint8Array | undefined;
+  deviceStatementKey(): Uint8Array | undefined;
   deviceEncryptionKey(): Promise<Uint8Array>;
   productSubtreePublicKey(
     productId: string,
@@ -80,13 +81,26 @@ export interface WorkerPairingHostRuntime extends WorkerHostRuntime {
   resetSessionState(): Promise<void>;
 }
 
-/** A browser-local signing host activated from caller-owned entropy. */
+/**
+ * A browser-local signing host activated from caller-owned entropy.
+ *
+ * A signing host owns the user's keys and establishes sessions from local
+ * entropy rather than by pairing with a wallet. It is present only in a core
+ * built with `wasm-signing-host`; the production `web` bundle is built without
+ * it, which is why the constructor is optional on {@link WasmModuleShape}.
+ */
 export interface WorkerSigningHostRuntime extends WorkerHostRuntime {
   activateLocalSession(secret: Uint8Array): Promise<void>;
+  /**
+   * Activate and give the session a display name, which is what
+   * `account.get_user_id` answers with.
+   */
   activateLocalSessionWithIdentity(
     secret: Uint8Array,
     liteUsername?: string,
   ): Promise<void>;
+  /** Only on a core built with `wasm-signing-host`. */
+  setGrantAllowancesUnchecked?(granted: boolean): void;
   localIdentityContext(): { activationId: string; identityAccountId: string };
   localIdentityAuthProof(
     activationId: string,
@@ -107,7 +121,8 @@ export interface WasmModuleShape {
     callbacks: unknown,
     hostConfig: unknown,
   ) => WorkerPairingHostRuntime;
-  WasmSigningHostRuntime: new (
+  /** Only in the `testing` bundle; see {@link WorkerSigningHostRuntime}. */
+  WasmSigningHostRuntime?: new (
     callbacks: unknown,
     hostConfig: unknown,
   ) => WorkerSigningHostRuntime;
