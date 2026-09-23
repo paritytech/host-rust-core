@@ -15,6 +15,10 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
+use core::future::Future;
+
+use futures::future::{Fuse, FusedFuture};
+use futures::{FutureExt, Stream, StreamExt, pin_mut};
 use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
 use truapi::v01;
@@ -46,7 +50,7 @@ use crate::host_logic::statement_store::{
 use crate::runtime::authority::{AuthorityError, AuthoritySession};
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::{fresh_statement_expiry, sso_message_id};
-use crate::runtime::sso_service::Dispatch;
+use crate::runtime::sso_service::{Dispatch, SsoWithdrawals};
 use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
 use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
@@ -553,91 +557,227 @@ async fn serve_session(
         .client("sso-responder session")
         .await
         .map_err(|err| err.to_string())?;
-    let mut subscription =
+    let subscription =
         statement_store_rpc::subscribe_match_all(&rpc_client, &[session.session_id_peer])
             .await
             .map_err(|err| format!("sso-responder subscribe failed: {err}"))?;
-    let mut decode_failure_request_ids = DecodeFailureRequestIds::new();
+    let (services, session) = (&services, &session);
+    let pages = futures::stream::unfold(
+        (subscription, DecodeFailureRequestIds::new()),
+        move |(mut subscription, mut decode_failure_request_ids)| async move {
+            let item = subscription.next().await?;
+            let page = match item {
+                Ok(value) => {
+                    read_statements(services, session, &mut decode_failure_request_ids, &value)
+                        .await
+                }
+                Err(err) => Err(format!("sso-responder subscription failed: {err}")),
+            };
+            Some((page, (subscription, decode_failure_request_ids)))
+        },
+    );
+    serve_pages(pages, signing_host.sso_withdrawals(), |incoming| {
+        serve_statement(
+            services,
+            &signing_host,
+            &service,
+            session,
+            replay_scope,
+            incoming,
+        )
+    })
+    .await
+}
 
-    while let Some(item) = subscription.next().await {
-        let value = item.map_err(|err| format!("sso-responder subscription failed: {err}"))?;
-        let page = parse_new_statements_result("sso-responder".to_string(), &value)
-            .map_err(|err| err.to_string())?;
-        for statement in page.statements {
-            let incoming = match decode_incoming_sso_request(&session, &statement) {
-                Ok(Some(incoming)) => incoming,
-                Ok(None) => continue,
-                Err(error) => {
-                    let prefix = hex::encode(&statement[..statement.len().min(16)]);
-                    warn!(
-                        reason = %error.reason,
-                        statement_bytes = statement.len(),
-                        statement_prefix = %prefix,
-                        "ignoring undecodable SSO session statement"
-                    );
-                    // Ack a decodable envelope whose messages did not decode
-                    // so the peer fails fast instead of waiting out its
-                    // response deadline.
-                    if let Some(request_id) = error.request_id
-                        && decode_failure_request_ids.insert(request_id.clone())
-                    {
-                        let ack = build_signed_session_response_statement(
-                            &session,
-                            request_id,
-                            SsoResponseCode::DecodingFailed as u8,
-                            fresh_statement_expiry(),
-                        )?;
-                        services
-                            .statement_store
-                            .submit_sso(ack, "sso-responder decode-failed ack")
-                            .await?;
-                    }
-                    continue;
-                }
-            };
-            for message in &incoming.messages {
-                let cli_summary = format!(
-                    "Incoming SSO request · {}\nstatement_request_id={}\nremote_message_id={}",
-                    message.name(),
-                    incoming.request_id,
-                    message.message_id
-                );
-                tracing::event!(
-                    target: "truapi_server::sso_transcript",
-                    tracing::Level::DEBUG,
-                    cli_summary = cli_summary.as_str(),
-                    cli_event = "request_received",
-                    request = message.name(),
-                    statement_request_id = %incoming.request_id,
-                    remote_message_id = %message.message_id,
-                );
-            }
-            let request_id = incoming.request_id.clone();
-            let expires_at_unix_secs = incoming.expires_at_unix_secs;
-            let duplicate_exit = duplicate_request_exit(&incoming);
-            let execution = execute_once(
-                services.platform.as_ref(),
-                signing_host.sso_replay_locks(),
-                replay_scope,
-                &request_id,
-                expires_at_unix_secs,
-                statement_current_unix_secs(),
-                || serve_request(&services, &service, &session, incoming),
-            )
-            .await?;
-            let exit = match execution {
-                ReplayExecution::Duplicate => {
-                    acknowledge_request(&services, &session, &request_id).await?;
-                    duplicate_exit
-                }
-                ReplayExecution::Executed(exit) => exit,
-            };
-            if let Some(exit) = exit {
+/// Requests read ahead of the one being served before reading pauses.
+const MAX_QUEUED_REQUESTS: usize = 64;
+
+/// Serve the requests in `pages` one at a time, reading on while each runs
+/// so a `Cancel` reaches the request it withdraws.
+async fn serve_pages<Fut>(
+    pages: impl Stream<Item = Result<Vec<IncomingSsoRequest>, String>>,
+    withdrawals: &SsoWithdrawals,
+    mut serve: impl FnMut(IncomingSsoRequest) -> Fut,
+) -> Result<ResponderExit, String>
+where
+    Fut: Future<Output = Result<Option<ResponderExit>, String>>,
+{
+    let pages = pages.fuse();
+    let serving = Fuse::terminated();
+    pin_mut!(pages, serving);
+    let mut queue = VecDeque::new();
+    let mut failure = None;
+    loop {
+        if serving.is_terminated()
+            && let Some(incoming) = queue.pop_front()
+        {
+            serving.set(serve(incoming).fuse());
+        }
+        // A full queue stops reading, as serving each request inline did.
+        if queue.len() >= MAX_QUEUED_REQUESTS {
+            if let Some(exit) = serving.as_mut().await? {
                 return Ok(exit);
+            }
+            continue;
+        }
+        futures::select! {
+            exit = serving => {
+                if let Some(exit) = exit? {
+                    return Ok(exit);
+                }
+            }
+            page = pages.next() => {
+                let page = match page {
+                    Some(Ok(page)) => page,
+                    Some(Err(reason)) => {
+                        failure = Some(reason);
+                        break;
+                    }
+                    None => break,
+                };
+                for incoming in page {
+                    if let Some(targets) = withdrawn_targets(&incoming) {
+                        for target in targets {
+                            withdrawals.withdraw(target);
+                        }
+                        continue;
+                    }
+                    log_request_received(&incoming);
+                    queue.push_back(incoming);
+                }
             }
         }
     }
+    // The running request has been acked and recorded as started, so it is
+    // answered before the loop stops, whatever stopped it.
+    if !serving.is_terminated()
+        && let Some(exit) = serving.await?
+    {
+        return Ok(exit);
+    }
+    if let Some(reason) = failure {
+        return Err(reason);
+    }
+    for incoming in queue {
+        if let Some(exit) = serve(incoming).await? {
+            return Ok(exit);
+        }
+    }
     Ok(ResponderExit::SubscriptionEnded)
+}
+
+/// Decode one page of session statements into the requests it carries.
+///
+/// A statement whose envelope decodes but whose messages do not is acked as
+/// `DecodingFailed` once, so the peer fails fast instead of waiting out its
+/// response deadline.
+async fn read_statements(
+    services: &RuntimeServices,
+    session: &SsoSessionInfo,
+    decode_failure_request_ids: &mut DecodeFailureRequestIds,
+    value: &serde_json::Value,
+) -> Result<Vec<IncomingSsoRequest>, String> {
+    let page = parse_new_statements_result("sso-responder".to_string(), value)
+        .map_err(|err| err.to_string())?;
+    let mut requests = Vec::new();
+    for statement in page.statements {
+        let incoming = match decode_incoming_sso_request(session, &statement) {
+            Ok(Some(incoming)) => incoming,
+            Ok(None) => continue,
+            Err(error) => {
+                let prefix = hex::encode(&statement[..statement.len().min(16)]);
+                warn!(
+                    reason = %error.reason,
+                    statement_bytes = statement.len(),
+                    statement_prefix = %prefix,
+                    "ignoring undecodable SSO session statement"
+                );
+                if let Some(request_id) = error.request_id
+                    && decode_failure_request_ids.insert(request_id.clone())
+                {
+                    let ack = build_signed_session_response_statement(
+                        session,
+                        request_id,
+                        SsoResponseCode::DecodingFailed as u8,
+                        fresh_statement_expiry(),
+                    )?;
+                    services
+                        .statement_store
+                        .submit_sso(ack, "sso-responder decode-failed ack")
+                        .await?;
+                }
+                continue;
+            }
+        };
+        requests.push(incoming);
+    }
+    Ok(requests)
+}
+
+/// Record each message of a request the responder will serve.
+fn log_request_received(incoming: &IncomingSsoRequest) {
+    for message in &incoming.messages {
+        let cli_summary = format!(
+            "Incoming SSO request · {}\nstatement_request_id={}\nremote_message_id={}",
+            message.name(),
+            incoming.request_id,
+            message.message_id
+        );
+        tracing::event!(
+            target: "truapi_server::sso_transcript",
+            tracing::Level::DEBUG,
+            cli_summary = cli_summary.as_str(),
+            cli_event = "request_received",
+            request = message.name(),
+            statement_request_id = %incoming.request_id,
+            remote_message_id = %message.message_id,
+        );
+    }
+}
+
+/// The requests a statement withdraws, when it carries nothing but `Cancel`s.
+fn withdrawn_targets(incoming: &IncomingSsoRequest) -> Option<Vec<&str>> {
+    incoming
+        .messages
+        .iter()
+        .map(|message| match &message.data {
+            RemoteMessageData::V1(v1::RemoteMessage::Cancel(withdrawal)) => {
+                Some(withdrawal.message_id.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Serve one inbound request statement exactly once across redeliveries.
+async fn serve_statement(
+    services: &RuntimeServices,
+    signing_host: &SigningHost,
+    service: &SigningHostSsoService,
+    session: &SsoSessionInfo,
+    replay_scope: SsoReplayScope,
+    incoming: IncomingSsoRequest,
+) -> Result<Option<ResponderExit>, String> {
+    let request_id = incoming.request_id.clone();
+    let expires_at_unix_secs = incoming.expires_at_unix_secs;
+    let duplicate_exit = duplicate_request_exit(&incoming);
+    let execution = execute_once(
+        services.platform.as_ref(),
+        signing_host.sso_replay_locks(),
+        replay_scope,
+        &request_id,
+        expires_at_unix_secs,
+        statement_current_unix_secs(),
+        || serve_request(services, service, session, incoming),
+    )
+    .await?;
+    Ok(match execution {
+        ReplayExecution::Duplicate => {
+            acknowledge_request(services, session, &request_id).await?;
+            duplicate_exit
+        }
+        ReplayExecution::Executed(exit) => exit,
+    })
 }
 
 /// Ack one inbound request statement and answer its batched messages.
@@ -653,7 +793,7 @@ async fn serve_request(
         let request_name = message.name();
         let responding_to = message.message_id.clone();
         let started = Instant::now();
-        let (response, outcome) = match service.dispatch(service.current_session(), message).await {
+        let (response, outcome) = match service.answer(message).await {
             Dispatch::Response(answer) => (answer.message, answer.outcome),
             Dispatch::Disconnected => {
                 debug!("pairing host disconnected the SSO session");
@@ -661,6 +801,11 @@ async fn serve_request(
             }
             Dispatch::NotARequest(name) => {
                 warn!(name, "peer sent a response variant as a request");
+                continue;
+            }
+            Dispatch::Withdraw(_) => continue,
+            Dispatch::Withdrawn => {
+                debug!(%responding_to, "pairing host withdrew the SSO request");
                 continue;
             }
         };
@@ -1707,8 +1852,7 @@ mod tests {
             message_id: message_id.to_string(),
             data: RemoteMessageData::V1(request),
         };
-        let Dispatch::Response(answer) =
-            futures::executor::block_on(service.dispatch(service.current_session(), message))
+        let Dispatch::Response(answer) = futures::executor::block_on(service.answer(message))
         else {
             panic!("expected a response");
         };
@@ -1812,8 +1956,7 @@ mod tests {
                 on_existing: OnExistingAllowancePolicy::Ignore,
             },
         );
-        let Dispatch::Response(answer) =
-            futures::executor::block_on(service.dispatch(service.current_session(), request))
+        let Dispatch::Response(answer) = futures::executor::block_on(service.answer(request))
         else {
             panic!("expected an allocation response");
         };
@@ -1975,7 +2118,7 @@ mod tests {
         );
 
         futures::executor::block_on(async {
-            let answer = service.dispatch(service.current_session(), message);
+            let answer = service.answer(message);
             futures::pin_mut!(answer);
             assert!(answer.as_mut().now_or_never().is_none());
             assert_eq!(
@@ -2004,6 +2147,168 @@ mod tests {
             );
             assert!(platform.sent_rpc.lock().unwrap().is_empty());
         });
+    }
+
+    fn allocation_request(message_id: &str) -> RemoteMessage {
+        RemoteMessage::request(
+            message_id.to_string(),
+            messages::ResourceAllocationRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                resources: vec![api::AllocatableResource::AutoSigning],
+                on_existing: OnExistingAllowancePolicy::Ignore,
+            },
+        )
+    }
+
+    fn cancel(message_id: &str, target: &str) -> RemoteMessage {
+        RemoteMessage {
+            message_id: message_id.to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::Cancel(messages::Withdrawal {
+                message_id: target.to_string(),
+            })),
+        }
+    }
+
+    /// The phone spends once the person approves an allocation, so a
+    /// withdrawal that arrives while the prompt is open must end the prompt
+    /// with nothing allocated and nothing to post.
+    #[test]
+    fn a_cancel_withdraws_an_allocation_while_its_prompt_is_open() {
+        let (_release, gate) = futures::channel::oneshot::channel();
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            resource_allocation_confirmation_gate: std::sync::Mutex::new(Some(gate)),
+            ..StubPlatform::default()
+        });
+        let (_, signing_host) = signing_fixture(platform.clone());
+        let service = SigningHostSsoService::new(signing_host);
+        let allocation = service.answer(allocation_request("alloc-1"));
+        futures::pin_mut!(allocation);
+        assert!(allocation.as_mut().now_or_never().is_none());
+
+        let withdrawal = service
+            .answer(cancel("cancel-1", "alloc-1"))
+            .now_or_never()
+            .expect("a withdrawal is answered at once");
+        let allocation = allocation
+            .as_mut()
+            .now_or_never()
+            .expect("a withdrawn request stops waiting on its prompt");
+
+        assert_eq!(
+            (
+                withdrawal,
+                allocation,
+                platform.sent_rpc.lock().unwrap().len()
+            ),
+            (
+                Dispatch::Withdraw("alloc-1".to_string()),
+                Dispatch::Withdrawn,
+                0
+            )
+        );
+    }
+
+    /// Statements arrive out of order, so a withdrawal can land first. The
+    /// request it names must then never reach the person at all.
+    #[test]
+    fn a_cancel_that_arrives_first_stops_its_request_before_it_prompts() {
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            ..StubPlatform::default()
+        });
+        let (_, signing_host) = signing_fixture(platform.clone());
+        let service = SigningHostSsoService::new(signing_host);
+
+        futures::executor::block_on(service.answer(cancel("cancel-1", "alloc-1")));
+        let allocation = futures::executor::block_on(service.answer(allocation_request("alloc-1")));
+
+        assert_eq!(allocation, Dispatch::Withdrawn);
+        assert!(
+            platform
+                .resource_allocation_reviews
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn statement(request_id: &str, message: RemoteMessage) -> Vec<IncomingSsoRequest> {
+        vec![IncomingSsoRequest {
+            request_id: request_id.to_string(),
+            expires_at_unix_secs: None,
+            messages: vec![message],
+        }]
+    }
+
+    /// Without this a `Cancel` waits behind the very request it withdraws,
+    /// and reaches it only after the person has answered.
+    #[test]
+    fn a_cancel_is_read_while_the_request_it_names_is_being_served() {
+        let withdrawals = SsoWithdrawals::default();
+        let (pages, statements) = futures::channel::mpsc::unbounded();
+        pages
+            .unbounded_send(Ok(statement("stmt-1", allocation_request("alloc-1"))))
+            .unwrap();
+        let serving = serve_pages(statements, &withdrawals, |incoming| {
+            let request = withdrawals.begin(&incoming.messages[0].message_id);
+            async move {
+                if let Some(request) = request {
+                    request.cancel.cancelled().await;
+                }
+                Ok(Some(ResponderExit::PeerDisconnected))
+            }
+        });
+        futures::pin_mut!(serving);
+        assert!(serving.as_mut().now_or_never().is_none());
+
+        pages
+            .unbounded_send(Ok(statement("stmt-2", cancel("cancel-1", "alloc-1"))))
+            .unwrap();
+
+        assert_eq!(
+            serving.as_mut().now_or_never(),
+            Some(Ok(ResponderExit::PeerDisconnected))
+        );
+    }
+
+    /// The request being served has been acked and recorded as started, so
+    /// redelivery would never answer it. A broken subscription must let it
+    /// finish before the loop reports the failure.
+    #[test]
+    fn a_failing_subscription_lets_the_request_being_served_finish() {
+        let withdrawals = SsoWithdrawals::default();
+        let (pages, statements) = futures::channel::mpsc::unbounded();
+        let (release, gate) = futures::channel::oneshot::channel::<()>();
+        let mut gate = Some(gate);
+        pages
+            .unbounded_send(Ok(statement("stmt-1", allocation_request("alloc-1"))))
+            .unwrap();
+        let serving = serve_pages(statements, &withdrawals, |_| {
+            let gate = gate.take();
+            async move {
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
+                Ok(None)
+            }
+        });
+        futures::pin_mut!(serving);
+        assert!(serving.as_mut().now_or_never().is_none());
+
+        pages
+            .unbounded_send(Err("subscription failed".to_string()))
+            .unwrap();
+        let before_the_request_finished = serving.as_mut().now_or_never();
+        let once_it_finished = before_the_request_finished.is_none().then(|| {
+            let _ = release.send(());
+            serving.as_mut().now_or_never()
+        });
+
+        assert_eq!(
+            (before_the_request_finished, once_it_finished),
+            (None, Some(Some(Err("subscription failed".to_string()))))
+        );
     }
 
     #[test]

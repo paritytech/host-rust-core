@@ -273,6 +273,13 @@ Signing uses canonical request and result types. Product-scoped VRF requests use
 `ProductRequest<P>` to attach the caller to a canonical payload. Both product and
 SSO signing encode `with_signed_transaction` with the one-byte `OptionBool` codec.
 
+A pairing host that stops waiting because its caller withdrew the request sends
+a `Cancel` naming it, when that request is still the newest on the session's
+request channel. The responder reads statements while it serves a request, so a
+`Cancel` fires the running request's token or stops a queued one from starting;
+a withdrawn request posts no response. See the
+[SSO request cancellation RFC](../../../docs/rfcs/sso-request-cancellation.md).
+
 When a device finishes pairing, the signing host reports it to the embedder's
 [`DevicePairingObserver`](src/runtime/signing_host/sso_responder.rs), installed
 once through `SigningHostRuntime::set_device_pairing_observer`, and on a native

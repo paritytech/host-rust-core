@@ -614,6 +614,192 @@ impl truapi_platform::ChatPlatform for RecordingChatPlatform {
     }
 }
 
+/// The phone may already be prompting for a request this host has published.
+/// Withdrawing the call has to reach it there, or the person is left
+/// approving a request nobody is waiting for.
+#[test]
+fn a_withdrawn_request_already_published_is_cancelled_on_the_phone() {
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_responses: vec![
+            subscribe_ack_frame("truapi:1", "own-sub-withdrawn"),
+            subscribe_ack_frame("truapi:2", "peer-sub-withdrawn"),
+            r#"{"jsonrpc":"2.0","id":"truapi:3","result":{"status":"new"}}"#.to_string(),
+        ],
+        ..Default::default()
+    });
+    let (host_config, _) = runtime_config("myapp.dot");
+    let product = ProductContext::new("myapp.dot".to_string()).expect("product context is valid");
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host.clone(), product);
+    install_pairing_session(&host, session.clone());
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("sign-raw-withdrawn".to_string(), cancel.clone());
+    let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+        account: account_id("myapp.dot", 0),
+        payload: raw_payload(),
+    });
+    let call = std::thread::spawn(move || {
+        futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err()
+    });
+    let published = submitted_remote_message(&platform, &session).message_id;
+    wait_until(
+        || pairing_host.newest_request_for_tests().as_deref() == Some(&published),
+        "the request was not published",
+    );
+
+    cancel.cancel();
+    call.join().expect("sign_raw thread panicked");
+
+    let withdrawn = || withdrawn_requests(&platform, &session);
+    wait_until(|| !withdrawn().is_empty(), "no request was withdrawn");
+    assert_eq!(withdrawn(), vec![published]);
+}
+
+/// A host that times out has not been asked to stop, so the phone keeps the
+/// request: a slow allocation it finishes stays available to the next call.
+#[test]
+fn a_request_that_times_out_is_not_withdrawn_from_the_phone() {
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_responses: vec![
+            subscribe_ack_frame("truapi:1", "own-sub-timeout"),
+            subscribe_ack_frame("truapi:2", "peer-sub-timeout"),
+            r#"{"jsonrpc":"2.0","id":"truapi:3","result":{"status":"new"}}"#.to_string(),
+        ],
+        ..Default::default()
+    });
+    let (host_config, _) = runtime_config("myapp.dot");
+    let product = ProductContext::new("myapp.dot".to_string()).expect("product context is valid");
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host.clone(), product);
+    install_pairing_session(&host, session.clone());
+    let mut cx = CallContext::with_request_id("sign-raw-timeout".to_string());
+    cx.set_timeout(std::time::Duration::from_millis(50));
+    let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+        account: account_id("myapp.dot", 0),
+        payload: raw_payload(),
+    });
+
+    futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+
+    let published = submitted_remote_message(&platform, &session).message_id;
+    assert_eq!(pairing_host.newest_request_for_tests(), Some(published));
+}
+
+/// `message_id`s every `Cancel` this host has published names, oldest first.
+fn withdrawn_requests(platform: &Arc<StubPlatform>, session: &SessionInfo) -> Vec<String> {
+    submitted_remote_messages(platform, session)
+        .into_iter()
+        .filter_map(|message| match message.data {
+            RemoteMessageData::V1(v1::RemoteMessage::Cancel(withdrawal)) => {
+                Some(withdrawal.message_id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The store keeps one statement per channel, so a `Cancel` replaces the
+/// newest request this host published. Sent for an older one it would
+/// replace a request the product is still waiting on instead.
+#[test]
+fn a_withdrawn_request_with_a_newer_one_behind_it_sends_no_cancel() {
+    let session = sso_session_info();
+    let answers = |method: &'static str, result: &str, times: usize| {
+        std::iter::repeat_n((method, result.to_string()), times)
+    };
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_method_responses: answers("statement_subscribeStatement", r#""sub""#, 4)
+            .chain(answers("statement_submit", r#"{"status":"new"}"#, 4))
+            .chain(answers("statement_unsubscribeStatement", "true", 4))
+            .collect(),
+        ..Default::default()
+    });
+    let (host_config, _) = runtime_config("myapp.dot");
+    let product = ProductContext::new("myapp.dot".to_string()).expect("product context is valid");
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = Arc::new(ProductRuntimeHost::from_services(
+        services,
+        adapters,
+        pairing_host.clone(),
+        product,
+    ));
+    install_pairing_session(&host, session.clone());
+    let start = |request_id: &str| {
+        let host = host.clone();
+        let cancel = truapi::CancellationToken::default();
+        let cx = CallContext::with_parts(request_id.to_string(), cancel.clone());
+        let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: raw_payload(),
+        });
+        let call = std::thread::spawn(move || {
+            let _ = futures::executor::block_on(host.sign_raw(&cx, request));
+        });
+        (cancel, call)
+    };
+    let wait_published = |count: usize| {
+        wait_until(
+            || {
+                let published = submitted_remote_messages(&platform, &session);
+                published.len() == count
+                    && pairing_host.newest_request_for_tests().as_deref()
+                        == published.last().map(|message| message.message_id.as_str())
+            },
+            "the request was not published",
+        );
+        submitted_remote_messages(&platform, &session)
+            .last()
+            .expect("a published request")
+            .message_id
+            .clone()
+    };
+    let (first_cancel, first_call) = start("sign-raw-first");
+    wait_published(1);
+    let (second_cancel, second_call) = start("sign-raw-second");
+    let second = wait_published(2);
+
+    first_cancel.cancel();
+    first_call.join().expect("first sign_raw thread panicked");
+    second_cancel.cancel();
+    second_call.join().expect("second sign_raw thread panicked");
+
+    let withdrawn = || withdrawn_requests(&platform, &session);
+    wait_until(|| !withdrawn().is_empty(), "no request was withdrawn");
+    assert_eq!(withdrawn(), vec![second]);
+}
+
 #[test]
 fn chat_post_message_screens_content_before_it_reaches_a_host() {
     let (host_config, _) = runtime_config("chat.dot");

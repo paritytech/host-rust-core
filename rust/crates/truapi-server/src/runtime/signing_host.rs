@@ -67,6 +67,7 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
+use crate::runtime::sso_service::SsoWithdrawals;
 use crate::runtime::statement_allowance::CollectionCandidate;
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
@@ -144,6 +145,8 @@ pub(crate) struct SigningHost {
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
     /// Serializes replay-ledger updates within each wallet and peer scope.
     sso_replay_locks: SsoReplayLocks,
+    /// Paired-host requests the pairing host can still withdraw.
+    sso_withdrawals: SsoWithdrawals,
     renewal: allowance_renewal::RenewalState,
 }
 
@@ -166,6 +169,7 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
+            sso_withdrawals: Default::default(),
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -231,6 +235,7 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
+            sso_withdrawals: Default::default(),
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -271,6 +276,10 @@ impl SigningHost {
 
     fn sso_replay_locks(&self) -> &SsoReplayLocks {
         &self.sso_replay_locks
+    }
+
+    fn sso_withdrawals(&self) -> &SsoWithdrawals {
+        &self.sso_withdrawals
     }
 
     fn grant_auto_signing(

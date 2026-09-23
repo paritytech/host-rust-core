@@ -1425,6 +1425,11 @@ impl NativeTrUApiHostRuntime {
     /// constructs them. Session control and transport stay with the wallet —
     /// `Disconnected` is reported, never handled here. Confirmation-gated
     /// requests await `confirm_user_action`, so this can take arbitrarily long.
+    ///
+    /// A `Cancel` withdraws the request it names and returns at once. It
+    /// reaches a running request only if the wallet passes it on as it
+    /// arrives; queued behind that request it arrives too late to stop it.
+    /// The withdrawn request, and the `Cancel` itself, answer `Ignored`.
     pub async fn handle_sso_request(
         &self,
         message: Vec<u8>,
