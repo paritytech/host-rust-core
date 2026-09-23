@@ -295,7 +295,7 @@ private extension TrUAPIChainConnectionPool {
         return url
     }
 
-    func register(_ connection: Connection, state: inout State) -> UInt32? {
+    private func register(_ connection: Connection, state: inout State) -> UInt32? {
         // Never wrap and alias a still-live or delayed native notification.
         guard state.nextConnectionId < UInt32.max else { return nil }
         let connectionId = state.nextConnectionId
@@ -305,7 +305,7 @@ private extension TrUAPIChainConnectionPool {
         return connectionId
     }
 
-    func remove(connectionId: UInt32, state: inout State) -> Connection? {
+    private func remove(connectionId: UInt32, state: inout State) -> Connection? {
         guard let connection = state.connections.removeValue(forKey: connectionId) else { return nil }
         state.connectionIds.removeValue(forKey: ObjectIdentifier(connection.adapter))
         if let engine = connection.ownedEngine {
