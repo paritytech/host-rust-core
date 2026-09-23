@@ -788,10 +788,10 @@ pub trait NativeChatCallbacks: Send + Sync {
     /// Persist a product-authored message in native Chat storage. A host that
     /// cannot render a given content variant returns a rejection for it.
     ///
-    /// The returned id is what [`ActionTrigger::message_id`] carries back, so
-    /// it must name this message for as long as the host stores it.
+    /// The returned id is [`HostChatPostMessageResponse`]'s `message_id`, which
+    /// chat actions carry back for as long as the host stores this message.
     ///
-    /// [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
+    /// [`HostChatPostMessageResponse`]: truapi::latest::HostChatPostMessageResponse
     async fn post_message(
         &self,
         room_id: String,

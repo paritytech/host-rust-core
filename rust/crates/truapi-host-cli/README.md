@@ -127,6 +127,9 @@ make headless install  # build dependencies and install truapi-host once
 truapi-host signing-host
 ```
 
+Requires stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and Bun. The target installs missing workspace
+build tools and regenerates Rust and TypeScript sources on every run, including after updating an existing checkout.
+
 ### Raw proof contexts (development only)
 
 A product can bind a ring-VRF proof to 32 bytes of its choosing instead of a

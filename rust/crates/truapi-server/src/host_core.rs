@@ -70,7 +70,7 @@ pub trait DebugSink: Send + Sync {
     /// same single-threaded loop a hung `emit` is already blocking, so the hop
     /// would cost every well-behaved sink without fixing the case it targets.
     ///
-    /// [`emit_debug`] contains a panic at both tap sites where the profile
+    /// `emit_debug` contains a panic at both tap sites where the profile
     /// allows it; see the sink contract in the wire-debugger design doc (§2)
     /// for what that does and does not guarantee.
     fn emit(&self, event: DebugEvent);
@@ -540,7 +540,7 @@ pub struct SigningHostRuntime {
 impl SigningHostRuntime {
     /// Answer resource allocation as granted without performing it.
     ///
-    /// For test hosts only; see [`SigningHostRole::set_grant_allowances_unchecked`].
+    /// For test hosts only, with the `test-host` feature enabled.
     #[cfg(feature = "test-host")]
     pub fn set_grant_allowances_unchecked(&self, granted: bool) {
         self.signing_host.set_grant_allowances_unchecked(granted);
