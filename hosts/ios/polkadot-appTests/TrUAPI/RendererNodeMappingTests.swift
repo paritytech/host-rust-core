@@ -69,14 +69,19 @@ struct RendererNodeMappingTests {
 
     /// The picture cannot be drawn, but the space it reserved has to survive,
     /// or everything laid out around it moves.
-    @Test func anImageKeepsTheSpaceItsModifiersReserve() throws {
+    @Test func anImageDrawsItsSourceAndKeepsItsSpace() throws {
         let image = RendererNode.image(
             modifiers: [.width(120), .height(80)],
-            props: ImageProps(source: .bulletin(""), fit: nil)
+            props: ImageProps(source: .bulletin("bafyimage"), fit: nil)
         )
 
         let widget = try #require(image.toWidgetNode(resolver: resolver))
 
+        guard case let .image(props) = widget.content else {
+            Issue.record("an image node should draw its source")
+            return
+        }
+        #expect(props.source == .bulletin(cid: "bafyimage"))
         #expect(widget.modifiers.width == 120)
         #expect(widget.modifiers.height == 80)
     }
@@ -103,7 +108,7 @@ struct RendererNodeMappingTests {
     }
 
     /// An effect's children take its place, rather than gaining a container.
-    @Test func effectIsReplacedByItsChildren() throws {
+    @Test func anEffectKeepsItsChildrenAndItsOwnNode() throws {
         let effect = RendererNode.effect(
             props: EffectProps(effect: .rainbow),
             children: [
@@ -111,26 +116,14 @@ struct RendererNodeMappingTests {
             ]
         )
 
-        // Nested: the parent adopts the children directly, with no node in between.
-        let parent = RendererNode.column(
-            modifiers: [],
-            props: ColumnProps(horizontalAlignment: nil, verticalArrangement: nil),
-            children: [effect]
-        )
-        let widget = try #require(parent.toWidgetNode(resolver: resolver))
-        guard case let .column(_, children) = widget.content,
-              case let .text(props) = children.first?.content else {
-            Issue.record("an effect's children should be adopted by its parent")
+        guard case let .effect(props, children) = try #require(effect.toWidgetNode(resolver: resolver)).content,
+              case let .text(textProps) = children.first?.content
+        else {
+            Issue.record("an effect should keep both its own node and its children")
             return
         }
-        #expect(props.text == "kept")
-
-        // At the root there is one slot, so a lone child fills it directly.
-        guard case let .text(rootProps) = try #require(effect.toWidgetNode(resolver: resolver)).content else {
-            Issue.record("a root effect with one child should resolve to that child")
-            return
-        }
-        #expect(rootProps.text == "kept")
+        #expect(props.effect == .rainbow)
+        #expect(textProps.text == "kept")
     }
 }
 
