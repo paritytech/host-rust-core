@@ -535,7 +535,7 @@ impl SigningHostRuntime {
 
     /// Answer these resource tags as refused, replacing any earlier set.
     ///
-    /// For test hosts only; see [`SigningHostRole::set_withheld_resources`].
+    /// For test hosts only, with the `test-host` feature enabled.
     #[cfg(feature = "test-host")]
     pub fn set_withheld_resources(&self, tags: Vec<String>) {
         self.signing_host.set_withheld_resources(tags);
