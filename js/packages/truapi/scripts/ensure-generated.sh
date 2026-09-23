@@ -21,6 +21,7 @@ codegen_required=(
   "rust/crates/truapi-server/src/wasm/generated_bridge.rs"
 )
 truapi_dts="js/packages/truapi/src/playground/codegen/truapi-dts.ts"
+host_script_dts="rust/crates/truapi-host-cli/js/script-types.d.ts"
 
 missing=0
 for path in "${codegen_required[@]}"; do
@@ -42,7 +43,7 @@ if [ "$missing" -eq 1 ] || [ -z "$example_file" ]; then
   TRUAPI_SKIP_PACKAGE_BUILD=1 ./scripts/codegen.sh
 fi
 
-if [ -f "$truapi_dts" ]; then
+if [ -f "$truapi_dts" ] && [ -f "$host_script_dts" ]; then
   exit 0
 fi
 
