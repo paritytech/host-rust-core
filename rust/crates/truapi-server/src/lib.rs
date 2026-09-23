@@ -75,11 +75,11 @@ pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_
 // These helpers use injected host RPC on both native and browser targets.
 // Only the direct-URL RPC constructor is native-only.
 pub use runtime::statement_allowance;
-pub use runtime::{LocalIdentity, LocalIdentityContext};
 pub use runtime::{
     AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
     PairingProposal, PairingProposalMetadata, ResponderExit,
 };
+pub use runtime::{LocalIdentity, LocalIdentityContext};
 pub use truapi_platform::{
     CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,
     PairingHostConfig, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,

@@ -100,10 +100,9 @@ use truapi::versioned::renderer::{
 };
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 use truapi_platform::{
-    AccountAccessReview, ChatFieldError, IdentityDisclosureReview,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision, Platform,
-    ProductContext, ProductStorageKey, SessionUiInfo, UserConfirmationReview,
-    normalize_chat_identifier, normalize_product_identifier,
+    AccountAccessReview, ChatFieldError, PermissionAuthorizationRequest,
+    PermissionAuthorizationStatus, PermissionDecision, Platform, ProductContext, ProductStorageKey,
+    SessionUiInfo, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
     validate_chat_icon, validate_chat_message_content, validate_chat_name,
 };
 #[cfg(target_arch = "wasm32")]
@@ -722,7 +721,6 @@ impl ProductRuntimeHost {
     async fn identity_disclosure_authorization(
         &self,
     ) -> Result<PermissionAuthorizationStatus, String> {
-        let product_id = self.product_id();
         self.permissions_service()
             .check_or_prompt_identity_disclosure()
             .await
@@ -731,7 +729,6 @@ impl ProductRuntimeHost {
 
     #[instrument(skip_all, fields(runtime.method = "permissions.chat_authority_authorization"))]
     async fn chat_authority_authorization(&self) -> Result<PermissionAuthorizationStatus, String> {
-        let product_id = self.product_id();
         self.permissions_service()
             .check_or_prompt_chat_authority()
             .await

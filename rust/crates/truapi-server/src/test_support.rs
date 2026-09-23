@@ -30,12 +30,11 @@ use truapi_platform::{
     Features as PlatformFeatures, HopProvider, HostInfo, JsonRpcConnection, LocaleHost,
     MainPurseChatPaymentReview, NativeChatFileExportRequest, NativeChatFilePickRequest,
     NativeChatFilesHost, NativeChatPickedFile, Navigation as PlatformNavigation,
-    Notifications as PlatformNotifications, PairingHostConfig,
-    Permissions as PlatformPermissions, PlatformInfo, PreimageHost, ProductContext,
-    ProductOperations as PlatformProductOperations, ProductStorage as PlatformProductStorage,
-    ProductSubtreeReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
-    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    Notifications as PlatformNotifications, PairingHostConfig, Permissions as PlatformPermissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductOperations as PlatformProductOperations,
+    ProductStorage as PlatformProductStorage, ProductSubtreeReview, ResourceAllocationReview,
+    SignPayloadReview, SignRawReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 

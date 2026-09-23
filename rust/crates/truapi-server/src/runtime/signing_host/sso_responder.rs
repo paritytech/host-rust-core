@@ -800,10 +800,16 @@ pub(super) async fn allocate_statement_store_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    use super::allowance_renewal::{self, StatementRenewalTarget};
+
     signing_host.require_current_session(session)?;
     let entropy = signing_host.root_entropy()?;
     let allowance =
         derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
+    #[cfg(feature = "test-host")]
+    if signing_host.grants_allowances_unchecked() {
+        return Ok(allowance.secret.to_bytes().to_vec());
+    }
     register_statement_store_target(
         services,
         signing_host,
@@ -813,6 +819,17 @@ pub(super) async fn allocate_statement_store_allowance(
         policy,
     )
     .await?;
+    if let Err(reason) = allowance_renewal::track(
+        signing_host,
+        vec![StatementRenewalTarget::ProductStatementAllowance {
+            product_id: product_id.to_string(),
+        }],
+    )
+    .await
+    {
+        warn!(%product_id, %reason, "failed to record statement-store renewal target");
+    }
+    signing_host.require_current_session(session)?;
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
@@ -825,6 +842,10 @@ pub(super) async fn allocate_product_statement_store_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<(), AllowanceAllocationError> {
     signing_host.require_current_session(session)?;
+    #[cfg(feature = "test-host")]
+    if signing_host.grants_allowances_unchecked() {
+        return Ok(());
+    }
     let target = signing_host
         .product_keypair(&v01::ProductAccountId {
             dot_ns_identifier: product_id.to_string(),
@@ -850,18 +871,6 @@ async fn register_statement_store_target(
     };
 
     signing_host.require_current_session(session)?;
-    let entropy = signing_host.root_entropy()?;
-    let allowance =
-        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
-    // The key is derived locally; only its registration needs the chain. A
-    // host answering allocation as granted hands back the derived key so a
-    // product can sign with it, and skips the registration, so nothing it
-    // signs is accepted by a real statement store.
-    #[cfg(feature = "test-host")]
-    if signing_host.grants_allowances_unchecked() {
-        return Ok(allowance.secret.to_bytes().to_vec());
-    }
-    let target = allowance.public.to_bytes();
     let candidates = signing_host.reserved_person_collection_candidates(session)?;
     let client = services
         .statement_store

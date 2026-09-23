@@ -393,10 +393,6 @@ impl CliPlatform {
         persist_current_pairing_user(&scope.bootstrap_dir, user_id)
     }
 
-    async fn decide(&self, action: &str, detail: String) -> bool {
-        self.decide_with(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
-    }
-
     async fn decide_with(
         &self,
         action: &str,
@@ -1614,10 +1610,15 @@ mod tests {
         assert_eq!(platform.approval_policy(), ApprovalPolicy::Prompt);
         platform.set_approval_policy(ApprovalPolicy::AutoAccept);
         assert_eq!(platform.approval_policy(), ApprovalPolicy::AutoAccept);
-        assert!(
+        assert_eq!(
             platform
-                .decide("test action", "test detail".to_string())
-                .await
+                .decide_with(
+                    "test action",
+                    "test detail".to_string(),
+                    ApprovalKind::Action,
+                )
+                .await,
+            PermissionDecision::AllowAlways,
         );
 
         platform.set_approval_policy(ApprovalPolicy::Prompt);
