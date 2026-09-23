@@ -12,10 +12,14 @@ name: Notification smoke test
 on:
   workflow_dispatch:
 
-# One at a time, so a second click cannot produce a second message.
+# Serialises overlapping runs. It does not cap how many messages this sends:
+# nothing here does. Two dispatches put two messages in the room, and a run
+# cancelled mid-flight may already have delivered. `false` rather than
+# `cancel-in-progress`, so a delivery that happened is not hidden behind a
+# cancelled run.
 concurrency:
   group: notification-smoke-test
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # The action talks to the relay and to nothing on GitHub.
 permissions: {}
@@ -29,11 +33,15 @@ jobs:
       - name: Send one message
         uses: novasamatech/github-actions/send-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
-          message: "Testing the new host-api bot, please ignore."
-          html_message: "Testing the new <b>host-api</b> bot, please ignore."
+          # The run is named so that an unexpected or repeated message can be
+          # traced back to what sent it.
+          message: "Testing the new host-api bot, please ignore. ${{ github.repository }} run ${{ github.run_id }}"
+          html_message: "Testing the new <b>host-api</b> bot, please ignore. <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">${{ github.repository }} run ${{ github.run_id }}</a>"
           bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
           bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
-          # One message per room this names. It holds one room today.
+          # One message per room this names, and the count is not reviewable
+          # from here because it is a secret. A second room means a second
+          # message, with the run still green.
           matrix_room_ids: ${{ secrets.CI_MATRIX_ROOM_IDS }}
           # No retries. A delivery that succeeds but answers 5xx would otherwise
           # be sent again, and one duplicate is worse here than one failure.
