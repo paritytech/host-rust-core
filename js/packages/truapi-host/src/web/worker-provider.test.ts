@@ -270,7 +270,9 @@ describe("createWebWorkerPairingHostRuntime", () => {
       kind: "init",
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
-      role: "pairing",
+      // A host that asks for no role sends none: the worker reads absent as
+      // "pairing", so the message stays what it was before the field existed.
+      role: undefined,
       capabilities: { chat: false, permissionStatus: false, pocket: false },
       debuggerUrl: null,
     });

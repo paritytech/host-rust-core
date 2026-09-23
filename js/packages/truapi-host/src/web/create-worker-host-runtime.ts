@@ -469,6 +469,12 @@ function operationIdFrom(value: unknown): number | null {
   }
 }
 
+/**
+ * Key one pending-operation hold. `OperationId` is unique per product, not per
+ * worker, so the product a `beginOperation`/`endOperation` arrived for has to be
+ * part of the key. Returns null if the encoded product will not decode, which
+ * drops the hold rather than letting it pin the worker forever.
+ */
 function operationHold(encodedProduct: unknown, id: number): string | null {
   if (!(encodedProduct instanceof Uint8Array)) return null;
   try {
@@ -979,12 +985,10 @@ interface CreateWebWorkerHostRuntimeOptions {
 
 export interface CreateWebWorkerPairingHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
   hostConfig: WebWorkerHostConfig;
-  role?: "pairing";
 }
 
 export interface CreateWebWorkerSigningHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
   hostConfig: WebWorkerSigningHostConfig;
-  role?: "signing";
 }
 
 export type WebWorkerHostCallbacks = RequiredHostCallbacks;
@@ -994,10 +998,10 @@ export function createWebWorkerPairingHostRuntime(
   host: WebWorkerHostCallbacks,
   options: CreateWebWorkerPairingHostRuntimeOptions,
 ): Promise<WorkerPairingHostRuntime> {
-  return createWebWorkerHostRuntime(worker, host, {
-    ...options,
-    role: "pairing",
-  });
+  // No role default: a host that asks for none must put exactly what it put
+  // on the wire before the field existed, and the worker reads absent as
+  // "pairing".
+  return createWebWorkerHostRuntime(worker, host, options);
 }
 
 export function createWebWorkerSigningHostRuntime(
@@ -1007,7 +1011,7 @@ export function createWebWorkerSigningHostRuntime(
 ): Promise<WorkerSigningHostRuntime> {
   return createWebWorkerHostRuntime(worker, host, {
     ...options,
-    role: "signing",
+    role: options.role ?? "signing",
   });
 }
 
@@ -1253,7 +1257,6 @@ function createWebWorkerHostRuntime(
             pocket: host.pocket !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,
-          role: options.role,
         } satisfies MainToWorker);
       } else if (msg.kind === "ready") {
         state.coreWireSchemaHash = msg.schema;
@@ -1500,13 +1503,6 @@ function buildRuntime(
       return sendSessionActivationRequest(state, (requestId) => ({
         kind: "resetSessionState",
         requestId,
-      }));
-    },
-    activateLocalSession(secret: Uint8Array): Promise<void> {
-      return sendSessionActivationRequest(state, (requestId) => ({
-        kind: "activateLocalSession",
-        requestId,
-        secret,
       }));
     },
     activateLocalSessionWithIdentity(
