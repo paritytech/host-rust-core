@@ -61,6 +61,10 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      build_id: ${{ steps.setup.outputs.build_id }}
+      short: ${{ steps.package.outputs.short }}
+      tag: ${{ steps.release-tag.outputs.tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -263,3 +267,54 @@ jobs:
             Same APK the Firebase release above carries.
           prerelease: true
           files: ${{ steps.release-asset.outputs.path }}
+
+  # Announced the way the iOS nightly is, through the same relay and into the
+  # same room. A separate job, so a delivery that landed is not reported as a
+  # failure because the announcement did not.
+  send-release-notification:
+    name: Send Release Notification
+    runs-on: ubuntu-latest
+    needs: nightly
+    # Narrower than the workflow default, which this job has no use for.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # Time mode, not the diff against a release branch the iOS nightly uses,
+      # because this one builds the default branch directly and has nothing to
+      # compare against.
+      #
+      # The window is a day, so a Monday announcement omits what merged over the
+      # weekend. Widening it would double-report on the other four nights; the
+      # honest fix is a diff against the previous nightly tag.
+      - name: Collect merged PRs
+        id: collect_prs
+        uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
+        with:
+          github_token: ${{ github.token }}
+          dst_ref: ${{ github.event.repository.default_branch }}
+          hours: "24"
+          release_notes_format: markdown
+
+      - name: Send nightly release notification
+        uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
+        with:
+          platform: Android
+          pr_list: ${{ steps.collect_prs.outputs.release_notes }}
+          # No marketing version reaches this workflow, so the build id and the
+          # commit are what identify a nightly here.
+          release_info: |
+            Nightly: ${{ needs.nightly.outputs.build_id }}
+            Commit: ${{ needs.nightly.outputs.short }}
+          # One entry per line, because the second is a sentence rather than a
+          # link and reads badly joined onto the first.
+          download_links_format: list
+          # The asset is public, so the link is built here rather than held in a
+          # secret the way the iOS one is. App Distribution has no fetchable URL,
+          # only the tester app, so it gets a sentence instead of a link.
+          download_links: |
+            [APK](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ needs.nightly.outputs.tag }}/app-gp-nightly.apk)
+            Also distributed to Firebase App Distribution (${{ vars.ANDROID_FIREBASE_GROUP }}).
+          bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
+          bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
+          matrix_room_ids: ${{ secrets.CI_MATRIX_ROOM_IDS }}

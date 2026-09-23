@@ -144,15 +144,12 @@ jobs:
           release_info: |
             Nightly: ${{ needs.build_nightly.outputs.marketing_version }} (${{ needs.build_nightly.outputs.build_number }})
           download_links_format: inline
-          # Each secret holds one ready-to-render markdown link entry, e.g.
-          # "[TestFlight](https://testflight.apple.com/join/<id>)". The label is part
-          # of the secret so that access hints stay out of the public repo — with all
-          # four rendered together the labels are what distinguishes the two apps.
+          # The secret holds a ready-to-render markdown entry, label included, so
+          # that an access hint stays out of this public repo. Safetynet ships from
+          # the app repository now, and no web page link is configured, so the
+          # production TestFlight entry is the only one.
           download_links: |
             ${{ secrets.TESTFLIGHT_DISTRIBUTION_LINK }}
-            ${{ secrets.WEB_PAGE_DISTRIBUTION_LINK }}
-            ${{ secrets.TESTFLIGHT_SAFETY_DISTRIBUTION_LINK }}
-            ${{ secrets.WEB_PAGE_SAFETY_DISTRIBUTION_LINK }}
           bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
           bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
           matrix_room_ids: ${{ secrets.CI_MATRIX_ROOM_IDS }}

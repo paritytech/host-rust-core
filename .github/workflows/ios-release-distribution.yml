@@ -73,12 +73,11 @@ jobs:
             Version: ${{ needs.build.outputs.marketing_version }}
             Build number: ${{ needs.build.outputs.build_number }}
           download_links_format: inline
-          # Each secret holds one ready-to-render markdown link entry, e.g.
-          # "[TestFlight](https://testflight.apple.com/join/<id>)". The label is part
-          # of the secret so that access hints stay out of the public repo.
+          # The secret holds a ready-to-render markdown entry, label included, so
+          # that an access hint stays out of this public repo. No web page link is
+          # configured, so TestFlight is the only entry.
           download_links: |
             ${{ secrets.TESTFLIGHT_DISTRIBUTION_LINK }}
-            ${{ secrets.WEB_PAGE_DISTRIBUTION_LINK }}
           bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
           bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
           matrix_room_ids: ${{ secrets.CI_MATRIX_ROOM_IDS }}
