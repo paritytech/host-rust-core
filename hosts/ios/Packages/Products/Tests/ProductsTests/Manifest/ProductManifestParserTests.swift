@@ -199,6 +199,88 @@ struct ProductManifestParserTests {
         #expect(!worker.includesPocket)
     }
 
+    // MARK: - Pocket cards
+
+    @Test func parsesPocketCardsAWorkerPublishes() throws {
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: Fixtures.cards())))
+
+        #expect(worker.pocketCards.map(\.id.value) == ["loyalty", "trophy"])
+        #expect(worker.pocketCards.map(\.title) == ["Loyalty", "Trophy"])
+        #expect(worker.pocketCards.first?.preview == .archive(path: "faces/loyalty.json"))
+    }
+
+    /// A published manifest must never make the Host fetch an address of the
+    /// product's choosing, so a preview is read as an archive path whatever it
+    /// spells.
+    @Test func readsAPreviewAsAnArchivePathEvenWhenItSpellsAUrl() throws {
+        let cards = #"[{"id":"loyalty","title":"Loyalty","preview":"https://evil.example/face.json"}]"#
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
+
+        #expect(worker.pocketCards.first?.preview == .archive(path: "https://evil.example/face.json"))
+    }
+
+    /// A stricter Host must not see a different manifest than this one, so cards
+    /// are read only behind the flag that declares them.
+    @Test func publishesNoCardsWithoutThePocketInclude() throws {
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "false", cards: Fixtures.cards())))
+
+        #expect(worker.pocketCards.isEmpty)
+    }
+
+    @Test func publishesNoCardsWhenTheWorkerDeclaresNone() throws {
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true")))
+
+        #expect(worker.pocketCards.isEmpty)
+    }
+
+    /// A defect in the cards costs the product its cards and nothing more:
+    /// failing the worker record over one would take the product's chat with it.
+    @Test func keepsTheWorkerWhenACardIsMalformed() throws {
+        let missingTitle = #"[{"id":"loyalty","preview":"faces/loyalty.json"}]"#
+        let blankPreview = #"[{"id":"loyalty","title":"Loyalty","preview":"  "}]"#
+
+        for cards in [missingTitle, blankPreview] {
+            let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
+
+            #expect(worker.includesChat)
+            #expect(worker.pocketCards.isEmpty)
+        }
+    }
+
+    /// Two cards under one id would make the card a product hands out ambiguous,
+    /// so the whole set is refused rather than one of them picked.
+    @Test func publishesNoCardsWhenIdsRepeat() throws {
+        let cards = """
+        [{"id":"loyalty","title":"One","preview":"a.json"},
+         {"id":"loyalty","title":"Two","preview":"b.json"}]
+        """
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
+
+        #expect(worker.pocketCards.isEmpty)
+    }
+
+    /// The user approves a card from a dialog showing its title, so an id
+    /// carrying a character that renders as nothing is refused here rather than
+    /// at the first wire call.
+    @Test func publishesNoCardsWhenAnIdHidesCharacters() throws {
+        let cards = #"[{"id":"loy\u200balty","title":"Loyalty","preview":"faces/loyalty.json"}]"#
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
+
+        #expect(worker.pocketCards.isEmpty)
+    }
+
+    private func parsedWorker(_ manifest: String) -> ProductExecutable.Worker? {
+        guard case let .worker(worker)? = parser.parseExecutable(
+            manifest,
+            kind: .worker,
+            identifier: "worker.hackm3.dot"
+        ) else {
+            Issue.record("expected a worker executable")
+            return nil
+        }
+        return worker
+    }
+
     @Test func rejectsWorkerMissingEntrypointOrIncludes() {
         #expect(parser.parseExecutable(
             #"{"$v":1,"kind":"worker","appVersion":[1,0,0],"includes":{"chat":true,"pocket":false}}"#,
@@ -240,10 +322,18 @@ private enum Fixtures {
         """
     }
 
-    static func worker(chat: String = "true", pocket: String = "false") -> String {
-        """
+    static func worker(chat: String = "true", pocket: String = "false", cards: String? = nil) -> String {
+        let pocketField = cards.map { ",\"pocket\":{\"cards\":\($0)}" } ?? ""
+        return """
         {"$v":1,"kind":"worker","appVersion":[1,0,0],"entrypoint":"src/worker.js",
-         "includes":{"chat":\(chat),"pocket":\(pocket)}}
+         "includes":{"chat":\(chat),"pocket":\(pocket)}\(pocketField)}
+        """
+    }
+
+    static func cards() -> String {
+        """
+        [{"id":"loyalty","title":"Loyalty","preview":"faces/loyalty.json"},
+         {"id":"trophy","title":"Trophy","preview":"faces/trophy.json"}]
         """
     }
 }
