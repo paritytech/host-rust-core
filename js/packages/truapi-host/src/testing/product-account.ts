@@ -1,0 +1,70 @@
+// The address a product account will be given, worked out without a host.
+//
+// A product account is derived from (session root, product id), so it exists
+// before any host runs and is the same on every run. That is what lets a suite
+// fund it once, in a `globalSetup`, rather than per test: funding is a property
+// of the account, not of the run.
+
+import { DerivationIndex } from "@parity/truapi";
+
+import { resolveAccount, type DevAccount, type DevAccountName } from "./dev-accounts.js";
+import { wasmArtifact } from "./require-wasm.js";
+
+/** Which account, product and index to derive. */
+export interface ProductAccountQuery {
+  /** The dev account whose session root the product account descends from. */
+  account: DevAccountName | DevAccount;
+  /** The product's dotNS identifier, e.g. `"tx-demo.dot"`. */
+  productId: string;
+  /** Index within the product's subtree. Defaults to `0`. */
+  index?: number;
+}
+
+/** The core's pure derivation helpers, as the node bundle exports them. */
+interface Derivation {
+  default: (input?: unknown) => Promise<unknown>;
+  deriveProductSubtreePublicKey(
+    rootEntropy: Uint8Array,
+    productId: string,
+  ): Uint8Array;
+  deriveProductAccountPublicKey(
+    productSubtreePublicKey: Uint8Array,
+    derivationIndex: Uint8Array,
+  ): Uint8Array;
+  productAccountAddress(publicKey: Uint8Array): string;
+}
+
+let loaded: Promise<Derivation> | undefined;
+
+/** Load the core's wasm once, for the derivation helpers alone. */
+async function derivation(): Promise<Derivation> {
+  loaded ??= (async () => {
+    const glue = (await import(
+      /* @vite-ignore */ wasmArtifact("testing/truapi_server.js")
+    )) as Derivation;
+    await glue.default();
+    return glue;
+  })();
+  return loaded;
+}
+
+/**
+ * The SS58 address of the product account `query` names.
+ *
+ * Encoded at the prefix the core mandates, which is not necessarily the one a
+ * product displays. Pass it to a faucet or a transfer as it stands.
+ *
+ * Needs the built WASM bundle; see `wasmIsBuilt`.
+ */
+export async function productAccountAddress(
+  query: ProductAccountQuery,
+): Promise<string> {
+  const { entropy } = resolveAccount(query.account);
+  const core = await derivation();
+  const subtree = core.deriveProductSubtreePublicKey(entropy, query.productId);
+  // The index crosses SCALE-encoded, so the chain code stays core-owned.
+  const index = DerivationIndex.enc({ tag: "Index", value: query.index ?? 0 });
+  return core.productAccountAddress(
+    core.deriveProductAccountPublicKey(subtree, index),
+  );
+}

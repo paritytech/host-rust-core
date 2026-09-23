@@ -21,6 +21,11 @@ import type {
   SigningLogEntry,
 } from "../web/create-mock-host.js";
 
+// The address a product account will be given, derivable without a host: a
+// suite funding that account does it once, in setup, not per test.
+export { productAccountAddress } from "./product-account.js";
+export type { ProductAccountQuery } from "./product-account.js";
+
 import { PRODUCT_FRAME_ID } from "./host-page.js";
 import { createTestHostServer } from "./server.js";
 import { hostPageUrl } from "./host-page-url.js";

@@ -1331,6 +1331,25 @@ impl WasmSigningHostRuntime {
 /// The index crosses encoded rather than as a number so the chain code stays
 /// core-owned: a host that rebuilds it wrongly gets a valid-looking wrong
 /// address rather than an error.
+/// Derive a product's hard-subtree public key from a session's root entropy.
+///
+/// Pure: no runtime and no session, so a test harness can work out the address
+/// a product will be given before it starts a host. The entropy is the same 32
+/// bytes `activateLocalSession` takes.
+#[wasm_bindgen(js_name = deriveProductSubtreePublicKey)]
+pub fn derive_product_subtree_public_key(
+    root_entropy: Vec<u8>,
+    product_id: String,
+) -> Result<Vec<u8>, JsValue> {
+    let root = crate::host_logic::product_account::derive_root_keypair_from_entropy(&root_entropy)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let product_id = crate::platform::normalize_product_identifier(&product_id)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    crate::host_logic::product_account::derive_product_subtree_keypair(&root, &product_id)
+        .map(|keypair| keypair.public.to_bytes().to_vec())
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
 #[wasm_bindgen(js_name = deriveProductAccountPublicKey)]
 pub fn derive_product_account_public_key(
     product_subtree_public_key: Vec<u8>,
