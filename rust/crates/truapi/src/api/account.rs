@@ -86,8 +86,10 @@ pub trait Account: Send + Sync {
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
-    /// const PEOPLE_COLLECTION_ID =
-    ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465" as const;
+    /// const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Array.from(
+    ///   new TextEncoder().encode("pop:polkadot.network/people-lite"),
+    ///   (byte) => byte.toString(16).padStart(2, "0"),
+    /// ).join("")}`;
     /// const keyHandle = {
     ///   dotNsIdentifier: productContext.value.productId,
     ///   derivationIndex: { tag: "Index" as const, value: 0 },
@@ -130,8 +132,10 @@ pub trait Account: Send + Sync {
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
-    /// const PEOPLE_COLLECTION_ID =
-    ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
+    /// const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Array.from(
+    ///   new TextEncoder().encode("pop:polkadot.network/people-lite"),
+    ///   (byte) => byte.toString(16).padStart(2, "0"),
+    /// ).join("")}`;
     ///
     /// const result = await truapi.account.createAccountProof({
     ///   keyHandle: {
@@ -214,8 +218,10 @@ pub trait Account: Send + Sync {
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
-    /// const PEOPLE_COLLECTION_ID =
-    ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
+    /// const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Array.from(
+    ///   new TextEncoder().encode("pop:polkadot.network/people-lite"),
+    ///   (byte) => byte.toString(16).padStart(2, "0"),
+    /// ).join("")}`;
     ///
     /// const result = await truapi.account.registerRingVrfKey({
     ///   index: { tag: "Index", value: 0 },
@@ -245,11 +251,38 @@ pub trait Account: Send + Sync {
     /// const productContext = await truapi.system.getProductContext();
     /// assert(productContext.isOk(), "getProductContext failed:", productContext);
     ///
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
+    ///
+    /// const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Array.from(
+    ///   new TextEncoder().encode("pop:polkadot.network/people-lite"),
+    ///   (byte) => byte.toString(16).padStart(2, "0"),
+    /// ).join("")}`;
+    /// const index = { tag: "Index" as const, value: 0 };
+    /// const registration = await truapi.account.registerRingVrfKey({
+    ///   index,
+    ///   ring: {
+    ///     chainId: people.value.genesisHash,
+    ///     junctions: [{ tag: "CollectionId", value: PEOPLE_COLLECTION_ID }],
+    ///   },
+    /// });
+    /// assert(registration.isOk(), "registerRingVrfKey failed:", registration);
+    ///
     /// const result = await truapi.account.listRingVrfKeys({
     ///   owner: productContext.value.productId,
     ///   disclosure: "PublicKey",
     /// });
     /// assert(result.isOk(), "listRingVrfKeys failed:", result);
+    /// const entry = result.value.find(
+    ///   (candidate) =>
+    ///     candidate.handle.dotNsIdentifier === productContext.value.productId &&
+    ///     candidate.handle.derivationIndex.value === index.value,
+    /// );
+    /// assert(
+    ///   entry?.publicKey === registration.value,
+    ///   "registered key missing from listRingVrfKeys:",
+    ///   result.value,
+    /// );
     /// console.log("registered ring VRF keys:", result.value);
     /// ```
     #[wire(id = 9)]
