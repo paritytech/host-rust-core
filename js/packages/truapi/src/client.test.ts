@@ -287,14 +287,15 @@ describe("generated client transport", () => {
             tag: "V1",
             value: { codecVersion: TRUAPI_CODEC_VERSION },
         });
-        const expectedFrame = new Uint8Array(str.enc("p:1").length + 3 + expectedPayload.length);
-        expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 1; // system trait
-        expectedFrame[str.enc("p:1").length + 1] = 0; // handshake
-        expectedFrame[str.enc("p:1").length + 2] = MESSAGE_TYPE_REQUEST;
-        expectedFrame.set(expectedPayload, str.enc("p:1").length + 3);
+        // Second request on this client, so the handshake carries id `p:2`.
+        const expectedFrame = new Uint8Array(str.enc("p:2").length + 3 + expectedPayload.length);
+        expectedFrame.set(str.enc("p:2"), 0);
+        expectedFrame[str.enc("p:2").length] = 1; // system trait
+        expectedFrame[str.enc("p:2").length + 1] = 0; // handshake
+        expectedFrame[str.enc("p:2").length + 2] = MESSAGE_TYPE_REQUEST;
+        expectedFrame.set(expectedPayload, str.enc("p:2").length + 3);
 
-        expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
+        expect(toHex(fixture.sent[fixture.sent.length - 1])).toBe(toHex(expectedFrame));
     });
 
     it("uses the transport codec version for generated handshake calls", () => {

@@ -26,7 +26,6 @@ import {
 import {
   NativeChatPickedFile,
   PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec,
-  PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec,
   ProductContext as ProductContextCodec,
 } from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
@@ -233,7 +232,7 @@ interface RuntimeState {
   disposeGraceTimer: ReturnType<typeof setTimeout> | undefined;
   /** How long `dispose()` waits for open operations before forcing teardown. */
   operationGraceMs: number;
-  chainConnections: Map<number, ChainConnection>;
+  chainConnections: Map<number, RpcConnectionEntry>;
   pendingDisconnects: Map<
     number,
     { resolve: () => void; reject: (error: Error) => void }
@@ -498,12 +497,9 @@ async function discardChatFileCallback(
     }
   } catch {
     // A closed/failed backing store is unavailable; never log private handles or payloads.
-/**
- * Key one pending-operation hold. `OperationId` is unique per product, not per
- * worker, so the product a `beginOperation`/`endOperation` arrived for has to be
- * part of the key. Returns null if the encoded product will not decode, which
- * drops the hold rather than letting it pin the worker forever.
- */
+  }
+}
+
 /**
  * Read the host-assigned id out of a `beginOperation` response. Returns null if
  * the response will not decode, so a hold that cannot be keyed is dropped
@@ -518,6 +514,12 @@ function operationIdFrom(value: unknown): number | null {
   }
 }
 
+/**
+ * Key one pending-operation hold. `OperationId` is unique per product, not per
+ * worker, so the product a `beginOperation`/`endOperation` arrived for has to be
+ * part of the key. Returns null if the encoded product will not decode, which
+ * drops the hold rather than letting it pin the worker forever.
+ */
 function operationHold(encodedProduct: unknown, id: number): string | null {
   if (!(encodedProduct instanceof Uint8Array)) return null;
   try {
@@ -577,6 +579,23 @@ function handleCallbackRequest(
           await discardChatFileCallback(state, msg.name, value);
           return;
         }
+        // Tracked in the success arm only: a rejected begin must not leave a
+        // hold that nothing will ever release.
+        if (msg.name === "beginOperation") {
+          const id = operationIdFrom(value);
+          const hold = id === null ? null : operationHold(msg.args[0], id);
+          if (hold !== null) state.openOperations.add(hold);
+        } else if (msg.name === "endOperation") {
+          const id = msg.args[1];
+          const hold =
+            typeof id === "number" ? operationHold(msg.args[0], id) : null;
+          if (hold !== null) state.openOperations.delete(hold);
+          if (state.openOperations.size === 0 && state.disposePending) {
+            state.disposePending = false;
+            clearDisposeGrace(state);
+            teardown(state, new Error("runtime disposed"), false);
+          }
+        }
         if (msg.name === "beginChatFileExport" && typeof value === "string") {
           state.chatFileExports.add(value);
         } else if (
@@ -610,30 +629,6 @@ function handleCallbackRequest(
             );
           }
         }
-      (value) => {
-        // Tracked in the success arm only: a rejected begin must not leave a
-        // hold that nothing will ever release.
-        if (msg.name === "beginOperation") {
-          const id = operationIdFrom(value);
-          const hold = id === null ? null : operationHold(msg.args[0], id);
-          if (hold !== null) state.openOperations.add(hold);
-        } else if (msg.name === "endOperation") {
-          const id = msg.args[1];
-          const hold =
-            typeof id === "number" ? operationHold(msg.args[0], id) : null;
-          if (hold !== null) state.openOperations.delete(hold);
-          if (state.openOperations.size === 0 && state.disposePending) {
-            state.disposePending = false;
-            clearDisposeGrace(state);
-            teardown(state, new Error("runtime disposed"), false);
-          }
-        }
-        state.worker.postMessage({
-          kind: "callbackResponse",
-          requestId: msg.requestId,
-          ok: true,
-          value,
-        } satisfies MainToWorker);
       },
       (err) => {
         if (state.disposed) return;
@@ -1161,12 +1156,10 @@ interface CreateWebWorkerHostRuntimeOptions {
 
 export interface CreateWebWorkerPairingHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
   hostConfig: WebWorkerHostConfig;
-  role?: "pairing";
 }
 
 export interface CreateWebWorkerSigningHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
   hostConfig: WebWorkerSigningHostConfig;
-  role?: "signing";
 }
 
 export type WebWorkerHostCallbacks = RequiredHostCallbacks;
@@ -1176,10 +1169,10 @@ export function createWebWorkerPairingHostRuntime(
   host: WebWorkerHostCallbacks,
   options: CreateWebWorkerPairingHostRuntimeOptions,
 ): Promise<WorkerPairingHostRuntime> {
-  return createWebWorkerHostRuntime(worker, host, {
-    ...options,
-    role: "pairing",
-  });
+  // No role default: a host that asks for none must put exactly what it put
+  // on the wire before the field existed, and the worker reads absent as
+  // "pairing".
+  return createWebWorkerHostRuntime(worker, host, options);
 }
 
 export function createWebWorkerSigningHostRuntime(
@@ -1189,7 +1182,7 @@ export function createWebWorkerSigningHostRuntime(
 ): Promise<WorkerSigningHostRuntime> {
   return createWebWorkerHostRuntime(worker, host, {
     ...options,
-    role: "signing",
+    role: options.role ?? "signing",
   });
 }
 
@@ -1447,7 +1440,6 @@ function createWebWorkerHostRuntime(
             coinageWallet: callbacks.nativeCoinage !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,
-          role: options.role,
         } satisfies MainToWorker);
       } else if (msg.kind === "ready") {
         state.coreWireSchemaHash = msg.schema;
@@ -1711,13 +1703,6 @@ function buildRuntime(
       return sendSessionActivationRequest(state, (requestId) => ({
         kind: "resetSessionState",
         requestId,
-      }));
-    },
-    activateLocalSession(secret: Uint8Array): Promise<void> {
-      return sendSessionActivationRequest(state, (requestId) => ({
-        kind: "activateLocalSession",
-        requestId,
-        secret,
       }));
     },
     activateLocalSessionWithIdentity(
