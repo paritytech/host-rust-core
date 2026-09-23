@@ -363,6 +363,15 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     }
 }
 
+impl From<&ProductContext> for NativeProductExecutionConfig {
+    fn from(product: &ProductContext) -> Self {
+        Self {
+            product_id: product.product_id.clone(),
+            execution_kind: product.execution_kind,
+        }
+    }
+}
+
 impl TryFrom<NativeProductExecutionConfig> for ProductContext {
     type Error = NativeRuntimeConfigError;
 
@@ -617,10 +626,12 @@ pub trait HostCallbacks: Send + Sync {
     /// Cancel a notification by id.
     fn cancel_notification(&self, id: u32) -> Result<(), HostRejection>;
 
-    /// Prompt the user for a device-level permission (camera, mic, ...);
-    /// the host preserves whether approval applies once or always.
+    /// Prompt the user for a device-level permission (camera, mic, ...)
+    /// `product` requested; the host preserves whether approval applies once
+    /// or always.
     async fn device_permission(
         &self,
+        product: NativeProductExecutionConfig,
         request: v01::HostDevicePermissionRequest,
     ) -> Result<NativePermissionDecision, HostRejection>;
 
@@ -639,9 +650,10 @@ pub trait HostCallbacks: Send + Sync {
         request: v01::HostDevicePermissionRequest,
     ) -> Result<NativeDevicePermissionStatus, HostRejection>;
 
-    /// Prompt the user for a remote (product-scoped) permission.
+    /// Prompt the user for a remote permission `product` requested.
     async fn remote_permission(
         &self,
+        product: NativeProductExecutionConfig,
         request: v01::RemotePermission,
     ) -> Result<NativePermissionDecision, HostRejection>;
 
@@ -2183,7 +2195,7 @@ impl truapi_platform::PermissionStatusHost for CallbackPlatform {
 impl Permissions for CallbackPlatform {
     async fn device_permission(
         &self,
-        _product: &ProductContext,
+        product: &ProductContext,
         request: v01::HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
@@ -2192,7 +2204,7 @@ impl Permissions for CallbackPlatform {
         );
 
         self.callbacks
-            .device_permission(request)
+            .device_permission(product.into(), request)
             .await
             .map(Into::into)
             .map_err(v01::GenericError::from)
@@ -2200,7 +2212,7 @@ impl Permissions for CallbackPlatform {
 
     async fn remote_permission(
         &self,
-        _product: &ProductContext,
+        product: &ProductContext,
         request: v01::RemotePermissionRequest,
     ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
@@ -2209,7 +2221,7 @@ impl Permissions for CallbackPlatform {
         );
 
         self.callbacks
-            .remote_permission(request.permission)
+            .remote_permission(product.into(), request.permission)
             .await
             .map(Into::into)
             .map_err(v01::GenericError::from)
@@ -3002,6 +3014,7 @@ mod tests {
         permission_confirmation_result: NativePermissionDecision,
         /// Counts prompts across the execution's separate connections.
         remote_permission_calls: std::sync::atomic::AtomicUsize,
+        remote_permission_products: Mutex<Vec<(String, ProductExecutionKind)>>,
     }
 
     impl EventCallbacks {
@@ -3047,6 +3060,7 @@ mod tests {
                 core_storage: Mutex::default(),
                 permission_confirmation_result: NativePermissionDecision::Deny,
                 remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
+                remote_permission_products: Mutex::new(Vec::new()),
             }
         }
     }
@@ -3083,6 +3097,7 @@ mod tests {
         }
         async fn device_permission(
             &self,
+            _product: NativeProductExecutionConfig,
             _request: v01::HostDevicePermissionRequest,
         ) -> Result<NativePermissionDecision, HostRejection> {
             Ok(NativePermissionDecision::Deny)
@@ -3099,9 +3114,14 @@ mod tests {
         }
         async fn remote_permission(
             &self,
+            product: NativeProductExecutionConfig,
             _request: v01::RemotePermission,
         ) -> Result<NativePermissionDecision, HostRejection> {
             self.remote_permission_calls.fetch_add(1, Ordering::SeqCst);
+            self.remote_permission_products
+                .lock()
+                .unwrap()
+                .push((product.product_id, product.execution_kind));
             let reply = self.remote_permission_reply.lock().unwrap().take();
             match reply {
                 Some(reply) => reply.await.unwrap(),
@@ -4882,6 +4902,7 @@ mod tests {
             }
             async fn device_permission(
                 &self,
+                _product: NativeProductExecutionConfig,
                 _request: v01::HostDevicePermissionRequest,
             ) -> Result<NativePermissionDecision, HostRejection> {
                 Ok(NativePermissionDecision::Deny)
@@ -4894,6 +4915,7 @@ mod tests {
             }
             async fn remote_permission(
                 &self,
+                _product: NativeProductExecutionConfig,
                 _request: v01::RemotePermission,
             ) -> Result<NativePermissionDecision, HostRejection> {
                 Ok(NativePermissionDecision::Deny)
@@ -5050,6 +5072,7 @@ mod tests {
             }
             async fn device_permission(
                 &self,
+                _product: NativeProductExecutionConfig,
                 _request: v01::HostDevicePermissionRequest,
             ) -> Result<NativePermissionDecision, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
@@ -5069,6 +5092,7 @@ mod tests {
             }
             async fn remote_permission(
                 &self,
+                _product: NativeProductExecutionConfig,
                 _request: v01::RemotePermission,
             ) -> Result<NativePermissionDecision, HostRejection> {
                 Ok(NativePermissionDecision::Deny)
@@ -5709,7 +5733,7 @@ mod tests {
                     callbacks.clone(),
                     None,
                     None,
-                    native_execution_config("fetch.dot", ProductExecutionKind::App),
+                    native_execution_config("fetch.dot", ProductExecutionKind::Worker),
                 )
                 .unwrap();
             let request = truapi::latest::RemotePermissionRequest {
@@ -5723,9 +5747,12 @@ mod tests {
             assert_eq!(
                 (
                     response,
-                    callbacks.remote_permission_calls.load(Ordering::SeqCst)
+                    callbacks.remote_permission_products.lock().unwrap().clone()
                 ),
-                (granted, 1),
+                (
+                    granted,
+                    vec![("fetch.dot".to_string(), ProductExecutionKind::Worker)]
+                ),
             );
         }
     }
