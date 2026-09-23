@@ -5,6 +5,18 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.19.1] - 2026-09-23
+
+### Added
+
+- chat modality on the shared TrUAPI core (#840)
+
+### Fixed
+
+- reject rustdoc warnings
+- regenerate before headless install
+- stop freezing built-in prototypes (#915)
+
 ## [0.19.0] - 2026-09-22
 
 ### Added
@@ -18,6 +30,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.19.0, @parity/truapi-host 0.19.0 (#904)
 - Sandbox CLI product scripts by default (#829)
 - @parity/truapi-provider 0.2.1 (#871)
 
