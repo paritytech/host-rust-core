@@ -51,11 +51,11 @@ private extension SearchContactViewController {
 }
 
 extension SearchContactViewController: SearchContactViewProtocol {
-    func didReceive(viewModel: SearchContactViewLayout.ViewModel) {
+    func didReceive(viewModel: SearchContactResultsView.ViewModel) {
         rootView.bind(viewModel: viewModel)
     }
 
-    func didReceive(status: SearchContactViewLayout.StatusViewModel) {
+    func didReceive(status: SearchContactResultsView.StatusViewModel) {
         rootView.bind(status: status)
     }
 }

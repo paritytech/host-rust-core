@@ -2597,6 +2597,17 @@
         }
       }
     },
+    "searchContact.noRecentSearches": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No recent searches"
+          }
+        }
+      }
+    },
     "searchContact.recent.chats": {
       "extractionState": "manual",
       "localizations": {
