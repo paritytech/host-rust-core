@@ -8,21 +8,21 @@
 //! `truapi-server`, a `MockPlatform` wired into the core yields a faithful host
 //! whose only mocked surface is the OS-primitive seam.
 //!
-//! Behavior is a [`MockConfig`] read on every call: per-capability permission
-//! policy, feature support, theme, confirmation answer, [`ChainBehavior`], and
-//! [`MockFaults`] error injection. Recordings (`navigations`,
+//! Behavior is a [`MockConfig`](crate::mock::MockConfig) read on every call: per-capability permission
+//! policy, feature support, theme, confirmation answer, [`ChainBehavior`](crate::mock::ChainBehavior), and
+//! [`MockFaults`](crate::mock::MockFaults) error injection. Recordings (`navigations`,
 //! `pushed_notifications`, `confirmations`, `auth_states`, `sent_rpc`, …) are
 //! the test oracles.
 //!
 //! Signing and login require a paired wallet answering over the statement-store
-//! channel. With [`ChainBehavior::Silent`] the chain connection records
+//! channel. With [`ChainBehavior::Silent`](crate::mock::ChainBehavior::Silent) the chain connection records
 //! outbound requests and never answers, so those flows park; use
-//! [`ChainBehavior::Scripted`] to feed canned response frames.
+//! [`ChainBehavior::Scripted`](crate::mock::ChainBehavior::Scripted) to feed canned response frames.
 //!
 //! Preimage submission is core-owned on current core (the core builds, signs,
 //! and submits the Bulletin `TransactionStorage.store` transaction itself), so
 //! the mock only implements host-side content retrieval via `lookup_preimage`.
-//! Seed retrievable content with [`MockPlatform::insert_preimage`].
+//! Seed retrievable content with [`MockPlatform::insert_preimage`](crate::mock::MockPlatform::insert_preimage).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;

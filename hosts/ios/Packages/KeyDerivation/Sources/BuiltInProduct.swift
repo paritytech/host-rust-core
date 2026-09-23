@@ -5,8 +5,9 @@ import Foundation
 /// when those features migrate to the product scheme. Coinage keeps its own
 /// derivation layout for now.
 public enum BuiltInProduct {
-    /// Game (DIM2).
-    public static func dim2(for tld: String) -> String {
+    /// Game (DIM2). `@Sendable` so the value of this function can be stored in a
+    /// `Sendable` type, which is how `HostPlacedProducts` names its backing product.
+    @Sendable public static func dim2(for tld: String) -> String {
         product(for: "dim2", tld: tld)
     }
 

@@ -178,6 +178,8 @@ public extension CustomMessageWidgetNode {
         public let minHeight: CGFloat?
         public let fillWidth: Bool
         public let fillHeight: Bool
+        /// `nil` is fully opaque, matching a node that carries no opacity modifier.
+        public let opacity: CGFloat?
 
         public var hasWidthConstraint: Bool {
             width != nil || minWidth != nil || fillWidth
@@ -210,7 +212,8 @@ public extension CustomMessageWidgetNode {
             minWidth: CGFloat? = nil,
             minHeight: CGFloat? = nil,
             fillWidth: Bool = false,
-            fillHeight: Bool = false
+            fillHeight: Bool = false,
+            opacity: CGFloat? = nil
         ) {
             self.padding = padding
             self.margin = margin
@@ -222,6 +225,7 @@ public extension CustomMessageWidgetNode {
             self.minHeight = minHeight
             self.fillWidth = fillWidth
             self.fillHeight = fillHeight
+            self.opacity = opacity
         }
     }
 }

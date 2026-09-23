@@ -38,6 +38,13 @@ Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolc
 
 Product scripts and `truapi-host dev` use the same web API permission checks from `js/container`. Dev loads the container through a blocking script tag in your existing browser. Scripts run in Bun and retain filesystem, environment and process access.
 
+To build from source, run `make headless install` with stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and
+Bun installed. The target installs missing workspace build tools and regenerates the Rust and TypeScript sources before
+compiling. CI tests this command in both a fresh checkout and one with stale generated files, then runs a product script
+through the installed CLI. Code generation and the workspace documentation check reject rustdoc warnings. These checks
+are part of the required `CI Status` gate. CLI packaging tests also build an isolated runner and verify it outside the
+source checkout.
+
 ## Usage
 
 `@parity/truapi` is the low-level generated protocol client. Product apps should normally use a higher-level product SDK, such as [`paritytech/product-sdk`](https://github.com/paritytech/product-sdk), while SDK and host-integration layers can depend on this package directly.

@@ -158,6 +158,7 @@ extension ChatViewModelFactory: ChatViewModelMaking {
 
             let decodingContext = ChatMessageDecodingContext(
                 messageId: message.messageId,
+                roomId: message.chatId.roomId,
                 identifier: content.identifier,
                 processAction: { _ in }
             )
@@ -324,6 +325,7 @@ private extension ChatViewModelFactory {
         case let .customRendered(content):
             let decodingContext = ChatMessageDecodingContext(
                 messageId: message.messageId,
+                roomId: message.chatId.roomId,
                 identifier: content.identifier,
                 processAction: actions.processAction
             )
