@@ -69,13 +69,6 @@ rest.
 - Prefer one `assert_eq!` over a whole value to several assertions on
   individual fields.
 
-## iOS Simulator
-
-Check XcodeBuildMCP session defaults and booted devices before choosing a
-simulator. Prefer the simulator already used for this project, including across
-worktrees; otherwise reuse a compatible booted simulator. Choose or create a
-different device only when the task requires it or the user requests it.
-
 ## Editing existing Rust
 
 Preserve the local style. Do not add semicolons to `return`, `break` or
