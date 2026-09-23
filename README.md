@@ -463,12 +463,36 @@ Secrets: `GOOGLE_SERVICES_JSON_BASE64`, `CI_GITHUB_KEYSTORE_KEY_FILE`,
 Variables: `APPLICATION_ID`, `APPLICATION_NAME`, `CURRENCY_SYMBOL`,
 `LOG_COLLECTION_EMAIL`, `PRIVACY_POLICY_URL`, `TERMS_OF_USE_URL`,
 `SENTRY_ORG`, `SENTRY_PROJECT`, `GAME_RESULTS_FALLBACK_URL`,
-`REFERRAL_WEB_HOST`, `ANDROID_FIREBASE_GROUP`, `ANDROID_FIREBASE_DEBUG_GROUP`.
+`REFERRAL_WEB_HOST`, `CONTACT_EMAIL`, `ANDROID_FIREBASE_GROUP`,
+`ANDROID_FIREBASE_DEBUG_GROUP`.
 
 `GOOGLE_PROJECT_ID` carries an `L` suffix. It is interpolated into a Java
 `long` literal, and a twelve digit project number overflows an `int` without
 one. Everything the app needs at runtime beyond these comes from Firebase
 Remote Config, keyed on an `environment` signal the build sets.
+
+### Instrumented tests
+
+`android-instrumented-tests.yml` boots an emulator and runs the app module's
+connected tests. It starts from the `android-instrumented-tests` label rather
+than from every commit, because the runner is macOS and a cold emulator costs
+minutes before the first assertion. `workflow_dispatch` runs it without a pull
+request to carry the label.
+
+It is not part of the required set, so a red run reports rather than blocks.
+
+### Credentials, checked before a release needs them
+
+Certificates, provisioning profiles and store keys expire, and a release is the
+most expensive place to discover it. `validate-signing-credentials.yml` runs on
+weekday mornings, authenticates each platform, and proves the credential is
+live without building or publishing: Android reuses the delivery check the
+nightly runs before it builds, and iOS reads one page of applications through
+the store key then fetches the signing material read only.
+
+Each job removes what it materialised, and the last verdict is carried into the
+pull request summary, so it is visible before someone starts a release rather
+than after. A workflow that has never run reports as never run, not as healthy.
 
 ### Building the standalone iOS host app
 

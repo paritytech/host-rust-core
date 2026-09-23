@@ -1161,15 +1161,17 @@ pub enum PermissionDecision {
 /// surface mirrors that split.
 #[async_trait]
 pub trait Permissions: Send + Sync {
-    /// Prompt the user for a device-level permission.
+    /// Prompt the user for a device-level permission `product` requested.
     async fn device_permission(
         &self,
+        product: &ProductContext,
         request: HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, GenericError>;
 
-    /// Prompt the user for a remote (product-scoped) permission bundle.
+    /// Prompt the user for a remote permission bundle `product` requested.
     async fn remote_permission(
         &self,
+        product: &ProductContext,
         request: RemotePermissionRequest,
     ) -> Result<PermissionDecision, GenericError>;
 }

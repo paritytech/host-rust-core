@@ -79,6 +79,8 @@ pub(crate) struct StubPlatform {
     pub(crate) device_permission_decisions:
         Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
     pub(crate) device_permission_requests: Mutex<Vec<v01::HostDevicePermissionRequest>>,
+    /// Product passed to each permission prompt, in order.
+    pub(crate) permission_prompt_products: Mutex<Vec<ProductContext>>,
     pub(crate) remote_permission_denied: bool,
     pub(crate) remote_permission_decisions:
         Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
@@ -1175,8 +1177,13 @@ impl PlatformNotifications for StubPlatform {
 impl PlatformPermissions for StubPlatform {
     async fn device_permission(
         &self,
+        product: &ProductContext,
         request: v01::HostDevicePermissionRequest,
     ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        self.permission_prompt_products
+            .lock()
+            .expect("permission prompt products mutex poisoned")
+            .push(product.clone());
         self.device_permission_requests
             .lock()
             .expect("device permission list mutex poisoned")
@@ -1191,8 +1198,13 @@ impl PlatformPermissions for StubPlatform {
 
     async fn remote_permission(
         &self,
+        product: &ProductContext,
         request: v01::RemotePermissionRequest,
     ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+        self.permission_prompt_products
+            .lock()
+            .expect("permission prompt products mutex poisoned")
+            .push(product.clone());
         self.remote_permission_requests
             .lock()
             .expect("remote permission list mutex poisoned")
