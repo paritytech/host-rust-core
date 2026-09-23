@@ -18,6 +18,7 @@ import type {
   NotificationLogEntry,
   PermissionLogEntry,
   PermissionPolicy,
+  PermissionPolicyAlias,
   SigningLogEntry,
 } from "../web/create-mock-host.js";
 
@@ -184,7 +185,9 @@ export interface TestHost {
   grantPermission(permission: string): Promise<void>;
   revokePermission(permission: string): Promise<void>;
   setEnforcePermissions(enforce: boolean): Promise<void>;
-  setPermissionBehavior(behavior: PermissionPolicy): Promise<void>;
+  setPermissionBehavior(
+    behavior: PermissionPolicy | PermissionPolicyAlias,
+  ): Promise<void>;
   getChatRooms(): Promise<unknown[]>;
   getChatBots(): Promise<unknown[]>;
   getChatMessageLog(): Promise<ChatMessageRecord[]>;

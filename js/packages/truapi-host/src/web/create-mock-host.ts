@@ -53,6 +53,29 @@ import type { ProductRuntimeConfig } from "../runtime.js";
 export type PermissionPolicy = "allow-all" | "deny-all";
 
 /**
+ * The denying policy under the name `@parity/host-api-test-sdk` gives it.
+ *
+ * Accepted rather than ignored: the two spellings differ, and an unrecognised
+ * one used to deny by accident -- `granted` compares against `"allow-all"`, so
+ * any other string denied and a suite meaning to allow saw refusals it never
+ * asked for, with nothing saying why.
+ */
+export type PermissionPolicyAlias = "reject-all";
+
+/** Resolve a policy name, rejecting one that means nothing here. */
+function normalizePermissionPolicy(
+  behavior: PermissionPolicy | PermissionPolicyAlias,
+): PermissionPolicy {
+  if (behavior === "allow-all" || behavior === "deny-all") return behavior;
+  if (behavior === "reject-all") return "deny-all";
+  throw new Error(
+    `testHost \`setPermissionBehavior\` does not know the policy ` +
+      `"${String(behavior)}". Use "allow-all", or "deny-all" (which ` +
+      `\`@parity/host-api-test-sdk\` spells "reject-all").`,
+  );
+}
+
+/**
  * The core's product-storage key shape, whose tail is the product's own key.
  *
  * Matching on that tail rather than on any `:key` suffix is what keeps a
@@ -437,7 +460,7 @@ export interface MockHost {
    */
   getConnectionStatus(): ChainStatus;
   /** Switch the answer both permission prompts fall back to. */
-  setPermissionBehavior(behavior: PermissionPolicy): void;
+  setPermissionBehavior(behavior: PermissionPolicy | PermissionPolicyAlias): void;
   /**
    * Release the mock's state and drop every live subscription.
    *
@@ -1302,8 +1325,9 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       authStates.at(-1)?.tag === "Connected",
     getConnectionStatus: () => chainStatus,
     setPermissionBehavior: (behavior) => {
-      devicePermissions = behavior;
-      remotePermissions = behavior;
+      const policy = normalizePermissionPolicy(behavior);
+      devicePermissions = policy;
+      remotePermissions = policy;
     },
     dispose() {
       this.reset();

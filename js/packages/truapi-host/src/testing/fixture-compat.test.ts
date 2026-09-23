@@ -307,3 +307,35 @@ describe("where the loopback statement store attaches", () => {
     expect(mock.chainProxies).toEqual([{ rpcUrl: SAMPLE_CHAIN.rpcUrl }]);
   });
 });
+
+describe("the permission policy the old package's name asks for", () => {
+  const suite = wasmIsBuilt("testing/truapi_server.js") ? describe : describe.skip;
+
+  suite("against the real core", () => {
+    it("takes `reject-all` without complaint", async () => {
+      // Both spellings denied before this, but only by accident: `granted`
+      // compares against "allow-all", so every other string fell through to a
+      // denial. What changed is that the name is now recognised rather than
+      // merely unequal -- which is what makes the check below possible.
+      const { host, dispose } = await createMockClient();
+      try {
+        expect(() => host.setPermissionBehavior("reject-all")).not.toThrow();
+      } finally {
+        dispose();
+      }
+    });
+
+    it("refuses a policy name that means nothing here", async () => {
+      // This is the case the accident hid: a typo denied everything silently,
+      // and a suite meaning to allow saw refusals with nothing saying why.
+      const { host, dispose } = await createMockClient();
+      try {
+        expect(() =>
+          (host.setPermissionBehavior as (value: string) => void)("allow_all"),
+        ).toThrow(/does not know the policy/);
+      } finally {
+        dispose();
+      }
+    });
+  });
+});
