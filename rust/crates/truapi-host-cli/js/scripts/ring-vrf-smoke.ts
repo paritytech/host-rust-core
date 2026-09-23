@@ -1,6 +1,5 @@
 /// <reference path="../runner.ts" />
 
-// Collection ids are fixed 32-byte values: the collection name, space-padded.
 const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Buffer.from(
   "pop:polkadot.network/people-lite".padEnd(32),
 ).toString("hex")}`;

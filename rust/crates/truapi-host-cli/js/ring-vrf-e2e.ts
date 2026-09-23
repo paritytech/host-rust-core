@@ -12,7 +12,6 @@ import {
 } from "./auto-signing-e2e.ts";
 import type { DiagnosisRow } from "./diagnosis.ts";
 
-// Collection ids are fixed 32-byte values: the collection name, space-padded.
 const collectionId = (name: string): `0x${string}` =>
   `0x${Buffer.from(name.padEnd(32)).toString("hex")}`;
 const PEOPLE_COLLECTION_ID = collectionId("pop:polkadot.network/people");

@@ -41,7 +41,6 @@ const OWNER = "peopl.paseo";
 const GRANTED = "dim2.paseo";
 const UNTRUSTED = "stash.paseo";
 
-/// Collection ids are fixed 32-byte values: the collection name, space-padded.
 const PEOPLE_LITE_COLLECTION_ID: `0x${string}` = `0x${Buffer.from(
   "pop:polkadot.network/people-lite".padEnd(32),
 ).toString("hex")}`;
