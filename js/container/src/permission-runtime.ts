@@ -1,8 +1,12 @@
 import { freezeValue } from './freeze.js';
 import { freezeInternalResults } from '@parity/truapi/internal';
 
+/**
+ * Protect shared methods without blocking libraries such as React and Buffer
+ * from assigning overrides on their own objects. Frozen data properties would
+ * reject those assignments, so setters create receiver-owned properties instead.
+ */
 function freezePrototype(prototype: object): void {
-  // Libraries must be able to shadow inherited methods on their own objects.
   for (const name of Reflect.ownKeys(prototype)) {
     const { value, writable, configurable } = Object.getOwnPropertyDescriptor(prototype, name)!;
     if (!writable || !configurable) continue;
@@ -20,9 +24,13 @@ export function freezePermissionRuntime(): void {
   // Block inherited then hooks without preventing products' own toString/valueOf assignments.
   Object.preventExtensions(Object.prototype);
   for (const name of [
-    'Object', 'Array', 'Map', 'Set', 'WeakMap', 'Promise',
-    'Number', 'String', 'Uint8Array', 'DataView',
-    'MessageChannel', 'MessagePort', 'EventTarget',
+    'Object', 'Array', // Prevent forged decoded permission fields.
+    'Map', 'WeakMap', // Keep pending resolvers and private SDK transports inaccessible.
+    'Set', // Prevent interception of private reply listeners.
+    'Promise', // Prevent replacement of asynchronous permission results.
+    'Number',
+    'String', // Reserve host: request IDs for private permission replies.
+    'Uint8Array', 'DataView', // Prevent altered request and reply bytes.
   ] as const) {
     const constructor = globalThis[name];
     if (name !== 'Object' && name !== 'Number') freezePrototype(constructor.prototype);
