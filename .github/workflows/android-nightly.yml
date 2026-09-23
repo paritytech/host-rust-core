@@ -302,6 +302,7 @@ jobs:
           # name needing escaping cannot break the filter. `uploaded` is the state
           # that matters: an asset stranded mid-upload still reports a size, which
           # is exactly the case this step exists to catch.
+          # shellcheck disable=SC2016  # $ENV.ASSET is jq, and must not expand here
           size="$(gh release view "$TAG" --json assets \
             --jq '[.assets[] | select(.name == $ENV.ASSET and .state == "uploaded") | .size] | first // 0')"
           case "$size" in
