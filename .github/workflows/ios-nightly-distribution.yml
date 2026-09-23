@@ -135,6 +135,23 @@ jobs:
       ${{ !cancelled() &&
       needs.build_nightly.outputs.succeeded == 'true' }}
     steps:
+      # The action prints the message it renders. It rewrites the markdown entry
+      # the secret holds into an anchor, so what reaches the log is the bare URL,
+      # a substring of the secret rather than its value, and nothing redacts it.
+      # This repository is public, so registering the URL masks it for the rest
+      # of the job.
+      - name: Mask the join link
+        env:
+          LINK: ${{ secrets.TESTFLIGHT_DISTRIBUTION_LINK }}
+        run: |
+          set -euo pipefail
+          url=$(printf '%s' "$LINK" | grep -oE 'https://[^)[:space:]]+' | head -n1 || true)
+          if [ -n "$url" ]; then
+            echo "::add-mask::$url"
+          else
+            echo "::warning::No URL in TESTFLIGHT_DISTRIBUTION_LINK; nothing to mask"
+          fi
+
       - name: Send nightly release notification
         uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
