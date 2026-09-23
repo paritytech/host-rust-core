@@ -6,6 +6,7 @@ final class MockConfirmationPresenter: TrUAPIConfirmationPresenting, @unchecked 
     var receivedReview: UserConfirmationReview?
     var receivedRequesterName: String?
     var verdictToReturn: Bool = true
+    var permissionDecisionToReturn: TrUAPIPermissionDecision = .allowAlways
 
     func confirm(review: UserConfirmationReview, from requesterName: String) async -> Bool {
         receivedReview = review
@@ -18,5 +19,14 @@ final class MockConfirmationPresenter: TrUAPIConfirmationPresenting, @unchecked 
         requiresPrivacyConfirmation _: Bool
     ) async -> Bool {
         await confirm(review: .mainPurseChatPayment(review), from: review.callingProductId)
+    }
+
+    func confirmPermission(
+        review: UserConfirmationReview,
+        from requesterName: String
+    ) async -> TrUAPIPermissionDecision {
+        receivedReview = review
+        receivedRequesterName = requesterName
+        return permissionDecisionToReturn
     }
 }

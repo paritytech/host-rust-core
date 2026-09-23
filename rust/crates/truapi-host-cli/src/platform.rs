@@ -26,23 +26,24 @@ use truapi_platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
     HopProvider, JsonRpcConnection, LocaleHost, NativeChatFileExportRequest,
     NativeChatFilePickRequest, NativeChatFilesHost, NativeChatPickedFile, Navigation,
-    Notifications, PermissionStatusHost, Permissions, PreimageHost, ProductStorage,
-    ProductStorageKey, SessionUiInfo, SignRawReview, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    Notifications, PermissionDecision, PermissionStatusHost, Permissions, PreimageHost,
+    ProductContext, ProductOperations, ProductStorage, ProductStorageKey, SessionUiInfo,
+    SignRawReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
 use crate::chat_files::{self, ChatFiles};
-use crate::terminal_ui::{SystemEvent, UiHandle};
+use crate::terminal_ui::{ApprovalKind, SystemEvent, UiHandle};
 
 static NEXT_STORAGE_TEMP_ID: AtomicU32 = AtomicU32::new(0);
+static NEXT_OPERATION_ID: AtomicU32 = AtomicU32::new(1);
 
 /// How the host answers confirmation prompts (the web/iOS "sign?" modals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalPolicy {
     /// Approve every sensitive action without prompting (`--auto-accept`).
     AutoAccept,
-    /// Prompt on the CLI (y/n) for every sensitive action.
+    /// Prompt on the CLI for sensitive actions and permission decisions.
     Prompt,
 }
 
@@ -392,19 +393,30 @@ impl CliPlatform {
         persist_current_pairing_user(&scope.bootstrap_dir, user_id)
     }
 
-    /// Resolve a confirmation: auto-accept, or prompt y/n on the CLI.
     async fn decide(&self, action: &str, detail: String) -> bool {
-        self.decide_with_policy(action, detail, self.approval_policy())
+        self.decide_with(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
+    }
+
+    async fn decide_with(
+        &self,
+        action: &str,
+        detail: String,
+        kind: ApprovalKind,
+    ) -> PermissionDecision {
+        self.decide_with_policy(action, detail, kind, self.approval_policy())
             .await
     }
 
+    /// Decide under an explicitly supplied policy, so a review that must never
+    /// be auto-accepted (a main-purse Chat payment) can force the prompt.
     async fn decide_with_policy(
         &self,
         action: &str,
         detail: String,
+        kind: ApprovalKind,
         policy: ApprovalPolicy,
-    ) -> bool {
-        let approved = match policy {
+    ) -> PermissionDecision {
+        let decision = match policy {
             ApprovalPolicy::AutoAccept => {
                 if let Some(ui) = &self.ui {
                     ui.success(format!("Approved {action} automatically"), Some(detail));
@@ -414,21 +426,21 @@ impl CliPlatform {
                         Some(detail),
                     );
                 }
-                true
+                PermissionDecision::AllowAlways
             }
             ApprovalPolicy::Prompt => {
                 let _guard = self.prompt_lock.lock().await;
                 if let Some(ui) = &self.ui {
-                    ui.confirm(action, detail).await
+                    ui.decide(action, detail, kind).await
                 } else {
-                    prompt_yes_no(action, &detail).await
+                    prompt_decision(action, &detail, kind).await
                 }
             }
         };
         if let Some(path) = &self.approvals_log {
-            record_approval(path, approved, action);
+            record_approval(path, decision != PermissionDecision::Deny, action);
         }
-        approved
+        decision
     }
 }
 
@@ -555,17 +567,18 @@ fn record_approval(path: &Path, approved: bool, action: &str) {
     }
 }
 
-/// Print a confirmation and read a y/n answer from the CLI (default: no).
-async fn prompt_yes_no(action: &str, detail: &str) -> bool {
+async fn prompt_decision(action: &str, detail: &str, kind: ApprovalKind) -> PermissionDecision {
     if !std::io::stdin().is_terminal() {
         eprintln!("approval required for {action}, but stdin is not a terminal; rejecting");
-        return false;
+        return PermissionDecision::Deny;
     }
+    let action = crate::terminal_ui::sanitize_terminal_text(action);
+    let detail = crate::terminal_ui::sanitize_terminal_text(detail);
     let mut stdout = tokio::io::stdout();
     let _ = stdout
         .write_all(
             format!(
-                "\n\u{2500}\u{2500} confirm: {action} \u{2500}\u{2500}\n{detail}\nApprove? [y/N] "
+                "\n\u{2500}\u{2500} confirm: {action} \u{2500}\u{2500}\n{detail}\n{} (default: deny) ", kind.choices()
             )
             .as_bytes(),
         )
@@ -574,9 +587,9 @@ async fn prompt_yes_no(action: &str, detail: &str) -> bool {
     let mut line = String::new();
     let mut reader = BufReader::new(tokio::io::stdin());
     if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
-        return false;
+        return PermissionDecision::Deny;
     }
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    kind.parse(&line).unwrap_or(PermissionDecision::Deny)
 }
 
 #[async_trait]
@@ -621,6 +634,48 @@ impl ProductStorage for CliPlatform {
         values.remove(scoped.key());
         self.persist_product_storage(scoped.product_id(), values)
             .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
+    }
+
+    fn subscribe_storage(
+        &self,
+        key: String,
+    ) -> BoxStream<'static, Result<api::HostLocalStorageChangeItem, api::GenericError>> {
+        // TODO: current value only; the CLI never pushes later changes. Needs a
+        // per-key broadcast off write/clear for cross-context storage sync.
+        let value = ProductStorageKey::decode(&key).ok().and_then(|scoped| {
+            self.product_storage
+                .lock()
+                .expect("product storage mutex poisoned")
+                .get(scoped.product_id())
+                .and_then(|values| values.get(scoped.key()))
+                .cloned()
+        });
+        Box::pin(stream::once(async move {
+            Ok(api::HostLocalStorageChangeItem { value })
+        }))
+    }
+}
+
+#[async_trait]
+impl ProductOperations for CliPlatform {
+    async fn begin_operation(
+        &self,
+        _product: &ProductContext,
+        _label: String,
+    ) -> Result<api::HostWorkerBeginOperationResponse, api::HostWorkerOperationError> {
+        // The headless CLI has no worker to keep alive, so the id exists only so
+        // a product can pair begin/end.
+        Ok(api::HostWorkerBeginOperationResponse {
+            id: NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed),
+        })
+    }
+
+    async fn end_operation(
+        &self,
+        _product: &ProductContext,
+        _id: u32,
+    ) -> Result<(), api::HostWorkerOperationError> {
+        Ok(())
     }
 }
 
@@ -833,28 +888,34 @@ impl PermissionStatusHost for CliPlatform {
 impl Permissions for CliPlatform {
     async fn device_permission(
         &self,
-        _request: api::HostDevicePermissionRequest,
-    ) -> Result<api::HostDevicePermissionResponse, api::GenericError> {
-        let granted = self
-            .decide(
+        product: &ProductContext,
+        request: api::HostDevicePermissionRequest,
+    ) -> Result<PermissionDecision, api::GenericError> {
+        let product_id = &product.product_id;
+        Ok(self
+            .decide_with(
                 "device permission",
-                "A product requested access to a device capability.".to_string(),
+                format!("{product_id} requested access to {request}."),
+                ApprovalKind::Permission,
             )
-            .await;
-        Ok(api::HostDevicePermissionResponse { granted })
+            .await)
     }
 
     async fn remote_permission(
         &self,
-        _request: api::RemotePermissionRequest,
-    ) -> Result<api::RemotePermissionResponse, api::GenericError> {
-        let granted = self
-            .decide(
-                "remote permission",
-                "A paired product requested a remote capability.".to_string(),
-            )
-            .await;
-        Ok(api::RemotePermissionResponse { granted })
+        product: &ProductContext,
+        request: api::RemotePermissionRequest,
+    ) -> Result<PermissionDecision, api::GenericError> {
+        let product_id = &product.product_id;
+        let detail = match &request.permission {
+            api::RemotePermission::Remote { .. } => format!(
+                "{product_id} requested {request}. This covers all ports on each host, including local services."
+            ),
+            _ => format!("{product_id} requested {request}."),
+        };
+        Ok(self
+            .decide_with("remote permission", detail, ApprovalKind::Permission)
+            .await)
     }
 }
 
@@ -946,6 +1007,16 @@ fn storage_user_id(info: &SessionUiInfo) -> Option<&str> {
 
 #[async_trait]
 impl UserConfirmation for CliPlatform {
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<PermissionDecision, api::GenericError> {
+        let (action, detail) = approval_summary(&review);
+        Ok(self
+            .decide_with(action, detail, ApprovalKind::Permission)
+            .await)
+    }
+
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,
@@ -956,7 +1027,10 @@ impl UserConfirmation for CliPlatform {
         } else {
             self.approval_policy()
         };
-        Ok(self.decide_with_policy(action, detail, policy).await)
+        Ok(self
+            .decide_with_policy(action, detail, ApprovalKind::Action, policy)
+            .await
+            != PermissionDecision::Deny)
     }
 }
 

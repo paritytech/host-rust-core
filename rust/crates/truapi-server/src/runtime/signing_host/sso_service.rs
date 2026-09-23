@@ -6,9 +6,9 @@ use std::sync::Arc;
 use tracing::warn;
 use truapi::latest as api;
 use truapi_platform::{
-    CreateTransactionReview, PermissionAuthorizationStatus, ResourceAllocationReview,
-    SignPayloadReview, SignRawReview, StatementStoreProductSignReview, UserConfirmationReview,
-    normalize_product_identifier,
+    CreateTransactionReview, PermissionAuthorizationStatus, ProductContext,
+    ProductExecutionKind, ResourceAllocationReview, SignPayloadReview, SignRawReview,
+    StatementStoreProductSignReview, UserConfirmationReview, normalize_product_identifier,
 };
 
 use super::SigningHost;
@@ -605,10 +605,18 @@ impl SigningHostSsoService {
                 ));
             }
         };
+        // Upstream `PermissionsService` takes the validated product context; the
+        // SSO chat path carries only the calling product's id, and Chat is
+        // served by the worker execution kind.
+        let calling_product = ProductContext::new_with_execution(
+            calling_product_id.clone(),
+            ProductExecutionKind::Worker,
+        )
+        .map_err(|_| WireError::V1(api::HostProductDeviceChatError::InvalidRequest))?;
         let permissions = PermissionsService::new(
             self.signing_host.platform.as_ref(),
             self.signing_host.platform.as_ref(),
-            &calling_product_id,
+            &calling_product,
         );
         if permissions
             .check_or_prompt_chat_authority()

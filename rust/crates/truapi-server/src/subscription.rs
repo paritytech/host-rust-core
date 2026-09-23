@@ -35,6 +35,11 @@ type StopFn = Box<dyn FnOnce() + Send>;
 /// through it is also `Send`. Each platform bridge supplies an
 /// implementation that hands the future to the runtime driving its transport
 /// (`tokio::spawn`, `wasm_bindgen_futures::spawn_local`, ...).
+///
+/// An implementation must not panic. The core spawns teardown work from
+/// `Drop`, where a panic during unwinding aborts the process, so a spawner
+/// whose runtime is already gone drops the future and reports the failure
+/// instead.
 pub type Spawner = Arc<dyn Fn(BoxFuture<'static, ()>) + Send + Sync>;
 
 /// Convenience spawner for tests and embedders that don't yet wire a
@@ -91,6 +96,7 @@ pub(crate) fn interrupt_reason(error: CallError<truapi::latest::GenericError>) -
         CallError::Denied => "denied".to_string(),
         CallError::Unsupported => "unsupported".to_string(),
         CallError::MalformedFrame { reason } | CallError::HostFailure { reason } => reason,
+        CallError::Cancelled => "cancelled".to_string(),
     }
 }
 
@@ -106,6 +112,7 @@ where
         CallError::Unsupported => CallError::Unsupported,
         CallError::MalformedFrame { reason } => CallError::MalformedFrame { reason },
         CallError::HostFailure { reason } => CallError::HostFailure { reason },
+        CallError::Cancelled => CallError::Cancelled,
     }
 }
 

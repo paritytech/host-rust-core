@@ -37,9 +37,12 @@ import androidx.compose.ui.unit.dp
 import io.paritytech.polkadotapp.common.presentation.tabbar.TabBarBaseInset
 import io.paritytech.polkadotapp.common.presentation.tabs.BottomTab
 import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
+import io.paritytech.polkadotapp.design.utils.collectAsEffect
+import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicatorsModel
 import io.paritytech.polkadotapp.feature_products_api.domain.browser.TabInfo
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.ImmutableMap
+import kotlinx.coroutines.flow.Flow
 import kotlin.math.abs
 
 private val NUB_WIDTH = TabBarBaseInset
@@ -74,9 +77,11 @@ fun RootNavBarOverlay(
     currentTab: BottomTab,
     tabWarnings: ImmutableMap<BottomTab, Boolean>,
     openApps: ImmutableList<TabInfo>,
+    chainsHealth: ChainHealthIndicatorsModel,
     scannerTooltipVisible: Boolean,
+    openScanPanelRequests: Flow<Unit>,
     onTabSelected: (BottomTab) -> Unit,
-    onScanClicked: () -> Unit,
+    onUsernameSearchClick: () -> Unit,
     onScannerTooltipDismiss: () -> Unit,
     onAppClick: (Long) -> Unit,
     onAppClose: (Long) -> Unit,
@@ -109,8 +114,13 @@ fun RootNavBarOverlay(
         }
     }
 
+    openScanPanelRequests.collectAsEffect { _, _ ->
+        onScannerTooltipDismiss()
+        pull.openScan()
+    }
+
     val scrimVisible by remember(hidden, forceShown) {
-        derivedStateOf { !hidden && (pull.appsExpanded || (pull.isOpen && !forceShown)) }
+        derivedStateOf { !hidden && (pull.panelExpanded || (pull.isOpen && !forceShown)) }
     }
 
     val tooltipVisible by remember(hidden, scannerTooltipVisible) {
@@ -126,7 +136,7 @@ fun RootNavBarOverlay(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                     ) {
-                        if (pull.appsExpanded) pull.collapseApps() else pull.collapse()
+                        if (pull.panelExpanded) pull.collapsePanels() else pull.collapse()
                     },
             )
         }
@@ -195,7 +205,7 @@ fun RootNavBarOverlay(
                             .padding(start = BAR_HORIZONTAL_MARGIN)
                             .onSizeChanged {
                                 pull.setBarWidth(it.width.toFloat())
-                                if (!pull.appsExpanded && !hidden) {
+                                if (!pull.panelExpanded && !hidden) {
                                     onBarHeight(with(density) { it.height.toDp() })
                                 }
                             }
@@ -204,12 +214,20 @@ fun RootNavBarOverlay(
                         tabWarnings = tabWarnings,
                         apps = openApps,
                         appsExpanded = pull.appsExpanded,
+                        chainsHealth = chainsHealth,
+                        networkStatusExpanded = pull.networkStatusExpanded,
                         scannerTooltipVisible = tooltipVisible,
-                        onTabSelected = { tab -> onTabSelected(tab) },
+                        scanExpanded = pull.scanExpanded,
+                        // Selecting the tab you are already on adds no back-stack entry, so the
+                        // panel would otherwise stay up with its tab deselected.
+                        onTabSelected = { tab -> pull.collapsePanels(); onTabSelected(tab) },
                         onCountClicked = { pull.toggleApps() },
+                        onNetworkStatusClicked = { pull.toggleNetworkStatus() },
                         onAppClick = onAppClick,
                         onAppClose = onAppClose,
-                        onScanClicked = onScanClicked,
+                        onScanClicked = { onScannerTooltipDismiss(); pull.toggleScan() },
+                        onScanHandled = { navigate -> pull.collapsePanels(); navigate?.invoke() },
+                        onUsernameSearchClick = { pull.collapsePanels(); onUsernameSearchClick() },
                         onScannerTooltipDismiss = onScannerTooltipDismiss,
                     )
                 }

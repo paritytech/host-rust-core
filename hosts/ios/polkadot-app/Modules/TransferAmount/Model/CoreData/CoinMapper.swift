@@ -27,7 +27,7 @@ extension CoinMapper: CoreDataMapperProtocol {
 
         return try Coin(
             exponent: entity.exponent,
-            derivationIndex: DerivationIndex.fromCoreData(entity.derivationIndex),
+            derivationIndex: entity.keyIndex(),
             age: entity.age?.int16Value,
             isOnchain: entity.isOnchain,
             handoffMark: handoffMark,
@@ -43,7 +43,8 @@ extension CoinMapper: CoreDataMapperProtocol {
         using _: NSManagedObjectContext
     ) throws {
         entity.identifier = model.identifier
-        entity.derivationIndex = model.derivationIndex.toCoreData()
+        entity.installationId = model.derivationIndex.installation.hex
+        entity.derivationIndex = Int64(bitPattern: model.derivationIndex.item)
         entity.exponent = model.exponent
         entity.age = model.age.map { NSNumber(value: $0) }
         entity.isOnchain = model.isOnchain

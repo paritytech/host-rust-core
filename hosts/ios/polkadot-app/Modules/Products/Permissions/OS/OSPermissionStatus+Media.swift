@@ -7,11 +7,10 @@ extension OSPermissionStatus {
         switch mediaStatus {
         case .notDetermined:
             self = .notDetermined
-        case .denied:
-            self = .denied
-        case .authorized,
+        case .denied,
              .restricted:
-            // be optimistic and treat restricted as allowed
+            self = .denied
+        case .authorized:
             self = .allowed
         @unknown default:
             self = .notDetermined

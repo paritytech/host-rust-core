@@ -4,21 +4,21 @@ import SubstrateSdk
 /// A coin or voucher consumed by a transaction, carrying the on-chain public key it is keyed by.
 public enum CoinageTxInput: Hashable, Sendable {
     case coin(CoinInput)
-    case recyclerVoucher(DerivationIndex, PublicKey)
+    case recyclerVoucher(CoinageKeyIndex, PublicKey)
 }
 
 /// A coin an entry consumes: either one this wallet minted, addressed by derivation index and its
 /// derived public key, or one received from a peer, addressed by the on-chain public key alone.
 public enum CoinInput: Hashable, Sendable {
-    case own(DerivationIndex, PublicKey)
+    case own(CoinageKeyIndex, PublicKey)
     case received(PublicKey)
 }
 
 /// An asset this wallet mints, and can therefore hold local projected state for. Carries the
 /// on-chain public key it is keyed by.
 public enum OwnAsset: Hashable, Sendable {
-    case coin(DerivationIndex, PublicKey)
-    case recyclerVoucher(DerivationIndex, PublicKey)
+    case coin(CoinageKeyIndex, PublicKey)
+    case recyclerVoucher(CoinageKeyIndex, PublicKey)
 }
 
 /// An asset a durability entry mints. An output is always one this wallet owns.
@@ -40,7 +40,7 @@ public extension OwnAsset {
     }
 
     /// Derivation index, which every own asset has.
-    var derivationIndex: DerivationIndex {
+    var derivationIndex: CoinageKeyIndex {
         switch self {
         case let .coin(index, _),
              let .recyclerVoucher(index, _): index

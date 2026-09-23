@@ -5,9 +5,12 @@
 // `crates/truapi-server/src/frame.rs` (`mod tests`); we compute them here
 // independently and compare.
 
+import { readFileSync } from "node:fs";
+
 import type { Result } from "neverthrow";
 import { describe, expect, it } from "bun:test";
 
+import { TRUAPI_CODEC_VERSION } from "./generated/client.js";
 import { str } from "./scale.js";
 import {
   MESSAGE_TYPE_REQUEST,
@@ -94,7 +97,16 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         expect(W.SYSTEM_HANDSHAKE.trait).toBe(1);
         expect(W.SYSTEM_HANDSHAKE.method).toBe(0);
 
-        const inner = new Uint8Array([0x00, 0x02]); // request wrapper V1 + codec_version=2
+        // Built the way the generated `system.handshake` builds it: the V1
+        // request wrapper followed by the codec version the client speaks. A
+        // hand-rolled codec byte here would keep passing while the generated
+        // client drifted away from the host it talks to.
+        const inner = T.VersionedHostHandshakeRequest.enc({
+            tag: "V1",
+            value: { codecVersion: TRUAPI_CODEC_VERSION },
+        });
+        expect(Array.from(inner)).toEqual([0x00, TRUAPI_CODEC_VERSION]);
+
         const encoded = unwrap(
             encodeWireMessage({
                 requestId: "p:1",
@@ -109,7 +121,7 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         );
         // [0c 70 3a 31] "p:1" + [01] system trait + [00] handshake request
         // + [00] messageType=Request + payload.
-        expect(toHex(encoded)).toBe("0c703a310100000002");
+        expect(toHex(encoded)).toBe(`0c703a31010000${toHex(inner)}`);
         expect(toHex(encoded)).toBe(toHex(expectedWire(1, 0, MESSAGE_TYPE_REQUEST, inner)));
 
         const decoded = unwrap(decodeWireMessage(encoded), "decode handshake_request");
@@ -117,6 +129,25 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         expect(decoded.payload.methodId).toBe(0);
         expect(decoded.payload.messageType).toBe(MESSAGE_TYPE_REQUEST);
         expect(toHex(decoded.payload.value)).toBe(toHex(inner));
+    });
+
+    it("speaks the codec version the host's handshake accepts", () => {
+        // `system.handshake` answers `UnsupportedProtocolVersion` unless the
+        // client's codec version equals `truapi::WIRE_CODEC_VERSION` exactly,
+        // so a client generated with a pinned `--codec-version` is rejected by
+        // the host built from the same tree. Read the constant the host
+        // compares against rather than restating the number here.
+        const lib = readFileSync(
+            new URL("../../../../rust/crates/truapi/src/lib.rs", import.meta.url),
+            "utf8",
+        );
+        const declaration = /pub const WIRE_CODEC_VERSION: u8 = (\d+);/.exec(lib);
+        if (declaration === null) {
+            throw new Error(
+                "no WIRE_CODEC_VERSION declaration in rust/crates/truapi/src/lib.rs",
+            );
+        }
+        expect(TRUAPI_CODEC_VERSION).toBe(Number(declaration[1]));
     });
 
     it("encodes account_get_request (pair (2, 1)) to match the golden fixture", () => {

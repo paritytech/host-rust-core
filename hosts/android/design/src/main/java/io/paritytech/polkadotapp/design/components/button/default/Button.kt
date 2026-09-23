@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -118,6 +119,64 @@ fun PolkadotTextButton(
     interactionSource: MutableInteractionSource? = null,
     onClick: () -> Unit
 ) {
+    PolkadotTextButtonInternal(
+        modifier = modifier,
+        enabled = enabled,
+        loading = loading,
+        style = style,
+        size = size,
+        shape = shape,
+        iconStart = iconStart,
+        iconEnd = iconEnd,
+        interactionSource = interactionSource,
+        onClick = onClick,
+        label = { NovaText(text = text, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    )
+}
+
+@Composable
+fun PolkadotTextButton(
+    text: AnnotatedString,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+    style: PolkadotButtonStyle = PolkadotButtonStyle.primary(),
+    size: PolkadotButtonSize = PolkadotButtonSize.largeIncreased(),
+    shape: Shape = PolkadotButtonShape.pill,
+    iconStart: ImageVector? = null,
+    iconEnd: ImageVector? = null,
+    interactionSource: MutableInteractionSource? = null,
+    onClick: () -> Unit
+) {
+    PolkadotTextButtonInternal(
+        modifier = modifier,
+        enabled = enabled,
+        loading = loading,
+        style = style,
+        size = size,
+        shape = shape,
+        iconStart = iconStart,
+        iconEnd = iconEnd,
+        interactionSource = interactionSource,
+        onClick = onClick,
+        label = { NovaText(text = text, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    )
+}
+
+@Composable
+private fun PolkadotTextButtonInternal(
+    modifier: Modifier,
+    enabled: Boolean,
+    loading: Boolean,
+    style: PolkadotButtonStyle,
+    size: PolkadotButtonSize,
+    shape: Shape,
+    iconStart: ImageVector?,
+    iconEnd: ImageVector?,
+    interactionSource: MutableInteractionSource?,
+    onClick: () -> Unit,
+    label: @Composable () -> Unit
+) {
     PolkadotButton(
         onClick = onClick,
         modifier = modifier,
@@ -138,11 +197,7 @@ fun PolkadotTextButton(
                 HorizontalSpacer { small }
             }
 
-            NovaText(
-                text = text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            label()
 
             if (iconEnd != null) {
                 HorizontalSpacer { small }

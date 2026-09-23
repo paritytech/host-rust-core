@@ -64,6 +64,21 @@ sealed interface ChatMessageUiModel {
 
         @Immutable
         sealed interface Status {
+            /**
+             * Claiming has not finished, so the funds have not arrived yet. A partial claim counts as in
+             * flight: the rest may still land.
+             */
+            val isClaimInFlight: Boolean
+                get() = when (this) {
+                    is Detecting,
+                    is Detected,
+                    is PartiallyClaimed -> true
+
+                    is Transferred,
+                    is FailedDetection,
+                    is FailedTransfer -> false
+                }
+
             data object Detecting : Status
             data class Detected(val detected: TokenAmountModel) : Status
             data class PartiallyClaimed(val claimed: TokenAmountModel) : Status

@@ -53,10 +53,10 @@ struct VoucherRingDeduplicationTests {
     @Test("Unplaced vouchers contribute no recycler key")
     func unplacedVouchersAreSkipped() {
         let voucherByIndex = [
-            DerivationIndex(0): voucher(0, exponent: 4),
-            DerivationIndex(1): voucher(1, exponent: 4)
+            CoinageKeyIndex.harness(0): voucher(0, exponent: 4),
+            CoinageKeyIndex.harness(1): voucher(1, exponent: 4)
         ]
-        let positions: [DerivationIndex: UncertainStorage<MembersPallet.RingPosition?>] = [
+        let positions: [CoinageKeyIndex: UncertainStorage<MembersPallet.RingPosition?>] = [
             0: .defined(included(ring: 7, position: 0)),
             1: .defined(onboarding())
         ]
@@ -74,10 +74,10 @@ struct VoucherRingDeduplicationTests {
     @Test("A retracted or undelivered position contributes no recycler key")
     func retractedAndUndeliveredAreSkipped() {
         let voucherByIndex = [
-            DerivationIndex(0): voucher(0, exponent: 4),
-            DerivationIndex(1): voucher(1, exponent: 4)
+            CoinageKeyIndex.harness(0): voucher(0, exponent: 4),
+            CoinageKeyIndex.harness(1): voucher(1, exponent: 4)
         ]
-        let positions: [DerivationIndex: UncertainStorage<MembersPallet.RingPosition?>] = [
+        let positions: [CoinageKeyIndex: UncertainStorage<MembersPallet.RingPosition?>] = [
             0: .defined(nil),
             1: .undefined
         ]
@@ -95,14 +95,14 @@ struct VoucherRingDeduplicationTests {
 
 private extension VoucherRingDeduplicationTests {
     func recyclers(
-        placements: [DerivationIndex: (exponent: Int16, ring: MembersPallet.RingIndex)]
-    ) -> [DerivationIndex: RecyclerKey] {
-        var voucherByIndex: [DerivationIndex: Voucher] = [:]
-        var positions: [DerivationIndex: UncertainStorage<MembersPallet.RingPosition?>] = [:]
+        placements: [CoinageKeyIndex: (exponent: Int16, ring: MembersPallet.RingIndex)]
+    ) -> [CoinageKeyIndex: RecyclerKey] {
+        var voucherByIndex: [CoinageKeyIndex: Voucher] = [:]
+        var positions: [CoinageKeyIndex: UncertainStorage<MembersPallet.RingPosition?>] = [:]
 
         for (index, placement) in placements {
             voucherByIndex[index] = voucher(index, exponent: placement.exponent)
-            positions[index] = .defined(included(ring: placement.ring, position: UInt32(index)))
+            positions[index] = .defined(included(ring: placement.ring, position: UInt32(index.item)))
         }
 
         return VoucherLocationService.recyclers(
@@ -111,14 +111,14 @@ private extension VoucherRingDeduplicationTests {
         )
     }
 
-    func voucher(_ index: DerivationIndex, exponent: Int16) -> Voucher {
+    func voucher(_ index: CoinageKeyIndex, exponent: Int16) -> Voucher {
         Voucher(
             exponent: exponent,
             derivationIndex: index,
             allocatedAt: Date(timeIntervalSinceReferenceDate: 0),
             readyAt: Date(timeIntervalSinceReferenceDate: 60),
             remoteState: .onboarding,
-            publicKey: Data(repeating: UInt8(truncatingIfNeeded: index), count: 32)
+            publicKey: Data(repeating: UInt8(truncatingIfNeeded: index.item), count: 32)
         )
     }
 

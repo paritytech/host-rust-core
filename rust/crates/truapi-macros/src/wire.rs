@@ -12,6 +12,7 @@ use syn::{Ident, ItemFn, ItemTrait, LitInt, Token, TraitItemFn, parse_macro_inpu
 #[derive(Default)]
 struct WireArgs {
     host_initiated: bool,
+    internal: bool,
     id: Option<u8>,
 }
 
@@ -27,11 +28,16 @@ impl Parse for WireArgs {
                     return Err(syn::Error::new(key.span(), "duplicate `host_initiated`"));
                 }
                 args.host_initiated = true;
+            } else if key == "internal" {
+                if args.internal {
+                    return Err(syn::Error::new(key.span(), "duplicate `internal`"));
+                }
+                args.internal = true;
             } else {
                 if key != "id" {
                     return Err(syn::Error::new(
                         key.span(),
-                        "expected `id = N` or `host_initiated`",
+                        "expected `id = N`, `host_initiated`, or `internal`",
                     ));
                 }
                 input.parse::<Token![=]>()?;
@@ -94,6 +100,9 @@ fn wire_tags(args: &WireArgs) -> Vec<String> {
     if args.host_initiated {
         tags.push("@wire_host_initiated".to_string());
     }
+    if args.internal {
+        tags.push("@wire_internal".to_string());
+    }
     tags
 }
 
@@ -136,5 +145,36 @@ pub(super) fn expand_trait(args: TokenStream, item: TokenStream) -> TokenStream 
         )
         .to_compile_error()
         .into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_methods_keep_their_wire_id_and_other_flags() {
+        let args = syn::parse_str::<WireArgs>("id = 2, host_initiated, internal").unwrap();
+
+        assert_eq!(
+            wire_tags(&args),
+            ["@wire_id=2", "@wire_host_initiated", "@wire_internal"]
+        );
+    }
+
+    #[test]
+    fn repeated_internal_flag_is_rejected() {
+        let error = syn::parse_str::<WireArgs>("id = 2, internal, internal")
+            .err()
+            .expect("duplicate visibility must be rejected");
+
+        assert_eq!(error.to_string(), "duplicate `internal`");
+    }
+
+    #[test]
+    fn methods_are_public_unless_marked_internal() {
+        let args = syn::parse_str::<WireArgs>("id = 2").unwrap();
+
+        assert_eq!(wire_tags(&args), ["@wire_id=2"]);
     }
 }

@@ -1,5 +1,7 @@
 package io.paritytech.polkadotapp.app.root.domain
 
+import io.paritytech.polkadotapp.app.root.data.storage.OneShotTooltip
+import io.paritytech.polkadotapp.app.root.data.storage.TooltipStorage
 import io.paritytech.polkadotapp.app.root.domain.debug.VerifyUsernameOnChainUseCase
 import io.paritytech.polkadotapp.chains.multiNetwork.ChainRegistry
 import io.paritytech.polkadotapp.common.BuildConfig
@@ -33,6 +35,10 @@ interface RootInteractor {
     suspend fun isDevResetNeeded(): Boolean
 
     suspend fun clearAllAndClose()
+
+    fun shouldShowNetworkStatusTooltip(): Boolean
+
+    fun markNetworkStatusTooltipShown()
 }
 
 class RealRootInteractor @Inject constructor(
@@ -47,6 +53,7 @@ class RealRootInteractor @Inject constructor(
     private val accountRepository: AccountRepository,
     private val verifyUsernameOnChainUseCase: VerifyUsernameOnChainUseCase,
     private val devResetCoordinator: DevResetCoordinator,
+    private val tooltipStorage: TooltipStorage,
 ) : RootInteractor {
     override fun startUpdateSystems(): Flow<*> {
         val updateSystems = buildList {
@@ -86,6 +93,12 @@ class RealRootInteractor @Inject constructor(
 
     override suspend fun clearAllAndClose() {
         devResetCoordinator.clearAllAndClose()
+    }
+
+    override fun shouldShowNetworkStatusTooltip(): Boolean = !tooltipStorage.wasShown(OneShotTooltip.NetworkStatus)
+
+    override fun markNetworkStatusTooltipShown() {
+        tooltipStorage.markShown(OneShotTooltip.NetworkStatus)
     }
 
     private suspend fun printAccountAddress(account: MetaAccount) {

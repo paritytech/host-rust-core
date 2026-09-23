@@ -13,7 +13,7 @@ extension CoreDataMapperTests {
         private var repo: AnyDataProviderRepository<Voucher> { facade.makeRepo(mapper: VoucherMapper()) }
 
         private func makeVoucher(
-            derivationIndex: UInt64 = 50,
+            derivationIndex: CoinageKeyIndex = 50,
             remoteState: Voucher.OnChainState = .unlocated
         ) -> Voucher {
             let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
@@ -23,7 +23,7 @@ extension CoreDataMapperTests {
                 allocatedAt: now,
                 readyAt: now.addingTimeInterval(3_600),
                 remoteState: remoteState,
-                publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex), count: 32)
+                publicKey: Data(repeating: UInt8(truncatingIfNeeded: derivationIndex.item), count: 32)
             )
         }
 
@@ -75,7 +75,7 @@ extension CoreDataMapperTests {
             let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
             let original = Voucher(
                 exponent: 10,
-                derivationIndex: DerivationIndex(700 + UInt64(value)),
+                derivationIndex: CoinageKeyIndex(installation: .test, item: 700 + UInt64(value)),
                 allocatedAt: now,
                 readyAt: now.addingTimeInterval(3_600),
                 recyclerFungibility: value,

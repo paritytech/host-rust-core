@@ -1,6 +1,7 @@
 package io.paritytech.polkadotapp.feature_coinage_api.domain.recycling
 
 import io.paritytech.polkadotapp.common.utils.Fraction
+import kotlin.time.Duration
 
 /**
  * How aggressively coins are moved through the recycler.
@@ -19,13 +20,8 @@ data class RecyclingParams(
     val maxUnavailableBalance: Fraction,
     /** Coins below this age are not considered for recycling at all. */
     val minRecyclingAge: MinRecyclingAge,
-    /**
-     * How full a recycler's ring must be before a voucher taken from it counts as spendable again.
-     *
-     * Below a full ring the random unload delay is accepted in its place; at a full ring nothing else will
-     * do. This is the parameter that produces the spendability delay the user is choosing between.
-     */
-    val requiredRingFill: Fraction,
+    /** Readiness rules for vouchers already included in a recycler ring. */
+    val voucherReadiness: VoucherReadiness,
     /**
      * Whether balance held back for privacy may still be spent, once the user has confirmed they accept the
      * loss. False for the strategy whose whole point is that it will not.
@@ -51,3 +47,21 @@ sealed interface MinRecyclingAge {
     /** A fixed age, for a preset whose threshold is deliberately unrelated to the chain's limit. */
     data class Override(val age: Int) : MinRecyclingAge
 }
+
+/** A voucher is ready when either requirement is satisfied. */
+data class VoucherReadiness(
+    /** Required ring fill for immediate readiness. */
+    val requiredRingFill: Fraction,
+    /** Alternative to the fill threshold; null means readiness depends on ring fill alone. */
+    val memberAndAgeRequirements: MemberAndAgeRequirements?,
+)
+
+/**
+ * Allows readiness below the ring-fill threshold once both membership and waiting requirements are met.
+ */
+data class MemberAndAgeRequirements(
+    /** Included members required for the timed route, regardless of how long the voucher has waited. */
+    val minimumMembers: Int,
+    /** Time since first confirmed inclusion; waiting to reach [minimumMembers] counts toward this delay. */
+    val delay: Duration,
+)

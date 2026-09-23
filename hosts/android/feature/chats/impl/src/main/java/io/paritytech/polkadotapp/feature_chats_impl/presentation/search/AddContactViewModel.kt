@@ -83,10 +83,6 @@ internal class AddContactViewModel @Inject constructor(
         router.back()
     }
 
-    override fun onScanClick() {
-        router.openScan()
-    }
-
     private fun ContactSearchResult.toUi(): UserSearchResultUiModel {
         val displayUsername = username.getDisplayUsername()
         return UserSearchResultUiModel(

@@ -126,6 +126,8 @@ pub struct MethodDef {
 pub struct WireAttrs {
     /// This subscription is started by the host and served by the product.
     pub host_initiated: bool,
+    /// Excluded from the public SDK; available to container and host bindings.
+    pub internal: bool,
     /// Method frame discriminant.
     pub id: Option<u8>,
 }
@@ -892,8 +894,8 @@ fn extract_wire_trait_id(trait_name: &str, docs: &str) -> Result<Option<u8>> {
     Ok(found)
 }
 
-/// Extracts the `@wire_id=N` marker (and `@wire_host_initiated`) from a doc
-/// comment block. Annotated methods carry these markers via the `#[wire(...)]`
+/// Extracts the wire id and flags from a doc comment block.
+/// Annotated methods carry these markers via the `#[wire(...)]`
 /// proc-macro, which appends hidden doc strings so they propagate through
 /// rustdoc JSON.
 fn extract_wire_attrs(docs: &str) -> WireAttrs {
@@ -902,6 +904,9 @@ fn extract_wire_attrs(docs: &str) -> WireAttrs {
         let line = line.trim_start();
         if line.starts_with("@wire_host_initiated") {
             attrs.host_initiated = true;
+        }
+        if line.trim_end() == "@wire_internal" {
+            attrs.internal = true;
         }
         const NEEDLE: &str = "@wire_id=";
         let Some(start) = line.find(NEEDLE).map(|index| index + NEEDLE.len()) else {
@@ -1547,9 +1552,35 @@ mod tests {
     #[test]
     fn clean_docs_strips_wire_markers() {
         let docs = "Trait summary.\n\n@wire_id=7\n@wire_trait_id=3\n\
+                    @wire_host_initiated\n@wire_internal\n\
                     @service_required_execution=Chat\n";
 
         assert_eq!(clean_docs(Some(docs)).as_deref(), Some("Trait summary."));
+    }
+
+    #[test]
+    fn internal_wire_metadata_preserves_method_address_and_direction() {
+        assert_eq!(
+            extract_wire_attrs(
+                "Method summary.\n@wire_id=2\n@wire_host_initiated\n@wire_internal\n"
+            ),
+            WireAttrs {
+                host_initiated: true,
+                internal: true,
+                id: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn public_methods_require_no_visibility_marker() {
+        assert_eq!(
+            extract_wire_attrs("Method summary.\n@wire_id=1\n"),
+            WireAttrs {
+                id: Some(1),
+                ..WireAttrs::default()
+            }
+        );
     }
 
     #[test]

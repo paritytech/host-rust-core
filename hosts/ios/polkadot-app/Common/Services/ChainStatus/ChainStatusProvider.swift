@@ -2,34 +2,7 @@ import Foundation
 import AsyncExtensions
 import PolkadotUI
 import StructuredConcurrency
-
-/// Rolling window of the most recent health scores for a single row. Median rather than
-/// mean so one bad sample cannot move the ring.
-struct ChainHealthWindow {
-    static let capacity = 10
-
-    private var samples: [Double] = []
-
-    var median: Double? {
-        guard !samples.isEmpty else {
-            return nil
-        }
-
-        return samples.sorted()[samples.count / 2]
-    }
-
-    mutating func record(_ sample: Double) {
-        samples.append(sample)
-
-        if samples.count > Self.capacity {
-            samples.removeFirst(samples.count - Self.capacity)
-        }
-    }
-
-    mutating func clear() {
-        samples.removeAll()
-    }
-}
+import FoundationExt
 
 protocol ChainStatusProviding: Actor {
     nonisolated func statusStream() -> AnyAsyncSequence<[ChainConnectionStatusViewModel]>
@@ -41,20 +14,28 @@ protocol ChainStatusProviding: Actor {
 /// complete set and a host subscribing later sees live state rather than a re-seed.
 actor ChainStatusProvider {
     private static let connectDebounce: Duration = .milliseconds(300)
+    private static let deadDwell: TimeInterval = 3
+    private static let anchorTimeout: Duration = .seconds(15)
 
     private let networkStatusService: NetworkStatusProviding
     private let blockProvider: ChainBlockProviding
-    private let statementTracker: StatementDeliveryTracking
+    private let anchorProvider: ChainLivenessAnchorProviding
+    private let appStateStreamFactory: ApplicationStateStreamFactory
     private let logger: LoggerProtocol
 
     private nonisolated let rowsSubject: AsyncCurrentValueSubject<[ChainConnectionStatusViewModel]>
 
     private var statuses: [ChainConnectionTarget: NetworkStatus]
     private var blocks: [ChainConnectionTarget: ChainBlockInfo] = [:]
-    private var connectedSince: [ChainConnectionTarget: Date] = [:]
-    private var statementState: StatementDeliveryState = .noSubscriptions
+    private var liveness: [ChainConnectionTarget: ChainLiveness] = [:]
+
     private var statusTasks: [Task<Void, Never>] = []
-    private var healthWindows: [String: ChainHealthWindow] = [:]
+    private var previousIndications: [String: ChainStatusIndication] = [:]
+    private var previousLiveness: [String: Double] = [:]
+    private var deadSince: [String: Date] = [:]
+    private var awaitingReanchor: Set<ChainConnectionTarget> = []
+    private var anchorGeneration: [ChainConnectionTarget: Int] = [:]
+    private(set) var anchorTasks: [ChainConnectionTarget: Task<Void, Never>] = [:]
     private var tickTask: Task<Void, Never>?
     private var isObserving = false
     private var lastEmittedRows: [ChainConnectionStatusViewModel] = []
@@ -62,30 +43,31 @@ actor ChainStatusProvider {
     init(
         networkStatusService: NetworkStatusProviding,
         blockProvider: ChainBlockProviding,
-        statementTracker: StatementDeliveryTracking,
+        anchorProvider: ChainLivenessAnchorProviding,
+        appStateStreamFactory: ApplicationStateStreamFactory,
         logger: LoggerProtocol
     ) {
         self.networkStatusService = networkStatusService
         self.blockProvider = blockProvider
-        self.statementTracker = statementTracker
+        self.anchorProvider = anchorProvider
+        self.appStateStreamFactory = appStateStreamFactory
         self.logger = logger
 
         let seededStatuses = ChainConnectionTarget.allCases
             .reduce(into: [ChainConnectionTarget: NetworkStatus]()) { $0[$1] = .connecting }
 
         statuses = seededStatuses
+        liveness = ChainConnectionTarget.allCases.reduce(into: [:]) { dict, target in
+            dict[target] = ChainLiveness(blockPeriod: target.expectedBlockTime)
+        }
         rowsSubject = AsyncCurrentValueSubject(
-            Self.makeRows(
-                statuses: seededStatuses,
-                blocks: [:],
-                connectedSince: [:],
-                statementState: .noSubscriptions
-            )
+            Self.makeRows(statuses: seededStatuses)
         )
     }
 
     deinit {
         statusTasks.forEach { $0.cancel() }
+        anchorTasks.values.forEach { $0.cancel() }
         tickTask?.cancel()
     }
 }
@@ -104,13 +86,13 @@ extension ChainStatusProvider: ChainStatusProviding {
 
         // Sampling runs for the app's lifetime because the top status strip is permanent.
         // A host closing its subscription does not pause sampling.
-        Task { [blockProvider] in
+        let activationTask = Task { [blockProvider] in
             await blockProvider.setActive(true)
         }
 
         statusTasks = ChainConnectionTarget.allCases.map { target in
             observeStatus(for: target)
-        } + [observeBlocks(), observeStatementState()]
+        } + [observeBlocks(), observeForeground(), activationTask]
 
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -119,6 +101,204 @@ extension ChainStatusProvider: ChainStatusProviding {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+    }
+}
+
+extension ChainStatusProvider {
+    func handleStatusUpdate(
+        _ status: NetworkStatus,
+        for target: ChainConnectionTarget,
+        at date: Date = Date()
+    ) async {
+        let previousStatus = statuses[target]
+
+        guard previousStatus != status else {
+            return
+        }
+
+        statuses[target] = status
+
+        if status != .connected {
+            blocks[target] = nil
+            liveness[target]?.clear()
+            // Without this a drop-and-reconnect keeps captioning the row with its pre-drop data.
+            await blockProvider.clear(for: target)
+        } else if previousStatus != .connected, status == .connected {
+            startAnchor(for: target, at: date)
+        }
+
+        emitRows(at: date)
+    }
+
+    func handleBlocksUpdate(
+        _ updatedBlocks: [ChainConnectionTarget: ChainBlockInfo],
+        at date: Date = Date()
+    ) {
+        guard updatedBlocks != blocks else {
+            return
+        }
+
+        blocks = updatedBlocks
+
+        for (target, blockInfo) in updatedBlocks {
+            liveness[target]?.record(height: blockInfo.number, at: date)
+        }
+
+        emitRows(at: date)
+    }
+
+    func handleForeground(at date: Date = Date()) {
+        for target in ChainConnectionTarget.allCases where statuses[target] == .connected {
+            awaitingReanchor.insert(target)
+            startAnchor(for: target, at: date)
+        }
+
+        emitRows(at: date)
+    }
+
+    func emitRows(at date: Date = Date()) {
+        let rawRows = Self.makeRows(statuses: statuses)
+        let indicatedRows = indicateRows(rawRows, at: date)
+
+        guard indicatedRows != lastEmittedRows else { return }
+
+        lastEmittedRows = indicatedRows
+        rowsSubject.send(indicatedRows)
+    }
+
+    private func indicateRows(
+        _ rows: [ChainConnectionStatusViewModel],
+        at date: Date
+    ) -> [ChainConnectionStatusViewModel] {
+        rows.map { row in
+            let owner = ChainConnectionTarget.allCases.first { $0.chainId == row.id }
+            let targetLiveness = owner
+                .flatMap { liveness[$0]?.liveness(at: date) }
+
+            let rawIndication = ChainStatusIndication.resolve(state: row.state, liveness: targetLiveness)
+
+            if
+                rawIndication != .dead,
+                let owner,
+                awaitingReanchor.contains(owner),
+                let previous = previousIndications[row.id] {
+                return row.withIndication(previous, liveness: previousLiveness[row.id])
+            }
+
+            let indication = applyDwell(to: rawIndication, rowId: row.id, at: date)
+            previousIndications[row.id] = indication
+            if let targetLiveness {
+                previousLiveness[row.id] = targetLiveness
+            }
+
+            return row.withIndication(indication, liveness: targetLiveness)
+        }
+    }
+
+    /// Entering dead is held for `deadDwell` so a flap shorter than that never darkens the strip;
+    /// leaving dead is immediate. A row that has never been emitted skips the hold, so a cold
+    /// launch with no connectivity reads dead at once instead of normal for three seconds.
+    private func applyDwell(
+        to indication: ChainStatusIndication,
+        rowId: String,
+        at date: Date
+    ) -> ChainStatusIndication {
+        guard let previous = previousIndications[rowId] else {
+            return indication
+        }
+
+        switch (previous, indication) {
+        case (.normal, .normal):
+            deadSince[rowId] = nil
+            return indication
+        case (.normal, .outage):
+            deadSince[rowId] = nil
+            return indication
+        case (.normal, .dead):
+            let deadAt = deadSince[rowId] ?? date
+            deadSince[rowId] = deadAt
+            return date.timeIntervalSince(deadAt) < Self.deadDwell ? previous : indication
+        case (.outage, .normal):
+            deadSince[rowId] = nil
+            return indication
+        case (.outage, .outage):
+            deadSince[rowId] = nil
+            return indication
+        case (.outage, .dead):
+            let deadAt = deadSince[rowId] ?? date
+            deadSince[rowId] = deadAt
+            return date.timeIntervalSince(deadAt) < Self.deadDwell ? previous : indication
+        case (.dead, .normal):
+            deadSince[rowId] = nil
+            return indication
+        case (.dead, .outage):
+            deadSince[rowId] = nil
+            return indication
+        case (.dead, .dead):
+            return indication
+        }
+    }
+
+    static func makeRows(
+        statuses: [ChainConnectionTarget: NetworkStatus]
+    ) -> [ChainConnectionStatusViewModel] {
+        let targetRows = ChainConnectionTarget.allCases.map { target in
+            let state = (statuses[target] ?? .connecting).connectionState
+
+            return ChainConnectionStatusViewModel(
+                id: target.chainId,
+                title: target.title,
+                state: state,
+                stateTitle: state.localizedTitle,
+                icon: target.statusIcon,
+                indication: ChainStatusIndication.resolve(state: state, liveness: nil),
+                liveness: nil,
+                expectedBlockSeconds: target.expectedBlockTime.timeInterval
+            )
+        }
+
+        return targetRows
+    }
+
+    private func startAnchor(for target: ChainConnectionTarget, at date: Date) {
+        let slotCount = liveness[target]?.slotCount ?? 0
+        let generation = (anchorGeneration[target] ?? 0) + 1
+        anchorGeneration[target] = generation
+
+        anchorTasks[target] = Task { [weak self, anchorProvider] in
+            do {
+                // Without a deadline a hung fetch would leave the target in awaitingReanchor forever, freezing its row
+                // on the last indication.
+                let anchor = try await withTimeout(Self.anchorTimeout) {
+                    try await anchorProvider.fetchAnchor(for: target, slotCount: slotCount)
+                }
+                await self?.finishReanchor(for: target, generation: generation, anchor: anchor, at: date)
+            } catch {
+                await self?.finishReanchor(for: target, generation: generation, anchor: nil, at: date)
+                self?.logger.error("Failed to fetch anchor for \(target.chainId): \(error)")
+            }
+        }
+    }
+
+    private func finishReanchor(
+        for target: ChainConnectionTarget,
+        generation: Int,
+        anchor: ChainLivenessAnchor?,
+        at date: Date
+    ) {
+        guard generation == anchorGeneration[target] else {
+            return
+        }
+
+        awaitingReanchor.remove(target)
+
+        if let anchor {
+            liveness[target]?.apply(anchor, at: date)
+        } else {
+            liveness[target]?.clear()
+        }
+
+        emitRows(at: date)
     }
 }
 
@@ -151,144 +331,12 @@ private extension ChainStatusProvider {
         }
     }
 
-    func observeStatementState() -> Task<Void, Never> {
-        Task { [weak self, statementTracker, logger] in
-            do {
-                for try await state in statementTracker.stateStream() {
-                    await self?.handleStatementStateUpdate(state)
-                }
-            } catch {
-                logger.error("Statement delivery state stream failed: \(error)")
+    func observeForeground() -> Task<Void, Never> {
+        Task { [weak self, appStateStreamFactory] in
+            let foregroundStream = appStateStreamFactory.stream(for: .willEnterForeground)
+            for await _ in foregroundStream {
+                await self?.handleForeground()
             }
         }
-    }
-
-    func handleStatusUpdate(_ status: NetworkStatus, for target: ChainConnectionTarget) async {
-        let previousStatus = statuses[target]
-
-        guard previousStatus != status else {
-            return
-        }
-
-        statuses[target] = status
-
-        if status == .connected {
-            connectedSince[target] = Date()
-        } else {
-            connectedSince[target] = nil
-            blocks[target] = nil
-            // Without this a drop-and-reconnect keeps captioning the row with its pre-drop data.
-            await blockProvider.clear(for: target)
-            healthWindows[target.chainId]?.clear()
-        }
-
-        emitRows()
-    }
-
-    func handleBlocksUpdate(_ updatedBlocks: [ChainConnectionTarget: ChainBlockInfo]) async {
-        guard updatedBlocks != blocks else {
-            return
-        }
-
-        blocks = updatedBlocks
-        emitRows()
-    }
-
-    func handleStatementStateUpdate(_ state: StatementDeliveryState) async {
-        guard state != statementState else {
-            return
-        }
-
-        statementState = state
-        emitRows()
-    }
-
-    func emitRows() {
-        let rawRows = Self.makeRows(
-            statuses: statuses,
-            blocks: blocks,
-            connectedSince: connectedSince,
-            statementState: statementState
-        )
-        let now = Date()
-
-        let scoredRows = scoreRows(rawRows, at: now)
-
-        guard scoredRows != lastEmittedRows else { return }
-
-        lastEmittedRows = scoredRows
-        rowsSubject.send(scoredRows)
-    }
-
-    private func scoreRows(_ rows: [ChainConnectionStatusViewModel], at date: Date)
-        -> [ChainConnectionStatusViewModel] {
-        rows.map { row in
-            let rawScore = ChainHealth.score(for: row, at: date)
-            healthWindows[row.id, default: ChainHealthWindow()].record(rawScore)
-            let smoothed = healthWindows[row.id]?.median ?? rawScore
-
-            // Quantised so float noise does not push a new row set every tick.
-            return row.withHealth((smoothed * 100).rounded() / 100)
-        }
-    }
-
-    static func makeRows(
-        statuses: [ChainConnectionTarget: NetworkStatus],
-        blocks: [ChainConnectionTarget: ChainBlockInfo],
-        connectedSince: [ChainConnectionTarget: Date],
-        statementState: StatementDeliveryState
-    ) -> [ChainConnectionStatusViewModel] {
-        let targetRows = ChainConnectionTarget.allCases.map { target in
-            let state = (statuses[target] ?? .connecting).connectionState
-            let block = state == .connected ? blocks[target] : nil
-            let finalityLag = computeFinalityLag(from: block)
-
-            return ChainConnectionStatusViewModel(
-                id: target.chainId,
-                title: target.title,
-                state: state,
-                stateTitle: state.localizedTitle,
-                lastBlockDate: block?.receivedAt,
-                finalityLag: finalityLag,
-                connectedSince: connectedSince[target],
-                thresholds: target.healthThresholds,
-                icon: target.statusIcon
-            )
-        }
-
-        let statementStoreRow = makeStatementStoreRow(
-            state: statementState.connectionState,
-            blocks: blocks,
-            connectedSince: connectedSince
-        )
-
-        return targetRows + [statementStoreRow]
-    }
-
-    private static func computeFinalityLag(from block: ChainBlockInfo?) -> Int? {
-        block.flatMap { info in
-            info.finalizedNumber.map { max(Int(info.number) - Int($0), 0) }
-        }
-    }
-
-    private static func makeStatementStoreRow(
-        state: ChainConnectionState,
-        blocks: [ChainConnectionTarget: ChainBlockInfo],
-        connectedSince: [ChainConnectionTarget: Date]
-    ) -> ChainConnectionStatusViewModel {
-        let block = state == .connected ? blocks[.chat] : nil
-        let finalityLag = computeFinalityLag(from: block)
-
-        return ChainConnectionStatusViewModel(
-            id: "statement-store",
-            title: "Statement Store",
-            state: state,
-            stateTitle: state.localizedTitle,
-            lastBlockDate: block?.receivedAt,
-            finalityLag: finalityLag,
-            connectedSince: connectedSince[.chat],
-            thresholds: ChainConnectionTarget.chat.healthThresholds,
-            icon: .statementStore
-        )
     }
 }

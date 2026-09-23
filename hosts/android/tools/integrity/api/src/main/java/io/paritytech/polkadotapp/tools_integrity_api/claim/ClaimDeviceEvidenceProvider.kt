@@ -1,7 +1,6 @@
 package io.paritytech.polkadotapp.tools_integrity_api.claim
 
 interface ClaimDeviceEvidenceProvider {
-
     /** Collects fresh evidence. `null` means not applicable; failure aborts the claim. */
     suspend fun collectEvidence(): Result<ClaimDeviceEvidence?>
 }

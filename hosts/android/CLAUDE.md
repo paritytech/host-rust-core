@@ -2,6 +2,16 @@
 
 This file is intentionally **thin**. Detailed architecture and code rules are in `.claude/docs/` and are lazy-loaded by skills, not auto-included here.
 
+## Build prerequisites
+
+The build needs the TrUAPI Rust core, because `:feature:products:impl` depends on `:bindings:truapi-host` in every variant. Inside `host-rust-core` the core is the enclosing repository and nothing has to be fetched. Outside it, run `scripts/setup-truapi.py` once: it clones `paritytech/host-rust-core` at the `truapi_ref` pin from `.github/actions/install/action.yaml` and writes `truapi.dir` to `local.properties`. Re-run it after the pin moves. A `truapi.dir` that is set but does not resolve still fails at configuration time rather than falling back.
+
+`FIRESTORE_DATABASE_ID` must also be in `local.properties`, or configuration fails before anything compiles. It is a CI secret, so ask for the value.
+
+The core generates part of its Rust sources at build time from rustdoc JSON, which needs the nightly toolchain pinned as `truapi.rustNightly` in `gradle.properties`: `rustup toolchain install "$(sed -n 's/^truapi.rustNightly=//p' gradle.properties)" --profile minimal --component rustfmt` once (the codegen formats what it emits with that toolchain's own rustfmt, which `--profile minimal` alone leaves out). Gradle runs the codegen itself.
+
+JDK 21. `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"` if `java` is not on PATH.
+
 ## How to work on this codebase
 
 1. **Plan first** with `/architect`. Loads `.claude/docs/architecture/*.md` on demand. Output is a plan that names modules touched, seams used, layer placement, and north-star alignment.

@@ -3,6 +3,7 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.webView
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.view.ViewGroup
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
@@ -13,12 +14,14 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.parity.truapi.TrUAPIProductExecution
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsLoadProgress
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsResolver
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsTldProvider
 import io.paritytech.polkadotapp.feature_dotns_api.presentation.DotNsContentLoader
 import io.paritytech.polkadotapp.feature_dotns_api.presentation.DotNsServingHostResolver
+import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.CallingProductIdProvider
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.PageLifecycleSource
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.UrlDerivedProductId
@@ -86,6 +89,9 @@ class BrowserWebViewProvider @AssistedInject constructor(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            // A WebView paints white before its first frame. Left opaque it flashes against the
+            // host around it, which is at its worst under an expanding card.
+            setBackgroundColor(Color.TRANSPARENT)
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -107,6 +113,10 @@ class BrowserWebViewProvider @AssistedInject constructor(
             webViewClient = InternalWebViewClient(innerClient)
             webChromeClient = chromeClient
         }
+    }
+
+    fun useTrUAPIPermissions(productId: ProductId, execution: TrUAPIProductExecution) {
+        permissionClient.useTrUAPIPermissions(productId, execution, scope)
     }
 
     override suspend fun loadInitialContent() {

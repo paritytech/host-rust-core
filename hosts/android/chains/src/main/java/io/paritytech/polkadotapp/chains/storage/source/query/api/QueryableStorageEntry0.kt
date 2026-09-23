@@ -1,7 +1,5 @@
 package io.paritytech.polkadotapp.chains.storage.source.query.api
 
-import io.novasama.substrate_sdk_android.koltinx_serialization_scale.Scale
-import io.novasama.substrate_sdk_android.koltinx_serialization_scale.decode
 import io.novasama.substrate_sdk_android.runtime.RuntimeSnapshot
 import io.novasama.substrate_sdk_android.runtime.metadata.module.StorageEntry
 import io.novasama.substrate_sdk_android.runtime.metadata.storageKey
@@ -90,10 +88,12 @@ sealed interface Entry0Encoders<T> {
     fun decodeValue(instance: Any): T
 
     class Auto<T>(
-        private val valueType: KType
+        valueType: KType
     ) : Entry0Encoders<T> {
+        private val valueCodec = ScaleTypeCodec<T>(valueType)
+
         override fun decodeValue(instance: Any): T {
-            return Scale.decode(valueType, instance)
+            return valueCodec.decode(instance)
         }
     }
 

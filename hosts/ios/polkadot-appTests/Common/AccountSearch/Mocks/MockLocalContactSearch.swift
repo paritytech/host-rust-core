@@ -10,6 +10,7 @@ final class MockLocalContactSearch: LocalContactSearching {
     var receivedUsernamePrefix: String?
     var receivedAccountId: AccountId?
     var didRequestAllContacts: Bool = false
+    var didRequestBlockedContacts: Bool = false
 
     func searchContacts(usernamePrefix: String) -> AnyDataProviderRepository<Chat.Contact> {
         receivedUsernamePrefix = usernamePrefix
@@ -26,11 +27,20 @@ final class MockLocalContactSearch: LocalContactSearching {
         return makeSeededRepository()
     }
 
-    private func makeSeededRepository() -> AnyDataProviderRepository<Chat.Contact> {
+    func blockedContacts() -> AnyDataProviderRepository<Chat.Contact> {
+        didRequestBlockedContacts = true
+        return makeRepository(with: contacts.filter(\.isBlocked))
+    }
+
+    private func makeRepository(with contacts: [Chat.Contact]) -> AnyDataProviderRepository<Chat.Contact> {
         let repository = InMemoryDataProviderRepository<Chat.Contact>()
         // `start()` runs the operation inline; an OperationQueue wait here would block
         // a cooperative-pool thread, since callers seed from an async context.
-        repository.replaceOperation { self.contacts }.start()
+        repository.replaceOperation { contacts }.start()
         return AnyDataProviderRepository(repository)
+    }
+
+    private func makeSeededRepository() -> AnyDataProviderRepository<Chat.Contact> {
+        makeRepository(with: contacts)
     }
 }

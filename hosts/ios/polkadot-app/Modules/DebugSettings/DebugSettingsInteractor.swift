@@ -34,6 +34,7 @@ extension DebugSettingsInteractor: DebugSettingsInteractorInputProtocol {
             provideJWTTokenState()
             provideStrategyDebugState()
             provideTruApiRuntimeState()
+            provideHostPlacementState()
         }
     }
 
@@ -41,8 +42,6 @@ extension DebugSettingsInteractor: DebugSettingsInteractorInputProtocol {
         Task { [weak self, mnemonicBackupHelper, keystore] in
             try? await ClosureOperation {
                 try? mnemonicBackupHelper.deleteMnemonic()
-                try? keystore.deleteKey(for: "coin-index")
-                try? keystore.deleteKey(for: "voucher-index")
                 JWTTokenStore(keychain: keystore, sessionIdStore: BackendSessionIdStore()).deleteAll()
             }
             .asyncExecute()
@@ -88,6 +87,12 @@ extension DebugSettingsInteractor: DebugSettingsInteractorInputProtocol {
         let current = SettingsManager.shared.isTrUAPIRuntimeEnabled
         SettingsManager.shared.set(value: !current, for: .truApiRuntimeEnabled)
         provideTruApiRuntimeState()
+    }
+
+    func toggleHostPlacement() {
+        let current = SettingsManager.shared.isHostPlacementEnabled
+        SettingsManager.shared.set(value: !current, for: .hostPlacementEnabled)
+        provideHostPlacementState()
     }
 
     func restartApp() {
@@ -140,6 +145,13 @@ private extension DebugSettingsInteractor {
         let enabled = SettingsManager.shared.isTrUAPIRuntimeEnabled
         Task { @MainActor [weak presenter] in
             presenter?.didReceive(truApiRuntimeEnabled: enabled)
+        }
+    }
+
+    func provideHostPlacementState() {
+        let enabled = SettingsManager.shared.isHostPlacementEnabled
+        Task { @MainActor [weak presenter] in
+            presenter?.didReceive(hostPlacementEnabled: enabled)
         }
     }
 }

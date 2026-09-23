@@ -26,9 +26,7 @@ extension DotNsContractError: @retroactive ErrorContentConvertible {
         case .contentHashTooShort,
              .unsupportedEip1577Prefix:
             .productLoadDamaged
-        case .contractCallFailed,
-             .runtimeApiNotFound,
-             .callFailed:
+        case .contractCallFailed:
             .productLoadUnreachable
         }
     }

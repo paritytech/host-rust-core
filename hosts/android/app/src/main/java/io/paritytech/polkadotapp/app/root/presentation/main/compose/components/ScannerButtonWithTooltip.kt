@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.app.root.presentation.main.compose.components
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -7,11 +8,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -20,11 +20,10 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.PopupProperties
-import io.paritytech.polkadotapp.design.components.text.NovaText
+import io.paritytech.polkadotapp.design.components.tooltip.NonFocusablePopupProperties
 import io.paritytech.polkadotapp.design.components.tooltip.PolkadotTooltip
+import io.paritytech.polkadotapp.design.components.tooltip.PolkadotTooltipContent
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import kotlinx.coroutines.launch
 import io.paritytech.polkadotapp.common.R as RCommon
@@ -35,42 +34,39 @@ import io.paritytech.polkadotapp.common.R as RCommon
  */
 @Composable
 fun ScannerIconWithTooltip(
+    modifier: Modifier = Modifier,
     tooltipVisible: Boolean,
+    active: Boolean,
     onTooltipDismiss: () -> Unit,
-    modifier: Modifier = Modifier
 ) {
     Box(
         modifier = modifier,
         contentAlignment = Alignment.Center
     ) {
-        AnimatedScannerIcon(tooltipVisible)
+        AnimatedScannerIcon(animating = tooltipVisible, active = active)
 
         PolkadotTooltip(
             expanded = tooltipVisible,
             onDismiss = onTooltipDismiss,
             arrowVisible = true,
             shape = PolkadotTheme.shapes.tiny,
-            properties = PopupProperties(focusable = false)
+            properties = NonFocusablePopupProperties
         ) {
-            NovaText(
-                modifier = Modifier
-                    .widthIn(max = 130.dp)
-                    .padding(
-                        vertical = PolkadotTheme.spacings.tiny,
-                        horizontal = PolkadotTheme.spacings.small
-                    ),
-                text = stringResource(RCommon.string.bottom_nav_scanner_tooltip),
-                style = PolkadotTheme.typography.body.smallEmphasized,
-                color = PolkadotTheme.colors.fg.primaryInverted,
-                textAlign = TextAlign.Center
+            PolkadotTooltipContent(
+                title = stringResource(RCommon.string.bottom_nav_scanner_tooltip_title),
+                message = stringResource(RCommon.string.bottom_nav_scanner_tooltip_message),
+                onDismiss = onTooltipDismiss,
             )
         }
     }
 }
 
 @Composable
-private fun AnimatedScannerIcon(animating: Boolean) {
-    val restingColor = PolkadotTheme.colors.fg.secondary
+private fun AnimatedScannerIcon(animating: Boolean, active: Boolean) {
+    val restingColor by animateColorAsState(
+        targetValue = if (active) PolkadotTheme.colors.fg.primary else PolkadotTheme.colors.fg.secondary,
+        label = "ScannerIconColor",
+    )
     val accentColor = PolkadotTheme.colors.fg.tertiary
 
     val phase = remember { Animatable(0f) }

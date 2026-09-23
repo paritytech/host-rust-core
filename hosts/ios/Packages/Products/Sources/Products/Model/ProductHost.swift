@@ -78,7 +78,7 @@ extension ProductHost {
     }
 
     static func fromNavigationDestination(_ dest: String, tld: String) -> ProductHost? {
-        guard let url = URL(string: dest), url.host() != nil else {
+        guard let url = NavigationDestinationURL.make(dest), url.host() != nil else {
             return parse(dest, tld: tld)
         }
 

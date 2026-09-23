@@ -51,6 +51,7 @@ class CoinRecyclingEvaluator @Inject constructor(
     private val balanceConverter: CoinageBalanceConverterUseCase,
     private val recyclingUseCase: CoinageRecyclingUseCase,
     private val dispatchers: CoroutineDispatchers,
+    private val readinessUpdates: VoucherReadinessUpdates,
 ) {
     private class Assets(
         val coins: List<TrackedCoin>,
@@ -81,6 +82,7 @@ class CoinRecyclingEvaluator @Inject constructor(
                 // Outside the throttle: switching strategy should re-judge the wallet at once rather than up
                 // to an interval later. Only the asset churn needs damping.
                 .combine(settings.strategyFlow(), ::Input)
+                .withReadinessUpdates(readinessUpdates, { it.assets.vouchers }, { it.strategyType })
                 .collect { input ->
                     // Both passes run off the same input rather than waiting for the next emission: the
                     // wallet may not change again for minutes, and the immediate verdicts must not stand

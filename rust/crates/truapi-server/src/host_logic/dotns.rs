@@ -4,7 +4,7 @@
 //! same categorization and the `navigate_to` callback only receives
 //! already-validated input.
 
-use truapi_platform::{has_dotns_tld, normalize_chat_identifier, normalize_remote_domain};
+use truapi_platform::{has_dotns_tld, normalize_chat_identifier};
 use unicode_normalization::UnicodeNormalization;
 use url::{Url, form_urlencoded};
 
@@ -33,7 +33,9 @@ pub enum NavigateDecision {
         identifier: String,
         /// Path/query/hash suffix without a leading `/`.
         path: String,
-        /// Loadable `https://` URL for this decision.
+        /// Normalized `polkadot://` form, which is what `navigate_to` hands the
+        /// host. Hosts route on the scheme, and no dotNS TLD resolves in public
+        /// DNS, so an `https://` string would not load either.
         canonical_url: String,
     },
     /// A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
@@ -161,7 +163,7 @@ fn classify_dotns(input: &str) -> Option<NavigateDecision> {
     }
 
     let path = strip_leading_slash(parsed.path()) + &suffix(&parsed);
-    let canonical_url = join_url("https://", &identifier, &path);
+    let canonical_url = join_url("polkadot://", &identifier, &path);
     Some(NavigateDecision::DotName {
         identifier,
         path,
@@ -249,7 +251,9 @@ fn classify_localhost(input: &str) -> Option<NavigateDecision> {
 /// External URL scheme allowlist. Anything outside this set is treated as
 /// a [`NavigateDecision::Reject`] so dangerous schemes (`javascript:`,
 /// `data:`, `file:`, `vbscript:`, ...) cannot reach `Platform::navigate_to`.
-const ALLOWED_EXTERNAL_SCHEMES: &[&str] = &["http", "https", "mailto", "tel", "polkadot", "dot"];
+const ALLOWED_EXTERNAL_SCHEMES: &[&str] = &[
+    "http", "https", "mailto", "tel", "sms", "maps", "polkadot", "dot",
+];
 
 /// Mirrors `normalizeUrl`: prepend `https://` if missing, otherwise pass the
 /// URL through as its canonical string form. Returns `Err(reason)` for an
@@ -265,26 +269,6 @@ fn normalize_external(input: &str) -> Result<String, String> {
         return Err(format!("scheme `{}` is not allowed", url.scheme()));
     }
     Ok(url.to_string())
-}
-
-/// Authorizable domain of an already-canonical [`NavigateDecision::External`]
-/// URL, in the [`normalize_remote_domain`] form the permission store keys on.
-///
-/// Only `http` and `https` address an internet origin that a domain grant can
-/// speak about. The rest of [`ALLOWED_EXTERNAL_SCHEMES`] are handoffs to
-/// another app — `mailto:` and `tel:` have no host at all, `polkadot:` and
-/// `dot:` name an in-ecosystem target — so they return `None`, and the
-/// permission gate lets them through instead of inventing a domain for them.
-pub fn external_host(url: &str) -> Option<String> {
-    let parsed = Url::parse(url).ok()?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return None;
-    }
-    let host = parsed.host_str()?;
-    if host.is_empty() {
-        return None;
-    }
-    Some(normalize_remote_domain(host))
 }
 
 fn strip_leading_slash(path: &str) -> String {
@@ -324,7 +308,7 @@ mod tests {
         Expected::Decision(NavigateDecision::DotName {
             identifier: identifier.to_string(),
             path: path.to_string(),
-            canonical_url: join_url("https://", identifier, path),
+            canonical_url: join_url("polkadot://", identifier, path),
         })
     }
 
@@ -355,6 +339,36 @@ mod tests {
         Expected::Decision(NavigateDecision::External {
             url: url.to_string(),
         })
+    }
+
+    /// Pinned as literals so the expectation does not borrow the production
+    /// builder it checks.
+    #[test]
+    fn a_product_destination_is_handed_over_as_a_polkadot_url() {
+        for (input, expected) in [
+            ("calculator.paseo", "polkadot://calculator.paseo"),
+            ("polkadot://calculator.paseo", "polkadot://calculator.paseo"),
+            ("https://calculator.paseo", "polkadot://calculator.paseo"),
+            (
+                "calculator.paseo/deep/path?q=1#frag",
+                "polkadot://calculator.paseo/deep/path?q=1#frag",
+            ),
+            ("MyTestApp.DOT", "polkadot://mytestapp.dot"),
+        ] {
+            let NavigateDecision::DotName { canonical_url, .. } = parse_navigate(input) else {
+                panic!("{input} should classify as a dotNS product destination");
+            };
+            assert_eq!(canonical_url, expected, "for {input}");
+        }
+    }
+
+    /// A web address keeps its scheme, so the two stay distinguishable.
+    #[test]
+    fn a_web_address_is_still_handed_over_as_https() {
+        let NavigateDecision::External { url } = parse_navigate("https://example.com/x") else {
+            panic!("example.com should classify as external");
+        };
+        assert_eq!(url, "https://example.com/x");
     }
 
     #[test]
@@ -606,6 +620,16 @@ mod tests {
                 expected: external("https://acme.dot.li/path/1"),
             },
             TestCase {
+                name: "external messages handoff",
+                input: "sms:+15551234567",
+                expected: external("sms:+15551234567"),
+            },
+            TestCase {
+                name: "external maps handoff",
+                input: "maps:?q=Berlin",
+                expected: external("maps:?q=Berlin"),
+            },
+            TestCase {
                 name: "reject empty",
                 input: "",
                 expected: Expected::Reject,
@@ -751,37 +775,6 @@ mod tests {
                 }
                 other => panic!("expected a Pocket decision for {input}, got {other:?}"),
             }
-        }
-    }
-
-    #[test]
-    fn external_host_names_a_domain_only_for_http_schemes() {
-        assert_eq!(
-            external_host("https://api.example.com/page"),
-            Some("api.example.com".to_string())
-        );
-        assert_eq!(
-            external_host("http://Example.COM./"),
-            Some("example.com".to_string())
-        );
-        // The permission store keys punycode, so a non-ASCII host resolves to
-        // the same slot as its ASCII spelling.
-        assert_eq!(
-            external_host("https://bücher.example/"),
-            external_host("https://xn--bcher-kva.example/")
-        );
-        // Handoff schemes address another app, not a domain a grant can name.
-        for handoff in [
-            "mailto:someone@example.com",
-            "tel:+15551234567",
-            "polkadot://1exampleaddress",
-            "dot:transfer",
-        ] {
-            assert_eq!(
-                external_host(handoff),
-                None,
-                "{handoff} is not a web origin"
-            );
         }
     }
 }

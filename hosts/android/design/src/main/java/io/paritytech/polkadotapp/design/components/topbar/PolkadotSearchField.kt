@@ -47,6 +47,7 @@ fun PolkadotSearchField(
     onLeadingClick: (() -> Unit)? = null,
     imeAction: ImeAction = ImeAction.Search,
     focusRequester: FocusRequester? = null,
+    onClick: (() -> Unit)? = null,
 ) {
     val placeholderContent: (@Composable () -> Unit)? = placeholder?.let { text ->
         {
@@ -64,6 +65,7 @@ fun PolkadotSearchField(
         color = PolkadotTheme.colors.bg.action.tertiary,
         border = BorderStroke(PolkadotTheme.borders.default, PolkadotTheme.colors.stroke.secondary),
         contentAlignment = Alignment.CenterStart,
+        onClick = onClick,
     ) {
         Row(
             modifier = Modifier

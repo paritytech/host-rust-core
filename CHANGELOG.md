@@ -53,6 +53,81 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
   composition crate (#540)
 - return a decode error instead of trapping when subscription helpers receive a
   request descriptor
+## [0.20.0] - 2026-09-23
+
+### Added
+
+- chat modality on the shared TrUAPI core (#840)
+
+### Fixed
+
+- repair source installs and gate rustdoc (#917)
+- stop freezing built-in prototypes (#915)
+
+## [0.19.0] - 2026-09-22
+
+### Added
+
+- add typed script projects (#549)
+- a TrUAPI-native test host (#294)
+- report a newly paired device to the host (#851)
+- let an Android preview name the commit it came from (#882)
+- distribute Android nightly and debug builds (#864)
+- build an installable Android APK on demand (#858)
+
+### Changed
+
+- @parity/truapi 0.19.0, @parity/truapi-host 0.19.0 (#904)
+- Sandbox CLI product scripts by default (#829)
+- @parity/truapi-provider 0.2.1 (#871)
+
+### Fixed
+
+- mask the signed download link the distributor prints (#906)
+- pass CONTACT_EMAIL to the Android builds (#903)
+- balance the delivery preflight, and shellcheck inline action shell (#902)
+- reconnect the localhost bridge after its socket dies (#872)
+- say why the delivery check refused (#894)
+- generate the bindings for every build type, not two (#884)
+- hand each reusable workflow the secrets it reads (#860)
+- use the application id the Google configuration is built for (#863)
+- re-apply deleted paths by removing them, not by patching (#859)
+- take the light client's full-node statement replay (#870)
+
+## [0.18.0] - 2026-09-21
+
+### RFCs
+
+- **Accepted:** Wire message type: an explicit byte for trait, method, and leg
+- **Withdrawn:** Wire message type: an explicit byte for trait, method, and leg
+
+### Added
+
+- report what a vendored tree owes its source (#824)
+- localStorage.subscribe and worker pending operations (#603)
+- cancel an in-flight one-shot request from the wire (#843)
+- expose the device statement account to host applications (#842)
+- resolve the Android core from this tree (#837)
+- extend AutoSigning to the product signing APIs and statement proofs (#751)
+- let hosts ask whether a product is trusted for remote access (#802)
+
+### Changed
+
+- @parity/truapi 0.18.0, @parity/truapi-host 0.18.0 (#869)
+- Authorize browser APIs through Rust permissions (#828)
+- Preserve permission decisions in the Rust core (#827)
+- Share one localhost WS listener across native product executions (#600)
+- route subscriptions through one state lock (#823)
+- Add screenshot-triggered issue reports to mobile hosts (#771)
+
+### Fixed
+
+- admit the granting product's own proof context (#850)
+- bound the pairing attempt with a deadline (#845)
+- stamp the generated client with the host's codec version (#848)
+- hand a product destination to the host as a polkadot URL (#832)
+- build the core before the distribution workflows build the app (#833)
+- record the revision hosts/ios is actually at (#822)
 
 ## [0.17.0] - 2026-09-17
 
@@ -67,6 +142,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.17.0, @parity/truapi-host 0.17.0, @parity/truapi-provider 0.2.0 (#819)
 - require versioned wrappers for empty wire payloads (#785)
 - restorable Rust cache, wire-table gate in the rust job (#779)
 - remove genesis constants (#753)

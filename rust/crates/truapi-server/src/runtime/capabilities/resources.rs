@@ -37,7 +37,7 @@ impl ProductRuntimeHost {
         };
         require_session()?;
         let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         let request = PermissionAuthorizationRequest::StatementStoreAllowance {
             derivation_index: derivation_index.clone(),
         };
@@ -161,7 +161,7 @@ impl ResourceAllocation for ProductRuntimeHost {
             }
         };
         let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         let mut grants = Vec::new();
         for resource in &inner.resources {
             let derivation_index = match resource {

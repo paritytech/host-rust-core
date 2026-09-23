@@ -9,4 +9,7 @@ data class DebugMenuState(
     val showSpaBrowserDialog: Boolean = false,
     val hasJWTToken: Boolean = false,
     val coinageDebugWidgetsEnabled: Boolean = true,
+    val truapiRuntimeEnabled: Boolean = true,
+    /** Non-null while the restart prompt is up; the value to restore if it is declined. */
+    val runtimeRestartRevertsTo: Boolean? = null,
 )

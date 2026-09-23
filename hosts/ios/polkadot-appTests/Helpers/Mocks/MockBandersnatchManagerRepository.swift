@@ -15,7 +15,10 @@ final class MockBandersnatchManagerRepository: BandersnatchManagerRepositoryProt
     }
 
     convenience init(tld: String = "dot") throws {
-        let manager = RootEntropyManager(keychain: InMemoryKeychain(), entropyIdStore: MockEntropyIdStore())
+        let manager = RootEntropyManager(
+            keychain: InMemoryKeychain(),
+            installationKeyIdStore: MockInstallationKeyIdStore()
+        )
         try manager.createRootEntropy(Data.randomOrError(of: 32))
         self.init(tld: tld, entropyManager: manager)
     }

@@ -1,8 +1,8 @@
 import SwiftUI
 import DesignSystem
 
-/// Per-chain readout of every monitored connection. It repeats the top strip's ring at a larger
-/// size so the two read as the same mark, and names the health grade and block age beside it.
+/// Per-chain readout of every monitored connection. Displays the ring at a larger size plus
+/// a metrics line of connection state, liveness and average block interval.
 public struct ConnectionStatusPanelView: View, Hashable {
     public let rows: [ChainConnectionStatusViewModel]
 
@@ -11,37 +11,33 @@ public struct ConnectionStatusPanelView: View, Hashable {
     }
 
     public var body: some View {
-        // `ChainStatusProvider` drops identical row sets, so a stalled chain stops emitting
-        // entirely. Block age therefore ticks on a view-local timeline rather than on emissions,
-        // otherwise it would freeze exactly when the panel is opened to diagnose the stall.
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(alignment: .leading, spacing: DSSpacings.mediumIncreased) {
-                Text(.Common.connectionStatusPanelTitle)
-                    .typography(.titleLarge)
-                    .foregroundStyle(Color.fgPrimary)
-                    .lineLimit(1)
-                    .padding(.bottom, DSSpacings.small)
+        VStack(alignment: .leading, spacing: DSSpacings.extraMedium) {
+            Text(.Common.connectionStatusPanelTitle)
+                .typography(.titleLarge)
+                .foregroundStyle(Color.fgPrimary)
+                .lineLimit(1)
+                .padding(.bottom, DSSpacings.extraMedium)
 
-                ForEach(rows) { row in
-                    rowView(row, now: context.date)
-                }
+            ForEach(rows) { row in
+                rowView(row)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(DSSpacings.mediumIncreased)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding([.top, .horizontal], DSSpacings.large)
     }
 }
 
 private extension ConnectionStatusPanelView {
     static let placeholder = "—"
 
-    /// Block age is right-anchored at this width so the "Block:" label beside it stays put when the
-    /// value gains a digit; `codeSmall` provides the monospaced font for steady alignment between those steps.
-    static let blockAgeMinWidth: CGFloat = 16
+    static let separator = " · "
 
-    static let blockAgeFormatter = DateComponentsFormatter.secondsMinutesAbbreviated
+    /// Matches the ring's arc animation so a liveness change reads as one movement across the row.
+    static let metricsAnimation: Animation = .easeOut(duration: 0.3)
 
-    func rowView(_ row: ChainConnectionStatusViewModel, now: Date) -> some View {
+    static let intervalFormatter = DateComponentsFormatter.secondsMinutesAbbreviated
+
+    func rowView(_ row: ChainConnectionStatusViewModel) -> some View {
         HStack(spacing: DSSpacings.extraMedium) {
             ChainStatusRingView(viewModel: row, diameter: 40)
                 .accessibilityHidden(true)
@@ -52,56 +48,42 @@ private extension ConnectionStatusPanelView {
                     .foregroundStyle(Color.fgPrimary)
                     .lineLimit(1)
 
-                Text(verbatim: subtitle(row))
-                    .typography(.bodySmall)
-                    .foregroundStyle(Color.fgSecondary)
-                    .lineLimit(1)
+                HStack(spacing: 0) {
+                    Text(verbatim: row.stateTitle)
+
+                    Text(verbatim: "\(Self.separator)\(livenessText(row))")
+                        .contentTransition(.numericText())
+
+                    Text(verbatim: "\(Self.separator)\(blockIntervalText(row))")
+                        .contentTransition(.numericText())
+                }
+                .typography(.bodySmall)
+                .monospacedDigit()
+                .foregroundStyle(Color.fgSecondary)
+                .lineLimit(1)
+                .animation(Self.metricsAnimation, value: row.liveness)
             }
 
             Spacer(minLength: 0)
-
-            Text(.Common.connectionStatusBlockLabel)
-                .typography(.bodySmall)
-                .foregroundStyle(Color.fgSecondary)
-                .lineLimit(1)
-
-            Text(verbatim: blockAgeText(row.lastBlockDate, now: now))
-                .typography(.codeSmall)
-                .foregroundStyle(Color.fgPrimary)
-                .lineLimit(1)
-                .frame(minWidth: Self.blockAgeMinWidth, alignment: .trailing)
         }
     }
 
-    func subtitle(_ row: ChainConnectionStatusViewModel) -> String {
-        guard row.state == .connected else {
-            return row.stateTitle
-        }
-
-        let grade =
-            switch row.healthGrade {
-            case .excellent: String(localized: .Common.connectionStatusHealthExcellent)
-            case .good: String(localized: .Common.connectionStatusHealthGood)
-            case .fair: String(localized: .Common.connectionStatusHealthFair)
-            case .poor: String(localized: .Common.connectionStatusHealthPoor)
-            }
-
-        return String(localized: .Common.connectionStatusSpeedValue(grade))
+    func livenessText(_ row: ChainConnectionStatusViewModel) -> String {
+        let percent = row.liveness.map { $0.formatted(.percent.precision(.fractionLength(0))) }
+        return String(localized: .Common.connectionStatusLivenessValue(percent ?? Self.placeholder))
     }
 
-    /// The result is displayed with `lineLimit(1)` because the panel measures its content only
-    /// when a configuration is pushed, so wrapped text on a timeline tick would grow content
-    /// without resizing the panel.
-    func blockAgeText(_ lastBlockDate: Date?, now: Date) -> String {
+    func blockIntervalText(_ row: ChainConnectionStatusViewModel) -> String {
+        let label = String(localized: .Common.connectionStatusBlockLabel)
+
         guard
-            let lastBlockDate,
-            let age = Self.blockAgeFormatter.string(
-                from: max(0, now.timeIntervalSince(lastBlockDate))
-            )
+            let liveness = row.liveness,
+            liveness > 0,
+            let interval = Self.intervalFormatter.string(from: row.expectedBlockSeconds / liveness)
         else {
-            return Self.placeholder
+            return "\(label) \(Self.placeholder)"
         }
 
-        return age
+        return "\(label) ~\(interval)"
     }
 }

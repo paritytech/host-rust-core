@@ -36,6 +36,7 @@ cargo run -p truapi-codegen -- \
   --output js/packages/truapi/src/generated \
   --rust-output rust/crates/truapi-server/src/generated \
   --rust-client-output rust/crates/truapi-client/src/generated.rs
+  --output js/packages/truapi/src/generated
 ```
 
 ## Typical workflow
@@ -47,6 +48,7 @@ cargo run -p truapi-codegen -- \
   --output js/packages/truapi/src/generated \
   --rust-output rust/crates/truapi-server/src/generated \
   --rust-client-output rust/crates/truapi-client/src/generated.rs
+  --output js/packages/truapi/src/generated
 ```
 
 The repo wraps both steps in [`scripts/codegen.sh`](../../../scripts/codegen.sh), which is what you should run from the repo root.

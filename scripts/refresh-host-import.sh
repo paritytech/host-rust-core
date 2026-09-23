@@ -28,6 +28,13 @@ set -euo pipefail
 readonly MANIFEST="hosts/imports.json"
 
 die() { echo "error: $*" >&2; exit 1; }
+
+# Every mktemp in this script registers here, so a die path leaks nothing. One
+# of these can be a large binary patch.
+TEMPS=()
+cleanup() { [ ${#TEMPS[@]} -eq 0 ] || rm -f "${TEMPS[@]}"; }
+trap cleanup EXIT
+scratch() { local f; f="$(mktemp)"; TEMPS+=("$f"); printf '%s' "$f"; }
 note() { echo "  $*"; }
 
 repo_root() { git rev-parse --show-toplevel; }
@@ -107,6 +114,70 @@ compare_against_source() {
   return $rc
 }
 
+# Paths that exist because the tree lives here rather than upstream. They are
+# wrong in the source repository by construction, so they are never owed back.
+manifest_infrastructure() {
+  local host=$1
+  python3 - "$host" <<'PY'
+import json, sys
+host = sys.argv[1]
+with open("hosts/imports.json") as fh:
+    data = json.load(fh)
+for entry in data[host].get("infrastructure", []):
+    print(entry)
+PY
+}
+
+cmd_backport() {
+  local host=$1; shift
+  local out=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --patch) out=$2; shift 2 ;;
+      *) die "unknown argument $1" ;;
+    esac
+  done
+
+  local source recorded
+  source="$(manifest_get "$host" source)"
+  recorded="$(manifest_get "$host" ref)"
+  fetch_source "$source" "$recorded"
+
+  local base_tree adapted infra
+  base_tree="$(upstream_tree_at_prefix "$host" "$recorded")"
+  adapted="$(mktemp)"; infra="$(mktemp)"
+  git diff -z --name-only "$base_tree" HEAD -- "hosts/${host}" > "$adapted"
+  manifest_infrastructure "$host" > "$infra"
+
+  note "hosts/${host} against ${recorded}"
+  echo
+
+  local owed
+  owed="$(mktemp)"
+  python3 scripts/lib/classify-host-adaptations.py "$adapted" "$infra" "hosts/${host}/" "$owed"
+  local rc=$?
+
+  if [ -n "$out" ] && [ -s "$owed" ]; then
+    # Rewritten to the source repository's paths, so it applies there with
+    # `git apply` from the root rather than needing -p juggling.
+    local owed_paths=()
+    while IFS= read -r owed_path; do
+      owed_paths+=("$owed_path")
+    done < "$owed"
+    git diff --binary "$base_tree" HEAD -- "${owed_paths[@]}" \
+      | sed -e "s|^diff --git a/hosts/${host}/|diff --git a/|" \
+            -e "s| b/hosts/${host}/| b/|" \
+            -e "s|^--- a/hosts/${host}/|--- a/|" \
+            -e "s|^+++ b/hosts/${host}/|+++ b/|" \
+      > "$out"
+    echo
+    note "patch written to ${out}, applies at the root of ${source}"
+  fi
+
+  rm -f "$adapted" "$infra" "$owed"
+  return $rc
+}
+
 cmd_status() {
   local host=$1 source ref branch
   source="$(manifest_get "$host" source)"
@@ -172,12 +243,21 @@ cmd_refresh() {
   # What this repository changed relative to the tree it imported.
   local base_tree patch
   base_tree="$(upstream_tree_at_prefix "$host" "$recorded")"
-  patch="$(mktemp)"
+  patch="$(scratch)"
+  local deleted_list
+  deleted_list="$(scratch)"
   # --binary, or a patch touching a binary file is rejected outright and git
   # apply, which is all or nothing, then applies none of it.
-  git diff --binary "$base_tree" HEAD -- "hosts/${host}" > "$patch"
+  #
+  # Deletions are excluded here and re-applied separately below. git apply
+  # cannot three-way a whole-file deletion, because there is no post-image to
+  # merge against, so it hard-rejects the moment upstream touches a path this
+  # repository deleted. Kept in this patch, that one rejection would discard
+  # every other adaptation with it.
+  git diff --binary --diff-filter=d "$base_tree" HEAD -- "hosts/${host}" > "$patch"
+  git diff -z --name-only --diff-filter=D "$base_tree" HEAD -- "hosts/${host}" > "$deleted_list"
   local adapted_list
-  adapted_list="$(mktemp)"
+  adapted_list="$(scratch)"
   # NUL-delimited to match the listings it is compared against. --name-only
   # quotes and escapes any path outside ASCII, and one asset in the iOS tree
   # would then never match its own entry and read as dropped work.
@@ -215,6 +295,31 @@ cmd_refresh() {
     note "resolve them, then stage and commit"
   fi
 
+  # Removing a path says the same thing whether the source kept it, changed it
+  # or deleted it too, so this needs no merge and cannot be rejected.
+  if [ -s "$deleted_list" ]; then
+    # -f because read-tree has just staged the source's version of these
+    # paths, and git rm refuses a path whose index entry differs from HEAD.
+    # Discarding that staged content is the whole point.
+    xargs -0 git rm -r -q -f --ignore-unmatch -- < "$deleted_list"
+    note "re-applied $(tr -cd '\0' < "$deleted_list" | wc -c | tr -d ' ') deletions"
+  fi
+
+  # The comparison below cannot see this: a resurrected path matches the source
+  # exactly, so it reads as an adaptation that left no difference rather than as
+  # one that was dropped.
+  local resurrected=0
+  while IFS= read -r -d '' path; do
+    if git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+      [ "$resurrected" -ne 0 ] || note "deleted paths that came back:"
+      resurrected=$((resurrected + 1))
+      note "    ${path}"
+    fi
+  done < "$deleted_list"
+  if [ "$resurrected" -ne 0 ]; then
+    die "${resurrected} path(s) this repository deleted are back in the index. Recover with: git reset --hard HEAD"
+  fi
+
   manifest_set_ref "$host" "$target"
   git add "$MANIFEST"
   echo
@@ -224,7 +329,6 @@ cmd_refresh() {
   note "checking the result against the source"
   local verdict=0
   compare_against_source "$host" "$target" "$adapted_list" || verdict=$?
-  rm -f "$patch" "$adapted_list"
 
   echo
   if [ "$verdict" -ne 0 ]; then
@@ -240,7 +344,8 @@ main() {
   case "$cmd" in
     status)  [ $# -ge 1 ] || die "usage: $0 status <host>"; cmd_status "$@" ;;
     refresh) [ $# -ge 1 ] || die "usage: $0 refresh <host> [--ref <rev>]"; cmd_refresh "$@" ;;
-    *) die "usage: $0 {status|refresh} <host> [options]" ;;
+    backport) [ $# -ge 1 ] || die "usage: $0 backport <host> [--patch <file>]"; cmd_backport "$@" ;;
+    *) die "usage: $0 {status|refresh|backport} <host> [options]" ;;
   esac
 }
 

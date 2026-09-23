@@ -486,7 +486,12 @@ async fn set_product_grants(
 ) {
     use crate::host_logic::permissions::PermissionsService;
     use truapi_platform::{PermissionAuthorizationRequest, PermissionAuthorizationStatus};
-    let permissions = PermissionsService::new(platform, platform, product);
+    let product = truapi_platform::ProductContext::new_with_execution(
+        product.to_owned(),
+        truapi_platform::ProductExecutionKind::Worker,
+    )
+    .expect("test product id is valid");
+    let permissions = PermissionsService::new(platform, platform, &product);
     permissions
         .set_authorization_status(
             &PermissionAuthorizationRequest::ChatAuthority,

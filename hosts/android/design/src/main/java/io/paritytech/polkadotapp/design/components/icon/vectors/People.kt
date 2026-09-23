@@ -16,23 +16,23 @@ import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 val NovaIcons.People: ImageVector by lazy(LazyThreadSafetyMode.NONE) {
     ImageVector.Builder(
         name = "People",
-        defaultWidth = 9.dp,
+        defaultWidth = 10.dp,
         defaultHeight = 10.dp,
-        viewportWidth = 9f,
+        viewportWidth = 10f,
         viewportHeight = 10f
     ).apply {
         path(fill = SolidColor(Color(0xFF000000))) {
-            moveTo(8.171f, 9.25f)
-            horizontalLineTo(0f)
-            verticalLineTo(5.194f)
-            horizontalLineTo(8.171f)
-            verticalLineTo(9.25f)
+            moveTo(9.085f, 9.625f)
+            horizontalLineTo(0.915f)
+            verticalLineTo(5.569f)
+            horizontalLineTo(9.085f)
+            verticalLineTo(9.625f)
             close()
-            moveTo(4.085f, 0f)
-            curveTo(5.354f, 0f, 6.382f, 1.028f, 6.382f, 2.297f)
-            curveTo(6.382f, 3.565f, 5.353f, 4.594f, 4.085f, 4.594f)
-            curveTo(2.817f, 4.594f, 1.788f, 3.565f, 1.788f, 2.297f)
-            curveTo(1.788f, 1.028f, 2.817f, 0f, 4.085f, 0f)
+            moveTo(5f, 0.375f)
+            curveTo(6.268f, 0.375f, 7.296f, 1.403f, 7.296f, 2.672f)
+            curveTo(7.296f, 3.94f, 6.268f, 4.969f, 5f, 4.969f)
+            curveTo(3.731f, 4.969f, 2.703f, 3.94f, 2.703f, 2.672f)
+            curveTo(2.703f, 1.403f, 3.731f, 0.375f, 5f, 0.375f)
             close()
         }
     }.build()

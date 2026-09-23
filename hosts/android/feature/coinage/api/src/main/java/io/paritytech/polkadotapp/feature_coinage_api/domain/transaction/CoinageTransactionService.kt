@@ -4,12 +4,13 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.Co
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageHandoffCommit
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageInput
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
+import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageScheduledTransactionRequest
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionRequest
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_transactions.api.data.EnrichedSendableExtrinsic
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -48,6 +49,18 @@ interface CoinageTransactionService {
     ): Result<List<CoinageTransactionId>>
 
     /**
+     * Registers transactions that are built and submitted by their policies afterwards, as one operation.
+     *
+     * Their inputs are locked from the moment this commits, so no other transaction can select them while
+     * they wait. Meant to be called inside the database transaction that makes the payment real — building
+     * starts only once that transaction has committed.
+     */
+    suspend fun scheduleTransactions(
+        transactions: List<CoinageScheduledTransactionRequest>,
+        groupId: CoinageOperationGroupId,
+    ): Result<List<CoinageTransactionId>>
+
+    /**
      * Reserves [assets] against being spent again, before their keys reach the transport — a key that arrives
      * at a peer without a mark can be selected again and double-spent.
      *
@@ -68,9 +81,9 @@ interface CoinageTransactionService {
      */
     fun startRecovery()
 
-    suspend fun getTransactionStatus(id: CoinageTransactionId): Result<CoinageTransactionStatus>
+    suspend fun getTransactionStatus(id: CoinageTransactionId): Result<DurableTxStatus>
 
-    fun subscribeTransactionStatus(id: CoinageTransactionId): Flow<CoinageTransactionStatus>
+    fun subscribeTransactionStatus(id: CoinageTransactionId): Flow<DurableTxStatus>
 
     /** In registration order. Empty when nothing was ever registered under [groupId]. */
     suspend fun getOperationGroupStatuses(groupId: CoinageOperationGroupId): Result<List<CoinageTransactionState>>

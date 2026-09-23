@@ -22,5 +22,4 @@ dependencies {
     implementation(project(":feature:account:api"))
     implementation(project(":feature:usernames:api"))
     implementation(project(":feature:statement-store:api"))
-    implementation(project(":feature:web3summit:api"))
 }

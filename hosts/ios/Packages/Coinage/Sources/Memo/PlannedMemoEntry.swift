@@ -4,7 +4,7 @@ import Foundation
 /// Created during transfer planning, before coin allocation and key derivation.
 struct PlannedMemoEntry: Equatable {
     /// The derivation index of the coin (used to derive the private key for the memo).
-    let coinDerivationIndex: DerivationIndex
+    let coinDerivationIndex: CoinageKeyIndex
 
     /// The denomination exponent (power-of-two value).
     let valueExponent: Int16
