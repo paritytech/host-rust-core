@@ -113,9 +113,15 @@ describe("the in-page statement store", () => {
       JSON.stringify({ id: 8, method: "statement_submit", params: [encoded] }),
       () => {},
     );
-    expect(store.submitted()).toEqual([encoded]);
+    expect(store.submitted().map((entry) => entry.encoded)).toEqual([encoded]);
+    // Provenance travels with the statement, because `submitted()` is the
+    // narrowing of everything retained and has to tell the two apart.
+    expect(store.submitted()[0]?.fromProduct).toBe(true);
+    expect(store.submitted()[0]?.timestamp).toBeGreaterThan(0);
+
     store.clear();
     expect(store.submitted()).toEqual([]);
+    expect(store.statements()).toEqual([]);
   });
 
   it("does not count an injection as a submission", () => {

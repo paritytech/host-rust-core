@@ -68,6 +68,7 @@ const JS_ONLY: Record<string, string> = {
     "host-api-test-sdk name for the policy Rust sets through MockConfig",
   statements: "loopback statement store, refused on both sides",
   getSubmittedStatements: "loopback statement store, refused on both sides",
+  getStatements: "loopback statement store, refused on both sides",
   getInjectedStatements: "loopback statement store, refused on both sides",
   injectStatement: "loopback statement store, refused on both sides",
   clearStatements: "loopback statement store, refused on both sides",

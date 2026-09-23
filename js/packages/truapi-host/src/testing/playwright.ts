@@ -20,7 +20,14 @@ import type {
   PermissionPolicy,
   PermissionPolicyAlias,
   SigningLogEntry,
+  StatementEntry,
 } from "../web/create-mock-host.js";
+import type { StatementInput } from "../web/loopback-statements.js";
+
+// The statement shapes `@parity/host-api-test-sdk` names, so a suite that
+// annotates what it injects or reads back compiles unchanged.
+export type { StatementEntry } from "../web/create-mock-host.js";
+export type { StatementInput } from "../web/loopback-statements.js";
 
 import { PRODUCT_FRAME_ID } from "./host-page.js";
 import { createTestHostServer } from "./server.js";
@@ -280,13 +287,17 @@ export interface TestHost {
    * one no statement is ever built to submit. A product that signs its own
    * statements is observable here.
    */
-  getSubmittedStatements(): Promise<string[]>;
+  getSubmittedStatements(): Promise<StatementEntry[]>;
+  /** Every statement the store holds, submitted or injected, in order. */
+  getStatements(): Promise<StatementEntry[]>;
   /**
    * Deliver a statement to the product as a chain notification, returning how
    * many live subscriptions it reached. Subscribe first: zero means nothing
    * was listening.
    */
-  injectStatement(statement: Uint8Array | string): Promise<number>;
+  injectStatement(
+    statement: StatementInput | Uint8Array | string,
+  ): Promise<StatementEntry>;
   /** Statements injected so far, in order. */
   getInjectedStatements(): Promise<string[]>;
   /** Forget the injected statements. */
@@ -711,15 +722,24 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         // Sent as hex, not bytes: `page.evaluate` serialises a Uint8Array as a
         // plain index object, which would inject a statement of nothing.
         injectStatement: (statement) =>
-          page.evaluate((value) => {
-            const host = window.__TRUAPI_TEST_HOST__;
-            if (!host) throw new Error("test host is not running on this page");
-            return host.injectStatement(value);
-          }, typeof statement === "string" ? statement : `0x${Array.from(statement, (b) => b.toString(16).padStart(2, "0")).join("")}`),
+          page.evaluate(
+            (value) => {
+              const host = window.__TRUAPI_TEST_HOST__;
+              if (!host) throw new Error("test host is not running on this page");
+              return host.injectStatement(value);
+            },
+            // A `Uint8Array` is reduced to hex here because `page.evaluate`
+            // serialises it as a plain index object, which would inject a
+            // statement of nothing. The decoded shape survives as it is.
+            statement instanceof Uint8Array
+              ? `0x${Array.from(statement, (byte) => byte.toString(16).padStart(2, "0")).join("")}`
+              : statement,
+          ),
         getInjectedStatements: () => call("getInjectedStatements"),
         clearStatements: () => call("clearStatements"),
 
         getSubmittedStatements: () => call("getSubmittedStatements"),
+        getStatements: () => call("getStatements"),
 
         // Playwright closes the page after the fixture yields, so there is
         // genuinely nothing to do -- not a silent stub standing in for work.

@@ -96,7 +96,14 @@ suite("createMockClient", () => {
       const denied = await client.permissions.requestDevicePermission("Camera");
       expect(denied._unsafeUnwrap().granted).toBe(false);
       expect(host.getPermissionLog()).toEqual([
-        { tag: "Camera", value: "Camera", approved: false, kind: "device" },
+        {
+          tag: "Camera",
+          value: "Camera",
+          approved: false,
+          kind: "device",
+          decision: "Deny",
+          timestamp: expect.any(Number),
+        },
       ]);
 
       // The core caches a decided authorization, so a product asking twice is

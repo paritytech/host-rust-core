@@ -22,7 +22,8 @@
 import { blake2b } from "@noble/hashes/blake2.js";
 import { err, ok } from "neverthrow";
 
-import { scale } from "@parity/truapi";
+import { scale, SignedStatement } from "@parity/truapi";
+import type { SignedStatement as SignedStatementValue } from "@parity/truapi";
 
 import type {
   ChatMessageContent,
@@ -94,8 +95,15 @@ const CORE_PRODUCT_STORAGE_KEY = /^truapi:product-storage:v\d+:\d+:[^:]+:(.+)$/;
  * must be the *real* one of the endpoint, not a {@link MOCK_GENESIS}
  * placeholder, and the runtime config must carry the same value.
  */
-import { createLoopbackStatements } from "./loopback-statements.js";
-import type { LoopbackStatements } from "./loopback-statements.js";
+import {
+  createLoopbackStatements,
+  encodeStatement,
+} from "./loopback-statements.js";
+import type {
+  LoopbackStatements,
+  RetainedStatement,
+  StatementInput,
+} from "./loopback-statements.js";
 
 export interface ChainProxy {
   /**
@@ -261,6 +269,25 @@ export interface OpenOperation {
  * Field names are `@parity/host-api-test-sdk`'s `PermissionLogEntry`, so an
  * assertion written against that shape reads this one.
  */
+/**
+ * One statement the store holds, in the shape a suite reads it.
+ *
+ * Field names are `@parity/host-api-test-sdk`'s `StatementEntry`, so an
+ * assertion written against that shape reads this one.
+ */
+export interface StatementEntry {
+  /** Topics the statement carries, `0x`-hex, in the order encoded. */
+  topics: string[];
+  /** The statement's payload, or `undefined` when it carries none. */
+  data: string | undefined;
+  /** The signature proof, when the statement carries a signing one. */
+  proof: { signature: string; signer: string } | undefined;
+  /** True when the product submitted it, false when a test injected it. */
+  fromProduct: boolean;
+  /** When the store took it, as epoch milliseconds. */
+  timestamp: number;
+}
+
 export interface PermissionLogEntry {
   /** The request's tag, the same key `grantPermission` takes. */
   tag: string;
@@ -270,6 +297,17 @@ export interface PermissionLogEntry {
   approved: boolean;
   /** Which prompt surface asked. */
   kind: PermissionKind;
+  /**
+   * The answer's lifetime, as the core records it.
+   *
+   * A mock policy is two-valued, so this is `AllowAlways` or `Deny`; a host
+   * that offered `AllowOnce` would record that instead. Carried because an
+   * assertion on a refusal reads the lifetime, not just the boolean: a suite
+   * checking that a denial was durable has nothing else to look at.
+   */
+  decision: PermissionDecision;
+  /** When the mock answered, as epoch milliseconds. */
+  timestamp: number;
 }
 
 /**
@@ -406,9 +444,16 @@ export interface MockHost {
    * what the chain would have sent it, so anything else is dropped during
    * decode with no error a suite can see.
    */
-  injectStatement(statement: Uint8Array | string): number;
+  injectStatement(statement: StatementInput | Uint8Array | string): StatementEntry;
   /** Statements injected so far, in order, as `0x` hex. */
   getInjectedStatements(): string[];
+  /**
+   * Every statement the store holds, submitted or injected, in order.
+   *
+   * Decoded, because the wire form is the core's business: a suite asserting on
+   * a topic or a payload should not have to know the codec to read one back.
+   */
+  getStatements(): StatementEntry[];
   /**
    * Statements the product submitted, as `0x` hex, read off the chain
    * transport.
@@ -418,7 +463,7 @@ export interface MockHost {
    * host to sign first (`createProofAuthorized`) needs a statement allowance to
    * get that far, and this stays empty until it has one.
    */
-  getSubmittedStatements(): string[];
+  getSubmittedStatements(): StatementEntry[];
   /** Forget the injected statements. Delivered ones cannot be recalled. */
   clearStatements(): void;
   /** Raw JSON-RPC the core sent over the chain connection, in order. */
@@ -601,6 +646,19 @@ function normalizeHash(hash: string | Uint8Array): string {
  * would cross-talk, and releasing one would leave its listeners on a socket the
  * other still holds. A single-chain suite is not safe from it.
  */
+/** Record a `statement_submit` the core sent to a real chain. */
+function recordChainSubmission(request: string, into: RetainedStatement[]): void {
+  try {
+    const frame = JSON.parse(request) as { method?: string; params?: unknown[] };
+    if (frame.method !== "statement_submit") return;
+    const [statement] = frame.params ?? [];
+    if (typeof statement !== "string") return;
+    into.push({ encoded: statement, fromProduct: true, timestamp: Date.now() });
+  } catch {
+    // A frame that is not JSON is not a submission.
+  }
+}
+
 function connectToChain(
   proxy: ChainProxy,
   sentRpc: string[],
@@ -610,6 +668,7 @@ function connectToChain(
   // type is generated from the protocol and must not grow test-only members.
   injectors?: Set<(frame: string) => void>,
   disconnectors?: Set<() => void>,
+  submissions?: RetainedStatement[],
 ): JsonRpcConnection {
   const socket = new WebSocket(proxy.rpcUrl);
   const queued: string[] = [];
@@ -687,6 +746,7 @@ function connectToChain(
   return {
     send(request) {
       sentRpc.push(request);
+      if (submissions) recordChainSubmission(request, submissions);
       // Served here rather than forwarded, so the statement flows work with no
       // chain behind them. Everything else still goes out.
       if (loopback?.handle(request, deliver)) return;
@@ -786,6 +846,9 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
   const chainInjectors = new Set<(frame: string) => void>();
   const chainDisconnectors = new Set<() => void>();
   const injectedStatements: string[] = [];
+  // Submissions and injections seen on a real chain transport, so the readers
+  // answer the same shape whether or not the store is served in-page.
+  const chainStatements: RetainedStatement[] = [];
   const loopbackStatements = createLoopbackStatements();
   const usingLoopback = (chainProxies ?? []).some(
     (proxy) => proxy.loopbackStatements,
@@ -861,7 +924,14 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
         : enforcePermissions
           ? false
           : granted(policy);
-    permissionLog.push({ tag, value, approved, kind });
+    permissionLog.push({
+      tag,
+      value,
+      approved,
+      kind,
+      decision: decision(approved),
+      timestamp: Date.now(),
+    });
     return approved;
   };
 
@@ -909,6 +979,30 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     for (const key of [...storage.keys()]) {
       if (key.startsWith(prefix) && key.includes(needle)) storage.delete(key);
     }
+  };
+
+  /** Decode a retained statement into the shape a suite reads. */
+  const asEntry = (statement: RetainedStatement): StatementEntry => {
+    let decoded: SignedStatementValue | undefined;
+    try {
+      decoded = SignedStatement.dec(scale.hexToBytes(statement.encoded));
+    } catch {
+      // An undecodable statement is still reported, with nothing claimed about
+      // its contents: a suite chasing one it injected by hand has something to
+      // see, where dropping it looks like the injection never happened.
+      decoded = undefined;
+    }
+    const proof = decoded?.proof;
+    return {
+      topics: decoded?.topics.map((topic) => topic.toLowerCase()) ?? [],
+      data: decoded?.data,
+      proof:
+        proof && proof.tag !== "OnChain"
+          ? { signature: proof.value.signature, signer: proof.value.signer }
+          : undefined,
+      fromProduct: statement.fromProduct,
+      timestamp: statement.timestamp,
+    };
   };
 
   const granted = (policy: PermissionPolicy): boolean => policy === "allow-all";
@@ -1103,6 +1197,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
             proxy.loopbackStatements ? loopbackStatements : undefined,
             chainInjectors,
             chainDisconnectors,
+            chainStatements,
           );
           chainStatus = "Connected";
           return connection;
@@ -1121,6 +1216,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
         return {
           send(request) {
             sentRpc.push(request);
+            recordChainSubmission(request, chainStatements);
           },
           async *responses(): AsyncGenerator<string> {
             try {
@@ -1267,24 +1363,19 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     getNavigationLog: () => [...navigations],
     getNotificationLog: () => pushedNotifications.map((n) => ({ ...n })),
     injectStatement: (statement) => {
-      if (usingLoopback) {
-        const encoded =
-          typeof statement === "string"
-            ? statement.startsWith("0x")
-              ? statement
-              : `0x${statement}`
-            : `0x${hex(statement)}`;
-        injectedStatements.push(encoded);
-        return loopbackStatements.inject(encoded);
-      }
       const encoded =
         typeof statement === "string"
           ? statement.startsWith("0x")
             ? statement
             : `0x${statement}`
-          : `0x${hex(statement)}`;
+          : statement instanceof Uint8Array
+            ? `0x${hex(statement)}`
+            : encodeStatement(statement);
       injectedStatements.push(encoded);
-      let delivered = 0;
+      if (usingLoopback) return asEntry(loopbackStatements.inject(encoded));
+
+      const entry = { encoded, fromProduct: false, timestamp: Date.now() };
+      chainStatements.push(entry);
       for (const subscription of statementSubscriptions) {
         // The envelope the chain sends, not the bare statement: the core reads
         // `result.data.statements`, so a bare value decodes to nothing.
@@ -1300,28 +1391,18 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
           },
         });
         for (const injector of chainInjectors) injector(frame);
-        delivered += 1;
       }
-      return delivered;
+      return asEntry(entry);
     },
     getInjectedStatements: () => [...injectedStatements],
+    getStatements: () =>
+      (usingLoopback ? loopbackStatements.statements() : chainStatements).map(
+        asEntry,
+      ),
     getSubmittedStatements: () =>
-      usingLoopback
-        ? loopbackStatements.submitted()
-        : sentRpc.flatMap((request) => {
-        try {
-          const frame = JSON.parse(request) as {
-            method?: string;
-            params?: unknown[];
-          };
-          if (frame.method !== "statement_submit") return [];
-          const [statement] = frame.params ?? [];
-          return typeof statement === "string" ? [statement] : [];
-        } catch {
-          // A frame that is not JSON is not a submission.
-            return [];
-          }
-        }),
+      (usingLoopback ? loopbackStatements.submitted() : chainStatements)
+        .filter((entry) => entry.fromProduct)
+        .map(asEntry),
     clearStatements: () => {
       injectedStatements.length = 0;
       loopbackStatements.clear();
