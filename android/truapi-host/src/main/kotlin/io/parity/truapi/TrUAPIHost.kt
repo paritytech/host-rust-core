@@ -33,10 +33,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
-import uniffi.truapi.ChatBotRegistrationStatus
 import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatRoom
-import uniffi.truapi.ChatRoomRegistrationStatus
 import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
@@ -61,7 +59,9 @@ import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.PermissionDecision
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
+import uniffi.truapi_server.NativeChatBotRegistrationStatus
 import uniffi.truapi_server.NativeChatCallbacks
+import uniffi.truapi_server.NativeChatRoomRegistrationStatus
 import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativePocketRemoval
 import uniffi.truapi_server.NativeRendererObserver
@@ -106,6 +106,15 @@ enum class ProductExecutionKind {
             WIDGET -> UniFfiProductExecutionKind.WIDGET
             WORKER -> UniFfiProductExecutionKind.WORKER
         }
+
+    internal companion object {
+        fun fromNative(kind: UniFfiProductExecutionKind): ProductExecutionKind =
+            when (kind) {
+                UniFfiProductExecutionKind.APP -> APP
+                UniFfiProductExecutionKind.WIDGET -> WIDGET
+                UniFfiProductExecutionKind.WORKER -> WORKER
+            }
+    }
 }
 
 /**
@@ -192,6 +201,14 @@ data class ProductExecutionConfig(
             productId = productId,
             executionKind = executionKind.toNative(),
         )
+
+    internal companion object {
+        fun fromNative(config: UniFfiNativeProductExecutionConfig): ProductExecutionConfig =
+            ProductExecutionConfig(
+                productId = config.productId,
+                executionKind = ProductExecutionKind.fromNative(config.executionKind),
+            )
+    }
 }
 
 /**
@@ -270,11 +287,15 @@ interface HostBridge {
     fun cancelNotification(id: UInt) {}
 
     /**
-     * Prompt for a device-level permission on the main thread, suspending until
-     * the user decides. Preserve whether approval applies once or always.
+     * Prompt for a device-level permission [product] requested on the main
+     * thread, suspending until the user decides. Preserve whether approval
+     * applies once or always.
      */
     @Throws(HostRejection::class)
-    suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision
+    suspend fun devicePermission(
+        product: ProductExecutionConfig,
+        request: HostDevicePermissionRequest,
+    ): PermissionDecision
 
     /**
      * Report the OS status of a device capability without prompting. Answer from
@@ -297,11 +318,14 @@ interface HostBridge {
     ): NativeDevicePermissionStatus = NativeDevicePermissionStatus.NOT_APPLICABLE
 
     /**
-     * Prompt for a remote (product-scoped) permission bundle on the main thread,
-     * suspending until the user decides.
+     * Prompt for a remote permission bundle [product] requested on the main
+     * thread, suspending until the user decides.
      */
     @Throws(HostRejection::class)
-    suspend fun remotePermission(request: RemotePermission): PermissionDecision
+    suspend fun remotePermission(
+        product: ProductExecutionConfig,
+        request: RemotePermission,
+    ): PermissionDecision
 
     /**
      * Observe an auth state change, in transition order: render
@@ -435,10 +459,9 @@ interface HostBridge {
  * [TrUAPIHostRuntime.openProductExecution] when the host supports the Chat
  * modality; hosts without it pass nothing.
  *
- * Threading: these run inline on the process-wide dispatch pool shared by
- * every product execution, so implementations must be safe to enter
- * concurrently and one that blocks stalls the others. Return promptly and
- * marshal UI work to the main thread.
+ * Threading: these run on the process-wide dispatch pool shared by every
+ * product execution, so implementations must be safe to enter concurrently.
+ * Marshal UI work to the main thread.
  */
 interface ChatHostBridge {
     /**
@@ -447,7 +470,7 @@ interface ChatHostBridge {
      * for the surface that renders them is still the host's job.
      */
     @Throws(HostRejection::class)
-    fun createRoom(roomId: String, name: String, icon: String): ChatRoomRegistrationStatus
+    suspend fun createRoom(roomId: String, name: String, icon: String): NativeChatRoomRegistrationStatus
 
     /**
      * Register or resolve a native product Chat bot. The core has bounded and
@@ -455,7 +478,7 @@ interface ChatHostBridge {
      * for the surface that renders them is still the host's job.
      */
     @Throws(HostRejection::class)
-    fun registerBot(botId: String, name: String, icon: String): ChatBotRegistrationStatus
+    suspend fun registerBot(botId: String, name: String, icon: String): NativeChatBotRegistrationStatus
 
     /**
      * Persist a product-authored message in native Chat storage. Throw for a
@@ -471,11 +494,11 @@ interface ChatHostBridge {
      * may name a message in another room, or none at all.
      */
     @Throws(HostRejection::class)
-    fun postMessage(roomId: String, content: ChatMessageContent): String
+    suspend fun postMessage(roomId: String, content: ChatMessageContent): String
 
     /** Return the current product-scoped native Chat rooms. */
     @Throws(HostRejection::class)
-    fun listRooms(): List<ChatRoom>
+    suspend fun listRooms(): List<ChatRoom>
 }
 
 /**
@@ -542,15 +565,25 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun cancelNotification(id: UInt) =
         withHostRejection { bridge.cancelNotification(id) }
 
-    override suspend fun devicePermission(request: HostDevicePermissionRequest): NativePermissionDecision =
-        withHostRejection { bridge.devicePermission(request).toNative() }
+    override suspend fun devicePermission(
+        product: UniFfiNativeProductExecutionConfig,
+        request: HostDevicePermissionRequest,
+    ): NativePermissionDecision =
+        withHostRejection {
+            bridge.devicePermission(ProductExecutionConfig.fromNative(product), request).toNative()
+        }
 
     override suspend fun devicePermissionStatus(
         request: HostDevicePermissionRequest,
     ): NativeDevicePermissionStatus = withHostRejection { bridge.devicePermissionStatus(request) }
 
-    override suspend fun remotePermission(request: RemotePermission): NativePermissionDecision =
-        withHostRejection { bridge.remotePermission(request).toNative() }
+    override suspend fun remotePermission(
+        product: UniFfiNativeProductExecutionConfig,
+        request: RemotePermission,
+    ): NativePermissionDecision =
+        withHostRejection {
+            bridge.remotePermission(ProductExecutionConfig.fromNative(product), request).toNative()
+        }
 
     override fun authStateChanged(state: AuthState) {
         try {
@@ -671,22 +704,22 @@ private inline fun <T> withStorageException(operation: () -> T): T =
  * [NativeChatCallbacks] interface.
  */
 private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeChatCallbacks {
-    override fun createRoom(
+    override suspend fun createRoom(
         roomId: String,
         name: String,
         icon: String,
-    ): ChatRoomRegistrationStatus = withHostRejection { bridge.createRoom(roomId, name, icon) }
+    ): NativeChatRoomRegistrationStatus = withHostRejection { bridge.createRoom(roomId, name, icon) }
 
-    override fun registerBot(
+    override suspend fun registerBot(
         botId: String,
         name: String,
         icon: String,
-    ): ChatBotRegistrationStatus = withHostRejection { bridge.registerBot(botId, name, icon) }
+    ): NativeChatBotRegistrationStatus = withHostRejection { bridge.registerBot(botId, name, icon) }
 
-    override fun postMessage(roomId: String, content: ChatMessageContent): String =
+    override suspend fun postMessage(roomId: String, content: ChatMessageContent): String =
         withHostRejection { bridge.postMessage(roomId, content) }
 
-    override fun listRooms(): List<ChatRoom> = withHostRejection { bridge.listRooms() }
+    override suspend fun listRooms(): List<ChatRoom> = withHostRejection { bridge.listRooms() }
 }
 
 /**

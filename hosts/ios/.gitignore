@@ -14,6 +14,7 @@ xcuserdata/
 *.dSYM
 
 ## fastlane build_app_simulator outputs (see fastlane/lanes/lane_simulator_build.rb)
+build/
 build_simulator/
 build_simulator_dd/
 

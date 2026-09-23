@@ -188,10 +188,16 @@ final class StubHostBridge: HostBridge, @unchecked Sendable {
     }
 
     func navigateTo(url _: String) async throws {}
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> PermissionDecision {
+    func devicePermission(
+        product _: ProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> PermissionDecision {
         nextDeviceDecision(request: request)
     }
-    func remotePermission(request _: RemotePermission) async throws -> PermissionDecision { nextRemoteDecision() }
+    func remotePermission(
+        product _: ProductExecutionConfig,
+        request _: RemotePermission
+    ) async throws -> PermissionDecision { nextRemoteDecision() }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func localStorageRead(key: String) throws -> Data? { try storage.read(key: key) }
@@ -210,19 +216,19 @@ final class StubChatHostBridge: ChatHostBridge {
         roomId _: String,
         name _: String,
         icon _: String
-    ) throws -> ChatRoomRegistrationStatus { .new }
+    ) async throws -> NativeChatRoomRegistrationStatus { .new }
 
     func registerBot(
         botId _: String,
         name _: String,
         icon _: String
-    ) throws -> ChatBotRegistrationStatus { .new }
+    ) async throws -> NativeChatBotRegistrationStatus { .new }
 
-    func postMessage(roomId _: String, content _: ChatMessageContent) throws -> String {
+    func postMessage(roomId _: String, content _: ChatMessageContent) async throws -> String {
         "message-id"
     }
 
-    func listRooms() throws -> [ChatRoom] { [] }
+    func listRooms() async throws -> [ChatRoom] { [] }
 }
 
 // Conforms to `PocketHostBridge` so a new requirement there fails this job.

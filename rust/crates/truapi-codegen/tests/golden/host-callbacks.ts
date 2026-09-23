@@ -1319,16 +1319,18 @@ export interface PermissionStatusHost {
  */
 export interface Permissions {
   /**
-   * Prompt the user for a device-level permission.
+   * Prompt the user for a device-level permission `product` requested.
    */
   devicePermission(
+    product: ProductContext,
     request: HostDevicePermissionRequest,
   ): Promise<PermissionDecision>;
 
   /**
-   * Prompt the user for a remote (product-scoped) permission bundle.
+   * Prompt the user for a remote permission bundle `product` requested.
    */
   remotePermission(
+    product: ProductContext,
     request: RemotePermissionRequest,
   ): Promise<PermissionDecision>;
 }

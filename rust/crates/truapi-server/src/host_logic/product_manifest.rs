@@ -1,6 +1,6 @@
 //! Root product manifest parsing and grant lookup.
 //!
-//! Pure: the bytes arrive from [`crate::runtime::product_manifest`], and nothing
+//! Pure: the bytes arrive from `crate::runtime::product_manifest`, and nothing
 //! here reaches a chain. A manifest carries more than the trust grants, but only
 //! the fields this core reads are modelled — everything else is skipped, so a
 //! publisher extending the document does not break parsing.

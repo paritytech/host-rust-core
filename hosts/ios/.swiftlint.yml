@@ -1,4 +1,5 @@
 excluded:
+  - build/
   - Package.swift
   - "**/*.generated.swift"
   - polkadot-appTests

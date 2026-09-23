@@ -202,6 +202,11 @@ pub enum SystemEvent {
     FramesListening {
         url: String,
     },
+    DebuggerDialling {
+        url: String,
+        source: String,
+    },
+    DebuggerOff,
     ServeReady {
         url: String,
         auto_accept: bool,
@@ -1634,6 +1639,21 @@ impl App {
                 NoticeTone::Info,
                 "Listening for product frames".to_string(),
                 Some(url),
+            ),
+            SystemEvent::DebuggerDialling { url, source } => self.notice(
+                NoticeTone::Info,
+                "Streaming wire frames to a debugger".to_string(),
+                Some(format!(
+                    "{url} (from {source})\nEvery product frame this host sends or receives leaves the process, decodable in full"
+                )),
+            ),
+            SystemEvent::DebuggerOff => self.notice(
+                NoticeTone::Info,
+                "Wire debugger off".to_string(),
+                Some(
+                    "No --debugger and no TRUAPI_DEBUGGER_URL, so no frames leave this host"
+                        .to_string(),
+                ),
             ),
             SystemEvent::ServeReady { url, auto_accept } => self.notice(
                 NoticeTone::Info,
@@ -3871,6 +3891,37 @@ mod tests {
             app.transcript_text(),
             "• Listening for product frames\n  ws://127.0.0.1:9956"
         );
+    }
+
+    /// §9 requires both arms of the dial report, and requires them where a
+    /// developer sees them. Both halves below run the one renderer: `human()`
+    /// builds an `App`, hands it the event, and returns that transcript. What
+    /// they pin is that each arm puts copy in the transcript at all, which is
+    /// what a report written as a `tracing` line would not do, since the
+    /// alternate screen covers stderr for the rest of the run.
+    #[test]
+    fn both_arms_of_the_debugger_report_render_in_either_mode() {
+        let dialling = SystemEvent::DebuggerDialling {
+            url: "ws://127.0.0.1:9231".to_string(),
+            source: "--debugger".to_string(),
+        };
+        // The endpoint and the switch that supplied it both have to survive: the
+        // source is the half that tells a developer which one to go and unset.
+        assert!(dialling.human().contains("ws://127.0.0.1:9231"));
+        assert!(dialling.human().contains("--debugger"));
+
+        let mut app = test_app();
+        app.handle_system_event(dialling);
+        assert!(app.transcript_text().contains("ws://127.0.0.1:9231"));
+        assert!(app.transcript_text().contains("--debugger"));
+
+        // The off arm is the one silence would swallow, so it must say something.
+        let off = SystemEvent::DebuggerOff;
+        assert!(off.human().contains("Wire debugger off"));
+
+        let mut app = test_app();
+        app.handle_system_event(off);
+        assert!(app.transcript_text().contains("Wire debugger off"));
     }
 
     #[test]

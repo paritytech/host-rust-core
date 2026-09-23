@@ -31,6 +31,7 @@ enum SettingsKey: String {
     case backendSessionId = "backendSessionId.v3"
     case showTransferStrategyDebug
     case truApiRuntimeEnabled
+    case hostPlacementEnabled
     case coinageRecyclingStrategy
     case tabBarLabelsEnabled
     #if TESTNET_FEATURE
