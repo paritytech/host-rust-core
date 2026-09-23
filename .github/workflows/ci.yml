@@ -1310,6 +1310,7 @@ jobs:
             release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -1371,6 +1372,19 @@ jobs:
             jq -r 'to_entries | sort_by(.key) | .[] | "| \(.key) | \(.value.result) |"' <<<"$NEEDS"
             echo
             echo "</details>"
+            echo
+            # Credential expiry should be found by a schedule rather than by
+            # a failed release, so what that schedule last said belongs where
+            # someone is already looking. Never run, or unreadable, is
+            # reported as such rather than as healthy.
+            creds="$(gh run list --workflow=validate-signing-credentials.yml \
+              --limit 1 --json conclusion,updatedAt \
+              --jq '.[0] | "\(.conclusion) \(.updatedAt[0:10])"' 2>/dev/null || true)"
+            case "${creds%% *}" in
+              success) echo "Signing credentials: valid as of ${creds##* }" ;;
+              "")      echo "Signing credentials: never checked" ;;
+              *)       echo "Signing credentials: **${creds%% *}** as of ${creds##* }, a release may fail" ;;
+            esac
             echo
             echo "<sub>Commit \`${SHA:0:8}\` &middot; [run log]($RUN_URL)</sub>"
           } > "$RUNNER_TEMP/ci-summary.md"
