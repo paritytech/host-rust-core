@@ -576,6 +576,8 @@ async fn serve_session(
             Some((page, (subscription, decode_failure_request_ids)))
         },
     );
+    // Boxed as a trait object so the hosts that await a session need not
+    // lay out this future or prove it `Send`.
     serve_pages(pages, signing_host.sso_withdrawals(), |incoming| {
         serve_statement(
             services,
@@ -586,6 +588,7 @@ async fn serve_session(
             incoming,
         )
     })
+    .boxed()
     .await
 }
 
