@@ -158,12 +158,14 @@ impl Notifications for WireShapePlatform {
 impl Permissions for WireShapePlatform {
     async fn device_permission(
         &self,
+        _product: &ProductContext,
         _request: v01::HostDevicePermissionRequest,
     ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         Ok(truapi_platform::PermissionDecision::AllowAlways)
     }
     async fn remote_permission(
         &self,
+        _product: &ProductContext,
         _request: v01::RemotePermissionRequest,
     ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         Ok(truapi_platform::PermissionDecision::AllowAlways)

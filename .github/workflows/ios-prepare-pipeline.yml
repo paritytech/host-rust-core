@@ -45,10 +45,11 @@ jobs:
               'sergkononenko',
               'ERussel',
               'stepanLav',
-              'den-vasilev',
-              'piroznoe',
-              'svojsu',
-              'kogeler'
+              'kogeler',
+              'TarikGul',
+              'pgherveou',
+              'filvecchiato',
+              'valentinfernandez1'
             ];
             const actor = context.actor;
             const eventName = context.eventName;

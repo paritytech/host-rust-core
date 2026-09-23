@@ -62,7 +62,10 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         }
     }
 
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> TrUAPIPermissionDecision {
+    func devicePermission(
+        product _: ProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> TrUAPIPermissionDecision {
         try await dependencies.permissionGuard.requestDevicePermissionDecision(
             productId: dependencies.productId,
             capability: request.deviceCapabilityType
@@ -90,7 +93,10 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         }
     }
 
-    func remotePermission(request: RemotePermission) async throws -> TrUAPIPermissionDecision {
+    func remotePermission(
+        product _: ProductExecutionConfig,
+        request: RemotePermission
+    ) async throws -> TrUAPIPermissionDecision {
         try await dependencies.permissionGuard.requestPermissionsDecision(
             productId: dependencies.productId,
             permissions: request.toDomainRequest().toDomainPermissions()

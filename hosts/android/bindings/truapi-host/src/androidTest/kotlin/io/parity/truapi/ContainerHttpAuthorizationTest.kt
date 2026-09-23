@@ -169,8 +169,9 @@ class ContainerHttpAuthorizationTest {
         override val coreStorage: HostCoreStorage = memory
         override suspend fun navigateTo(url: String) = Unit
         override suspend fun featureSupported(request: HostFeatureSupportedRequest) = false
-        override suspend fun devicePermission(request: HostDevicePermissionRequest) = PermissionDecision.DENY
-        override suspend fun remotePermission(request: RemotePermission): PermissionDecision {
+        override suspend fun devicePermission(product: ProductExecutionConfig, request: HostDevicePermissionRequest) =
+            PermissionDecision.DENY
+        override suspend fun remotePermission(product: ProductExecutionConfig, request: RemotePermission): PermissionDecision {
             requests.add(request)
             return decisions.poll() ?: PermissionDecision.DENY
         }
