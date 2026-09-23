@@ -57,9 +57,15 @@ extension MainTabBarPresenter: MainTabBarPresenterProtocol {
         }
     }
 
-    func didRequestContactSearch() {
-        wireframe.showSearchContact(from: view)
-    }
+    #if FEATURE_INPUT
+        func didFindChat(_ model: ChatOpenModel) {
+            wireframe.openChat(model)
+        }
+    #else
+        func didRequestContactSearch() {
+            wireframe.showSearchContact(from: view)
+        }
+    #endif
 }
 
 extension MainTabBarPresenter: MainTabBarInteractorOutputProtocol {

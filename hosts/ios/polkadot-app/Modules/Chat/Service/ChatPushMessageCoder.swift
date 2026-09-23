@@ -7,12 +7,12 @@ protocol ChatPushMessageDecoding {
     func decodeMessage(
         _ message: String,
         for contact: Chat.Contact
-    ) throws -> Chat.RemoteMessage
+    ) throws -> Chat.NotificationPayload
 }
 
 protocol ChatPushMessageEncoding {
     func encodeMessage(
-        _ message: Chat.RemoteMessage,
+        _ payload: Chat.NotificationPayload,
         for contact: Chat.Contact
     ) throws -> String
 }
@@ -31,23 +31,22 @@ extension ChatPushMessageCoder: ChatPushMessageCoding {
     func decodeMessage(
         _ message: String,
         for contact: Chat.Contact
-    ) throws -> Chat.RemoteMessage {
+    ) throws -> Chat.NotificationPayload {
         let encryptedData = try message.fromHex()
         let encryptor = try encryptionManager
             .makeEncryptorFactory(ownEncryptionKeyId: contact.ownKeyId.encryptionKeyId)
             .makeEncryptor(remotePublicKey: contact.publicKey)
 
         let decryptedData = try encryptor.decrypt(encryptedData)
-        let decoder = try ScaleDecoder(data: decryptedData)
 
-        return try Chat.RemoteMessage(scaleDecoder: decoder)
+        return try Chat.NotificationPayload.fromScaleEncoded(decryptedData)
     }
 
     func encodeMessage(
-        _ message: Chat.RemoteMessage,
+        _ payload: Chat.NotificationPayload,
         for contact: Chat.Contact
     ) throws -> String {
-        let scaleData = try message.scaleEncoded()
+        let scaleData = try payload.scaleEncoded()
         let encryptor = try encryptionManager
             .makeEncryptorFactory(ownEncryptionKeyId: contact.ownKeyId.encryptionKeyId)
             .makeEncryptor(remotePublicKey: contact.publicKey)

@@ -2,10 +2,20 @@ import AsyncExtensions
 import Foundation
 import SubstrateSdk
 
+/// What a block's events say about one extrinsic's dispatch.
+///
+/// `reason` is the chain's own name for the failure (`"Coinage.RingRevisionMismatch"`), decoded from the
+/// `ExtrinsicFailed` event for diagnostics only: a verdict rests on the dispatch having failed, never on
+/// being able to name why, so a reason that cannot be decoded is `nil` rather than a failed read.
+public enum DispatchOutcome: Sendable, Equatable {
+    case succeeded
+    case failed(reason: String?)
+}
+
 /// Result of scanning the mortality window for an extrinsic hash.
 public enum BodySearchOutcome: Sendable, Equatable {
     case foundSucceeded(BlockRef)
-    case foundFailed(BlockRef)
+    case foundFailed(BlockRef, reason: String?)
     /// Included, but the events at that block could not be decoded.
     case foundOutcomeUnreadable(BlockRef)
     /// Every block in the window was read and the hash is in none of them.
@@ -21,7 +31,7 @@ public enum BodySearchOutcome: Sendable, Equatable {
 public enum BlockLookup: Sendable {
     case unreadable
     case notInBlock
-    case outcome(ReadResult<Bool>)
+    case outcome(ReadResult<DispatchOutcome>)
 }
 
 /// Reads one extrinsic hash's dispatch outcome from one block. The single access that needs a live
@@ -54,9 +64,9 @@ public protocol PinnedChainViewProtocol: Sendable {
     /// Resolves a block hash to a full ``BlockRef``.
     func blockRef(forHash hash: Data) async -> ReadResult<BlockRef>
 
-    /// Reads the dispatch outcome of `txHash` from the events at `block`.
-    /// `present(true)` is `ExtrinsicSuccess`, `present(false)` is `ExtrinsicFailure`.
-    func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<Bool>
+    /// Reads the dispatch outcome of `txHash` from the events at `block`: `ExtrinsicSuccess` or
+    /// `ExtrinsicFailed`, the latter carrying the decoded failure name when the events yield one.
+    func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<DispatchOutcome>
 
     /// Scans `window` for `txHash` and, on a hit, reads the dispatch outcome from the same block the
     /// extrinsic was found in. Callers bound the window at the finalized head, so a hit is always

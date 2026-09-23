@@ -49,6 +49,45 @@ try save(entity)
 
 This is documented in CLAUDE.md and enforced in reviews.
 
+### Concurrency modes
+
+`CoreDataService` (Operation-iOS 3.0.0) takes a `concurrencyMode`. `CoreDataConcurrencyPolicy` names both
+modes — `.app` is `.concurrent(readerConcurrency: 2)` (writer + observer + short-lived readers), and
+`.notificationServiceExtension` is `.serial` (one context, 2.x behaviour) — and `forCurrentTarget` picks
+between them **at compile time**: the extension declares `NOTIFICATION_SERVICE_EXTENSION` in
+`NotificationServiceExtension/Configs/*.xcconfig`, the app declares nothing. A new target that links these
+files must declare its own mode there; nothing is inferred from the running bundle. Rollback is one line in
+that file.
+
+| Entry point | Use for | Contract |
+|---|---|---|
+| `performWrite` | any mutation | one transaction: the service saves when the block leaves changes and rolls back on throw. **Never call `save()` / `rollback()` inside.** |
+| `performRead` | one-shot fetches | runs on a reader context that may overlap the writer; never mutate |
+| `performObserve` | fetched results controllers, long-lived observers | the observer context; merges every writer save automatically, never reset |
+| `perform` (StructuredConcurrency) | legacy | writer context, caller saves; no call sites should remain |
+
+Contracts worth knowing (Operation-iOS 3.0.0):
+
+- A `performRead` block that mutates fails with `CoreDataServiceError.readLeftChanges`; it is not silently
+  discarded. Return plain values only — in concurrent mode the reader context is gone when the completion runs.
+- `close()` drains in-flight work; anything arriving while it drains is rejected with `closeInProgress`, and
+  a `drop()` during the drain throws the same. A read's completion may close the service, a read's block may not.
+- The configuration takes a `logger` (both facades pass `Logger.shared`). It surfaces diagnostics that cannot
+  be raised as errors, such as a row the mapper could not read or a remote delete with no tombstone.
+- Cross-process deletes reach `CoreDataContextObservable` only if the entity's identifier attribute is marked
+  **Preserve After Deletion** in the model. No entity sets it today; the extension only inserts, so nothing is
+  lost. Mark it in the same version bump if the extension ever starts deleting rows.
+
+Repositories already route fetches to readers and saves to the writer; `subscribeSnapshot` attaches to the
+observer. Raw-context code goes through the async `performWrite` / `performRead` bridges in
+`StructuredConcurrency`. See the library README section "Core Data concurrency modes".
+
+`subscribeSnapshot` re-maps only the rows its fetched results controller reports as inserted, updated, moved
+or deleted (mapped models are cached by object ID), so mapper cost is per change, not per subscriber × rows.
+A row whose *related* objects change without the row itself changing is not re-mapped; derived-state
+subscribers (coin and voucher state from `CDDurableTx`) get their refresh because the durable-tx repository
+touches the parent rows (`CoinageTxRowObserver`). Do the same for any new relationship-derived mapper.
+
 ### Migration
 
 - `Common/Storage/Migration/` — migration strategies

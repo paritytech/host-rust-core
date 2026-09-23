@@ -2,11 +2,11 @@ import Kingfisher
 import UIKit
 import PolkadotUI
 
-protocol ImageProcessingOptionsProducing: AnyObject {
+protocol ImageProcessingOptionsProducing: AnyObject, Sendable {
     func options(for settings: ImageViewModelSettings, animated: Bool) -> KingfisherOptionsInfo
 }
 
-final class ImageProcessingOptionsFactory: ImageProcessingOptionsProducing {
+final class ImageProcessingOptionsFactory: ImageProcessingOptionsProducing, Sendable {
     func options(
         for settings: ImageViewModelSettings,
         animated: Bool

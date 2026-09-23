@@ -123,6 +123,37 @@ no `test` prefix on `@Test` functions — SwiftFormat strips it
 }
 ```
 
+## Benchmarks
+
+Core Data benchmarks live in `polkadot-appIntegrationTests/CoreData/`. They are not in
+`polkadot-app.xctestplan` and never run in CI; run them locally, on demand, one suite tree at a time:
+
+```bash
+set -o pipefail && TEST_RUNNER_COREDATA_BENCH_OUT="$PWD/docs/benchmarks/coredata/<date>-operation-ios-<version>" \
+  xcodebuild test -project polkadot-app.xcodeproj -scheme polkadot-appIntegrationTests \
+  -destination 'platform=iOS Simulator,id=<simulator udid>' \
+  -parallel-testing-enabled NO \
+  -only-testing:polkadot-appIntegrationTests/CoreDataBenchmarks \
+  -only-testing:polkadot-appIntegrationTests/CoreDataTopologySpike 2>&1 | xcbeautify --quiet
+```
+
+`-parallel-testing-enabled NO` is required: the scheme allows parallel testing, which runs the scenarios
+on several simulator clones at once and measures their contention instead of the store's. Use a
+simulator udid (`xcrun simctl list devices available`); device names are ambiguous across runtimes.
+
+Rules:
+
+- Timing scenarios (B1–B4, S1) **record**, they never assert thresholds. Correctness gates (B5, B6) assert.
+- Every timing test is `@Test(arguments: StackVariant.supported)`; a new Operation-iOS concurrency mode is
+  enabled by appending to `StackVariant.supported`, not by editing scenarios.
+- The store is SQLite on disk with history tracking (`BenchmarkStorageFacade`), not the in-memory
+  `UserDataStorageTestFacade`: the coordinator lock and WAL are what is being measured.
+- Reports are Swift Testing attachments (`<scenario>.<variant>.json`) and, when
+  `TEST_RUNNER_COREDATA_BENCH_OUT` is set, files in that directory. Committed baselines live under
+  `docs/benchmarks/coredata/` with a README naming the machine and library version.
+- Sizes live in `BenchmarkScale`; the JSON embeds the scale used. Keep the whole set under three minutes.
+- Compare p50/p95 across runs on the same machine only; run twice and keep the second run.
+
 ## Hard Rules
 
 1. **Sentry must not run in tests** — guard with environment check

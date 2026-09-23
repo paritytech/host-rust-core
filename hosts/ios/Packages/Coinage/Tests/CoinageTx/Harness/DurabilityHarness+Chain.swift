@@ -147,7 +147,7 @@ extension DurabilityHarness {
     /// runtime does to on-chain state: a success mints the outputs, marks spent vouchers unloaded and
     /// removes spent coins; a failure changes nothing this subsystem reads.
     func includeEntry(_ entry: CoinageTxEntry, success: Bool, finality: TestActionFinality) {
-        let txHash = entry.txHash
+        let txHash = entry.submittedAttempt.txHash
         produceBlock(finality, body: [txHash]) { state in
             guard success else { return state.applied(txHash, success: false) }
 
