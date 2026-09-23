@@ -18,16 +18,27 @@ struct PublishedPocketCards: PublishedPocketCardsResolving {
     }
 
     func find(productId: ProductId, cardId: PocketCardId) async throws -> PublishedPocketCard {
-        let resolved = try? await products.resolve(productId)
+        let resolved: ResolvedProduct
+        do {
+            resolved = try await products.resolve(productId)
+        } catch {
+            // A product that could not be read has not answered yet. A card
+            // typed in by hand needs no chain presence and still stands;
+            // anything else would settle the question against a read that
+            // simply did not land.
+            guard let byHand = byHand(cardId, of: productId, resolved: nil) else { throw error }
 
-        if let worker = resolved?.executables.worker, worker.includesPocket {
+            return byHand
+        }
+
+        if let worker = resolved.executables.worker, worker.includesPocket {
             guard let definition = worker.pocketCards.first(where: { $0.id == cardId }) else {
                 throw PocketPublishError.unknownCard
             }
 
             return PublishedPocketCard(
-                productId: resolved?.id ?? productId,
-                productName: resolved?.displayName ?? productId,
+                productId: resolved.id,
+                productName: resolved.displayName,
                 workerContentId: worker.identifier,
                 definition: definition
             )
@@ -36,9 +47,19 @@ struct PublishedPocketCards: PublishedPocketCardsResolving {
         // Only reached when the product publishes no Pocket worker: a published
         // one always wins, so a card supplied by hand can never shadow what a
         // product actually ships.
-        guard let definition = debugCards(productId).first(where: { $0.id == cardId }) else {
+        guard let byHand = byHand(cardId, of: productId, resolved: resolved) else {
             throw PocketPublishError.noPocket
         }
+
+        return byHand
+    }
+
+    private func byHand(
+        _ cardId: PocketCardId,
+        of productId: ProductId,
+        resolved: ResolvedProduct?
+    ) -> PublishedPocketCard? {
+        guard let definition = debugCards(productId).first(where: { $0.id == cardId }) else { return nil }
 
         return PublishedPocketCard(
             productId: resolved?.id ?? productId,

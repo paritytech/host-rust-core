@@ -217,7 +217,7 @@ private extension ProductManifestParser {
 
         return try PocketCardDefinition(
             id: PocketCardIdentifier.screen(rawId),
-            title: title,
+            title: PocketCardIdentifier.screenTitle(title),
             preview: .archive(path: preview)
         )
     }

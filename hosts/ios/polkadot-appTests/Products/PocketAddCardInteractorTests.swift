@@ -82,7 +82,7 @@ private func makeInteractor(
             includesPocket: includesPocket,
             productName: "Game"
         ),
-        previews: PocketPreviewLoader(archive: StubArchive(), fetch: { _ in minimalFace }),
+        previews: PocketPreviewLoader(archive: StubArchive(), fetch: { _, _ in minimalFace }),
         store: store
     )
 }
@@ -107,5 +107,5 @@ private struct StubPublishedCards: PublishedPocketCardsResolving {
 }
 
 private struct StubArchive: PocketArchiveReading {
-    func file(contentId _: ProductId, path _: String) async throws -> Data { minimalFace }
+    func file(contentId _: ProductId, path _: String, maxBytes _: Int) async throws -> Data { minimalFace }
 }

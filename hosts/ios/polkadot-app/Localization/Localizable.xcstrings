@@ -2316,30 +2316,6 @@
         }
       }
     },
-    "pocket.card.expanded.title": {
-      "comment": "Title of the screen one Pocket card is opened on.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Card"
-          }
-        }
-      }
-    },
-    "pocket.card.open.product": {
-      "comment": "Button that opens the product a Pocket card belongs to.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open"
-          }
-        }
-      }
-    },
     "pocket.card.remove": {
       "comment": "Button that removes a product card the user added.",
       "extractionState": "manual",
@@ -2376,30 +2352,6 @@
         }
       }
     },
-    "pocket.card.remove.pinned": {
-      "comment": "Shown when the user tries to remove a host-placed card.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This card cannot be removed"
-          }
-        }
-      }
-    },
-    "pocket.card.removed": {
-      "comment": "Confirms a card left the Pocket.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Removed from Pocket"
-          }
-        }
-      }
-    },
     "pocket.deeplink.malformed": {
       "comment": "Shown for a link under the reserved host target that is not a Pocket link.",
       "extractionState": "manual",
@@ -2432,18 +2384,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "This product has no such card"
-          }
-        }
-      }
-    },
-    "pocket.empty.title": {
-      "comment": "Shown on the Pocket surface when the user holds no cards.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No cards yet"
           }
         }
       }

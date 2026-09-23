@@ -19,7 +19,7 @@ public enum PocketCardIdentifierError: Error, CustomStringConvertible {
         case .empty:
             "card id must not be empty"
         case let .tooLong(bytes):
-            "card id is \(bytes) bytes, longer than \(PocketCardIdentifier.maxBytes)"
+            "card id or title is \(bytes) bytes, longer than it may be"
         case let .unsafeCharacter(scalar):
             "card id carries an unsafe character U+\(String(scalar.value, radix: 16, uppercase: true))"
         }
@@ -35,7 +35,22 @@ public enum PocketCardIdentifierError: Error, CustomStringConvertible {
 public enum PocketCardIdentifier {
     public static let maxBytes = 256
 
+    /// A title is shorter than an id because it is drawn: one long enough to
+    /// push the product's name out of the approval dialog defeats the dialog.
+    public static let maxTitleBytes = 96
+
     public static func screen(_ raw: String) throws -> PocketCardId {
+        try PocketCardId(value: screened(raw, maxBytes: maxBytes))
+    }
+
+    /// The same rules for the name the card is drawn under. The dialog that
+    /// grants a card its place names it by this text, so a title able to hide
+    /// characters passes a card off exactly as an id able to would.
+    public static func screenTitle(_ raw: String) throws -> String {
+        try screened(raw, maxBytes: maxTitleBytes)
+    }
+
+    private static func screened(_ raw: String, maxBytes: Int) throws -> String {
         let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
 
         guard !normalized.isEmpty else { throw PocketCardIdentifierError.empty }
@@ -47,7 +62,7 @@ public enum PocketCardIdentifier {
             throw PocketCardIdentifierError.unsafeCharacter(unsafe)
         }
 
-        return PocketCardId(value: normalized)
+        return normalized
     }
 
     /// An ordinary ASCII space hides nothing, so it is the one space that stays.

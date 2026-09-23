@@ -19,10 +19,16 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
         self.collection = collection
     }
 
-    /// Starts republishing this product's cards to the core. `publish` is handed
-    /// the execution, which its owner closes, so it is dropped on ``stop()``.
+    /// Starts republishing this product's cards to the core, beginning with the
+    /// snapshot as it stands. `publish` is handed the execution, which its
+    /// owner closes, so it is dropped on ``stop()``.
+    ///
+    /// The opening publish is what closes the boot window: the snapshot is
+    /// filled before the worker's script comes up, so every change taken into
+    /// it until here was seen by nobody.
     func start(publish: @escaping ([PocketCard]) -> Void) {
         republish.withLock { $0 = publish }
+        publish(snapshot.withLock { $0 })
     }
 
     func stop() {

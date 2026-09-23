@@ -76,6 +76,25 @@ struct ProductPocketHostBridgeTests {
         await repository.insert(otherProductCard, face: .nil)
         await bridge.refresh()
 
+        // The leading publish is the opening one, of the snapshot as it stood;
+        // the other product's card adds nothing to this product's slice, so the
+        // second refresh says nothing.
+        #expect(published.counts == [0, 1])
+    }
+
+    /// The snapshot is filled before the worker's script comes up, so every
+    /// change taken into it until the core can be told reached nobody. Waiting
+    /// for the next change instead would wait forever: the slice has already
+    /// moved, so no later refresh finds anything to report.
+    @Test
+    func republishesTheSnapshotItAlreadyHoldsWhenItStarts() async throws {
+        let repository = InMemoryPocketCardRepository()
+        await repository.insert(loyalty, face: .nil)
+        let bridge = await makeBridge(repository: repository)
+
+        let published = Published()
+        bridge.start { published.record($0) }
+
         #expect(published.counts == [1])
     }
 }

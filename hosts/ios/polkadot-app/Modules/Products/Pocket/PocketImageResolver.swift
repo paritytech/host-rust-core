@@ -41,9 +41,6 @@ struct PocketImageResolver: Sendable {
             return nil
         }
 
-        let file = root.appending(path: path).standardizedFileURL
-        guard file.path().hasPrefix(root.standardizedFileURL.path()) else { return nil }
-
-        return file
+        return PocketArchivePath.inside(root, path: path)
     }
 }

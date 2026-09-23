@@ -44,7 +44,7 @@ enum PocketAddCardViewFactory {
             publishedCards: PublishedPocketCards.makeDefault(products: flowState.productResolver),
             previews: PocketPreviewLoader(
                 archive: DotNsPocketArchive(dotNsResolver: flowState.dotNsResolver),
-                fetch: { try await URLSession.shared.data(from: $0).0 }
+                fetch: PocketPreviewFetch.bounded
             ),
             store: store
         )

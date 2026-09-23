@@ -269,6 +269,26 @@ struct ProductManifestParserTests {
         #expect(worker.pocketCards.isEmpty)
     }
 
+    /// The id is screened because the dialog shows the title — but the dialog
+    /// shows the title, so a title carrying a direction override reads as
+    /// another product's card just as well as a doctored id would.
+    @Test func publishesNoCardsWhenATitleHidesCharacters() throws {
+        let cards = #"[{"id":"loyalty","title":"Loy‮alty","preview":"faces/loyalty.json"}]"#
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
+
+        #expect(worker.pocketCards.isEmpty)
+    }
+
+    /// A title long enough to push the product's name out of the approval sheet
+    /// defeats the sheet.
+    @Test func publishesNoCardsWhenATitleIsLongerThanItMayBe() throws {
+        let long = String(repeating: "a", count: PocketCardIdentifier.maxTitleBytes + 1)
+        let cards = #"[{"id":"loyalty","title":"\#(long)","preview":"faces/loyalty.json"}]"#
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
+
+        #expect(worker.pocketCards.isEmpty)
+    }
+
     private func parsedWorker(_ manifest: String) -> ProductExecutable.Worker? {
         guard case let .worker(worker)? = parser.parseExecutable(
             manifest,

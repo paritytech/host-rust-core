@@ -121,10 +121,8 @@ private extension RendererNode {
 }
 
 private extension RendererNode {
-    /// The nodes this one contributes to its parent's children: at most one,
-    /// except an `Effect`, which contributes its own. It decorates them without
-    /// laying them out, so a container here would impose a layout the product
-    /// never asked for. The effect itself is dropped here too.
+    /// The nodes this one contributes to its parent's children: its own, or
+    /// none when it does not draw.
     func widgetNodesInPlace(resolver: any WidgetDesignTokenResolving) -> [CustomMessageWidgetNode] {
         toWidgetNode(resolver: resolver).map { [$0] } ?? []
     }

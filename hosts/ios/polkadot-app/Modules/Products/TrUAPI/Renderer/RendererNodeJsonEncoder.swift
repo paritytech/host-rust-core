@@ -127,10 +127,10 @@ private extension RendererNodeJsonEncoder {
         case let .padding(dimensions): tagged("Padding", self.dimensions(dimensions))
         case let .background(background): tagged("Background", self.background(background))
         case let .border(style): tagged("Border", borderStyle(style))
-        case let .height(size): ["tag": "Height", "value": size]
-        case let .width(size): ["tag": "Width", "value": size]
-        case let .minWidth(size): ["tag": "MinWidth", "value": size]
-        case let .minHeight(size): ["tag": "MinHeight", "value": size]
+        case let .height(size): ["tag": "Height", "value": readable(size)]
+        case let .width(size): ["tag": "Width", "value": readable(size)]
+        case let .minWidth(size): ["tag": "MinWidth", "value": readable(size)]
+        case let .minHeight(size): ["tag": "MinHeight", "value": readable(size)]
         case let .fillWidth(fills): ["tag": "FillWidth", "value": fills]
         case let .fillHeight(fills): ["tag": "FillHeight", "value": fills]
         case let .opacity(opacity): ["tag": "Opacity", "value": opacity]
@@ -140,11 +140,19 @@ private extension RendererNodeJsonEncoder {
 
     func dimensions(_ dimensions: Dimensions) -> [String: Any] {
         [
-            "top": dimensions.top,
-            "end": dimensions.end,
-            "bottom": dimensions.bottom,
-            "start": dimensions.start
+            "top": readable(dimensions.top),
+            "end": readable(dimensions.end),
+            "bottom": dimensions.bottom.map(readable),
+            "start": dimensions.start.map(readable)
         ].compactMapValues { $0 }
+    }
+
+    /// A size no larger than the decoder will read back. The renderer clamps
+    /// every size before it draws, so a face kept this way draws exactly as the
+    /// product meant it to — where one written past the bound would be refused
+    /// at the next cold start, taking the card's kept face with it.
+    func readable(_ size: Size) -> Size {
+        min(size, RendererWire.maxSize)
     }
 
     // The shape is read off its enclosing value rather than passed: `Shape`
@@ -154,7 +162,7 @@ private extension RendererNodeJsonEncoder {
         let shape: [String: Any]? =
             switch background.shape {
             case .none: nil
-            case let .rounded(radius): ["tag": "Rounded", "value": radius]
+            case let .rounded(radius): ["tag": "Rounded", "value": readable(radius)]
             case .circle: ["tag": "Circle"]
             case .square: ["tag": "Square"]
             }
@@ -166,12 +174,13 @@ private extension RendererNodeJsonEncoder {
         let shape: [String: Any]? =
             switch style.shape {
             case .none: nil
-            case let .rounded(radius): ["tag": "Rounded", "value": radius]
+            case let .rounded(radius): ["tag": "Rounded", "value": readable(radius)]
             case .circle: ["tag": "Circle"]
             case .square: ["tag": "Square"]
             }
 
-        return ["width": style.width, "color": name(style.color), "shape": shape].compactMapValues { $0 }
+        return ["width": readable(style.width), "color": name(style.color), "shape": shape]
+            .compactMapValues { $0 }
     }
 
     func source(_ source: ImageSource) -> [String: Any] {

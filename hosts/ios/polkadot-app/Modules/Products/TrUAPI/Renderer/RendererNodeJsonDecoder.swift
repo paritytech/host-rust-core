@@ -31,9 +31,7 @@ enum RendererNodeJsonError: Error, CustomStringConvertible {
 
 private enum Limit {
     static let depth = 32
-    /// The bound the Android host applies, so a face one host accepts is not
-    /// refused by the other.
-    static let size = Double(Int32.max)
+    static let size = Double(RendererWire.maxSize)
 }
 
 private func jsonObject(_ element: Any?) throws -> [String: Any] {
@@ -292,6 +290,12 @@ private extension [String: Any] {
 /// Swift case names, so a bindgen rename breaks the build instead of silently
 /// changing which faces decode.
 enum RendererWire {
+    /// The largest size either direction may carry: the bound the Android host
+    /// applies, so a face one host accepts is not refused by the other. The
+    /// encoder writes nothing past it, because a face written larger than this
+    /// could never be read back.
+    static let maxSize = Size(Int32.max)
+
     static let blendingModes: [String: BlendingMode] = [
         "Normal": .normal, "Multiply": .multiply, "Screen": .screen, "Overlay": .overlay,
         "Darken": .darken, "Lighten": .lighten, "ColorDodge": .colorDodge, "ColorBurn": .colorBurn,

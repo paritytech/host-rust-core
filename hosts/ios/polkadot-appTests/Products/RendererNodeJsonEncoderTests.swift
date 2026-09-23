@@ -31,6 +31,31 @@ struct RendererNodeJsonEncoderTests {
         #expect(try decoder.decode(encoder.encode(node)) == node)
     }
 
+    /// The mapper takes the whole `Size` range and clamps only when it draws, so
+    /// a product may legitimately send a size no screen could use. What is
+    /// written down still has to read back: a kept face the decoder refuses
+    /// costs the card its face at the next cold start.
+    @Test(arguments: [Modifier.height(.max), .width(.max), .minWidth(.max), .minHeight(.max)])
+    func writesASizeTheDecoderStillReads(_ modifier: Modifier) throws {
+        let node = RendererNode.box(modifiers: [modifier], props: BoxProps(contentAlignment: nil), children: [])
+
+        #expect(throws: Never.self) { try decoder.decode(encoder.encode(node)) }
+    }
+
+    @Test
+    func writesABorderAndPaddingTheDecoderStillReads() throws {
+        let node = RendererNode.box(
+            modifiers: [
+                .padding(Dimensions(top: .max, end: .max, bottom: .max, start: .max)),
+                .border(BorderStyle(width: .max, color: .fgError, shape: .rounded(.max)))
+            ],
+            props: BoxProps(contentAlignment: nil),
+            children: []
+        )
+
+        #expect(throws: Never.self) { try decoder.decode(encoder.encode(node)) }
+    }
+
     @Test(arguments: RendererWire.blendingModes.values)
     func roundTripsEveryBlendingMode(_ mode: BlendingMode) throws {
         let node = RendererNode.box(

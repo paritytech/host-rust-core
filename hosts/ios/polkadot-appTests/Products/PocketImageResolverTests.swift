@@ -39,6 +39,23 @@ struct PocketImageResolverTests {
         #expect(await resolver.resolve(.archive(path: "../outside.png")) == nil)
     }
 
+    /// A lookalike sibling is not inside the archive. `..` is refused outright,
+    /// before any path comparison has to get the directory boundary right.
+    @Test
+    func refusesASiblingDirectoryWhoseNameStartsWithTheArchives() async throws {
+        let root = try makeArchive(files: ["art/badge.png": "png"])
+        let sibling = root.deletingLastPathComponent().appending(path: "content.staging")
+        try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
+        try Data("secret".utf8).write(to: sibling.appending(path: "secret.png"))
+        let resolver = PocketImageResolver(
+            contentId: { "worker.game.paseo" },
+            dotNsResolver: StubResolver(root: root),
+            ipfsUrl: { _ in nil }
+        )
+
+        #expect(await resolver.resolve(.archive(path: "../content.staging/secret.png")) == nil)
+    }
+
     @Test
     func resolvesABulletinImageToItsGatewayAddress() async throws {
         let resolver = PocketImageResolver(

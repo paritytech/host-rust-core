@@ -5,6 +5,10 @@ import SwiftUI
 ///
 /// The face shown here is the one the host keeps for the card, so approving is
 /// consent to this card rather than to whatever the product draws next.
+///
+/// Who backs it is named twice: the product's own display name, and the dotNS
+/// name the host resolved it to. Only the second is the host's word, and it is
+/// what tells two products apart when both claim to be the same one.
 struct PocketAddCardView: View {
     /// The card is a fixed frame, so the sheet is too: it does not resize under
     /// the user between loading the offer and showing it.
@@ -19,7 +23,7 @@ struct PocketAddCardView: View {
                 ProgressView()
                     .frame(height: PocketCardSize.height)
             case let .offered(offer, face):
-                header(productName: offer.productName)
+                header(productName: offer.productName, productId: offer.key.productId)
                 PocketProductCardView(title: offer.title, face: face)
                 actions
             case let .refused(message):
@@ -32,14 +36,24 @@ struct PocketAddCardView: View {
         .task { await viewModel.load() }
     }
 
-    private func header(productName: String) -> some View {
-        VStack(spacing: 8) {
+    private func header(productName: String, productId: String) -> some View {
+        VStack(spacing: 4) {
             Text(String(localized: .pocketAddCardTitle))
                 .textStyle(.title24SemiBold())
                 .foregroundStyle(Color(.fgPrimary))
+                .padding(.bottom, 4)
+            // Held to one line so a long name cannot push the dotNS name below
+            // it out of the sheet.
             Text(productName)
                 .textStyle(.body14Regular())
                 .foregroundStyle(Color(.fgSecondary))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(productId)
+                .textStyle(.caption12Regular())
+                .foregroundStyle(Color(.fgTertiary))
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
         .frame(maxWidth: .infinity)
     }

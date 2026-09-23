@@ -51,10 +51,11 @@ A product with **no published worker**, driven by hand.
 
 4. Approve it. The card joins the Pocket on the Wallet tab, drawn with the face
    the sheet showed.
-5. Open the card from the Pocket. Only there does it stream: the collection is a
-   scrolling surface, so a press belongs to the surface until the card has a
-   screen of its own. Opening it takes one worker reference, which boots the
-   worker; leaving releases it.
+5. Scroll the card into view. That is what makes it live: a visible card holds
+   one worker reference, which boots the worker, and releases it when the card
+   leaves the screen. Presses and text edits go straight back to the worker from
+   the collection. Pressing the card opens its product at
+   `https://<product>?card=<id>`.
 
 ## What fails where
 
@@ -65,7 +66,7 @@ Work down this list — each step rules out the one below it.
 | Face does not draw in Loop A | the face file, or the decoder |
 | Card draws static but never updates | the worker is not running or not reachable |
 | Card never appears at all | the card id, or `includes.pocket` on the worker |
-| Presses do nothing | open the card first; it is not interactive in the collection |
+| Presses do nothing | the worker is not running, or registered no handler for that action |
 | A pinned card will not go away | it is privileged, and no removal will move it |
 
 ## Traps

@@ -20,6 +20,7 @@ final class PocketWorkerFacade: @unchecked Sendable {
 
     private let held = OSAllocatedUnfairLock<(any PocketFaceSourcing)?>(initialState: nil)
     private let assembled = OSAllocatedUnfairLock<Assembled?>(initialState: nil)
+    private let running = OSAllocatedUnfairLock<(any PocketWorkerSupervising)?>(initialState: nil)
 
     private init() {}
 
@@ -40,7 +41,11 @@ final class PocketWorkerFacade: @unchecked Sendable {
     }
 
     /// Wires the supervisor into the runtime provider and keeps the face source
-    /// the cards read. Called once.
+    /// the cards read.
+    ///
+    /// Called once per session, so a sign-out and back in installs a second
+    /// one: the supervisor it replaces is shut down here, because nothing else
+    /// holds a way back to the workers it is still running.
     func install(
         runtimeProvider: any TrUAPIHostRuntimeProviding,
         flowState: SPAFlowState,
@@ -73,6 +78,15 @@ final class PocketWorkerFacade: @unchecked Sendable {
         )
 
         runtimeProvider.attach(workerSupervisor: supervisor)
+
+        let replaced = running.withLock { held -> (any PocketWorkerSupervising)? in
+            let previous = held
+            held = supervisor
+            return previous
+        }
+        if let replaced {
+            Task { await replaced.shutdown() }
+        }
 
         let converter = HexToCIDConverter(ipfsBaseURL: AppConfig.KnownIPFS.main)
         assembled.withLock {

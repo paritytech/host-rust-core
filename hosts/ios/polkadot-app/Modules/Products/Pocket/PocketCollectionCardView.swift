@@ -31,7 +31,10 @@ struct PocketCollectionCardView: View {
     }
 
     private func draw() async {
-        guard let faces else { return }
+        guard let faces else {
+            Logger.shared.warning("[pocket] no face source yet; \(card.key.cardId.value) draws what is kept")
+            return
+        }
 
         for await face in faces.faces(for: card.key) {
             streamed = face.toWidgetNode(resolver: resolver)

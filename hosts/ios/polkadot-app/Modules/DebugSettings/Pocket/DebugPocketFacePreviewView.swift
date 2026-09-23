@@ -1,41 +1,45 @@
-import PolkadotUI
-import SwiftUI
+#if DEBUG
 
-/// The face-preview loop: type a URL, draw what comes back in the card frame.
-struct DebugPocketFacePreviewView: View {
-    @State var viewModel = DebugPocketFacePreviewViewModel()
+    import PolkadotUI
+    import SwiftUI
 
-    var body: some View {
-        VStack(spacing: 16) {
-            TextField("Face URL", text: $viewModel.url)
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
+    /// The face-preview loop: type a URL, draw what comes back in the card frame.
+    struct DebugPocketFacePreviewView: View {
+        @State var viewModel = DebugPocketFacePreviewViewModel()
 
-            Button("Draw") { Task { await viewModel.load() } }
-                .buttonStyle(.borderedProminent)
-                .disabled(viewModel.isLoading)
+        var body: some View {
+            VStack(spacing: 16) {
+                TextField("Face URL", text: $viewModel.url)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
 
-            // Drawn in the real card frame, so what is seen here is what the
-            // Pocket will show.
-            PocketProductCardView(title: "Preview", face: viewModel.face)
+                Button("Draw") { Task { await viewModel.load() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.isLoading)
 
-            if let refusal = viewModel.refusal {
-                ScrollView {
-                    Text(refusal)
-                        .textStyle(.body14Regular())
-                        .foregroundStyle(Color(.fgError))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                // Drawn in the real card frame, so what is seen here is what the
+                // Pocket will show.
+                PocketProductCardView(title: "Preview", face: viewModel.face)
+
+                if let refusal = viewModel.refusal {
+                    ScrollView {
+                        Text(refusal)
+                            .textStyle(.body14Regular())
+                            .foregroundStyle(Color(.fgError))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
                 }
-            }
 
-            Spacer()
+                Spacer()
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(Color(.bgSurfaceMain))
+            .navigationTitle("Pocket face preview")
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(Color(.bgSurfaceMain))
-        .navigationTitle("Pocket face preview")
     }
-}
+
+#endif

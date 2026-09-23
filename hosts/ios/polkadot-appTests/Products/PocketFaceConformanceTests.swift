@@ -46,24 +46,3 @@ struct PocketFaceConformanceTests {
 }
 
 private final class FaceFixtures {}
-
-private extension RendererNode {
-    /// Every node in the tree, this one included.
-    var nodeCount: Int {
-        switch self {
-        case .nil,
-             .string,
-             .spacer,
-             .image,
-             .textField:
-            1
-        case let .box(_, _, children),
-             let .column(_, _, children),
-             let .row(_, _, children),
-             let .text(_, _, children),
-             let .button(_, _, children),
-             let .effect(_, children):
-            1 + children.reduce(0) { $0 + $1.nodeCount }
-        }
-    }
-}

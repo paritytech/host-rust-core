@@ -33,10 +33,26 @@ private struct NodeCompositingModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .opacity(modifiers.opacity ?? 1)
-            .blendMode(modifiers.blendingMode ?? .normal)
+            .modifier(NodeBlendModeModifier(mode: modifiers.blendingMode))
             // `.opacity(0)` only stops the drawing, so a node the product hid
             // would still take the press: hit testing follows the opacity.
             .allowsHitTesting((modifiers.opacity ?? 1) > 0)
+    }
+}
+
+/// Any blend mode puts the node into a compositing group of its own, so one is
+/// applied only where the product asked for it: a node that declared none goes
+/// on composing against the backdrop it always did.
+private struct NodeBlendModeModifier: ViewModifier {
+    let mode: BlendMode?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let mode {
+            content.blendMode(mode)
+        } else {
+            content
+        }
     }
 }
 

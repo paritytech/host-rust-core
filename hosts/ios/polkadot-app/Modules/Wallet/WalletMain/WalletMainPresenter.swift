@@ -10,17 +10,21 @@ final class WalletMainPresenter {
 
     private var collectiblesURL: URL?
     private let pocketPrewarmer: PocketPrewarmer
+    private let pocket: PocketFacade
+    private var warming: Task<Void, Never>?
 
     init(
         interactor: WalletMainInteractorInputProtocol,
         wireframe: WalletMainWireframeProtocol,
         titleViewModelFactory: NetworkStatusTitleViewModelMaking,
-        pocketPrewarmer: PocketPrewarmer
+        pocketPrewarmer: PocketPrewarmer,
+        pocket: PocketFacade = .shared
     ) {
         self.interactor = interactor
         self.wireframe = wireframe
         self.titleViewModelFactory = titleViewModelFactory
         self.pocketPrewarmer = pocketPrewarmer
+        self.pocket = pocket
     }
 }
 
@@ -36,23 +40,34 @@ extension WalletMainPresenter: WalletMainPresenterProtocol {
     /// whenever one enters or leaves it.
     private func loadPocketCards() {
         Task { @MainActor in
-            await showPocketCards()
+            // Listening starts before the first read, which waits on a chain
+            // read for the network's dotNS suffix: a card that entered the
+            // collection in that window is announced once and by nobody again.
+            var changes = pocket.changes().makeAsyncIterator()
 
-            for try await _ in PocketFacade.shared.changes() {
+            await showPocketCards()
+            while await (try? changes.next()) != nil {
                 await showPocketCards()
             }
         }
     }
 
     private func showPocketCards() async {
-        guard let store = await PocketFacade.shared.store() else { return }
+        guard let store = await pocket.store() else { return }
 
         let cards = await PocketCardsProvider(store: store).cards()
         view?.didReceive(pocketCards: cards)
+        prewarm(cards)
+    }
 
-        // After the cards are on screen: warming is for the press that may
-        // come, and must not hold up the collection the user is looking at.
-        await pocketPrewarmer.warm(cards)
+    /// Warming fetches an archive, so it runs beside the collection rather than
+    /// in front of the next change: held here, every change that landed while
+    /// it ran would arrive late, and the tab would sit on a stale collection.
+    private func prewarm(_ cards: [PocketCardViewModel]) {
+        warming?.cancel()
+        warming = Task { @MainActor [pocketPrewarmer] in
+            await pocketPrewarmer.warm(cards)
+        }
     }
 
     func showCollectibles() {
@@ -74,10 +89,10 @@ extension WalletMainPresenter: WalletMainPresenterProtocol {
 
     private func remove(_ card: PocketCardViewModel) {
         Task { @MainActor in
-            guard let store = await PocketFacade.shared.store() else { return }
+            guard let store = await pocket.store() else { return }
 
             _ = try? await store.removeCard(card.key)
-            PocketFacade.shared.collectionChanged()
+            pocket.collectionChanged()
         }
     }
 }

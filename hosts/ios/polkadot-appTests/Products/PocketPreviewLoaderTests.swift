@@ -29,6 +29,18 @@ struct PocketPreviewLoaderTests {
         }
     }
 
+    /// The reader is told the bound rather than being left to hand back
+    /// whatever the product published for the loader to measure afterwards.
+    @Test
+    func tellsTheArchiveHowMuchItMayRead() async throws {
+        let archive = StubArchive(contents: minimalFace)
+        let loader = PocketPreviewLoader(archive: archive, fetch: refusingFetch)
+
+        _ = try await loader.load(contentId: "worker.game.paseo", preview: .archive(path: "faces/loyalty.json"))
+
+        #expect(archive.boundedTo == PocketPreviewLoader.maxBytes)
+    }
+
     @Test
     func refusesAFaceTheArchiveDoesNotHold() async {
         let loader = PocketPreviewLoader(archive: StubArchive(contents: nil), fetch: refusingFetch)
@@ -44,7 +56,7 @@ struct PocketPreviewLoaderTests {
     func readsAFaceFromADebugUrl() async throws {
         let loader = PocketPreviewLoader(
             archive: StubArchive(contents: nil),
-            fetch: { _ in minimalFace }
+            fetch: { _, _ in minimalFace }
         )
 
         let face = try await loader.load(
@@ -61,7 +73,7 @@ struct PocketPreviewLoaderTests {
     @Test
     func refusesAUrlFaceBeyondTheSizeBound() async {
         let oversized = Data(repeating: UInt8(ascii: " "), count: 256 * 1_024 + 1)
-        let loader = PocketPreviewLoader(archive: StubArchive(contents: nil), fetch: { _ in oversized })
+        let loader = PocketPreviewLoader(archive: StubArchive(contents: nil), fetch: { _, _ in oversized })
 
         await #expect(throws: (any Error).self) {
             try await loader.load(contentId: "worker.game.paseo", preview: .url("http://127.0.0.1:5173/big.json"))
@@ -85,15 +97,23 @@ private let minimalFace = Data("""
 }
 """.utf8)
 
-private let refusingFetch: @Sendable (URL) async throws -> Data = { _ in
+private let refusingFetch: @Sendable (URL, Int) async throws -> Data = { _, _ in
     Issue.record("the archive path must not reach the network")
     return Data()
 }
 
-private struct StubArchive: PocketArchiveReading {
+private final class StubArchive: PocketArchiveReading, @unchecked Sendable {
     let contents: Data?
+    /// The bound the loader passed down, so a loader that stopped telling the
+    /// reader how much to read is caught here rather than at the bound itself.
+    private(set) var boundedTo: Int?
 
-    func file(contentId _: ProductId, path: String) async throws -> Data {
+    init(contents: Data?) {
+        self.contents = contents
+    }
+
+    func file(contentId _: ProductId, path: String, maxBytes: Int) async throws -> Data {
+        boundedTo = maxBytes
         guard let contents else { throw PocketPreviewError.notReachable(path) }
         return contents
     }

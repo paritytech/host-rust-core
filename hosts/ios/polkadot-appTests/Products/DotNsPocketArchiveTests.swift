@@ -10,7 +10,11 @@ struct DotNsPocketArchiveTests {
         let root = try makeArchive(files: ["faces/loyalty.json": "{}"])
         let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
 
-        let data = try await archive.file(contentId: "worker.game.paseo", path: "faces/loyalty.json")
+        let data = try await archive.file(
+            contentId: "worker.game.paseo",
+            path: "faces/loyalty.json",
+            maxBytes: PocketPreviewLoader.maxBytes
+        )
 
         #expect(String(decoding: data, as: UTF8.self) == "{}")
     }
@@ -24,8 +28,66 @@ struct DotNsPocketArchiveTests {
         let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
 
         await #expect(throws: (any Error).self) {
-            try await archive.file(contentId: "worker.game.paseo", path: "../outside.json")
+            try await archive.file(contentId: "worker.game.paseo", path: "../outside.json", maxBytes: 1_024)
         }
+    }
+
+    /// A lookalike sibling is not inside the archive. `..` is refused outright,
+    /// so this never reaches the path comparison — which is the point: the
+    /// comparison alone would have to get the directory boundary exactly right.
+    @Test
+    func refusesASiblingDirectoryWhoseNameStartsWithTheArchives() async throws {
+        let root = try makeArchive(files: ["faces/loyalty.json": "{}"])
+        let sibling = root.deletingLastPathComponent().appending(path: "content.staging")
+        try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
+        try Data("secret".utf8).write(to: sibling.appending(path: "secret.json"))
+        let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
+
+        await #expect(throws: (any Error).self) {
+            try await archive.file(
+                contentId: "worker.game.paseo",
+                path: "../content.staging/secret.json",
+                maxBytes: 1_024
+            )
+        }
+    }
+
+    /// The archive's own contents are written by the product, so a link planted
+    /// inside it is as much the product's word as the path is.
+    @Test
+    func refusesALinkInsideTheArchiveThatPointsOutOfIt() async throws {
+        let root = try makeArchive(files: ["faces/loyalty.json": "{}"])
+        let outside = root.deletingLastPathComponent().appending(path: "outside.json")
+        try Data("secret".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: root.appending(path: "faces/escape.json"),
+            withDestinationURL: outside
+        )
+        let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
+
+        await #expect(throws: (any Error).self) {
+            try await archive.file(contentId: "worker.game.paseo", path: "faces/escape.json", maxBytes: 1_024)
+        }
+    }
+
+    /// The face is read before the user has approved anything, so its weight is
+    /// the product's choice. Refusing it once it is already resident would let a
+    /// product publishing a large preview decide what the host allocates.
+    @Test
+    func stopsReadingAFileOnceItPassesTheBound() async throws {
+        let root = try makeArchive(files: ["faces/big.json": String(repeating: "x", count: 8_192)])
+        let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
+
+        let refusal = await #expect(throws: PocketPreviewError.self) {
+            try await archive.file(contentId: "worker.game.paseo", path: "faces/big.json", maxBytes: 1_024)
+        }
+
+        guard case let .tooLarge(bytes) = refusal else {
+            Issue.record("expected a size refusal, got \(String(describing: refusal))")
+            return
+        }
+        // One byte past the bound is all that was ever held.
+        #expect(bytes == 1_025)
     }
 }
 

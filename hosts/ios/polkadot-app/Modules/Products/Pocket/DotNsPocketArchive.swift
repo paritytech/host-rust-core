@@ -13,14 +13,21 @@ struct DotNsPocketArchive: PocketArchiveReading {
         self.dotNsResolver = dotNsResolver
     }
 
-    func file(contentId: ProductId, path: String) async throws -> Data {
+    func file(contentId: ProductId, path: String, maxBytes: Int) async throws -> Data {
         let root = try await dotNsResolver.resolveToLocalURL(dotNsName: contentId)
-        let file = root.appending(path: path).standardizedFileURL
 
-        guard file.path().hasPrefix(root.standardizedFileURL.path()) else {
+        guard let file = PocketArchivePath.inside(root, path: path) else {
             throw PocketPreviewError.notReachable(path)
         }
 
-        return try Data(contentsOf: file)
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+
+        // One byte past the bound: enough to tell a file that is too large from
+        // one that exactly fills it, without holding either of them whole.
+        let read = try handle.read(upToCount: maxBytes + 1) ?? Data()
+        guard read.count <= maxBytes else { throw PocketPreviewError.tooLarge(bytes: read.count) }
+
+        return read
     }
 }

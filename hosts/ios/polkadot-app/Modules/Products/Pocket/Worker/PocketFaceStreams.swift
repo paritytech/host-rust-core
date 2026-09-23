@@ -13,6 +13,17 @@ protocol PocketFaceStreaming: Sendable {
     func send(action: String, payload: Data, for key: PocketCardKey)
 }
 
+/// The worker reference a card holds for as long as it is on screen. The core
+/// counts these and starts or stops the product's worker on the transitions
+/// across zero.
+protocol PocketWorkerReferencing: Sendable {
+    func acquireWorker(productId: ProductId)
+
+    func releaseWorker(productId: ProductId)
+}
+
+extension TrUAPIHostRuntime: PocketWorkerReferencing {}
+
 /// Faces over the core: one worker reference is taken for as long as the card
 /// is on screen, the product's worker is awaited, and `render` is opened on the
 /// card's own context.
@@ -34,13 +45,13 @@ struct TrUAPIPocketFaceStreams: PocketFaceStreaming {
         static let maxBackoffDoublings = 5
     }
 
-    private let runtime: @Sendable () throws -> TrUAPIHostRuntime
+    private let runtime: @Sendable () throws -> any PocketWorkerReferencing
     private let workers: any PocketWorkerSupervising
     private let publishedCards: any PublishedPocketCardsResolving
     private let logger: LoggerProtocol
 
     init(
-        runtime: @escaping @Sendable () throws -> TrUAPIHostRuntime,
+        runtime: @escaping @Sendable () throws -> any PocketWorkerReferencing,
         workers: any PocketWorkerSupervising,
         publishedCards: any PublishedPocketCardsResolving,
         logger: LoggerProtocol = Logger.shared
@@ -81,7 +92,7 @@ private extension TrUAPIPocketFaceStreams {
         // stream, and the reference below is what starts one: taking it
         // regardless would boot a worker for the personhood product every time
         // the default tab is opened.
-        guard await isStreamable(key) else {
+        guard await awaitPublished(key) else {
             continuation.finish()
             return
         }
@@ -107,10 +118,18 @@ private extension TrUAPIPocketFaceStreams {
         into continuation: AsyncThrowingStream<RendererNode, Error>.Continuation
     ) async {
         var opened: Task<Void, Never>?
+        var current: (any TrUAPIProductExecutionProtocol)?
         defer { opened?.cancel() }
 
         do {
             for try await execution in workers.executions(of: key.productId) {
+                // The supervisor publishes every product's execution together,
+                // so this re-sends whenever any other worker starts or stops.
+                // Reopening on those would tear down a live render stream, and
+                // pay the connect retries again, for a worker that never moved.
+                guard execution !== current else { continue }
+                current = execution
+
                 opened?.cancel()
                 guard let execution else { continue }
 
@@ -181,13 +200,27 @@ private extension TrUAPIPocketFaceStreams {
         return min(Retry.reopenDelay * (1 << doublings), Retry.maxReopenDelay)
     }
 
-    func isStreamable(_ key: PocketCardKey) async -> Bool {
-        do {
-            _ = try await publishedCards.find(productId: key.productId, cardId: key.cardId)
-            return true
-        } catch {
-            logger.debug("[pocket] \(key.cardId.value) has no published card; it keeps the face it has")
-            return false
+    /// Whether the card's product publishes it, waited for rather than asked
+    /// once. A product that publishes no such card is a settled answer. Any
+    /// other failure is a chain read that did not land, and ending on one would
+    /// leave the card on its cached face for as long as it stays on screen.
+    func awaitPublished(_ key: PocketCardKey) async -> Bool {
+        var attempt = 0
+        while !Task.isCancelled {
+            do {
+                _ = try await publishedCards.find(productId: key.productId, cardId: key.cardId)
+                return true
+            } catch let refusal as PocketPublishError {
+                logger.debug("[pocket] \(key.cardId.value): \(refusal); it keeps the face it has")
+                return false
+            } catch {
+                logger.warning("[pocket] \(key.cardId.value) could not be looked up, asking again: \(error)")
+            }
+
+            try? await Task.sleep(for: reopenDelay(after: attempt))
+            attempt += 1
         }
+
+        return false
     }
 }
