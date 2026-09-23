@@ -19,7 +19,10 @@ enum WalletMainViewFactory {
         else {
             return nil
         }
-        let wireframe = WalletMainWireframe(personDataStore: context.personDataStore)
+        let wireframe = WalletMainWireframe(
+            personDataStore: context.personDataStore,
+            hostProvider: context.flowState.hostProvider
+        )
 
         let networkStatusObserver = NetworkStatusObserver(
             networkStatusService: context.networkStatusService,
@@ -42,6 +45,10 @@ enum WalletMainViewFactory {
             wireframe: wireframe,
             titleViewModelFactory: NetworkStatusTitleViewModelFactory(
                 screenTitle: String(localized: .walletMainTitle)
+            ),
+            pocketPrewarmer: PocketPrewarmer(
+                products: context.flowState.productResolver,
+                dotNsResolver: context.flowState.dotNsResolver
             )
         )
         interactor.presenter = presenter

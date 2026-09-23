@@ -12,17 +12,6 @@
         }
       }
     },
-    "action.send.cash": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Send CASH"
-          }
-        }
-      }
-    },
     "Chat.contactAddedYou": {
       "extractionState": "manual",
       "localizations": {
@@ -173,6 +162,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Recover Polkadot ID"
+          }
+        }
+      }
+    },
+    "action.send.cash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send CASH"
           }
         }
       }
@@ -2256,6 +2256,198 @@
         }
       }
     },
+    "pocket.add.card.cancel": {
+      "comment": "Button that dismisses the Pocket card approval sheet without adding.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not now"
+          }
+        }
+      }
+    },
+    "pocket.add.card.confirm": {
+      "comment": "Button that adds the offered card to the Pocket.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add"
+          }
+        }
+      }
+    },
+    "pocket.add.card.failed": {
+      "comment": "Shown when adding an approved card did not succeed.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not add the card"
+          }
+        }
+      }
+    },
+    "pocket.add.card.title": {
+      "comment": "Title of the sheet asking the user to approve a product's card.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add to Pocket"
+          }
+        }
+      }
+    },
+    "pocket.alert.ok": {
+      "comment": "Dismisses a message about a Pocket link that went nowhere.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
+    },
+    "pocket.card.expanded.title": {
+      "comment": "Title of the screen one Pocket card is opened on.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Card"
+          }
+        }
+      }
+    },
+    "pocket.card.open.product": {
+      "comment": "Button that opens the product a Pocket card belongs to.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open"
+          }
+        }
+      }
+    },
+    "pocket.card.remove": {
+      "comment": "Button that removes a product card the user added.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove from Pocket"
+          }
+        }
+      }
+    },
+    "pocket.card.remove.confirm.message": {
+      "comment": "Body of the prompt asking to confirm removing a card.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The product that placed it can offer it again later."
+          }
+        }
+      }
+    },
+    "pocket.card.remove.confirm.title": {
+      "comment": "Title of the prompt asking to confirm removing a card.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove this card?"
+          }
+        }
+      }
+    },
+    "pocket.card.remove.pinned": {
+      "comment": "Shown when the user tries to remove a host-placed card.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This card cannot be removed"
+          }
+        }
+      }
+    },
+    "pocket.card.removed": {
+      "comment": "Confirms a card left the Pocket.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed from Pocket"
+          }
+        }
+      }
+    },
+    "pocket.deeplink.malformed": {
+      "comment": "Shown for a link under the reserved host target that is not a Pocket link.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This Pocket link is not valid"
+          }
+        }
+      }
+    },
+    "pocket.deeplink.no.pocket": {
+      "comment": "Shown when a Pocket link names a product that publishes none.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This product has no Pocket cards"
+          }
+        }
+      }
+    },
+    "pocket.deeplink.unknown.card": {
+      "comment": "Shown when a Pocket link names a card the product does not publish.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This product has no such card"
+          }
+        }
+      }
+    },
+    "pocket.empty.title": {
+      "comment": "Shown on the Pocket surface when the user holds no cards.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No cards yet"
+          }
+        }
+      }
+    },
     "polkadot.host.message.too.big.error": {
       "extractionState": "manual",
       "localizations": {
@@ -3268,17 +3460,6 @@
         }
       }
     },
-    "transaction.search.recent.contacts": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Previous payments"
-          }
-        }
-      }
-    },
     "transaction.search.all.users": {
       "extractionState": "manual",
       "localizations": {
@@ -3297,6 +3478,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "My contacts"
+          }
+        }
+      }
+    },
+    "transaction.search.recent.contacts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previous payments"
           }
         }
       }

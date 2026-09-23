@@ -5,6 +5,7 @@ import ChainRegistry
 
 protocol WalletMainViewProtocol: ControllerBackedProtocol {
     func didReceive(isCollectiblesAvailable: Bool)
+    func didReceive(pocketCards: [PocketCardViewModel])
     func didReceive(titleViewModel: NetworkStatusTitleView.ViewModel)
 }
 
@@ -12,11 +13,15 @@ protocol WalletMainViewProtocol: ControllerBackedProtocol {
 protocol WalletMainPresenterProtocol: AnyObject {
     func setup()
     func showCollectibles()
+    func showPocketCard(_ card: PocketCardViewModel)
+    func removePocketCard(_ card: PocketCardViewModel)
 }
 
 @MainActor
 protocol WalletMainWireframeProtocol: AnyObject {
     func showCollectibles(from view: WalletMainViewProtocol?, url: URL)
+    func showPocketCard(_ card: PocketCardViewModel)
+    func confirmPocketCardRemoval(_ card: PocketCardViewModel, onConfirm: @escaping () -> Void)
 }
 
 protocol WalletMainInteractorInputProtocol: AnyObject {
