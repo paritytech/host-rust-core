@@ -57,11 +57,15 @@ import uniffi.truapi_platform.HostChainSet
 import uniffi.truapi_platform.NativeChatFilePickRequest
 import uniffi.truapi_platform.NativeChatPickedFile
 import uniffi.truapi_platform.NativeChatFileExportRequest
+import uniffi.truapi_platform.NativeCoinageRequest
+import uniffi.truapi_platform.NativeCoinageResponse
 import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatCallbacks
+import uniffi.truapi_server.NativeCoinageCallbacks
+import uniffi.truapi_server.NativeCoinageCallbackResult
 import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativePocketRemoval
 import uniffi.truapi_server.NativeRendererObserver
@@ -261,6 +265,17 @@ interface NativeChatFilesHost {
     @Throws(HostRejection::class)
     suspend fun cancelChatFileExport(exportId: String): Unit =
         throw HostRejection.Rejected("native Chat files unavailable")
+}
+
+/**
+ * Optional process-wide native custody, registered at runtime construction.
+ * Omit only when the built-in Rust wallet owns custody. A registered native
+ * wallet stays installed while locked or unavailable; failures never permit fallback.
+ */
+interface NativeCoinageHost {
+    /** Host-private operation. Return sanitized failures; never expose bearer material. */
+    @Throws(HostRejection::class)
+    suspend fun nativeCoinage(request: NativeCoinageRequest): NativeCoinageResponse
 }
 
 /**
@@ -537,6 +552,11 @@ interface PocketHostBridge {
     fun removeCard(cardId: String): NativePocketRemoval
 }
 
+private class NativeCoinageCallbackAdapter(private val bridge: NativeCoinageHost) : NativeCoinageCallbacks {
+    override suspend fun nativeCoinage(request: NativeCoinageRequest): NativeCoinageCallbackResult =
+        withCoinageWalletRejection { NativeCoinageCallbackResult(bridge.nativeCoinage(request)) }
+}
+
 /**
  * Adapter from the public [HostBridge] surface to the generated UniFFI
  * [HostCallbacks] interface. Keeps the public API stable even if uniffi-bindgen
@@ -675,6 +695,15 @@ private fun hostRejectionReason(error: Throwable): String =
     (error.message ?: error.toString()).take(HOST_REJECTION_REASON_MAX_CHARS)
 
 private const val HOST_REJECTION_REASON_MAX_CHARS = 256
+
+private inline fun <T> withCoinageWalletRejection(operation: () -> T): T =
+    try {
+        operation()
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        throw HostRejection.Rejected("Native Coinage wallet operation failed")
+    }
 
 private inline fun <T> withChatFileRejection(operation: () -> T): T =
     try {
@@ -916,18 +945,26 @@ object LocalhostBridgeBootstrap {
 class TrUAPIHostRuntime private constructor(
     bridge: HostBridge,
     runtimeConfig: UniFfiNativeHostRuntimeConfig,
+    nativeWallet: NativeCoinageHost?,
 ) : AutoCloseable {
     @Throws(NativeRuntimeConfigException::class)
-    constructor(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) : this(
+    constructor(
+        bridge: HostBridge,
+        runtimeConfig: HostRuntimeConfig,
+        nativeWallet: NativeCoinageHost? = null,
+    ) : this(
         bridge,
         runtimeConfig.toNative(),
+        nativeWallet,
     )
 
     // Co-owns the adapter alongside the generated FfiConverter handle map,
     // which is what actually keeps the callback object alive for the runtime.
     private val callbackRetainer: HostCallbacks = HostCallbackAdapter(bridge)
+    private val nativeWalletRetainer: NativeCoinageCallbacks? =
+        nativeWallet?.let { NativeCoinageCallbackAdapter(it) }
     private val inner: NativeTrUApiHostRuntime =
-        NativeTrUApiHostRuntime.withRuntimeConfig(callbackRetainer, runtimeConfig)
+        NativeTrUApiHostRuntime.withRuntimeConfig(callbackRetainer, runtimeConfig, nativeWalletRetainer)
 
     /**
      * Open one executable connection with a host-assigned immutable context.

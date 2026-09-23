@@ -25,9 +25,10 @@ use super::allowances::{self, AllowanceCacheKey, AllowanceResource};
 use super::auth_state::AuthStateMachine;
 use super::authority::{
     AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningKey, BulletinAllowanceKey,
-    CreateTransactionAuthorityRequest, ProductAuthority, ProductDeviceChatAuthorityError,
-    ProductDeviceChatAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
-    StatementStoreAllowanceKey, authority_session, require_current_session,
+    CreateTransactionAuthorityRequest, PaymentTopUpAuthorityError, ProductAuthority,
+    ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
+    SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
+    authority_session, require_current_session,
 };
 use super::connected_session_ui_info;
 use super::identity::resolve_session_identity_with_chain;
@@ -48,7 +49,7 @@ use crate::host_logic::product_account::{
 use crate::host_logic::raw_signing::raw_payload_bytes;
 use crate::host_logic::session::{SessionInfo, SessionState, encode_persisted_session};
 use crate::host_logic::session_store::SessionStoreChangeNotifier;
-use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
+use crate::host_logic::sso::messages::{PaymentTopUpRequest, ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::subscription::Spawner;
 
@@ -2742,6 +2743,20 @@ impl ProductAuthority for PairingHost {
         request: ProductDeviceChatAuthorityRequest,
     ) -> Result<latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
         PairingHost::product_device_chat(self, cx, session, request).await
+    }
+
+    async fn payment_top_up(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        mut request: PaymentTopUpRequest,
+    ) -> Result<(), PaymentTopUpAuthorityError> {
+        let current = require_current_session(&self.session_state, session)?;
+        request.calling_product_id = normalize_product_identifier(&request.calling_product_id)
+            .map_err(|_| {
+                PaymentTopUpAuthorityError::Domain(v01::HostPaymentTopUpError::InvalidSource)
+            })?;
+        self.remote_payment_top_up(cx, &current, request).await
     }
 
     async fn allocate_resources(

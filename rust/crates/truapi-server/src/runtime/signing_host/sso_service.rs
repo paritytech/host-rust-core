@@ -24,20 +24,20 @@ use crate::host_logic::product_account::{
 use crate::host_logic::sso::messages::{
     CreateAccountProofResponse, CreateTransactionLegacyPayload, CreateTransactionPayload,
     CreateTransactionRequest, CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest,
-    GetAccountAliasResponse, ListRingVrfKeysResponse, OnExistingAllowancePolicy,
-    ProductDeviceChatResponse, ProductRequest, ProductSubtreeRequest, ProductSubtreeResponse,
-    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse,
-    RingVrfSignResponse, SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse,
-    SignRequest, SignResponse, SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
-    SsoProductDeviceChatOperation, StatementStoreProductSignRequest,
-    StatementStoreProductSignResponse,
+    GetAccountAliasResponse, ListRingVrfKeysResponse, OnExistingAllowancePolicy, PaymentTopUpError,
+    PaymentTopUpRequest, PaymentTopUpResponse, ProductDeviceChatResponse, ProductRequest,
+    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
+    ResourceAllocationRequest, ResourceAllocationResponse, RingVrfSignResponse,
+    SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
+    SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome, SsoProductDeviceChatOperation,
+    StatementStoreProductSignRequest, StatementStoreProductSignResponse,
 };
 use crate::host_logic::sso::wire::ResponseOutcome;
 use crate::host_logic::statement_store::validate_unsigned_statement_signing_payload;
 use crate::runtime::authority::{
     AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
     ProductDeviceChatAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
-    chat_requires_statement_submit,
+    chat_requires_preimage_submit,
 };
 use crate::runtime::sso_service::{SsoReply, SsoRequestContext};
 
@@ -343,6 +343,18 @@ fn resource_allocation_outcome(
 
 #[truapi_macros::sso_service]
 impl SigningHostSsoService {
+    /// Incoming funding uses only supplied secrets, not any outgoing-spend grant.
+    async fn payment_top_up(
+        &self,
+        cx: &SsoRequestContext,
+        request: PaymentTopUpRequest,
+    ) -> PaymentTopUpResponse {
+        self.signing_host
+            .payment_top_up(&cx.call, &cx.session, request)
+            .await
+            .map_err(|error| PaymentTopUpError(error.into()))
+    }
+
     /// Sign a payload or raw bytes with a product account.
     async fn sign(&self, cx: &SsoRequestContext, request: SignRequest) -> SignResponse {
         let payload = self.serve_sign(cx, request).await;
@@ -570,7 +582,7 @@ impl SigningHostSsoService {
             .map_err(|error| error.to_string())
     }
 
-    /// Execute the same typed Chat operations as local products; never return secrets.
+    /// Execute the same narrow Chat authority operations as local products.
     async fn product_device_chat(
         &self,
         cx: &SsoRequestContext,
@@ -585,7 +597,14 @@ impl SigningHostSsoService {
             .map_err(|_| WireError::V1(api::HostProductDeviceChatError::NotConnected))?;
         let calling_product_id = normalize_product_identifier(&request.calling_product_id)
             .map_err(|_| WireError::V1(api::HostProductDeviceChatError::InvalidRequest))?;
-        let SsoProductDeviceChatOperation::V2(operation) = request.payload;
+        let operation = match request.payload {
+            SsoProductDeviceChatOperation::V3(operation) => operation,
+            SsoProductDeviceChatOperation::V2(_) => {
+                return Err(WireError::V1(
+                    api::HostProductDeviceChatError::InvalidRequest,
+                ));
+            }
+        };
         let permissions = PermissionsService::new(
             self.signing_host.platform.as_ref(),
             self.signing_host.platform.as_ref(),
@@ -601,10 +620,10 @@ impl SigningHostSsoService {
                 api::HostProductDeviceChatError::AccessNotGranted,
             ));
         }
-        if chat_requires_statement_submit(&operation)
+        if chat_requires_preimage_submit(&operation)
             && permissions
                 .check_or_prompt_remote(api::RemotePermissionRequest {
-                    permission: api::RemotePermission::StatementSubmit,
+                    permission: api::RemotePermission::PreimageSubmit,
                 })
                 .await
                 .map_err(|_| WireError::V1(api::HostProductDeviceChatError::StorageUnavailable))?
@@ -624,7 +643,7 @@ impl SigningHostSsoService {
                 },
             )
             .await
-            .map(WireResponse::V1)
+            .map(WireResponse::V2)
             .map_err(|error| WireError::V1(error.into()))
     }
 }

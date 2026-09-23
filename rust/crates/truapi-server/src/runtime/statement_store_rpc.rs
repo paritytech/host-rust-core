@@ -177,22 +177,6 @@ impl StatementSubmitError {
         matches!(self, Self::Rejected(result)
             if result["status"] == "rejected" && result["reason"] == "noAllowance")
     }
-
-    /// The store's inclusive priority floor; advance strictly past it.
-    pub(super) fn replacement_expiry(&self) -> Option<u64> {
-        let Self::Rejected(result) = self else {
-            return None;
-        };
-        if result["status"] != "rejected"
-            || !matches!(
-                result["reason"].as_str(),
-                Some("accountFull" | "channelPriorityTooLow")
-            )
-        {
-            return None;
-        }
-        result["min_expiry"].as_u64()?.checked_add(1)
-    }
 }
 
 /// Submit a SCALE-encoded statement and confirm the store accepted it.
@@ -258,37 +242,5 @@ pub(super) fn rpc_error_message(error: subxt_rpcs::Error) -> String {
     match error {
         subxt_rpcs::Error::User(error) => error.message,
         other => other.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn capacity_rejection_retains_exact_priority_and_cannot_mask_other_failures() {
-        let response = serde_json::from_str(
-            r#"{"status":"rejected","reason":"accountFull","min_expiry":7688541413222383616}"#,
-        )
-        .unwrap();
-        let rejection = StatementSubmitError::Rejected(response);
-        assert_eq!(rejection.replacement_expiry(), Some(7688541413222383617));
-        assert!(!rejection.is_no_allowance());
-        let allowance = StatementSubmitError::Rejected(
-            json!({"status":"rejected","reason":"noAllowance","min_expiry":1}),
-        );
-        assert!(allowance.is_no_allowance());
-        assert_eq!(allowance.replacement_expiry(), None);
-        for response in [
-            json!({"status":"invalid","reason":"accountFull","min_expiry":1}),
-            json!({"status":"rejected","reason":"accountFull"}),
-            json!({"status":"rejected","reason":"accountFull","min_expiry":u64::MAX}),
-            json!({"status":"rejected","reason":"badProof","min_expiry":1}),
-        ] {
-            assert_eq!(
-                StatementSubmitError::Rejected(response).replacement_expiry(),
-                None
-            );
-        }
     }
 }

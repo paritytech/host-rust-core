@@ -8,7 +8,9 @@ use core::fmt::Display;
 
 use truapi::{latest::HostAccountSignVrfError, versioned::account::HostProductDeviceChatError};
 
-use super::messages::{RemoteMessage, RemoteMessageData, Response, RingVrfError, v1};
+use super::messages::{
+    PaymentTopUpError, RemoteMessage, RemoteMessageData, Response, RingVrfError, v1,
+};
 
 /// A request payload and the wire response selected by its handler declaration.
 pub trait SsoRequest: Sized {
@@ -53,6 +55,14 @@ impl SsoError for HostAccountSignVrfError {
 impl SsoError for HostProductDeviceChatError {
     fn not_connected() -> Self {
         Self::V1(truapi::latest::HostProductDeviceChatError::NotConnected)
+    }
+}
+
+impl SsoError for PaymentTopUpError {
+    fn not_connected() -> Self {
+        Self(truapi::v01::HostPaymentTopUpError::Unknown {
+            reason: "Wallet session is not active".to_string(),
+        })
     }
 }
 

@@ -6080,6 +6080,7 @@ dependencies = [
  "parity-scale-codec",
  "truapi-macros",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]

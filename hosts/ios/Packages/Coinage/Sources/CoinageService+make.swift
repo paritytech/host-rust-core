@@ -27,7 +27,7 @@ public extension CoinageService {
     ///   - durableEngine: The shared durable transaction engine; coinage registers its oracle with it
     ///   - chainViewFactory: Pinned chain views for reads outside the engine
     ///   - assetLedger: Coinage's half of the ledger (asset rows, handoff marks)
-    ///   - rootEntropyManager: Manager for root entropy (key derivation)
+    ///   - lifecycle: Root-bound lifecycle shared with the native origin factory
     ///   - keystore: Keystore for key management
     ///   - logger: Logger for diagnostic output
     ///   - schedulerFactory: Coin recycling background task scheduler
@@ -43,7 +43,7 @@ public extension CoinageService {
         durableEngine: any DurableTxServicing,
         chainViewFactory: any PinnedChainViewFactoryProtocol,
         assetLedger: any CoinageAssetLedgerProtocol,
-        rootEntropyManager: RootEntropyManaging,
+        lifecycle: CoinageLifecycle,
         keystore: KeystoreProtocol,
         applicationStateStreamFactory: ApplicationStateStreamFactory,
         externalPaymentStore: ExternalPaymentStoring,
@@ -71,8 +71,8 @@ public extension CoinageService {
 
         let voucherIndexstore = VoucherIndexstore(storage: keystore)
         let coinsIndexstore = CoinIndexstore(storage: keystore)
-        let coinKeypairFactory = CoinKeypairFactory(entropyManager: rootEntropyManager)
-        let voucherKeypairFactory = VoucherKeypairFactory(entropyManager: rootEntropyManager)
+        let coinKeypairFactory = CoinKeypairFactory(entropyManager: lifecycle)
+        let voucherKeypairFactory = VoucherKeypairFactory(entropyManager: lifecycle)
         // One allocator per Coinage instance: actor isolation serialises the index counter only
         // within a single instance.
         let coinAllocator = CoinAllocator(
@@ -142,7 +142,9 @@ public extension CoinageService {
             for: .coinage
         )
 
-        let txService = CoinageTxService(engine: durableEngine, ledger: assetLedger, logger: logger)
+        let txService = CoinageTxService(
+            engine: durableEngine, ledger: assetLedger, logger: logger, lifecycle: lifecycle
+        )
 
         let voucherLoaderFactory = VoucherLoaderFactory(
             instanceId: instanceId,
@@ -194,6 +196,7 @@ public extension CoinageService {
             planFactory: planFactory,
             memoBuilder: memoBuilder,
             recyclerLoader: readinessLoader,
+            txService: txService,
             logger: logger
         )
 
@@ -331,7 +334,7 @@ public extension CoinageService {
         )
 
         let incomingPaymentSourceResolver = IncomingPaymentSourceResolver(
-            entropyManager: rootEntropyManager,
+            entropyManager: lifecycle,
             snKeyFactory: SNKeyFactory()
         )
 
@@ -349,7 +352,9 @@ public extension CoinageService {
             ),
             acknowledger: incomingPaymentAcknowledger,
             instanceId: instanceId,
-            logger: logger
+            logger: logger,
+            lifecycle: lifecycle,
+            ownerId: lifecycle.ownerId(chainId: chain.chainId, instanceId: instanceId)
         )
 
         let coinageService = CoinageService(
@@ -374,7 +379,8 @@ public extension CoinageService {
             databaseFactory: databaseFactory,
             recoveryService: recoveryService,
             incomingPaymentService: incomingPaymentService,
-            logger: logger
+            logger: logger,
+            lifecycle: lifecycle
         )
 
         return coinageService

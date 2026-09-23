@@ -34,6 +34,11 @@
 
 ## Getting started
 
+For the in-tree Host build and Chat product, follow the
+[Mac simulator runbook](../../docs/chat-ios-simulator.md). It covers the CI
+preview install, local builds, matching product versions, and safe coexistence
+testing with built-in Chat.
+
 <details>
 <summary>Prerequisites</summary>
 

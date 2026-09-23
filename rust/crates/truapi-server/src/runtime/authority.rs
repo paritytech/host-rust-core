@@ -28,7 +28,7 @@ use truapi_platform::ProductContext;
 use crate::host_logic::extrinsic::LocalTransactionError;
 use crate::host_logic::raw_signing::RawPayloadError;
 use crate::host_logic::session::{SessionInfo, SessionState};
-use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
+use crate::host_logic::sso::messages::{PaymentTopUpRequest, ProductRequest, RingVrfError};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
 use crate::host_logic::transaction::ExtrinsicPayloadError;
 
@@ -296,20 +296,22 @@ pub(crate) struct ProductDeviceChatAuthorityRequest {
     pub operation: HostProductDeviceChatRequest,
 }
 
-/// Receive may emit acknowledgments; reconciliation may resume queued delivery.
-pub(crate) fn chat_requires_statement_submit(operation: &HostProductDeviceChatRequest) -> bool {
+/// Only trusted attachment preparation uploads preimages; products submit Chat statements.
+pub(crate) fn chat_requires_preimage_submit(operation: &HostProductDeviceChatRequest) -> bool {
     match operation {
+        HostProductDeviceChatRequest::PrepareAttachments { .. } => true,
         HostProductDeviceChatRequest::Initialize
-        | HostProductDeviceChatRequest::PaymentStatus { .. } => false,
-        HostProductDeviceChatRequest::Invite { .. }
-        | HostProductDeviceChatRequest::Receive { .. }
-        | HostProductDeviceChatRequest::AcceptInvitation { .. }
-        | HostProductDeviceChatRequest::RejectInvitation { .. }
-        | HostProductDeviceChatRequest::Send { .. }
+        | HostProductDeviceChatRequest::Bind { .. }
+        | HostProductDeviceChatRequest::Prepare { .. }
+        | HostProductDeviceChatRequest::Open { .. }
         | HostProductDeviceChatRequest::SendPayment { .. }
-        | HostProductDeviceChatRequest::SendAttachments { .. }
+        | HostProductDeviceChatRequest::PaymentStatus { .. }
+        | HostProductDeviceChatRequest::ReconcilePayments
         | HostProductDeviceChatRequest::OpenAttachment { .. }
-        | HostProductDeviceChatRequest::Reconcile => true,
+        | HostProductDeviceChatRequest::CommitMigration { .. }
+        | HostProductDeviceChatRequest::ContinueOpen { .. }
+        | HostProductDeviceChatRequest::ContinueState { .. }
+        | HostProductDeviceChatRequest::PaymentDenomination => false,
     }
 }
 
@@ -338,6 +340,39 @@ impl From<ProductDeviceChatAuthorityError> for truapi::v02::HostProductDeviceCha
             ProductDeviceChatAuthorityError::Rejected => Self::UserRejected,
             ProductDeviceChatAuthorityError::Unavailable(_) => Self::NetworkUnavailable,
             ProductDeviceChatAuthorityError::Domain(error) => error,
+        }
+    }
+}
+
+/// Payment failures retain typed wallet results without exposing backend diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PaymentTopUpAuthorityError {
+    Authority(AuthorityError),
+    Domain(truapi::v01::HostPaymentTopUpError),
+}
+
+impl From<AuthorityError> for PaymentTopUpAuthorityError {
+    fn from(error: AuthorityError) -> Self {
+        Self::Authority(error)
+    }
+}
+
+impl From<PaymentTopUpAuthorityError> for truapi::v01::HostPaymentTopUpError {
+    fn from(error: PaymentTopUpAuthorityError) -> Self {
+        match error {
+            PaymentTopUpAuthorityError::Domain(error) if !matches!(error, Self::Unknown { .. }) => {
+                error
+            }
+            PaymentTopUpAuthorityError::Authority(AuthorityError::Disconnected) => Self::Unknown {
+                reason: "Wallet session is not active".to_string(),
+            },
+            PaymentTopUpAuthorityError::Authority(AuthorityError::Cancelled(_)) => Self::Unknown {
+                reason: "Payment top-up cancelled".to_string(),
+            },
+            // Backend failures may contain supplied source keys; never echo them.
+            _ => Self::Unknown {
+                reason: "Payment top-up unavailable".to_string(),
+            },
         }
     }
 }
@@ -572,6 +607,14 @@ pub(crate) trait ProductAuthority: Send + Sync {
         session: &AuthoritySession,
         request: ProductDeviceChatAuthorityRequest,
     ) -> Result<HostProductDeviceChatResponse, ProductDeviceChatAuthorityError>;
+
+    /// Credit caller-supplied incoming funding; no outgoing-spend or Chat grant.
+    async fn payment_top_up(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: PaymentTopUpRequest,
+    ) -> Result<(), PaymentTopUpAuthorityError>;
 
     /// Ask the account authority to allocate product-scoped resources.
     async fn allocate_resources(

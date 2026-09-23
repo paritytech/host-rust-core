@@ -1426,6 +1426,236 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_chat_accepts_narrow_initialize_and_rejects_retired_operations() {
+        use crate::host_logic::sso::messages::{
+            ProductRequest, SsoProductDeviceChatOperation, SsoSessionStatement,
+            decode_sso_session_statement,
+        };
+        use crate::host_logic::sso::wire::SsoRequest;
+        use crate::test_support::sso_host_and_responder_sessions;
+        use truapi::versioned::account::{
+            HostProductDeviceChatError, HostProductDeviceChatResponse,
+        };
+
+        let platform = Arc::new(StubPlatform {
+            chat_authority_confirmed: true,
+            remote_permission_denied: true,
+            ..Default::default()
+        });
+        let (_, signing_host) = signing_fixture(platform.clone());
+        futures::executor::block_on(async {
+            let service = SigningHostSsoService::new(signing_host);
+            let (pairing, responder) = sso_host_and_responder_sessions();
+            for (message_id, operation, retired) in [
+                (
+                    "retired-chat",
+                    SsoProductDeviceChatOperation::V2(
+                        truapi::v02::HostProductDeviceChatRequest::Initialize,
+                    ),
+                    true,
+                ),
+                (
+                    "narrow-chat",
+                    SsoProductDeviceChatOperation::V3(
+                        api::HostProductDeviceChatRequest::Initialize,
+                    ),
+                    false,
+                ),
+            ] {
+                let request = ProductRequest {
+                    calling_product_id: "MYAPP.DOT".to_string(),
+                    payload: operation,
+                };
+                let message = RemoteMessage::request(message_id.to_string(), request);
+                let statement = messages::build_outgoing_request_statement(
+                    &pairing,
+                    message_id.to_string(),
+                    vec![message],
+                    (statement_current_unix_secs() + 60) << 32,
+                )
+                .unwrap();
+                let incoming = messages::decode_incoming_sso_request(&responder, &statement)
+                    .unwrap()
+                    .unwrap();
+                let Dispatch::Response(answer) = service
+                    .dispatch(
+                        service.current_session(),
+                        incoming.messages.into_iter().next().unwrap(),
+                    )
+                    .await
+                else {
+                    panic!("expected Chat response");
+                };
+                let response_statement = messages::build_outgoing_request_statement(
+                    &responder,
+                    format!("{message_id}-response"),
+                    vec![answer.message],
+                    (statement_current_unix_secs() + 60) << 32,
+                )
+                .unwrap();
+                let Some(SsoSessionStatement::RemoteMessages(mut responses)) =
+                    decode_sso_session_statement(&pairing, &response_statement, message_id)
+                        .unwrap()
+                else {
+                    panic!("expected encrypted Chat answer");
+                };
+                let response =
+                    ProductRequest::<SsoProductDeviceChatOperation>::response_from_message(
+                        responses.remove(0).unwrap(),
+                    )
+                    .unwrap();
+                assert_eq!(response.responding_to, message_id);
+                if retired {
+                    assert_eq!(
+                        response.payload,
+                        Err(HostProductDeviceChatError::V1(
+                            api::HostProductDeviceChatError::InvalidRequest,
+                        ))
+                    );
+                    assert!(platform.chat_authority_reviews.lock().is_empty());
+                } else {
+                    let Ok(HostProductDeviceChatResponse::V2(state)) = response.payload else {
+                        panic!("expected narrow Chat initialization");
+                    };
+                    assert_eq!(state.device.product_account.dot_ns_identifier, "myapp.dot");
+                    assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+                }
+            }
+            assert!(
+                platform
+                    .remote_permission_requests
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                platform
+                    .main_purse_chat_payment_reviews
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+        });
+    }
+
+    #[test]
+    fn encrypted_payment_top_up_reaches_wallet_validation_without_chat_grants() {
+        use crate::host_logic::sso::messages::{
+            PaymentTopUpRequest, SsoSessionStatement, decode_sso_session_statement,
+        };
+        use crate::host_logic::sso::wire::SsoRequest;
+        use crate::test_support::sso_host_and_responder_sessions;
+        use truapi::versioned::payment::HostPaymentTopUpRequest;
+
+        let platform = Arc::new(StubPlatform {
+            chain_connect_error: Some("offline"),
+            ..Default::default()
+        });
+        let (_, signing_host) = signing_fixture(platform.clone());
+        futures::executor::block_on(async {
+            let service = SigningHostSsoService::new(signing_host.clone());
+            let (pairing, responder) = sso_host_and_responder_sessions();
+            let request = PaymentTopUpRequest {
+                calling_product_id: "MYAPP.DOT".to_string(),
+                payload: HostPaymentTopUpRequest::V1(truapi::v01::HostPaymentTopUpRequest {
+                    into: None,
+                    amount: 1,
+                    source: truapi::v01::PaymentTopUpSource::PrivateKey {
+                        sr25519_secret_key: [0xab; 64],
+                    },
+                }),
+            };
+            let message = RemoteMessage::request("top-up-1".to_string(), request);
+            assert!(!format!("{message:?}").contains(&format!("{:?}", [0xab_u8; 64])));
+            let statement = messages::build_outgoing_request_statement(
+                &pairing,
+                "top-up-1".to_string(),
+                vec![message],
+                (statement_current_unix_secs() + 60) << 32,
+            )
+            .unwrap();
+            assert!(!statement.windows(64).any(|bytes| bytes == [0xab; 64]));
+            let incoming = messages::decode_incoming_sso_request(&responder, &statement)
+                .unwrap()
+                .unwrap();
+            let Dispatch::Response(answer) = service
+                .dispatch(
+                    service.current_session(),
+                    incoming.messages.into_iter().next().unwrap(),
+                )
+                .await
+            else {
+                panic!("expected top-up response");
+            };
+            let response_statement = messages::build_outgoing_request_statement(
+                &responder,
+                "top-up-response".to_string(),
+                vec![answer.message],
+                (statement_current_unix_secs() + 60) << 32,
+            )
+            .unwrap();
+            let Some(SsoSessionStatement::RemoteMessages(mut responses)) =
+                decode_sso_session_statement(&pairing, &response_statement, "top-up-1").unwrap()
+            else {
+                panic!("expected encrypted top-up answer");
+            };
+            let response =
+                PaymentTopUpRequest::response_from_message(responses.remove(0).unwrap()).unwrap();
+            assert_eq!(response.responding_to, "top-up-1");
+            assert_eq!(
+                response.payload,
+                Err(messages::PaymentTopUpError(
+                    truapi::v01::HostPaymentTopUpError::InvalidSource
+                ))
+            );
+            assert!(platform.chat_authority_reviews.lock().is_empty());
+            assert!(
+                platform
+                    .main_purse_chat_payment_reviews
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(platform.sign_raw_reviews.lock().unwrap().is_empty());
+            assert!(platform.sign_payload_reviews.lock().unwrap().is_empty());
+            assert_eq!(
+                platform
+                    .identity_disclosure_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+
+            signing_host.disconnect().await;
+            let request = RemoteMessage::request(
+                "top-up-disconnected".to_string(),
+                PaymentTopUpRequest {
+                    calling_product_id: "myapp.dot".to_string(),
+                    payload: HostPaymentTopUpRequest::V1(truapi::v01::HostPaymentTopUpRequest {
+                        into: None,
+                        amount: 1,
+                        source: truapi::v01::PaymentTopUpSource::Coins {
+                            sr25519_secret_keys: vec![[0xab; 64]],
+                        },
+                    }),
+                },
+            );
+            let Dispatch::Response(answer) =
+                service.dispatch(service.current_session(), request).await
+            else {
+                panic!("expected disconnected top-up response");
+            };
+            let RemoteMessageData::V1(data) = answer.message.data;
+            let response = PaymentTopUpRequest::response_from_message(data).unwrap();
+            assert!(matches!(
+                response.payload,
+                Err(messages::PaymentTopUpError(
+                    truapi::v01::HostPaymentTopUpError::Unknown { .. }
+                ))
+            ));
+        });
+    }
+
+    #[test]
     fn response_summary_reports_protocol_errors_without_multiline_output() {
         let payload: GetAccountAliasResponse = Err(RingVrfError::Unknown {
             reason: "chain RPC\ntimed out".to_string(),

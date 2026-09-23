@@ -12,4 +12,11 @@ final class MockConfirmationPresenter: TrUAPIConfirmationPresenting, @unchecked 
         receivedRequesterName = requesterName
         return verdictToReturn
     }
+
+    func confirmNativeCoinage(
+        review: MainPurseChatPaymentReview,
+        requiresPrivacyConfirmation _: Bool
+    ) async -> Bool {
+        await confirm(review: .mainPurseChatPayment(review), from: review.callingProductId)
+    }
 }

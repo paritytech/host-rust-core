@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
+use truapi_platform::{ChatPlatform, CoinageWalletHost, PermissionStatusHost, PocketPlatform};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -258,6 +258,7 @@ impl PairingHostRuntime {
             config.asset_hub_chain_genesis_hash,
             spawner.clone(),
             chat_platform,
+            None,
         );
         let pairing_host = PairingHostRole::new(services.clone(), config);
         pairing_host.clone().start_session_store_sync(spawner);
@@ -584,20 +585,20 @@ impl SigningHostRuntime {
     where
         P: Platform + 'static,
     {
-        Self::with_chat_platform(platform, config, spawner, None)
+        Self::with_chat_platform(platform, config, spawner, None, None)
     }
 
     /// Build a signing-host runtime that serves Chat through `chat_platform`.
     ///
-    /// The pairing host has had this since chat reached the core; a signing
-    /// host needs it for the same reason a native host does, and without it no
-    /// runnable host in this repo can serve a chat product at all.
+    /// Native wallet custody is fixed at construction. `None` uses the built-in
+    /// Rust wallet; an injected native service never falls back on failure.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.with_chat_platform"))]
     pub fn with_chat_platform<P>(
         platform: Arc<P>,
         config: SigningHostConfig,
         spawner: Spawner,
         chat_platform: Option<Arc<dyn ChatPlatform>>,
+        native_wallet: Option<Arc<dyn CoinageWalletHost>>,
     ) -> Self
     where
         P: Platform + 'static,
@@ -611,6 +612,7 @@ impl SigningHostRuntime {
             config.asset_hub_chain_genesis_hash,
             spawner,
             chat_platform,
+            native_wallet,
         );
         if services.asset_hub_chain_genesis_hash().is_none() {
             // Said once at startup because the refusals themselves are

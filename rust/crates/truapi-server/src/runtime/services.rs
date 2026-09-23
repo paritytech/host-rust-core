@@ -15,7 +15,9 @@ use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
 use async_trait::async_trait;
 use truapi::latest;
-use truapi_platform::{HostInfo, JsonRpcConnection, PermissionStatusHost, Platform};
+use truapi_platform::{
+    CoinageWalletHost, HostInfo, JsonRpcConnection, PermissionStatusHost, Platform,
+};
 
 /// Upper bound on the in-core preimage cache. The cache is a bridge until
 /// content propagates to the lookup backend, not a store, so it stays small.
@@ -34,6 +36,9 @@ pub(crate) struct RuntimeServices {
     /// Host chat adapter, when the host serves the Chat capability. `None`
     /// makes every product chat call resolve as `Unsupported`.
     pub(crate) chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// Native wallet custody, fixed at construction. Absence uses Rust; an
+    /// injected service remains the owner even while unavailable.
+    pub(crate) native_wallet: Option<Arc<dyn CoinageWalletHost>>,
     /// Host adapter reporting live OS permission state, installed once at
     /// startup by a host that can read it. Unset leaves device grants
     /// resolving from stored state alone.
@@ -90,6 +95,29 @@ impl RuntimeServices {
         asset_hub_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
     ) -> Arc<Self> {
+        Self::with_chat_platform(
+            platform,
+            host_info,
+            people_chain_genesis_hash,
+            bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
+            spawner,
+            None,
+            None,
+        )
+    }
+
+    /// Same as [`Self::new`], with optional Chat and native wallet dependencies.
+    pub(crate) fn with_chat_platform(
+        platform: Arc<dyn Platform>,
+        host_info: HostInfo,
+        people_chain_genesis_hash: [u8; 32],
+        bulletin_chain_genesis_hash: [u8; 32],
+        asset_hub_chain_genesis_hash: [u8; 32],
+        spawner: Spawner,
+        chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+        native_wallet: Option<Arc<dyn CoinageWalletHost>>,
+    ) -> Arc<Self> {
         let chain_provider = Arc::new(HostChainProvider {
             platform: platform.clone(),
         });
@@ -100,7 +128,8 @@ impl RuntimeServices {
         Arc::new(Self {
             platform,
             host_info,
-            chat_platform: None,
+            chat_platform,
+            native_wallet,
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
             identity_backend: OnceLock::new(),
@@ -117,33 +146,6 @@ impl RuntimeServices {
             device_encryption_key: futures::lock::Mutex::new(()),
             next_core_instance: AtomicU64::new(1),
         })
-    }
-
-    /// Same as [`Self::new`], with the host's chat adapter installed.
-    pub(crate) fn with_chat_platform(
-        platform: Arc<dyn Platform>,
-        host_info: HostInfo,
-        people_chain_genesis_hash: [u8; 32],
-        bulletin_chain_genesis_hash: [u8; 32],
-        asset_hub_chain_genesis_hash: [u8; 32],
-        spawner: Spawner,
-        chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
-    ) -> Arc<Self> {
-        let services = Self::new(
-            platform,
-            host_info,
-            people_chain_genesis_hash,
-            bulletin_chain_genesis_hash,
-            asset_hub_chain_genesis_hash,
-            spawner,
-        );
-        let Some(chat_platform) = chat_platform else {
-            return services;
-        };
-        let mut services = Arc::try_unwrap(services)
-            .unwrap_or_else(|_| unreachable!("services are not shared before this point"));
-        services.chat_platform = Some(chat_platform);
-        Arc::new(services)
     }
 
     /// Install the host's live OS permission-status adapter.

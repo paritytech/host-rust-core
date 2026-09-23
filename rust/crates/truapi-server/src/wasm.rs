@@ -30,7 +30,7 @@ use truapi_platform::{
     RuntimeConfigValidationError,
 };
 #[cfg(feature = "wasm-signing-host")]
-use truapi_platform::{IdentityBackendHost, SigningHostConfig};
+use truapi_platform::{CoinageWalletHost, IdentityBackendHost, SigningHostConfig};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -961,6 +961,8 @@ struct WasmPlatformAdapters {
     pocket_platform: Option<Arc<dyn PocketPlatform>>,
     #[cfg(feature = "wasm-signing-host")]
     identity_backend_host: Option<Arc<dyn IdentityBackendHost>>,
+    #[cfg(feature = "wasm-signing-host")]
+    native_wallet: Option<Arc<dyn CoinageWalletHost>>,
 }
 
 /// Build the platform and the optional capability adapters supplied by the host.
@@ -970,6 +972,8 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     let has_pocket = bridge.has_pocket();
     #[cfg(feature = "wasm-signing-host")]
     let has_identity_backend = bridge.has_identity_backend();
+    #[cfg(feature = "wasm-signing-host")]
+    let has_native_wallet = bridge.has_coinage_wallet();
     let platform = Arc::new(WasmPlatform::new(bridge));
     let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
     let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
@@ -977,6 +981,8 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     #[cfg(feature = "wasm-signing-host")]
     let identity_backend =
         has_identity_backend.then(|| platform.clone() as Arc<dyn IdentityBackendHost>);
+    #[cfg(feature = "wasm-signing-host")]
+    let native_wallet = has_native_wallet.then(|| platform.clone() as Arc<dyn CoinageWalletHost>);
     WasmPlatformAdapters {
         platform,
         chat_platform: chat,
@@ -984,6 +990,8 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
         pocket_platform: pocket,
         #[cfg(feature = "wasm-signing-host")]
         identity_backend_host: identity_backend,
+        #[cfg(feature = "wasm-signing-host")]
+        native_wallet,
     }
 }
 
@@ -1358,13 +1366,19 @@ impl WasmSigningHostRuntime {
             status_host,
             pocket_platform,
             identity_backend_host,
+            native_wallet,
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = signing_host_config_from_js(&host_config)?;
-        let runtime =
-            SigningHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        let runtime = SigningHostRuntime::with_chat_platform(
+            platform,
+            host_config,
+            spawner,
+            chat_platform,
+            native_wallet,
+        );
         if let Some(identity_backend_host) = identity_backend_host {
             runtime.set_identity_backend_host(identity_backend_host);
         }

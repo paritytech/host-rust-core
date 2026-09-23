@@ -78,6 +78,8 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 pub(crate) struct StubPlatform {
     pub(crate) native_chat_files: Option<Arc<dyn NativeChatFilesHost>>,
+    pub(crate) guard_main_purse_storage: bool,
+    pub(crate) main_purse_storage_accesses: AtomicUsize,
     pub(crate) remote_permission_denied: bool,
     /// Every `remote_permission` request, in order, so a test can assert which
     /// domains reached the prompt and that a stored grant suppresses a re-ask.
@@ -893,6 +895,7 @@ impl PlatformCoreStorage for StubPlatform {
         &self,
         key: CoreStorageKey,
     ) -> Result<Option<Vec<u8>>, v01::GenericError> {
+        self.check_coinage_storage(&key)?;
         if self
             .core_read_failures
             .lock()
@@ -935,6 +938,7 @@ impl PlatformCoreStorage for StubPlatform {
         key: CoreStorageKey,
         value: Vec<u8>,
     ) -> Result<(), v01::GenericError> {
+        self.check_coinage_storage(&key)?;
         if self
             .core_write_failures
             .lock()
@@ -972,6 +976,7 @@ impl PlatformCoreStorage for StubPlatform {
     }
 
     async fn clear_core_storage(&self, key: CoreStorageKey) -> Result<(), v01::GenericError> {
+        self.check_coinage_storage(&key)?;
         if let CoreStorageKey::AuthSession = key {
             *self
                 .session_clears
@@ -1548,6 +1553,21 @@ struct DropFlagGuard(Arc<AtomicBool>);
 impl Drop for DropFlagGuard {
     fn drop(&mut self) {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl StubPlatform {
+    fn check_coinage_storage(&self, key: &CoreStorageKey) -> Result<(), v01::GenericError> {
+        if matches!(key, CoreStorageKey::MainPurseCoinage { .. }) {
+            self.main_purse_storage_accesses
+                .fetch_add(1, Ordering::SeqCst);
+            if self.guard_main_purse_storage {
+                return Err(v01::GenericError {
+                    reason: "Native Coinage owns main purse".into(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 

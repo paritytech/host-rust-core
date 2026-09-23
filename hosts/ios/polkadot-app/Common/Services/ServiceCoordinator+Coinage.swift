@@ -118,8 +118,13 @@ private extension ServiceCoordinator {
             return nil
         }
 
+        guard let lifecycle = try? CoinageLifecycle(rootEntropyManager: RootEntropyManager.shared) else {
+            logger.error("Failed to bind Coinage to the current root")
+            return nil
+        }
+
         let voucherKeypairFactory = VoucherKeypairFactory(
-            entropyManager: RootEntropyManager.shared
+            entropyManager: lifecycle
         )
 
         let consumedTokenChecker = ConsumedTokenChecker(
@@ -169,7 +174,11 @@ private extension ServiceCoordinator {
         // coordinator owns the engine's lifecycle.
         let assetLedger = CoinageAssetLedgerCoreData(storageFacade: UserDataStorageFacade.shared)
 
-        let incomingPaymentSecretStore = IncomingPaymentKeychainSecretStore(keychain: Keychain(), logger: logger)
+        let incomingPaymentSecretStore = IncomingPaymentKeychainSecretStore(
+            keychain: Keychain(),
+            logger: logger,
+            ownerId: lifecycle.ownerId(chainId: chain.chainId, instanceId: AppConfig.Coinage.instanceId)
+        )
         let incomingPaymentAcknowledger = TopUpAcknowledgementPresenter()
 
         return CoinageService.make(
@@ -182,7 +191,7 @@ private extension ServiceCoordinator {
             durableEngine: durableEngine,
             chainViewFactory: chainViewFactory,
             assetLedger: assetLedger,
-            rootEntropyManager: RootEntropyManager.shared,
+            lifecycle: lifecycle,
             keystore: Keychain(),
             applicationStateStreamFactory: ApplicationStateStreamFactory(),
             externalPaymentStore: externalPaymentStore,

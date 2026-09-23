@@ -14,11 +14,12 @@ use truapi::latest::{
 use super::{
     CreateAccountProofResponse, CreateTransactionRequest, CreateTransactionResponse,
     CreateTransactionWithLegacyAccountRequest, GetAccountAliasResponse, ListRingVrfKeysResponse,
-    ProductDeviceChatResponse, ProductRequest, ProductSubtreeRequest, ProductSubtreeResponse,
-    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse, Response,
-    RingVrfSignResponse, SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse,
-    SignRequest, SignResponse, SignVrfResponse, SsoProductDeviceChatOperation,
-    StatementStoreProductSignRequest, StatementStoreProductSignResponse,
+    PaymentTopUpRequest, PaymentTopUpResponse, ProductDeviceChatResponse, ProductRequest,
+    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
+    ResourceAllocationRequest, ResourceAllocationResponse, Response, RingVrfSignResponse,
+    SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
+    SignVrfResponse, SsoProductDeviceChatOperation, StatementStoreProductSignRequest,
+    StatementStoreProductSignResponse,
 };
 
 /// v1 messages exchanged with the paired signing host over the encrypted SSO channel.
@@ -97,4 +98,10 @@ pub enum RemoteMessage {
     /// Account Holder's product-account Statement Store signature.
     #[codec(index = 27)]
     StatementStoreProductSignResponse(Response<StatementStoreProductSignResponse>),
+    /// Deposit caller-supplied funding into the wallet's payment purse.
+    #[codec(index = 28)]
+    PaymentTopUpRequest(PaymentTopUpRequest),
+    /// Account Holder's answer after incoming funding has been credited.
+    #[codec(index = 29)]
+    PaymentTopUpResponse(Response<PaymentTopUpResponse>),
 }

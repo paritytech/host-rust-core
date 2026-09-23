@@ -284,6 +284,15 @@ public extension NativeChatFilesHost {
     }
 }
 
+/// Optional process-wide native wallet custody, supplied at runtime construction.
+/// Omit only when the built-in Rust wallet owns custody. Keep a registered native
+/// wallet installed while locked or unavailable; failures never permit fallback.
+public protocol NativeCoinageHost: AnyObject, Sendable {
+    /// Host-private operation. Never expose requests, bearer memos, or raw native
+    /// errors to products or logs. Return sanitized operation failures as values.
+    func nativeCoinage(request: NativeCoinageRequest) async throws -> NativeCoinageResponse
+}
+
 /// Host-side callback bundle that the Rust core invokes for capabilities the
 /// native shell owns. The permission split mirrors the Rust `Permissions`
 /// trait:
@@ -520,6 +529,26 @@ public extension HostBridge {
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus { .notApplicable }
+}
+
+/// Kept separate from product callbacks so executions cannot replace custody.
+private final class NativeCoinageCallbackAdapter: NativeCoinageCallbacks, @unchecked Sendable {
+    private let bridge: NativeCoinageHost
+
+    init(bridge: NativeCoinageHost) {
+        self.bridge = bridge
+    }
+
+    func nativeCoinage(request: NativeCoinageRequest) async throws -> NativeCoinageCallbackResult {
+        do {
+            return NativeCoinageCallbackResult(response: try await bridge.nativeCoinage(request: request))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Even typed HostRejection values may embed secret-bearing native errors.
+            throw HostRejection.Rejected(reason: "Native Coinage wallet operation failed")
+        }
+    }
 }
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
@@ -869,13 +898,22 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
 public final class TrUAPIHostRuntime: @unchecked Sendable {
     private let inner: NativeTrUApiHostRuntime
     private let callbackRetainer: HostCallbacks
+    private let nativeWalletRetainer: NativeCoinageCallbacks?
 
-    public init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
+    /// Register native custody once; nil selects the built-in Rust wallet.
+    public init(
+        bridge: HostBridge,
+        runtimeConfig: HostRuntimeConfig,
+        nativeWallet: NativeCoinageHost? = nil
+    ) throws {
         let adapter = HostCallbackAdapter(bridge: bridge)
         callbackRetainer = adapter
+        let walletAdapter = nativeWallet.map { NativeCoinageCallbackAdapter(bridge: $0) }
+        nativeWalletRetainer = walletAdapter
         inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
             callbacks: adapter,
-            runtimeConfig: runtimeConfig.native
+            runtimeConfig: runtimeConfig.native,
+            nativeWallet: walletAdapter
         )
     }
 

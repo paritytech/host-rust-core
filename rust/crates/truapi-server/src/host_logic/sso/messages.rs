@@ -21,6 +21,7 @@
 //! <https://github.com/paritytech/triangle-js-sdks/blob/afb26e2c78bf1134886c1248c1bf2b6b4dc1fce9/packages/host-papp/src/sso/sessionManager/scale/createTransaction.ts>
 
 use core::fmt;
+use zeroize::Zeroizing;
 
 use parity_scale_codec::{Decode, Encode};
 use truapi::latest::{
@@ -344,9 +345,12 @@ pub struct CreateTransactionWithLegacyAccountRequest {
 /// Host-owned Chat operations carried over encrypted SSO.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum SsoProductDeviceChatOperation {
-    /// The removed raw-crypto tags 0 through 5 are deliberately not accepted.
+    /// Retained for decoding only; high-level Chat execution is retired.
     #[codec(index = 6)]
-    V2(truapi::latest::HostProductDeviceChatRequest),
+    V2(truapi::v02::HostProductDeviceChatRequest),
+    /// Narrow product-owned Chat boundary; tags 0 through 5 remain invalid.
+    #[codec(index = 7)]
+    V3(truapi::latest::HostProductDeviceChatRequest),
 }
 
 /// Public Chat views and typed failures returned by the signing authority.
@@ -354,6 +358,79 @@ pub type ProductDeviceChatResponse = Result<
     truapi::versioned::account::HostProductDeviceChatResponse,
     truapi::versioned::account::HostProductDeviceChatError,
 >;
+
+/// Incoming payment funding; source secrets stay inside the encrypted SSO channel.
+///
+/// The wrapper also guards requests while queued or cancelled before dispatch.
+#[derive(Clone, PartialEq, Eq, Encode, Decode)]
+pub struct PaymentTopUpRequest {
+    /// Caller authenticated by the product connection or paired host.
+    pub calling_product_id: String,
+    /// Existing versioned payment request, including caller-supplied funding keys.
+    pub payload: truapi::versioned::payment::HostPaymentTopUpRequest,
+}
+
+impl PaymentTopUpRequest {
+    pub(crate) fn into_parts(mut self) -> (String, truapi::v01::HostPaymentTopUpRequest) {
+        let truapi::versioned::payment::HostPaymentTopUpRequest::V1(payload) = &mut self.payload;
+        let payload = core::mem::replace(
+            payload,
+            truapi::v01::HostPaymentTopUpRequest {
+                into: None,
+                amount: 0,
+                source: truapi::v01::PaymentTopUpSource::Coins {
+                    sr25519_secret_keys: Vec::new(),
+                },
+            },
+        );
+        (core::mem::take(&mut self.calling_product_id), payload)
+    }
+}
+
+impl fmt::Debug for PaymentTopUpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PaymentTopUpRequest")
+            .field("calling_product_id", &self.calling_product_id)
+            .field("payload", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for PaymentTopUpRequest {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        let truapi::versioned::payment::HostPaymentTopUpRequest::V1(payload) = &mut self.payload;
+        match &mut payload.source {
+            truapi::v01::PaymentTopUpSource::PrivateKey { sr25519_secret_key } => {
+                sr25519_secret_key.zeroize();
+            }
+            truapi::v01::PaymentTopUpSource::Coins {
+                sr25519_secret_keys,
+            } => {
+                sr25519_secret_keys.zeroize();
+            }
+            truapi::v01::PaymentTopUpSource::ProductAccount { .. } => {}
+        }
+    }
+}
+
+/// Payment failure with a secret-safe transcript representation.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct PaymentTopUpError(pub truapi::v01::HostPaymentTopUpError);
+
+impl fmt::Display for PaymentTopUpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match &self.0 {
+            truapi::v01::HostPaymentTopUpError::InsufficientFunds => "Insufficient funds",
+            truapi::v01::HostPaymentTopUpError::InvalidSource => "Invalid payment source",
+            truapi::v01::HostPaymentTopUpError::PartialPayment { .. } => "Partial payment",
+            truapi::v01::HostPaymentTopUpError::Unknown { .. } => "Payment top-up unavailable",
+        })
+    }
+}
+
+/// Success is returned only after the wallet has credited the incoming funding.
+pub type PaymentTopUpResponse = Result<(), PaymentTopUpError>;
 
 /// Versioned legacy transaction-creation payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -393,14 +470,14 @@ pub fn decode_sso_session_statement(
         return Ok(None);
     }
     let encrypted = verified.data;
-    let data = decrypt_session_statement_data(session, &encrypted)?;
+    let data = Zeroizing::new(decrypt_session_statement_data(session, &encrypted)?);
     if verified.signer == session.ss_public_key {
-        return match data {
+        return match &*data {
             SsoStatementData::Response {
                 request_id,
                 response_code,
             } if request_id == expected_statement_request_id => {
-                classify_response_ack(request_id, response_code).map(Some)
+                classify_response_ack(request_id.clone(), *response_code).map(Some)
             }
             _ => Ok(None),
         };
@@ -408,12 +485,12 @@ pub fn decode_sso_session_statement(
     if verified.signer != session.identity_account_id {
         return Err("statement proof signer does not match expected peer".to_string());
     }
-    match data {
+    match &*data {
         SsoStatementData::Response {
             request_id,
             response_code,
         } if request_id == expected_statement_request_id => {
-            classify_response_ack(request_id, response_code).map(Some)
+            classify_response_ack(request_id.clone(), *response_code).map(Some)
         }
         SsoStatementData::Response { .. } => Ok(None),
         SsoStatementData::Request { data, .. } => Ok(Some(SsoSessionStatement::RemoteMessages(
@@ -497,9 +574,11 @@ pub fn decode_incoming_sso_request(
     {
         return Ok(None);
     }
-    match decrypt_session_statement_data(session, &verified.data)
-        .map_err(SsoRequestDecodeError::unrecoverable)?
-    {
+    let data = Zeroizing::new(
+        decrypt_session_statement_data(session, &verified.data)
+            .map_err(SsoRequestDecodeError::unrecoverable)?,
+    );
+    match &*data {
         SsoStatementData::Response { .. } => Ok(None),
         SsoStatementData::Request { request_id, data } => {
             let messages = data
@@ -511,7 +590,7 @@ pub fn decode_incoming_sso_request(
                     reason,
                 })?;
             Ok(Some(IncomingSsoRequest {
-                request_id,
+                request_id: request_id.clone(),
                 expires_at_unix_secs: verified.expiry.map(|expiry| expiry >> 32),
                 messages,
             }))
@@ -583,7 +662,7 @@ fn encrypt_outgoing_request_data(
 ) -> Result<Vec<u8>, String> {
     encrypt_session_statement_data(
         session,
-        &outgoing_request_data(statement_request_id, messages),
+        &Zeroizing::new(outgoing_request_data(statement_request_id, messages)),
     )
 }
 
@@ -595,7 +674,7 @@ fn encrypt_outgoing_request_data_with_nonce(
 ) -> Result<Vec<u8>, String> {
     encrypt_session_statement_data_with_nonce(
         session,
-        &outgoing_request_data(statement_request_id, messages),
+        &Zeroizing::new(outgoing_request_data(statement_request_id, messages)),
         nonce,
     )
 }
@@ -994,7 +1073,7 @@ mod tests {
     fn product_device_chat_messages_preserve_typed_operations_and_failures() {
         let chat_request = ProductRequest {
             calling_product_id: "egui-chat.paseo".to_string(),
-            payload: SsoProductDeviceChatOperation::V2(
+            payload: SsoProductDeviceChatOperation::V3(
                 truapi::latest::HostProductDeviceChatRequest::SendPayment {
                     peer_identity: [0x55; 32],
                     request_id: "payment-one".to_string(),
@@ -1045,6 +1124,26 @@ mod tests {
             assert!(SsoProductDeviceChatOperation::decode(&mut legacy.as_slice()).is_err());
         }
     }
+
+    #[test]
+    fn narrow_chat_uses_a_fresh_sso_operation_tag() {
+        let retired = SsoProductDeviceChatOperation::V2(
+            truapi::v02::HostProductDeviceChatRequest::Initialize,
+        );
+        let current = SsoProductDeviceChatOperation::V3(
+            truapi::latest::HostProductDeviceChatRequest::Initialize,
+        );
+        assert_eq!(retired.encode(), [6, 0]);
+        assert_eq!(current.encode(), [7, 0]);
+        assert_eq!(
+            SsoProductDeviceChatOperation::decode(&mut [6, 0].as_slice()).unwrap(),
+            retired,
+        );
+        assert_eq!(
+            SsoProductDeviceChatOperation::decode(&mut [7, 0].as_slice()).unwrap(),
+            current,
+        );
+    }
     #[test]
     fn statement_store_product_sign_messages_pin_extension_wire_indices() {
         let payload = unsigned_statement_signing_payload(vec![
@@ -1084,6 +1183,56 @@ mod tests {
         assert_eq!(
             StatementStoreProductSignRequest::response_from_message(data),
             Some(response_envelope)
+        );
+    }
+
+    #[test]
+    fn payment_top_up_appends_wire_tags_and_retains_response_matching() {
+        let request = RemoteMessage::request(
+            String::new(),
+            PaymentTopUpRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                payload: truapi::versioned::payment::HostPaymentTopUpRequest::V1(
+                    truapi::v01::HostPaymentTopUpRequest {
+                        into: None,
+                        amount: 1,
+                        source: truapi::v01::PaymentTopUpSource::Coins {
+                            sr25519_secret_keys: vec![[0xab; 64]],
+                        },
+                    },
+                ),
+            },
+        );
+        let encoded = Zeroizing::new(request.encode());
+        assert_eq!(&encoded[..3], &[0, 0, 28]);
+        assert_eq!(decode_remote_message(&encoded).unwrap(), request);
+        let response = Response {
+            responding_to: "top-up".to_string(),
+            payload: Err(PaymentTopUpError(
+                truapi::v01::HostPaymentTopUpError::PartialPayment { credited: 7 },
+            )),
+        };
+        let response = PaymentTopUpRequest::response_into_message(response);
+        assert_eq!(response.encode()[0], 29);
+        assert!(ProductSubtreeRequest::response_from_message(response.clone()).is_none());
+        assert_eq!(
+            PaymentTopUpRequest::response_from_message(response)
+                .unwrap()
+                .payload,
+            Err(PaymentTopUpError(
+                truapi::v01::HostPaymentTopUpError::PartialPayment { credited: 7 }
+            )),
+        );
+        let older_response = ProductSubtreeRequest::response_into_message(Response {
+            responding_to: "subtree".to_string(),
+            payload: Ok([7; 32]),
+        });
+        assert!(PaymentTopUpRequest::response_from_message(older_response.clone()).is_none());
+        assert_eq!(
+            ProductSubtreeRequest::response_from_message(older_response)
+                .unwrap()
+                .payload,
+            Ok([7; 32]),
         );
     }
 

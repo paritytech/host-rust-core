@@ -51,7 +51,7 @@ pub fn generate_wasm_bridge(
         /// Callbacks of an optional capability trait are replaced by a throwing
         /// stub when the host omits the group. The core never reaches them: it
         /// only holds an adapter for a capability whose `has_*` accessor is
-        /// true, and answers the rest with `Unsupported`.
+        /// true, and applies each omitted capability's absence behavior.
         pub(super) struct JsBridge {{
         "#,
     )

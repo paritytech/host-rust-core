@@ -39,9 +39,10 @@ pub(crate) use sso_service::SigningHostSsoService;
 
 use super::authority::{
     AuthorityError, AuthoritySession, AutoSigningGrant, BulletinAllowanceKey,
-    CreateTransactionAuthorityRequest, ProductAuthority, ProductDeviceChatAuthorityError,
-    ProductDeviceChatAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
-    StatementStoreAllowanceKey, authority_session_validation_id,
+    CreateTransactionAuthorityRequest, PaymentTopUpAuthorityError, ProductAuthority,
+    ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
+    SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
+    authority_session_validation_id,
 };
 use super::native_chat::{NativeChatContext, NativeChatRegistry};
 use super::ring_vrf_registry::RingVrfRegistryStore;
@@ -58,7 +59,9 @@ use crate::host_logic::product_account::{
 };
 use crate::host_logic::raw_signing::raw_payload_bytes;
 use crate::host_logic::session::{SessionInfo, SessionState};
-use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
+use crate::host_logic::sso::messages::{
+    OnExistingAllowancePolicy, PaymentTopUpRequest, ProductRequest, RingVrfError,
+};
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
 use crate::runtime::statement_allowance::CollectionCandidate;
@@ -333,8 +336,7 @@ impl SigningHost {
                 }
             })?;
             let forgotten = self.native_chat.forget_product(&context, &product_id).await;
-            // The owned forget task rebinds unrelated receivers on every outcome,
-            // including cancellation of this administration call.
+            // The registry preserves wallet custody and unrelated product authority.
             forgotten.map_err(|_| AuthorityError::Unavailable {
                 reason: "native Chat product state could not be cleared".into(),
             })?;
@@ -397,7 +399,7 @@ impl SigningHost {
         self.native_chat.release();
         if let Some(session) = self.current_local_session() {
             if let Ok(context) = self.native_chat_context(&session) {
-                self.native_chat.resume_receiving(context);
+                self.native_chat.resume_wallet_recovery(context);
             }
         }
     }
@@ -1222,6 +1224,31 @@ impl ProductAuthority for SigningHost {
             .map_err(ProductDeviceChatAuthorityError::Domain)
     }
 
+    async fn payment_top_up(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        request: PaymentTopUpRequest,
+    ) -> Result<(), PaymentTopUpAuthorityError> {
+        self.require_current_session(session)?;
+        let product = normalize_product_identifier(&request.calling_product_id).map_err(|_| {
+            PaymentTopUpAuthorityError::Domain(v01::HostPaymentTopUpError::InvalidSource)
+        })?;
+        let context = self
+            .native_chat_context(session)
+            .map_err(|error| match error {
+                ProductDeviceChatAuthorityError::Disconnected => AuthorityError::Disconnected,
+                _ => AuthorityError::Unavailable {
+                    reason: "Wallet payment context unavailable".to_string(),
+                },
+            })?;
+        let (_, payload) = request.into_parts();
+        self.native_chat
+            .top_up(context, product, payload)
+            .await
+            .map_err(PaymentTopUpAuthorityError::Domain)
+    }
+
     async fn allocate_resources(
         &self,
         _cx: &CallContext,
@@ -1588,6 +1615,87 @@ mod tests {
             authority,
             ProductContext::new(product_id.to_string()).expect("valid product id"),
         )
+    }
+
+    #[test]
+    fn payment_top_up_requires_current_wallet_session_without_chat_grants() {
+        use crate::host_logic::sso::messages::PaymentTopUpRequest;
+        use crate::runtime::authority::PaymentTopUpAuthorityError;
+        use truapi::api::Payment;
+        use truapi::versioned::payment::{HostPaymentTopUpError, HostPaymentTopUpRequest};
+
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                chain_connect_error: Some("offline"),
+                ..Default::default()
+            });
+            let (services, authority) = signing_runtime_with_platform(platform.clone());
+            let runtime = product_runtime(services, authority.clone());
+            let request = || {
+                HostPaymentTopUpRequest::V1(v01::HostPaymentTopUpRequest {
+                    into: None,
+                    amount: 1,
+                    source: v01::PaymentTopUpSource::ProductAccount {
+                        derivation_index: v01::DerivationIndex::Index(0),
+                    },
+                })
+            };
+            assert!(matches!(
+                runtime.top_up(&CallContext::default(), request()).await,
+                Err(CallError::Domain(HostPaymentTopUpError::V1(
+                    v01::HostPaymentTopUpError::Unknown { .. }
+                )))
+            ));
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let session = authority.current_session().unwrap();
+            // An active wallet reaches source validation, not a Chat/signing prompt.
+            assert_eq!(
+                runtime.top_up(&CallContext::default(), request()).await,
+                Err(CallError::Domain(HostPaymentTopUpError::V1(
+                    v01::HostPaymentTopUpError::InvalidSource
+                )))
+            );
+            assert!(platform.chat_authority_reviews.lock().is_empty());
+            assert!(
+                platform
+                    .main_purse_chat_payment_reviews
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(platform.sign_raw_reviews.lock().unwrap().is_empty());
+            assert!(platform.sign_payload_reviews.lock().unwrap().is_empty());
+            assert_eq!(
+                platform
+                    .identity_disclosure_calls
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+
+            authority.disconnect().await;
+            authority
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            assert_eq!(
+                authority
+                    .payment_top_up(
+                        &CallContext::default(),
+                        &session,
+                        PaymentTopUpRequest {
+                            calling_product_id: "myapp.dot".to_string(),
+                            payload: request(),
+                        },
+                    )
+                    .await,
+                Err(PaymentTopUpAuthorityError::Authority(
+                    AuthorityError::Disconnected
+                ))
+            );
+        });
     }
 
     #[test]
@@ -3504,11 +3612,22 @@ mod tests {
     fn lock_and_wallet_replacement_release_native_custody_and_fence_old_authority() {
         futures::executor::block_on(async {
             use truapi::latest::{HostProductDeviceChatError, HostProductDeviceChatRequest};
-            let (_services, authority) = signing_runtime();
+            let (services, authority) = signing_runtime();
             authority
                 .activate_local_session(ENTROPY.to_vec())
                 .await
                 .unwrap();
+            crate::host_logic::permissions::PermissionsService::new(
+                services.platform.as_ref(),
+                services.platform.as_ref(),
+                "chat.dot",
+            )
+            .set_authorization_status(
+                &PermissionAuthorizationRequest::ChatAuthority,
+                PermissionAuthorizationStatus::Authorized,
+            )
+            .await
+            .unwrap();
             let session = authority.current_local_session().unwrap();
             let context = authority.native_chat_context(&session).unwrap();
             let first = authority
@@ -3585,9 +3704,17 @@ mod tests {
         authority
             .grant_auto_signing(&stale_session, "other.dot")
             .expect("other product grant succeeds");
+        let context = authority.native_chat_context(&stale_session).unwrap();
+        let wallet = futures::executor::block_on(authority.native_chat.wallet(&context)).unwrap();
+        let custody = Arc::downgrade(&wallet);
+        drop(wallet);
 
         futures::executor::block_on(authority.clear_product_state("myapp.dot"))
             .expect("product clear succeeds");
+        assert!(
+            custody.upgrade().is_some(),
+            "product clear must preserve wallet custody"
+        );
 
         let current_session = authority.current_session().expect("session remains active");
         let (_, current_generation) = authority
@@ -4259,7 +4386,7 @@ mod tests {
                 .await
                 .unwrap();
             let cx = CallContext::default();
-            let request = HostProductDeviceChatRequest::V1(
+            let request = HostProductDeviceChatRequest::V2(
                 truapi::latest::HostProductDeviceChatRequest::Initialize,
             );
 
@@ -4309,14 +4436,14 @@ mod tests {
                 .unwrap();
             let runtime = product_runtime(services, activation);
             let cx = CallContext::default();
-            let initialize = HostProductDeviceChatRequest::V1(
+            let initialize = HostProductDeviceChatRequest::V2(
                 truapi::latest::HostProductDeviceChatRequest::Initialize,
             );
-            let HostProductDeviceChatResponse::V1(first) = runtime
+            let HostProductDeviceChatResponse::V2(first) = runtime
                 .product_device_chat(&cx, initialize.clone())
                 .await
                 .unwrap();
-            let HostProductDeviceChatResponse::V1(second) = runtime
+            let HostProductDeviceChatResponse::V2(second) = runtime
                 .product_device_chat(&cx, initialize.clone())
                 .await
                 .unwrap();
@@ -4341,7 +4468,7 @@ mod tests {
     }
 
     #[test]
-    fn product_chat_authority_does_not_grant_statement_delivery() {
+    fn product_chat_authority_validation_does_not_require_statement_delivery() {
         futures::executor::block_on(async {
             let platform = Arc::new(StubPlatform {
                 chat_authority_confirmed: true,
@@ -4362,7 +4489,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let request = HostProductDeviceChatRequest::V1(
+            let request = HostProductDeviceChatRequest::V2(
                 truapi::latest::HostProductDeviceChatRequest::SendPayment {
                     peer_identity: [0x55; 32],
                     request_id: "not-authorized".to_string(),
@@ -4374,7 +4501,22 @@ mod tests {
                     .product_device_chat(&CallContext::default(), request)
                     .await,
                 Err(CallError::Domain(HostProductDeviceChatError::V1(
-                    truapi::latest::HostProductDeviceChatError::AccessNotGranted
+                    truapi::latest::HostProductDeviceChatError::PeerNotReady
+                )))
+            ));
+            let request = HostProductDeviceChatRequest::V2(
+                truapi::latest::HostProductDeviceChatRequest::Prepare {
+                    peer_identity: [0x55; 32],
+                    route: truapi::latest::HostNativeChatRoute::Identity,
+                    plaintext: vec![],
+                },
+            );
+            assert!(matches!(
+                runtime
+                    .product_device_chat(&CallContext::default(), request)
+                    .await,
+                Err(CallError::Domain(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::InvalidRequest
                 )))
             ));
         });
@@ -4422,7 +4564,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let request = SsoProductDeviceChatOperation::V2(
+            let request = SsoProductDeviceChatOperation::V3(
                 truapi::latest::HostProductDeviceChatRequest::Initialize,
             );
 
@@ -4471,12 +4613,12 @@ mod tests {
             let service = super::sso_service::SigningHostSsoService::new(activation);
             let permissions =
                 PermissionsService::new(platform.as_ref(), platform.as_ref(), "myapp.dot");
-            let initialize = SsoProductDeviceChatOperation::V2(
+            let initialize = SsoProductDeviceChatOperation::V3(
                 truapi::latest::HostProductDeviceChatRequest::Initialize,
             );
-            let HostProductDeviceChatResponse::V1(first) =
+            let HostProductDeviceChatResponse::V2(first) =
                 sso_chat(&service, initialize.clone()).await.unwrap();
-            let HostProductDeviceChatResponse::V1(second) =
+            let HostProductDeviceChatResponse::V2(second) =
                 sso_chat(&service, initialize.clone()).await.unwrap();
             assert_eq!(first.device, second.device);
             assert_eq!(first.device.product_account.dot_ns_identifier, "myapp.dot");
@@ -4499,7 +4641,7 @@ mod tests {
     }
 
     #[test]
-    fn sso_chat_authority_does_not_grant_statement_delivery() {
+    fn sso_chat_authority_validation_does_not_require_statement_delivery() {
         futures::executor::block_on(async {
             let platform = Arc::new(StubPlatform {
                 chat_authority_confirmed: true,
@@ -4522,7 +4664,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let request = SsoProductDeviceChatOperation::V2(
+            let request = SsoProductDeviceChatOperation::V3(
                 truapi::latest::HostProductDeviceChatRequest::SendPayment {
                     peer_identity: [0x55; 32],
                     request_id: "not-authorized".to_string(),
@@ -4532,7 +4674,20 @@ mod tests {
             assert_eq!(
                 sso_chat(&service, request).await,
                 Err(HostProductDeviceChatError::V1(
-                    truapi::latest::HostProductDeviceChatError::AccessNotGranted,
+                    truapi::latest::HostProductDeviceChatError::PeerNotReady,
+                ))
+            );
+            let request = SsoProductDeviceChatOperation::V3(
+                truapi::latest::HostProductDeviceChatRequest::Prepare {
+                    peer_identity: [0x55; 32],
+                    route: truapi::latest::HostNativeChatRoute::Identity,
+                    plaintext: vec![],
+                },
+            );
+            assert_eq!(
+                sso_chat(&service, request).await,
+                Err(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::InvalidRequest,
                 ))
             );
         });

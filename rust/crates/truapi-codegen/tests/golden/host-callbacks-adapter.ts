@@ -36,6 +36,8 @@ import {
   NativeChatFileExportRequest,
   NativeChatFilePickRequest,
   NativeChatPickedFile,
+  NativeCoinageRequest,
+  NativeCoinageResponse,
   ProductContext,
   UserConfirmationReview,
 } from "./host-callbacks.js";
@@ -44,6 +46,7 @@ import type { RequiredHostCallbacks } from "./host-callbacks.js";
 import type { ChainConnect, HopConnect } from "../runtime.js";
 import {
   chainConnectAdapter,
+  coinageWalletHostAdapter,
   driveResultStream,
   hopConnectAdapter,
   unavailableHopProvider,
@@ -79,6 +82,7 @@ export interface RawCallbacks {
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  nativeCoinage?(request: Uint8Array): Promise<Uint8Array>;
   readCoreStorage(key: Uint8Array): Promise<Uint8Array | null | undefined>;
   writeCoreStorage(key: Uint8Array, value: Uint8Array): Promise<void>;
   clearCoreStorage(key: Uint8Array): Promise<void>;
@@ -141,6 +145,7 @@ export function createWasmRawCallbacks(
   callbacks: RequiredHostCallbacks,
 ): RawCallbacks {
   const chat = callbacks.chat;
+  const coinageWallet = coinageWalletHostAdapter(callbacks.coinageWallet);
   const identityBackend = callbacks.identityBackend;
   const permissionStatus = callbacks.permissionStatus;
   const pocket = callbacks.pocket;
@@ -179,6 +184,16 @@ export function createWasmRawCallbacks(
               chat.subscribeChatRooms(ProductContext.dec(product)),
               (item) => sendItem(HostChatListSubscribeItem.enc(item)),
               sendError,
+            ),
+        }
+      : {}),
+    ...(coinageWallet
+      ? {
+          nativeCoinage: async (request) =>
+            NativeCoinageResponse.enc(
+              await coinageWallet.nativeCoinage(
+                NativeCoinageRequest.dec(request),
+              ),
             ),
         }
       : {}),

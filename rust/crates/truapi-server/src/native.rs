@@ -21,11 +21,12 @@ use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
 use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
-    AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
-    HopProvider, HostInfo, JsonRpcConnection, LocaleHost, NativeChatFileExportRequest,
-    NativeChatFilePickRequest, NativeChatFilesHost, NativeChatPickedFile, Navigation,
-    Notifications, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions,
-    PlatformInfo, PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
+    AuthPresenter, AuthState, ChainProvider, CoinageWalletHost, CoreAdmin, CoreStorage,
+    CoreStorageKey, Features, HopProvider, HostInfo, JsonRpcConnection, LocaleHost,
+    NativeChatFileExportRequest, NativeChatFilePickRequest, NativeChatFilesHost,
+    NativeChatPickedFile, NativeCoinageRequest, NativeCoinageResponse, Navigation, Notifications,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions, PlatformInfo,
+    PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
     RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
@@ -502,6 +503,29 @@ impl From<NativeDevicePermissionStatus> for truapi_platform::DevicePermissionSta
     }
 }
 
+/// UniFFI-local callback envelope: Kotlin async returns must lower into this
+/// namespace's RustBuffer, not the platform namespace's distinct RustBuffer.
+/// The nested field retains the canonical platform type without mirroring it.
+/// Do not derive Debug: a prepared response can contain bearer memo material.
+#[derive(Clone, uniffi::Record)]
+pub struct NativeCoinageCallbackResult {
+    /// Typed result, including Host-private memo material when preparing a payment.
+    pub response: NativeCoinageResponse,
+}
+
+/// Optional process-wide native custody, installed only at runtime construction.
+/// Absence selects built-in Rust custody. A registered wallet's failure or
+/// unavailability never changes that dependency or permits fallback.
+#[uniffi::export(rust, foreign)]
+#[async_trait::async_trait]
+pub trait NativeCoinageCallbacks: Send + Sync {
+    /// Host-private wallet operation; bearer material must never reach a product.
+    async fn native_coinage(
+        &self,
+        request: NativeCoinageRequest,
+    ) -> Result<NativeCoinageCallbackResult, HostRejection>;
+}
+
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback executes on the shared bridge
@@ -797,6 +821,7 @@ impl NativeTrUApiHostRuntime {
     fn from_resolved(
         callbacks: Arc<dyn HostCallbacks>,
         runtime_config: NativeResolvedHostRuntimeConfig,
+        native_wallet: Option<Arc<dyn NativeCoinageCallbacks>>,
         log_marker: &str,
         log_detail: &str,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
@@ -808,10 +833,15 @@ impl NativeTrUApiHostRuntime {
             events: events.clone(),
         });
         let spawner = native_thread_pool_spawner(&callbacks);
-        let runtime = Arc::new(SigningHostRuntime::new(
+        let native_wallet = native_wallet.map(|callbacks| -> Arc<dyn CoinageWalletHost> {
+            Arc::new(NativeCoinageCallbackPlatform { callbacks })
+        });
+        let runtime = Arc::new(SigningHostRuntime::with_chat_platform(
             platform.clone(),
             runtime_config.signing,
             spawner.clone(),
+            None,
+            native_wallet,
         ));
         runtime.set_identity_backend_host(platform.clone());
         assert!(
@@ -1015,15 +1045,18 @@ impl From<crate::runtime::TrackedStatementRenewalTarget> for NativeTrackedStatem
 #[uniffi::export]
 impl NativeTrUApiHostRuntime {
     /// Construct one host-level runtime and optionally activate its local session.
+    /// Pass native custody once here; omitting it selects the built-in Rust wallet.
     #[uniffi::constructor]
     pub fn with_runtime_config(
         callbacks: Arc<dyn HostCallbacks>,
         runtime_config: NativeHostRuntimeConfig,
+        native_wallet: Option<Arc<dyn NativeCoinageCallbacks>>,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         let runtime_config: NativeResolvedHostRuntimeConfig = runtime_config.try_into()?;
         Self::from_resolved(
             callbacks,
             runtime_config,
+            native_wallet,
             "truapi.native.host_runtime.boot",
             "host runtime ready",
         )
@@ -1769,6 +1802,26 @@ impl NativeEventBus {
             .lock()
             .expect("native Pocket card subscribers mutex poisoned")
             .retain(|tx| tx.unbounded_send(item.clone()).is_ok());
+    }
+}
+
+struct NativeCoinageCallbackPlatform {
+    callbacks: Arc<dyn NativeCoinageCallbacks>,
+}
+
+#[async_trait]
+impl CoinageWalletHost for NativeCoinageCallbackPlatform {
+    async fn native_coinage(
+        &self,
+        request: NativeCoinageRequest,
+    ) -> Result<NativeCoinageResponse, v01::GenericError> {
+        self.callbacks
+            .native_coinage(request)
+            .await
+            .map(|result| result.response)
+            .map_err(|_| v01::GenericError {
+                reason: "Native Coinage wallet operation failed".into(),
+            })
     }
 }
 
@@ -3092,7 +3145,7 @@ mod tests {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
         config.local_session_lite_username = None;
-        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config, None)
             .expect("host runtime config should be valid");
         host.open_product_execution(
             callbacks,
@@ -3109,6 +3162,7 @@ mod tests {
         let host = NativeTrUApiHostRuntime::with_runtime_config(
             callbacks.clone(),
             native_host_runtime_config(),
+            None,
         )
         .expect("host runtime config should be valid");
         let product = || "shared.dot".to_string();
@@ -3135,6 +3189,7 @@ mod tests {
         let host = NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
+            None,
         )
         .expect("host runtime config should be valid");
         let app = host
@@ -3179,6 +3234,121 @@ mod tests {
         replacement
             .publish_chat_action(text_chat_action("fresh"))
             .expect("replacement execution has a fresh buffer");
+    }
+
+    #[test]
+    fn native_wallet_dependency_survives_failure_and_product_replacement() {
+        use parking_lot::Mutex;
+        use std::sync::atomic::AtomicU8;
+        use truapi::api::Payment;
+        use truapi::versioned::payment::{HostPaymentTopUpError, HostPaymentTopUpRequest};
+        use truapi_platform::{
+            NativeCoinageFailure, NativeCoinageOperation, NativeCoinageTopUpOutcome,
+        };
+
+        struct Wallet {
+            state: AtomicU8,
+            products: Mutex<Vec<String>>,
+        }
+        #[async_trait::async_trait]
+        impl NativeCoinageCallbacks for Wallet {
+            async fn native_coinage(
+                &self,
+                request: NativeCoinageRequest,
+            ) -> Result<NativeCoinageCallbackResult, HostRejection> {
+                let request = zeroize::Zeroizing::new(request);
+                if matches!(request.operation, NativeCoinageOperation::Reconcile) {
+                    return Ok(NativeCoinageCallbackResult {
+                        response: NativeCoinageResponse::Done,
+                    });
+                }
+                let NativeCoinageOperation::TopUp { product_id, .. } = &request.operation else {
+                    panic!("top-up must reach native custody without a Rust inventory scan");
+                };
+                self.products.lock().push(product_id.clone());
+                let response = match self.state.load(Ordering::Acquire) {
+                    0 => NativeCoinageResponse::Failed {
+                        reason: NativeCoinageFailure::Unavailable,
+                    },
+                    1 => {
+                        return Err(HostRejection::Rejected {
+                            reason: "private-native-error".into(),
+                        });
+                    }
+                    _ => NativeCoinageResponse::TopUp {
+                        outcome: NativeCoinageTopUpOutcome::NotClaimed,
+                    },
+                };
+                Ok(NativeCoinageCallbackResult { response })
+            }
+        }
+
+        let wallet = Arc::new(Wallet {
+            state: AtomicU8::new(0),
+            products: Mutex::new(Vec::new()),
+        });
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+            Some(wallet.clone()),
+        )
+        .expect("runtime installs native custody before activation");
+        futures::executor::block_on(async {
+            let open = || {
+                host.open_product_execution(
+                    Arc::new(EventCallbacks::new()),
+                    None,
+                    None,
+                    native_execution_config("wallet.dot", ProductExecutionKind::Worker),
+                )
+                .expect("product opens without supplying wallet callbacks")
+            };
+            let execution = open();
+            let source = schnorrkel::MiniSecretKey::from_bytes(&[9; 32])
+                .unwrap()
+                .expand_to_keypair(schnorrkel::ExpansionMode::Ed25519);
+            let request = || {
+                HostPaymentTopUpRequest::V1(v01::HostPaymentTopUpRequest {
+                    into: None,
+                    amount: 1,
+                    source: v01::PaymentTopUpSource::Coins {
+                        sr25519_secret_keys: vec![source.secret.to_bytes()],
+                    },
+                })
+            };
+            let admin = execution.admin();
+            for state in [0, 1] {
+                wallet.state.store(state, Ordering::Release);
+                let result = admin
+                    .product_runtime()
+                    .top_up(&truapi::CallContext::default(), request())
+                    .await;
+                let Err(truapi::CallError::Domain(HostPaymentTopUpError::V1(
+                    v01::HostPaymentTopUpError::Unknown { reason },
+                ))) = result
+                else {
+                    panic!("unavailable or failing native custody must fail closed");
+                };
+                assert!(!reason.contains("private-native-error"));
+            }
+            // Replacing all product callbacks cannot reset or replace native custody.
+            let replacement = open();
+            wallet.state.store(2, Ordering::Release);
+            assert!(matches!(
+                replacement
+                    .admin()
+                    .product_runtime()
+                    .top_up(&truapi::CallContext::default(), request())
+                    .await,
+                Err(truapi::CallError::Domain(HostPaymentTopUpError::V1(
+                    v01::HostPaymentTopUpError::InsufficientFunds
+                )))
+            ));
+            assert_eq!(
+                wallet.products.lock().as_slice(),
+                &["wallet.dot", "wallet.dot", "wallet.dot"],
+            );
+        });
     }
 
     #[test]
@@ -3247,9 +3417,12 @@ mod tests {
     fn native_chat_entrypoint_is_unsupported_without_an_adapter() {
         let mut config = native_host_runtime_config();
         config.local_session_secret = Some(vec![7; 32]);
-        let host =
-            NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
-                .expect("host runtime config should be valid");
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            config,
+            None,
+        )
+        .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
@@ -3628,6 +3801,7 @@ mod tests {
         let host = NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
+            None,
         )
         .expect("host runtime config should be valid");
         let execution = host
@@ -3973,6 +4147,7 @@ mod tests {
         let host = NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
+            None,
         )
         .expect("host runtime config should be valid");
         let execution = host
@@ -4663,7 +4838,7 @@ mod tests {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
         config.local_session_lite_username = None;
-        NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
+        NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config, None)
             .expect("host runtime config should be valid")
     }
 
@@ -4701,6 +4876,7 @@ mod tests {
         let runtime = NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
+            None,
         )
         .expect("host runtime config should be valid");
         let request = RemoteMessage {
@@ -4799,6 +4975,7 @@ mod tests {
         let host = NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
+            None,
         )
         .expect("host runtime config should be valid");
         let execution = host

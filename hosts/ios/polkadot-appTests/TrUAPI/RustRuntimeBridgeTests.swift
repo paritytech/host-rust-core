@@ -459,39 +459,6 @@ struct RustRuntimeBridgeTests {
         }
     }
 
-    /// After `attach`, the bridge sets itself as the chain event handler on
-    /// the connection pool. Mocked execution — the Rust cdylib never boots in
-    /// unit tests.
-    @Test func attachWiresChainEventHandlerOnPool() {
-        let chainRegistry = MockChainRegistry()
-        let pool = makeRegistryPool(chainRegistry: chainRegistry)
-        let bridge = RustProductExecutionBridge(dependencies: .init(
-            productId: "test.dot",
-            permissionGuard: MockPermissionGuard(),
-            notificationScheduler: MockNotificationScheduler(),
-            navigationRouter: MockNavigationRouter(),
-            chainRegistry: chainRegistry,
-            chainConnections: pool,
-            productStorage: TrUAPILocalStorage.createProductLocalStorage(
-                productId: "test.dot",
-                defaults: makeTestDefaults()
-            ),
-            coreStorage: TrUAPILocalStorage.createCoreLocalStorage(defaults: makeTestDefaults()),
-            confirmationPresenter: MockConfirmationPresenter(),
-            chatFiles: UnavailableNativeChatFiles(),
-            preimageCache: TrUAPIPreimageCache { _ in nil },
-            hostProvider: StubHostProvider(),
-            logger: Logger.shared
-        ))
-
-        #expect(pool.eventHandler == nil)
-
-        let execution = MockProductExecution()
-        bridge.attach(execution)
-
-        #expect(pool.eventHandler === bridge)
-    }
-
     /// After `attach`, chain notify-backs route to the opened execution.
     @Test func chainEventForwardingRoutesToAttachedExecution() {
         let bridge = makeBridge()

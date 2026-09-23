@@ -35,7 +35,7 @@ pub(crate) fn composed_traits(definition: &PlatformDefinition) -> Vec<&PlatformT
 
 /// Capability trait names a host may omit, taken from the `OptionalPlatform`
 /// super-trait. A host that supplies none of a trait's callbacks is not
-/// broken: the core answers the matching product calls with `Unsupported`.
+/// broken: the core applies the capability's absence behavior.
 pub(crate) fn optional_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
     definition
         .optional_super_trait

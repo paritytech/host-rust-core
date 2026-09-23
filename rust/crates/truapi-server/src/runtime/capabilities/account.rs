@@ -30,9 +30,7 @@ use truapi_platform::{
 
 use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::sso::messages::ProductRequest;
-use crate::runtime::authority::{
-    ProductDeviceChatAuthorityRequest, chat_requires_statement_submit,
-};
+use crate::runtime::authority::{ProductDeviceChatAuthorityRequest, chat_requires_preimage_submit};
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     product_device_chat_authority_error, remote_authority_call, remote_authority_context,
@@ -393,7 +391,12 @@ impl Account for ProductRuntimeHost {
         cx: &CallContext,
         request: HostProductDeviceChatRequest,
     ) -> Result<HostProductDeviceChatResponse, CallError<HostProductDeviceChatError>> {
-        let HostProductDeviceChatRequest::V1(operation) = request;
+        let operation = match request {
+            HostProductDeviceChatRequest::V2(operation) => operation,
+            HostProductDeviceChatRequest::V1(_) => {
+                return Err(CallError::unavailable());
+            }
+        };
         let calling_product_id =
             normalize_product_identifier(&self.product_id()).map_err(|_| {
                 CallError::Domain(HostProductDeviceChatError::V1(
@@ -415,19 +418,7 @@ impl Account for ProductRuntimeHost {
                 latest::HostProductDeviceChatError::AccessNotGranted,
             )));
         }
-        if chat_requires_statement_submit(&operation) {
-            self.require_remote_permission(
-                v01::RemotePermission::StatementSubmit,
-                HostProductDeviceChatError::V1(
-                    latest::HostProductDeviceChatError::AccessNotGranted,
-                ),
-            )
-            .await?;
-        }
-        if matches!(
-            &operation,
-            latest::HostProductDeviceChatRequest::SendAttachments { .. }
-        ) {
+        if chat_requires_preimage_submit(&operation) {
             self.require_remote_permission(
                 v01::RemotePermission::PreimageSubmit,
                 HostProductDeviceChatError::V1(
@@ -447,7 +438,7 @@ impl Account for ProductRuntimeHost {
                 .product_device_chat(&cx, &session, authority_request),
         )
         .await
-        .map(HostProductDeviceChatResponse::V1)
+        .map(HostProductDeviceChatResponse::V2)
         .map_err(product_device_chat_authority_error)
     }
 

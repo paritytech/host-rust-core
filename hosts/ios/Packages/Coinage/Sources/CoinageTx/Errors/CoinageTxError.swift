@@ -15,6 +15,8 @@ public enum CoinageTxError: Error, Equatable {
     case inputHandedOff(String)
     /// Handoff rejected: an asset a live entry still claims cannot also leave the device.
     case handoffOfClaimedAsset(String)
+    /// Handoff rejected: a stale selection names an asset already reserved for a recipient.
+    case handoffAlreadyReserved(String)
     /// The entry is not in the store.
     case entryNotFound(CoinageTxId)
     /// A pinned chain view could not be read, so the pass cannot run.

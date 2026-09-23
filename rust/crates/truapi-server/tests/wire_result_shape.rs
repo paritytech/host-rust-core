@@ -346,25 +346,6 @@ fn deferred_payment_requests_return_dotli_not_implemented_errors() {
             reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
         }),
     );
-
-    let top_up = v01::HostPaymentTopUpRequest {
-        into: None,
-        amount: 1,
-        source: v01::PaymentTopUpSource::ProductAccount {
-            derivation_index: v01::DerivationIndex::Index(0),
-        },
-    };
-    assert_request_returns_domain_error(
-        &core,
-        "p:top-up",
-        "payment_top_up",
-        truapi::versioned::payment::HostPaymentTopUpRequest::V1(top_up).encode(),
-        truapi::versioned::payment::HostPaymentTopUpError::V1(
-            v01::HostPaymentTopUpError::Unknown {
-                reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
-            },
-        ),
-    );
 }
 
 #[test]
@@ -465,8 +446,8 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
 #[test]
 fn product_device_chat_initialize_reaches_authorization_at_method_twelve() {
     let core = make_core();
-    let request = account::HostProductDeviceChatRequest::V1(
-        truapi::v02::HostProductDeviceChatRequest::Initialize,
+    let request = account::HostProductDeviceChatRequest::V2(
+        truapi::latest::HostProductDeviceChatRequest::Initialize,
     );
     let response = dispatch(
         &core,
@@ -490,6 +471,32 @@ fn product_device_chat_initialize_reaches_authorization_at_method_twelve() {
             truapi::v02::HostProductDeviceChatError::NotConnected,
         )),
     );
+}
+
+#[test]
+fn retired_high_level_chat_cannot_dispatch_at_method_twelve() {
+    let core = make_core();
+    let request = account::HostProductDeviceChatRequest::V1(
+        truapi::v02::HostProductDeviceChatRequest::Initialize,
+    );
+    let response = dispatch(
+        &core,
+        ProtocolMessage {
+            request_id: "p:retired-high-level-chat".into(),
+            payload: Payload {
+                trait_id: 2,
+                method_id: 12,
+                message_type: MESSAGE_TYPE_REQUEST,
+                value: request.encode(),
+            },
+        },
+    );
+    let result = Result::<
+        account::HostProductDeviceChatResponse,
+        CallError<account::HostProductDeviceChatError>,
+    >::decode(&mut response.payload.value.as_slice())
+    .expect("retired request remains decodable");
+    assert!(matches!(result, Err(CallError::HostFailure { .. })));
 }
 
 #[test]

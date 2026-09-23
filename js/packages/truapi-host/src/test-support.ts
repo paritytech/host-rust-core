@@ -8,7 +8,9 @@ import {
 export type CompleteHostCallbacks = RequiredHostCallbacks;
 
 type HostCallbackOverrides = {
-  [K in keyof RequiredHostCallbacks]?: Partial<RequiredHostCallbacks[K]>;
+  [K in keyof RequiredHostCallbacks]?: K extends "coinageWallet"
+    ? RequiredHostCallbacks[K]
+    : Partial<RequiredHostCallbacks[K]>;
 };
 
 /** Default no-op host callbacks with optional per-test overrides. */
@@ -86,6 +88,9 @@ export function makeHostCallbacks(
     ...(overrides.hop
       ? { hop: { ...unavailableHopProvider, ...overrides.hop } }
       : {}),
+    ...(overrides.coinageWallet === undefined
+      ? {}
+      : { coinageWallet: overrides.coinageWallet }),
     ...(overrides.nativeChatFiles
       ? {
           nativeChatFiles: {

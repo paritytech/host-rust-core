@@ -8,6 +8,10 @@ protocol TrUAPIConfirmationPresenting: Sendable {
     /// itself, so the presenter is product-agnostic and shared across the host
     /// and per-execution bridges.
     func confirm(review: UserConfirmationReview, from requesterName: String) async -> Bool
+    func confirmNativeCoinage(
+        review: MainPurseChatPaymentReview,
+        requiresPrivacyConfirmation: Bool
+    ) async -> Bool
 }
 
 /// Routes core-reviewed actions to the native confirmation surfaces exposed
@@ -38,6 +42,13 @@ final class TrUAPIConfirmationPresenter: TrUAPIConfirmationPresenting, @unchecke
             logger.error("Failed to map confirmation review: \(error)")
             return false
         }
+    }
+
+    func confirmNativeCoinage(
+        review: MainPurseChatPaymentReview,
+        requiresPrivacyConfirmation: Bool
+    ) async -> Bool {
+        await confirmMainPursePayment(review, requiresPrivacyConfirmation: requiresPrivacyConfirmation)
     }
 }
 
@@ -110,10 +121,16 @@ private extension TrUAPIConfirmationPresenter {
             return decision == .approved
         }
     }
-    func confirmMainPursePayment(_ review: MainPurseChatPaymentReview) async -> Bool {
+    func confirmMainPursePayment(
+        _ review: MainPurseChatPaymentReview,
+        requiresPrivacyConfirmation: Bool = false
+    ) async -> Bool {
         await awaitDecision { [routerFacade] in
             await withCheckedContinuation { continuation in
-                let context = MainPursePaymentConfirmationContext(review: review)
+                let context = MainPursePaymentConfirmationContext(
+                    review: review,
+                    requiresPrivacyConfirmation: requiresPrivacyConfirmation
+                )
                 context.setContinuation(continuation)
                 let prompt = MainPursePaymentPromptViewFactory.createView(context: context)
                 if !routerFacade.productsRouter.present(view: prompt) {
