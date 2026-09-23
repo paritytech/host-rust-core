@@ -887,6 +887,30 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
               )
             : inner,
         )}`;
+  /**
+   * Drop the core's stored answer for `permission`, so the next request asks
+   * again.
+   *
+   * The core answers a settled permission from its own storage without calling
+   * the host, which is the real behaviour. It also means that changing the
+   * mock's answer after the first request changes nothing a product can see:
+   * the decision it is now going to get was recorded before. A suite setting an
+   * answer is saying what the host should reply, so the recorded one has to go
+   * with it.
+   *
+   * Matched on the serialised key because the mock holds keys as strings: every
+   * permission is named in its own key, a device one as `"Camera"` and a remote
+   * one as `"ChainSubmit"`, so the quoted name selects that permission's slots
+   * and no others.
+   */
+  const forgetStoredAuthorization = (permission: string): void => {
+    const prefix = "core:PermissionAuthorization:";
+    const needle = JSON.stringify(permission);
+    for (const key of [...storage.keys()]) {
+      if (key.startsWith(prefix) && key.includes(needle)) storage.delete(key);
+    }
+  };
+
   const granted = (policy: PermissionPolicy): boolean => policy === "allow-all";
   // A mock policy is two-valued, so a grant is durable and a refusal is
   // durable. `AllowOnce` is a host answer the mock has no knob to ask for.
@@ -1346,12 +1370,15 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
         .sort(),
     grantPermission: (permission) => {
       permissionDecisions.set(permission, true);
+      forgetStoredAuthorization(permission);
     },
     revokePermission: (permission) => {
       permissionDecisions.set(permission, false);
+      forgetStoredAuthorization(permission);
     },
     resetPermission: (permission) => {
       permissionDecisions.delete(permission);
+      forgetStoredAuthorization(permission);
     },
     setEnforcePermissions: (enforce) => {
       enforcePermissions = enforce;

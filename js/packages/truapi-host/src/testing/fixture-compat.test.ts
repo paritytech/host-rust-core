@@ -339,3 +339,110 @@ describe("the permission policy the old package's name asks for", () => {
     });
   });
 });
+
+describe("changing an answer the core has already settled", () => {
+  const suite = wasmIsBuilt("testing/truapi_server.js") ? describe : describe.skip;
+
+  suite("against the real core", () => {
+    it("asks once, then answers from the core's own record", async () => {
+      // Not a limitation to work around: a settled permission is the core's to
+      // answer, and a host that were asked twice would be the wrong behaviour.
+      const { client, host, dispose } = await createMockClient();
+      try {
+        await client.permissions.requestDevicePermission("Camera");
+        expect(host.getPermissionLog()).toHaveLength(1);
+
+        await client.permissions.requestDevicePermission("Camera");
+        expect(host.getPermissionLog()).toHaveLength(1);
+      } finally {
+        dispose();
+      }
+    });
+
+    it("re-asks after the answer is changed, rather than keeping the settled one", async () => {
+      // `@parity/host-api-test-sdk` has no core, so setting an answer there is
+      // the whole story. Here the core has already recorded one, and a suite
+      // that revoked and saw nothing reach the host would be watching a request
+      // that was never made.
+      const { client, host, dispose } = await createMockClient();
+      try {
+        await client.permissions.requestDevicePermission("Camera");
+        expect(host.getPermissionLog()).toHaveLength(1);
+
+        host.revokePermission("Camera");
+        const second = await client.permissions.requestDevicePermission("Camera");
+
+        expect(host.getPermissionLog()).toHaveLength(2);
+        expect(host.getPermissionLog().at(-1)?.approved).toBe(false);
+        expect(second._unsafeUnwrap().granted).toBe(false);
+      } finally {
+        dispose();
+      }
+    });
+
+    it("leaves another permission's settled answer alone", async () => {
+      // The slot is selected by name, so revoking one permission must not make
+      // every other one ask again.
+      const { client, host, dispose } = await createMockClient();
+      try {
+        await client.permissions.requestDevicePermission("Camera");
+        await client.permissions.requestDevicePermission("Microphone");
+        expect(host.getPermissionLog()).toHaveLength(2);
+
+        host.revokePermission("Camera");
+        await client.permissions.requestDevicePermission("Microphone");
+
+        expect(host.getPermissionLog()).toHaveLength(2);
+      } finally {
+        dispose();
+      }
+    });
+  });
+});
+
+describe("withholding one resource while the rest stay granted", () => {
+  it("carries the refused resources to the page", async () => {
+    // The whole point of the option: with allocation granted, a product's
+    // refusal path is unreachable, so a suite proving the product survives one
+    // has to be able to name the resource it wants refused.
+    const url = new URL(
+      await hostPageUrlFor({
+        behaviors: { resourceAllocation: { AutoSigning: false } },
+      }),
+    );
+    expect(url.searchParams.get("withheld")).toBe("AutoSigning");
+  });
+
+  it("carries only the refused ones", async () => {
+    const url = new URL(
+      await hostPageUrlFor({
+        behaviors: {
+          resourceAllocation: {
+            AutoSigning: false,
+            StatementStoreAllowance: true,
+            BulletinAllowance: false,
+          },
+        },
+      }),
+    );
+    // `true` is what an unlisted resource already is, so sending it would name
+    // something the host does not act on.
+    expect(url.searchParams.get("withheld")).toBe(
+      "AutoSigning,BulletinAllowance",
+    );
+  });
+
+  it("sets nothing when every resource is allowed", async () => {
+    const url = new URL(
+      await hostPageUrlFor({
+        behaviors: { resourceAllocation: { AutoSigning: true } },
+      }),
+    );
+    expect(url.searchParams.has("withheld")).toBe(false);
+  });
+
+  it("sets nothing when the option is absent", async () => {
+    const url = new URL(await hostPageUrlFor({}));
+    expect(url.searchParams.has("withheld")).toBe(false);
+  });
+});

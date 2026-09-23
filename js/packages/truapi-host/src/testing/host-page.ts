@@ -96,6 +96,12 @@ export interface TestHostPageOptions {
    */
   allowances?: "granted" | "chain";
   /**
+   * Resource tags answered as refused, whatever `allowances` would otherwise
+   * say. Applied before the product loads, because a product asks for its
+   * resources on connect and a later call would land after that.
+   */
+  withheldResources?: string[];
+  /**
    * Core log level (`off`/`error`/`warn`/`info`/`debug`/`trace`).
    *
    * The core logs why a call failed before mapping it to a protocol answer,
@@ -224,6 +230,9 @@ export async function startTestHost(
     if ((options.allowances ?? "granted") === "granted") {
       await workerRuntime.setGrantAllowancesUnchecked?.(true);
     }
+    if (options.withheldResources?.length) {
+      await workerRuntime.setWithheldResources?.(options.withheldResources);
+    }
     runtime = workerRuntime;
   } else {
     const wasmUrl = options.wasmUrl ?? "./wasm/testing/truapi_server.js";
@@ -255,6 +264,9 @@ export async function startTestHost(
     // branching there, so both topologies activate identically.
     if ((options.allowances ?? "granted") === "granted") {
       directRuntime.setGrantAllowancesUnchecked?.(true);
+    }
+    if (options.withheldResources?.length) {
+      directRuntime.setWithheldResources?.(options.withheldResources);
     }
     const direct = directRuntime;
     runtime = {
@@ -414,6 +426,7 @@ export async function startTestHost(
 /** The main-thread signing runtime: hands back a product core directly. */
 interface DirectSigningRuntime {
   setGrantAllowancesUnchecked?(granted: boolean): void;
+  setWithheldResources?(tags: string[]): void;
   activateLocalSession(secret: Uint8Array): Promise<void>;
   activateLocalSessionWithIdentity?(
     secret: Uint8Array,
@@ -432,6 +445,7 @@ interface WorkerSigningRuntime {
   disconnectSession(): Promise<void>;
   setLogLevel?(level: string): void;
   setGrantAllowancesUnchecked?(granted: boolean): Promise<void>;
+  setWithheldResources?(tags: string[]): Promise<void>;
   createProvider(product: { productId: string }): Promise<{
     postMessage(frame: Uint8Array): void;
     subscribe(listener: (frame: Uint8Array) => void): () => void;

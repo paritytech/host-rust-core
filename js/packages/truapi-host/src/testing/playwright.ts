@@ -145,6 +145,18 @@ export interface TestHostFixtureOptions {
    */
   allowances?: "granted" | "chain";
   /**
+   * Decisions applied before the product loads.
+   *
+   * `resourceAllocation` names resources the host refuses; anything unlisted
+   * stays granted. A boot option rather than a call, because a product asks for
+   * its resources on connect and a later call would land after that.
+   *
+   * A refusal here is answered as refused whatever {@link allowances} would
+   * otherwise say, which is what makes a product's refusal path reachable: with
+   * allocation granted there is nothing a suite could do to see one.
+   */
+  behaviors?: { resourceAllocation?: Record<string, boolean> };
+  /**
    * Serve the statement store in-page instead of forwarding it to the chains
    * the host proxies. Defaults to on when `allowances` is `"granted"`, so the
    * two halves of a statement flow agree: a product that is handed an
@@ -534,6 +546,13 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
   // an unregistered allowance key has somewhere its statements are accepted.
   const loopbackStatements =
     defaults.loopbackStatements ?? (defaults.allowances ?? "granted") === "granted";
+  // Only the refused entries travel: `true` is what every unlisted resource
+  // already is, so carrying it would say something the host does not act on.
+  const withheldResources = Object.entries(
+    defaults.behaviors?.resourceAllocation ?? {},
+  )
+    .filter(([, allowed]) => !allowed)
+    .map(([resource]) => resource);
   const expanded = chains
     ? fromNetworks(chains, loopbackStatements)
     : undefined;
@@ -557,6 +576,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         loginBehavior: defaults.loginBehavior,
         topology: defaults.topology,
         allowances: defaults.allowances,
+        withheldResources,
         logLevel: defaults.logLevel,
       });
       await page.goto(url);
