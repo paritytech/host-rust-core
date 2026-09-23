@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.productBotManagement
 
+import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.feature_chats_api.domain.middleware.bot.ChatBotStateController
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsTld
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsTldProvider
@@ -8,10 +9,13 @@ import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_api.model.toChatExtensionId
 import io.paritytech.polkadotapp.feature_products_impl.data.repository.ProductIntegrationRepository
 import io.paritytech.polkadotapp.feature_products_impl.data.repository.ProductRepository
+import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.DebugPocketCard
+import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.DebugPocketCards
 import io.paritytech.polkadotapp.feature_products_impl.domain.product.IntegrationType
 import io.paritytech.polkadotapp.feature_products_impl.domain.product.UninstallProductUseCase
 import io.paritytech.polkadotapp.feature_products_impl.domain.usecase.ResolveProductUseCase
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,9 +26,21 @@ interface ProductBotManagementInteractor {
 
     suspend fun getUserWorkerUrl(productId: ProductId): String?
 
-    suspend fun upsertProduct(productId: ProductId, workerUrl: String, name: String): Result<ProductId>
+    suspend fun getDebugCard(productId: ProductId): DebugPocketCard?
 
-    suspend fun updateProduct(productId: ProductId, workerUrl: String, name: String): Result<Unit>
+    suspend fun upsertProduct(
+        productId: ProductId,
+        workerUrl: String,
+        name: String,
+        card: DebugPocketCard?,
+    ): Result<ProductId>
+
+    suspend fun updateProduct(
+        productId: ProductId,
+        workerUrl: String,
+        name: String,
+        card: DebugPocketCard?,
+    ): Result<Unit>
 
     suspend fun deleteProduct(productId: ProductId): Result<Unit>
 
@@ -42,6 +58,8 @@ class RealProductBotManagementInteractor @Inject constructor(
     private val resolveProductUseCase: ResolveProductUseCase,
     private val uninstallProductUseCase: UninstallProductUseCase,
     private val dotNsTldProvider: DotNsTldProvider,
+    private val debugPocketCards: DebugPocketCards,
+    private val dispatchers: CoroutineDispatchers,
 ) : ProductBotManagementInteractor {
     override fun observeProducts(): Flow<List<Product>> {
         return productRepository.observeProducts()
@@ -55,9 +73,20 @@ class RealProductBotManagementInteractor @Inject constructor(
         return productRepository.getUserWorkerUrl(productId)
     }
 
-    override suspend fun upsertProduct(productId: ProductId, workerUrl: String, name: String): Result<ProductId> {
+    // The first read loads the preferences file from disk, and the edit dialog asks on the main thread.
+    override suspend fun getDebugCard(productId: ProductId): DebugPocketCard? = withContext(dispatchers.io) {
+        debugPocketCards.get(productId)
+    }
+
+    override suspend fun upsertProduct(
+        productId: ProductId,
+        workerUrl: String,
+        name: String,
+        card: DebugPocketCard?,
+    ): Result<ProductId> {
         return runCatching {
             productRepository.upsertManualProduct(productId, name, workerUrl)
+            debugPocketCards.set(productId, card)
             resolveProductUseCase.invalidate(productId) // force next resolve to read the new URL
             integrationRepository.install(productId, IntegrationType.Chat)
             botStateController.setActive(productId.toChatExtensionId())
@@ -65,9 +94,16 @@ class RealProductBotManagementInteractor @Inject constructor(
         }
     }
 
-    override suspend fun updateProduct(productId: ProductId, workerUrl: String, name: String): Result<Unit> {
+    override suspend fun updateProduct(
+        productId: ProductId,
+        workerUrl: String,
+        name: String,
+        card: DebugPocketCard?,
+    ): Result<Unit> {
         return runCatching {
             productRepository.upsertManualProduct(productId, name, workerUrl)
+            debugPocketCards.set(productId, card)
+            // The card rides on the resolved worker, so a changed one is only seen after this.
             resolveProductUseCase.invalidate(productId)
         }
     }

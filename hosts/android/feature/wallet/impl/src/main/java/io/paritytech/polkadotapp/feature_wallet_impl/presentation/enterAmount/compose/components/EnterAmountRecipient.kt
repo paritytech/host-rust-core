@@ -12,7 +12,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import io.paritytech.polkadotapp.common.R
 import io.paritytech.polkadotapp.design.components.avatar.AvatarUiModel
 import io.paritytech.polkadotapp.design.components.avatar.NovaAddressAvatar
 import io.paritytech.polkadotapp.design.components.avatar.PolkadotAvatar
@@ -22,6 +21,7 @@ import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.configs.colors.AvatarColorScheme
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_account_api.presentation.address.model.ExtractedAddress
+import io.paritytech.polkadotapp.common.R as RCommon
 
 @Composable
 internal fun EnterAmountRecipient(
@@ -37,15 +37,15 @@ internal fun EnterAmountRecipient(
         horizontalArrangement = Arrangement.Center
     ) {
         NovaText(
-            text = stringResource(R.string.common_to).lowercase(),
+            text = stringResource(RCommon.string.common_to).lowercase(),
             style = PolkadotTheme.typography.body.large,
-            color = PolkadotTheme.colors.fg.tertiary,
+            color = PolkadotTheme.colors.fg.secondary,
         )
 
         HorizontalSpacer { small }
 
         PolkadotSurface(
-            shape = PolkadotTheme.shapes.extraLarge,
+            shape = PolkadotTheme.shapes.full,
             color = PolkadotTheme.colors.bg.surface.container,
             border = BorderStroke(PolkadotTheme.borders.default, PolkadotTheme.colors.stroke.primary),
         ) {
