@@ -40,7 +40,7 @@ use truapi::latest::{
     HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
     HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
-    HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
+    HostChatRegisterBotResponse, HostDevicePermissionRequest,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageChangeItem,
     HostLocaleSubscribeItem, HostNativeChatAttachmentMetadata, HostNavigateToError,
     HostPlatform, HostPocketListSubscribeItem, HostPocketRemoveCardError,
@@ -49,7 +49,7 @@ use truapi::latest::{
     HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
     HostWorkerBeginOperationResponse, HostWorkerOperationError, LegacyAccountTxPayload,
     NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
-    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
+    RemotePermission, RemotePermissionRequest, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
