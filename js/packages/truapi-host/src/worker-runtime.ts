@@ -29,7 +29,6 @@ import type {
   WasmModuleShape,
   WorkerHostRuntime,
   WorkerPairingHostRuntime,
-  WorkerSigningHostRuntime,
   WorkerProductRuntime,
   WorkerSigningHostRuntime,
   WorkerTransition,
