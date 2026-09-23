@@ -1,13 +1,15 @@
 package io.paritytech.polkadotapp.feature_products_api.model.signing
 
-import io.paritytech.polkadotapp.feature_products_api.model.ProductAccountId
-
 /**
  * Domain model representing SignerPayloadJSON from Polkadot.js.
  * Used for signing transaction requests.
+ *
+ * Generic over the signer for the same reason [createTransaction.TxPayload] is:
+ * the payload body is identical whether the signer is a product account or a
+ * legacy one, and only the account identifier differs.
  */
-class SignerPayloadJson(
-    val account: ProductAccountId,
+class SignerPayloadJson<Signer>(
+    val account: Signer,
     /** The checkpoint hash of the block, in hex */
     val blockHash: ByteArray,
     /** The checkpoint block number, in hex */

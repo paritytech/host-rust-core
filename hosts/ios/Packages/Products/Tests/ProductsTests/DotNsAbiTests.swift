@@ -1,7 +1,7 @@
 import Foundation
+import Revive
 import SubstrateSdk
 import Testing
-import Web3Core
 @testable import Products
 
 struct DotNsAbiTests {
@@ -29,11 +29,19 @@ struct DotNsAbiTests {
         #expect(encoded.prefix(4).toHex() == "59d1d43c")
     }
 
+    @Test func encodeResolverProducesCorrectSelector() throws {
+        let node = try NameHash.nameHash("test.dot")
+        let encoded = try DotNsAbi.encodeResolver(node: node)
+
+        // resolver(bytes32) selector = 0x0178b8bf
+        #expect(encoded.prefix(4).toHex() == "0178b8bf")
+        #expect(encoded.subdata(in: 4 ..< 36) == node)
+    }
+
     @Test func decodeContentHashRoundTrips() throws {
         let originalHash = Data(0 ..< 34)
-        let abiEncoded = try #require(abiEncodeBytes(originalHash))
 
-        let decoded = DotNsAbi.decodeContentHash(output: abiEncoded)
+        let decoded = DotNsAbi.decodeContentHash(output: AbiOutput.dynamicBytes(originalHash))
         #expect(decoded == originalHash)
     }
 
@@ -43,47 +51,28 @@ struct DotNsAbiTests {
     }
 
     @Test func decodeTextRoundTrips() throws {
-        let abiEncoded = try #require(abiEncodeString("manifest-value"))
-
-        let decoded = DotNsAbi.decodeText(output: abiEncoded)
+        let decoded = DotNsAbi.decodeText(output: AbiOutput.string("manifest-value"))
         #expect(decoded == "manifest-value")
     }
 
     @Test func decodeTextReturnsNilForEmptyString() throws {
-        let abiEncoded = try #require(abiEncodeString(""))
-
-        let result = DotNsAbi.decodeText(output: abiEncoded)
+        let result = DotNsAbi.decodeText(output: AbiOutput.string(""))
         #expect(result == nil)
     }
 
     @Test func decodeResolverRoundTrips() throws {
         let address = Data(repeating: 0xAB, count: 20)
-        let abiEncoded = try #require(abiEncodeAddress(address))
 
-        #expect(DotNsAbi.decodeResolver(output: abiEncoded) == address)
+        #expect(DotNsAbi.decodeResolver(output: AbiOutput.address(address)) == address)
     }
 
     /// How the registry reports a name it holds no entry for. Passing it on as a contract address
     /// would send every subsequent read to the zero account.
     @Test func decodeResolverReturnsNilForTheZeroAddress() throws {
-        let abiEncoded = try #require(abiEncodeAddress(Data(repeating: 0, count: 20)))
-
-        #expect(DotNsAbi.decodeResolver(output: abiEncoded) == nil)
+        #expect(DotNsAbi.decodeResolver(output: AbiOutput.address(EvmAddressFormat.zero)) == nil)
     }
 
     @Test func decodeResolverReturnsNilForEmptyOutput() {
         #expect(DotNsAbi.decodeResolver(output: Data()) == nil)
     }
-}
-
-private func abiEncodeBytes(_ data: Data) -> Data? {
-    ABIEncoder.encode(types: [.dynamicBytes], values: [data])
-}
-
-private func abiEncodeString(_ string: String) -> Data? {
-    ABIEncoder.encode(types: [.string], values: [string])
-}
-
-private func abiEncodeAddress(_ address: Data) -> Data? {
-    ABIEncoder.encode(types: [.address], values: [EthereumAddress(address)])
 }

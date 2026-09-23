@@ -7,6 +7,8 @@ import TrUAPIHost
 
 // MARK: - Helpers
 
+private let testProduct = ProductExecutionConfig(productId: "host.product", executionKind: .app)
+
 private func makeHostDefaults() -> UserDefaults {
     UserDefaults(suiteName: "io.polkadotapp.tests.truapi-host-bridge") ?? .standard
 }
@@ -88,11 +90,27 @@ struct RustHostRuntimeBridgeTests {
     @Test func permissionsDenyAtHostLevel() async throws {
         let bridge = makeHostBridge()
 
-        let device = try await bridge.devicePermission(request: .camera)
-        let remote = try await bridge.remotePermission(request: .webRtc)
+        let device = try await bridge.devicePermission(product: testProduct, request: .camera)
+        let remote = try await bridge.remotePermission(product: testProduct, request: .webRtc)
 
-        #expect(!device)
-        #expect(!remote)
+        #expect(device == .deny)
+        #expect(remote == .deny)
+    }
+
+    @Test(arguments: [TrUAPIPermissionDecision.allowOnce, .allowAlways, .deny])
+    func confirmPermissionPreservesLifetime(decision: TrUAPIPermissionDecision) async throws {
+        let presenter = MockConfirmationPresenter()
+        presenter.permissionDecisionToReturn = decision
+        let bridge = makeHostBridge(confirmationPresenter: presenter)
+        let review = UserConfirmationReview.identityDisclosure(
+            IdentityDisclosureReview(productId: "caller.dot")
+        )
+
+        let result = try await bridge.confirmPermission(review: review)
+
+        #expect(result == decision)
+        #expect(presenter.receivedReview == review)
+        #expect(presenter.receivedRequesterName == "host")
     }
 
     /// Core storage is the real host-global backend: writes round-trip.

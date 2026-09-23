@@ -1,11 +1,12 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.externalPayment
 
 import io.paritytech.polkadotapp.chains.network.binding.Balance
+import io.paritytech.polkadotapp.common.utils.flatMap
+import io.paritytech.polkadotapp.common.utils.mapToSet
 import io.paritytech.polkadotapp.common.utils.runCancellableCatching
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.CoinageBalanceConversionContext
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.totalBalance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentPlan
-import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentPlan.DelayReason
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentPlanner
 import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.VoucherOffboarding
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
@@ -24,56 +25,72 @@ class RealExternalPaymentPlanner @Inject constructor(
         with(converter) { determinePlan(amount) }
     }
 
+    override suspend fun canPayPrivately(amount: Balance): Result<Boolean> =
+        coinageBalanceConverterUseCase.create().flatMap { converter ->
+            runCancellableCatching { with(converter) { privateVouchers().totalBalance() >= amount } }
+        }
+
     override suspend fun pickOffboarding(
         availableVouchers: List<RecyclerVoucher>,
         target: Balance,
     ): Result<VoucherOffboarding> = runCancellableCatching {
         val converter = coinageBalanceConverterUseCase.create().getOrThrow()
-        with(converter) { pickVoucherForOffboardingOrThrow(availableVouchers, target) }
+        with(converter) { pickVoucherForOffboardingOrThrow(availableVouchers, target, preferred = emptyList()) }
     }
 
+    /**
+     * Vouchers before coins, even ones still gaining privacy: a coin loaded only to be unloaded right away leaves
+     * its recycler as soon as such a voucher would, so it saves no privacy and only adds a recycling round.
+     */
     context(coinageContext: CoinageBalanceConversionContext)
     private suspend fun determinePlan(amount: Balance): ExternalPaymentPlan {
-        val availableVouchers = assetSelector.getSelectableVouchers(SpendScope.SPENDABLE)
+        val privateVouchers = privateVouchers()
 
-        if (availableVouchers.totalBalance() >= amount) {
-            val offboarding = pickVoucherForOffboardingOrThrow(availableVouchers, target = amount)
-            return ExternalPaymentPlan.Ready(offboarding)
+        if (privateVouchers.totalBalance() >= amount) {
+            return ExternalPaymentPlan.Ready(pickVoucherForOffboardingOrThrow(privateVouchers, amount, preferred = emptyList()))
         }
 
-        // Vouchers still gaining privacy become spendable on their own, so waiting for them beats spending
-        // coins to make up the difference. Nobody is here to confirm a private spend, so they are not spent.
-        val activeVouchers = availableVouchers + assetSelector.getVouchersGainingPrivacy()
+        val vouchers = assetSelector.getOnChainSpendableVouchers()
 
-        if (activeVouchers.totalBalance() >= amount) {
-            return ExternalPaymentPlan.NeedsDelayedRetry(DelayReason.VOUCHERS_NOT_READY)
+        if (vouchers.totalBalance() >= amount) {
+            return ExternalPaymentPlan.Ready(pickVoucherForOffboardingOrThrow(vouchers, amount, preferred = privateVouchers))
         }
 
-        val deficit = amount - activeVouchers.totalBalance()
-        val activeCoins = assetSelector.getSelectableCoins(SpendScope.SPENDABLE)
+        val deficit = amount - vouchers.totalBalance()
+        val coins = assetSelector.getRecyclableCoins()
 
-        if (activeCoins.totalBalance() >= deficit) {
-            val coinsToLoad = pickCoinsForDeficit(activeCoins, deficit)
-            return ExternalPaymentPlan.LoadCoins(coinsToLoad)
+        if (coins.totalBalance() >= deficit) {
+            return ExternalPaymentPlan.LoadCoins(
+                coinsToLoad = pickCoinsForDeficit(coins, deficit),
+                exactVouchers = vouchers,
+            )
         }
 
         return ExternalPaymentPlan.NotEnoughAmount(
-            activeVouchers = activeVouchers.totalBalance(),
-            activeCoins = activeCoins.totalBalance(),
+            activeVouchers = vouchers.totalBalance(),
+            activeCoins = coins.totalBalance(),
             deficitToCoverWithCoins = deficit,
         )
     }
 
+    private suspend fun privateVouchers() = assetSelector.getSelectableVouchers(SpendScope.SPENDABLE)
+
+    /** Takes [preferred] vouchers first, then the largest, until [target] is reached. */
     context(coinageContext: CoinageBalanceConversionContext)
     private fun pickVoucherForOffboardingOrThrow(
         vouchers: List<RecyclerVoucher>,
         target: Balance,
+        preferred: List<RecyclerVoucher>,
     ): VoucherOffboarding {
         require(vouchers.totalBalance() >= target) {
             "Insufficient vouchers balance ${vouchers.totalBalance()} to cover target $target"
         }
 
-        val sorted = vouchers.sortedByDescending { coinageContext.formatExponentToBalance(it.recyclerValue) }
+        val preferredKeys = preferred.mapToSet { it.ringVrfKeyIndex }
+        val sorted = vouchers.sortedWith(
+            compareByDescending<RecyclerVoucher> { it.ringVrfKeyIndex in preferredKeys }
+                .thenByDescending { coinageContext.formatExponentToBalance(it.recyclerValue) }
+        )
 
         val selected = mutableListOf<RecyclerVoucher>()
         var accumulated = Balance.ZERO

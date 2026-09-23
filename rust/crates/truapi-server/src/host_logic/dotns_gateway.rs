@@ -562,7 +562,7 @@ pub async fn is_pop_issued<T: DotnsTransport + ?Sized>(
 const MAX_DNS_LABEL_LEN: usize = 63;
 
 /// A canonical DNS label: lowercase ASCII letters, digits and hyphens, neither
-/// starting nor ending with a hyphen, at most [`MAX_DNS_LABEL_LEN`] octets
+/// starting nor ending with a hyphen, at most 63 octets
 /// (`StringUtils._isDnsLabel`).
 pub fn is_dns_label(value: &str) -> bool {
     !value.is_empty()

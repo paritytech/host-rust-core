@@ -25,6 +25,7 @@ mod pocket;
 mod product_config;
 mod qr_scanner;
 mod register_name;
+mod script_project;
 mod script_runner;
 mod sessions;
 mod signing_shell;
@@ -42,7 +43,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::parser::ValueSource;
+use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -56,8 +58,9 @@ use truapi_server::host_logic::dotns_gateway::{
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
-    PairedSsoPeer, PairingHostConfig, PairingHostRuntime, ResponderExit, SigningHostConfig,
-    SigningHostRuntime, StatementRenewalTarget,
+    AnnouncedPairing, DebugSink, PairedSsoPeer, PairingHostConfig, PairingHostRuntime,
+    PairingProposal, ResponderExit, SigningHostConfig, SigningHostRuntime, StatementRenewalTarget,
+    WsDebugSink,
 };
 
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
@@ -69,7 +72,7 @@ use crate::sessions::{
 };
 use crate::signing_shell::{
     ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, PairCommand, ProductCommand,
-    SessionCommand, ShellCommand, parse_command,
+    ScriptCommand, SessionCommand, ShellCommand, parse_command,
 };
 use crate::terminal_ui::{
     ActiveTerminalUi, ActivityState, DriveResult, PairingImageInput, SystemEvent, TerminalUi,
@@ -96,6 +99,14 @@ struct Cli {
     /// `RUST_LOG` takes precedence when set.
     #[arg(long, global = true, value_enum, env = "TRUAPI_HOST_LOG")]
     log_level: Option<LogLevel>,
+    /// Stream every product frame to a wire debugger listening on this loopback
+    /// `ws://` URL, e.g. `ws://127.0.0.1:9231`. The target must be loopback, and
+    /// an unreachable debugger never fails a dispatch. Frames go out whole and
+    /// the debugger decodes all of them, so a tapped signing host puts its
+    /// payloads on that socket: point it at a debugger you run yourself. Only
+    /// `pairing-host`, `dev` and `signing-host` read this.
+    #[arg(long, global = true, env = "TRUAPI_DEBUGGER_URL", value_name = "URL")]
+    debugger: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -494,13 +505,22 @@ fn state_base_path(base_path: Option<PathBuf>) -> PathBuf {
         .join(STATE_VERSION)
 }
 
+fn script_project_directory(base_path: Option<PathBuf>) -> PathBuf {
+    base_path.unwrap_or_else(default_base_path).join("scripts")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install a rustls crypto provider so `wss://` chain connections work;
     // rustls 0.23 panics without a process-level default provider.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    let debugger = cli.debugger.take().map(|url| DebuggerSwitch {
+        url,
+        source: debugger_url_source(&matches),
+    });
     let base_path = command_base_path(&cli.command);
     let (saved_log_level, saved_log_level_error) = match load_log_level(&base_path) {
         Ok(level) => (level, None),
@@ -546,7 +566,7 @@ async fn main() -> Result<()> {
         tokio::spawn(update::run_background_check())
     });
 
-    let outcome = dispatch(cli.command, log_filter, log_controller).await;
+    let outcome = dispatch(cli.command, log_filter, log_controller, debugger).await;
 
     if let Some(check) = check {
         update::finish_background_check(check).await;
@@ -562,13 +582,22 @@ async fn dispatch(
     command: Command,
     log_filter: String,
     log_controller: LogController,
+    debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
+    // The switch is global but resolved per command, by the three arms that build
+    // a frame server and still before they bind a port. `update`,
+    // `identity-check`, `register-name` and `alloc-check` emit no frames, so they
+    // open no sink and cannot be failed by a URL they would never dial - which
+    // matters most when `TRUAPI_DEBUGGER_URL` is exported and every invocation
+    // carries the switch.
     match command {
         Command::Update => update::run_update_command().await,
-        Command::PairingHost(args) => run_pairing_host(args, log_filter, log_controller).await,
-        Command::Dev(args) => run_dev(args, log_filter, log_controller).await,
+        Command::PairingHost(args) => {
+            run_pairing_host(args, log_filter, log_controller, debugger).await
+        }
+        Command::Dev(args) => run_dev(args, log_filter, log_controller, debugger).await,
         Command::SigningHost(args) => {
-            run_signing_host(args, log_filter, log_controller, None).await
+            run_signing_host(args, log_filter, log_controller, None, debugger).await
         }
         Command::IdentityCheck { mnemonic, network } => {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
@@ -1021,10 +1050,21 @@ fn approval_policy(auto_accept: bool) -> ApprovalPolicy {
 
 /// Spawner that runs runtime futures on the tokio runtime, so their WebSocket
 /// connects and timers have a reactor.
+///
+/// The core spawns teardown work from `Drop`, which can run after the runtime
+/// has shut down; `tokio::spawn` panics there, so the handle is looked up
+/// rather than assumed.
 fn tokio_spawner() -> Spawner {
-    Arc::new(|fut: BoxFuture<'static, ()>| {
-        tokio::spawn(fut);
-    })
+    Arc::new(
+        |fut: BoxFuture<'static, ()>| match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(fut);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "dropping a runtime future: no tokio runtime is running");
+            }
+        },
+    )
 }
 
 fn host_info(name: &str) -> HostInfo {
@@ -1043,11 +1083,128 @@ fn platform_info() -> PlatformInfo {
     }
 }
 
+/// A `--debugger` switch as clap resolved it: the URL in play, and the spelling
+/// clap took it from.
+struct DebuggerSwitch {
+    url: String,
+    source: &'static str,
+}
+
+/// A resolved `--debugger` switch with its sink, carried so the dial can be
+/// announced after the terminal UI exists.
+struct DebuggerDial {
+    sink: Arc<dyn DebugSink>,
+    switch: DebuggerSwitch,
+}
+
+/// Name the switch clap read `--debugger` from.
+///
+/// §9 requires a host that dials to name the source it read, so a developer
+/// looking at a host that streams knows which spelling to clear. clap folds the
+/// flag and the variable into one value, and `value_source` is the only thing
+/// that still knows which of the two it took.
+fn debugger_url_source(matches: &ArgMatches) -> &'static str {
+    match matches.value_source("debugger") {
+        Some(ValueSource::EnvVariable) => "TRUAPI_DEBUGGER_URL",
+        _ => "--debugger",
+    }
+}
+
+/// Open a wire-debugger sink for `switch`.
+///
+/// A URL that is not a loopback `ws://` target aborts startup rather than
+/// warning. The caller explicitly asked for a debugger, and a host that runs on
+/// without one is indistinguishable, from the debugger's side, from a host that
+/// is simply idle. Success does not mean the debugger is listening: the sink
+/// dials lazily and reconnects, so it can be started either side of the host.
+fn connect_debugger(switch: DebuggerSwitch) -> Result<DebuggerDial> {
+    let DebuggerSwitch { url, source } = &switch;
+    let sink = WsDebugSink::connect(url).with_context(|| {
+        format!("{source} {url} must be a ws:// URL on 127.0.0.1, localhost, or [::1]")
+    })?;
+    Ok(DebuggerDial { sink, switch })
+}
+
+/// Say once whether this host streams frames, and to where.
+///
+/// §9 requires both arms. Silence when no dial is set is the failure the rule
+/// exists for: the debugger's own viewer holds a socket, so its socket count
+/// moves whether or not a host connected, and an empty board is indistinguishable
+/// from a host nobody switched on. Announcing the dial is what makes an ungated
+/// switch acceptable on a released binary (§7) - a host streaming frames is never
+/// quiet about it, so a stale exported variable cannot tap a session unnoticed.
+fn report_debugger(dial: Option<&DebuggerDial>) {
+    match dial {
+        Some(dial) => terminal_ui::output_event(SystemEvent::DebuggerDialling {
+            url: dial.switch.url.clone(),
+            source: dial.switch.source.to_string(),
+        }),
+        None => terminal_ui::output_event(SystemEvent::DebuggerOff),
+    }
+}
+
+/// Wrap `factory` so every product frame it serves also reaches `sink`,
+/// returning it untouched when no debugger was requested.
+fn tap_for_debugger(
+    factory: Arc<dyn frame_server::ProductRuntimeFactory>,
+    sink: Option<Arc<dyn DebugSink>>,
+) -> Arc<dyn frame_server::ProductRuntimeFactory> {
+    match sink {
+        Some(sink) => frame_server::DebugTappedRuntime::new(factory, sink),
+        None => factory,
+    }
+}
+
+#[cfg(test)]
+mod debugger_tap_tests {
+    use super::*;
+    use truapi_server::{DebugEvent, FrameSink, ProductContext, ProductRuntime};
+
+    struct SilentSink;
+
+    impl DebugSink for SilentSink {
+        fn emit(&self, _event: DebugEvent) {}
+    }
+
+    struct UnusedFactory;
+
+    impl frame_server::ProductRuntimeFactory for UnusedFactory {
+        fn product_runtime(
+            &self,
+            _product: ProductContext,
+            _sink: Arc<dyn FrameSink>,
+        ) -> ProductRuntime {
+            panic!("this test observes the wrapping decision only")
+        }
+    }
+
+    /// What `DebugTappedRuntime` does once installed is covered next to it. This
+    /// covers whether it is installed at all: a `tap_for_debugger` that returned
+    /// `factory` in both arms leaves a host that accepts `--debugger`, announces
+    /// the dial, and streams nothing.
+    #[test]
+    fn the_tap_wraps_the_factory_exactly_when_a_sink_was_opened() {
+        let factory: Arc<dyn frame_server::ProductRuntimeFactory> = Arc::new(UnusedFactory);
+        let tapped = tap_for_debugger(factory.clone(), Some(Arc::new(SilentSink)));
+        let untapped = tap_for_debugger(factory.clone(), None);
+
+        assert_eq!(
+            (
+                Arc::ptr_eq(&factory, &tapped),
+                Arc::ptr_eq(&factory, &untapped)
+            ),
+            (false, true)
+        );
+    }
+}
+
 async fn run_pairing_host(
     args: PairingHostArgs,
     initial_log_filter: String,
     log_controller: LogController,
+    debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
+    let script_projects = script_project_directory(args.base_path.clone());
     let interactive = args.script.is_none();
     if interactive && !terminal_ui::is_interactive_terminal() {
         invalid_invocation(
@@ -1099,12 +1256,18 @@ async fn run_pairing_host(
         pairing_runtime.set_pocket_platform(pocket);
     }
 
+    // Resolved before the port is bound, so a bad URL still fails on the argument
+    // rather than half-way through startup - but reported below, once the UI
+    // exists. A `tracing` line here goes to a stderr that the alternate screen
+    // covers for the rest of the run, so in interactive mode nobody ever sees it.
+    let debugger = debugger.map(connect_debugger).transpose()?;
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
     terminal_ui::output_event(SystemEvent::FramesListening {
         url: frame_url.clone(),
     });
-    let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> = pairing_runtime.clone();
+    report_debugger(debugger.as_ref());
+    let runtime_for_frames = tap_for_debugger(pairing_runtime.clone(), debugger.map(|d| d.sink));
 
     if let Some(script) = args.script {
         let script_product_id = product_id.clone();
@@ -1135,6 +1298,7 @@ async fn run_pairing_host(
                 product,
                 pairing_runtime,
                 storage_platform,
+                script_projects,
                 terminal_ui,
                 log_controller,
             )
@@ -1149,6 +1313,7 @@ async fn run_signing_host(
     initial_log_filter: String,
     log_controller: LogController,
     dev_command: Option<Vec<String>>,
+    debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
     if let Err(error) = validate_signing_args(&args) {
         invalid_invocation(error);
@@ -1199,6 +1364,11 @@ async fn run_signing_host(
         ui_handle.clone(),
     )
     .await?;
+    // Resolved before the port is bound, so a bad URL still fails on the argument
+    // rather than half-way through startup - but reported below, once the UI
+    // exists. A `tracing` line here goes to a stderr that the alternate screen
+    // covers for the rest of the run, so in interactive mode nobody ever sees it.
+    let debugger = debugger.map(connect_debugger).transpose()?;
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
     terminal_ui::output_event(SystemEvent::FramesListening {
@@ -1207,8 +1377,9 @@ async fn run_signing_host(
     if let Some(url) = bootstrap::bridge_url(&frame_url) {
         terminal_ui::output_event(SystemEvent::BridgeReady { url });
     }
-    let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> =
-        session.runtime_factory.clone();
+    report_debugger(debugger.as_ref());
+    let runtime_for_frames =
+        tap_for_debugger(session.runtime_factory.clone(), debugger.map(|d| d.sink));
 
     if let Some(script) = args.script {
         let product_id = product.current();
@@ -1333,6 +1504,7 @@ struct SigningHostSession {
     signer: Option<ResolvedSigner>,
     cached_user_id: Option<String>,
     last_script: Option<PathBuf>,
+    script_projects: PathBuf,
     catalog: SessionCatalog,
     profile: Option<SessionProfile>,
     network: NetworkConfig,
@@ -1558,6 +1730,7 @@ async fn start_signing_host(
         signer,
         cached_user_id,
         last_script,
+        script_projects: script_project_directory(args.base_path.clone()),
         catalog,
         profile,
         network,
@@ -1702,49 +1875,23 @@ where
     let server = tokio::spawn(frame_server::accept_loop(runtime, product, frame_server));
     let result = body.await;
     server.abort();
+    let _ = server.await;
     result
 }
 
 fn paired_host_from_deeplink(deeplink: &str) -> Result<PairedHost> {
-    use truapi_server::host_logic::sso::pairing::{
-        VersionedHandshakeProposal, decode_pairing_deeplink, v2::MetadataKey,
-    };
-
-    let VersionedHandshakeProposal::V2(proposal) =
-        decode_pairing_deeplink(deeplink).map_err(anyhow::Error::msg)?;
-    let mut metadata = PairedHostMetadata::default();
-    for entry in proposal.metadata {
-        let value = safe_display_metadata(entry.1);
-        match entry.0 {
-            MetadataKey::HostName => metadata.host_name = value,
-            MetadataKey::HostVersion => metadata.host_version = value,
-            MetadataKey::HostIcon => metadata.host_icon = value,
-            MetadataKey::PlatformType => metadata.platform_type = value,
-            MetadataKey::PlatformVersion => metadata.platform_version = value,
-            MetadataKey::Custom(_) => {}
-        }
-    }
+    let proposal = PairingProposal::from_deeplink(deeplink).map_err(anyhow::Error::msg)?;
     Ok(PairedHost::new(
-        proposal.device.statement_account_id,
-        proposal.device.encryption_public_key,
-        metadata,
+        proposal.peer.statement_account_id,
+        proposal.peer.encryption_public_key,
+        PairedHostMetadata {
+            host_name: proposal.metadata.host_name,
+            host_version: proposal.metadata.host_version,
+            host_icon: proposal.metadata.host_icon,
+            platform_type: proposal.metadata.platform_type,
+            platform_version: proposal.metadata.platform_version,
+        },
     ))
-}
-
-fn safe_display_metadata(value: String) -> Option<String> {
-    let value = value
-        .trim()
-        .chars()
-        .filter(|character| {
-            !character.is_control()
-                && !matches!(
-                    character,
-                    '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-                )
-        })
-        .take(512)
-        .collect::<String>();
-    (!value.is_empty()).then_some(value)
 }
 
 fn paired_sso_peer(host: &PairedHost) -> PairedSsoPeer {
@@ -1918,7 +2065,9 @@ async fn run_dev(
     args: DevArgs,
     initial_log_filter: String,
     log_controller: LogController,
+    debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
+    bootstrap::read_container(&bootstrap::container_path())?;
     let product_id = args
         .product_id
         .unwrap_or_else(|| format!("localhost:{}", args.app_port));
@@ -1937,7 +2086,14 @@ async fn run_dev(
         ..Default::default()
     };
     let command = (!args.command.is_empty()).then_some(args.command);
-    run_signing_host(signing, initial_log_filter, log_controller, command).await
+    run_signing_host(
+        signing,
+        initial_log_filter,
+        log_controller,
+        command,
+        debugger,
+    )
+    .await
 }
 
 /// Run the wrapped development command, returning the code to exit with.
@@ -2193,6 +2349,104 @@ async fn activate_current_signer(session: &mut SigningHostSession) -> Result<()>
     Ok(())
 }
 
+/// Register this host's own statement-store allowance, reporting whether it
+/// ended up usable.
+///
+/// Every handshake answer is signed by the `WalletSso` account, so nothing
+/// reaches the pairing host until this lands. Failing is not fatal: the
+/// device-slot pass renews the same target, and can rotate the signer to get
+/// it. It only means there is no way to say anything in the meantime.
+async fn prepare_own_allowance(session: &mut SigningHostSession) -> bool {
+    use truapi_server::statement_allowance::renewal::TargetRenewalStatus;
+
+    if let Err(error) = ensure_signer(session).await {
+        tracing::warn!(%error, "no signer to register the wallet allowance under");
+        return false;
+    }
+    if let Err(error) = session
+        .runtime
+        .track_statement_renewal_targets(vec![StatementRenewalTarget::WalletSso])
+        .await
+    {
+        tracing::warn!(reason = %error.reason, "failed to record the wallet allowance");
+        return false;
+    }
+    let report = match session.runtime.renew_statement_allowances().await {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!(reason = %error.reason, "wallet allowance renewal failed");
+            return false;
+        }
+    };
+    // `renew_statement_allowances` reports per-target failures in its outcomes
+    // rather than as an error, so an exhausted slot reads as success here
+    // unless the outcome itself is checked.
+    report
+        .outcomes
+        .iter()
+        .rev()
+        .find(|outcome| outcome.label == WALLET_SSO_RENEWAL_LABEL)
+        .is_some_and(|outcome| {
+            matches!(
+                outcome.status,
+                TargetRenewalStatus::Registered { .. }
+                    | TargetRenewalStatus::AlreadyAllocated { .. }
+            )
+        })
+}
+
+/// Tell the pairing host that allocation has started, so it stops showing a QR
+/// that has already been scanned.
+async fn announce_allowance_allocation(
+    session: &mut SigningHostSession,
+    deeplink: &str,
+) -> Option<AnnouncedPairing> {
+    if !prepare_own_allowance(session).await {
+        return None;
+    }
+    match session
+        .runtime
+        .notify_pairing_allowance_allocation(deeplink)
+        .await
+    {
+        Ok(announced) => Some(announced),
+        Err(error) => {
+            terminal_ui::output_event(SystemEvent::SigningHostError {
+                reason: format!(
+                    "failed to announce allowance allocation to the pairing host: {}",
+                    error.reason
+                ),
+            });
+            None
+        }
+    }
+}
+
+/// Tell a pairing host that already dropped its QR why pairing stopped.
+///
+/// It waits on the handshake topic without a deadline, so staying silent here
+/// leaves it waiting forever. Reported under `announced`, because allocating
+/// the device slot can rotate this host's signer onto an account that never
+/// obtained an allowance and so cannot reach the host at all.
+async fn report_pairing_failure(
+    session: &SigningHostSession,
+    announced: &AnnouncedPairing,
+    reason: String,
+) {
+    if let Err(error) = session
+        .runtime
+        .notify_pairing_failed(announced, reason)
+        .await
+    {
+        terminal_ui::output_event(SystemEvent::SigningHostError {
+            reason: format!(
+                "failed to tell the pairing host that pairing failed: {}",
+                error.reason
+            ),
+        });
+    }
+}
+
 async fn prepare_pairing_response(
     session: &mut SigningHostSession,
     candidate: &PairedHost,
@@ -2278,7 +2532,15 @@ async fn establish_paired_host(
     let candidate_is_existing = existing
         .iter()
         .any(|host| host.statement_account_id() == candidate.statement_account_id());
+    // Allocating the device slot submits extrinsics and waits for them on
+    // chain. Without this the pairing host stays on its QR screen throughout,
+    // with no sign that the scan registered.
+    let announced = announce_allowance_allocation(session, deeplink).await;
+
     if let Err(error) = prepare_pairing_response(session, &candidate, &existing).await {
+        if let Some(announced) = &announced {
+            report_pairing_failure(session, announced, error.to_string()).await;
+        }
         discard_new_pairing_candidate(session, &candidate, candidate_is_existing).await;
         return Err(error);
     }
@@ -2293,6 +2555,9 @@ async fn establish_paired_host(
     }
     .await;
     if let Err(error) = result {
+        if let Some(announced) = &announced {
+            report_pairing_failure(session, announced, error.to_string()).await;
+        }
         discard_new_pairing_candidate(session, &candidate, candidate_is_existing).await;
         return Err(error);
     }
@@ -2324,6 +2589,9 @@ fn is_statement_slot_exhaustion(err: &anyhow::Error) -> bool {
 fn signer_identity_may_rotate(auto_managed: bool, paired_host_count: usize) -> bool {
     auto_managed && paired_host_count == 0
 }
+
+/// Report label `StatementRenewalTarget::WalletSso` renews under.
+const WALLET_SSO_RENEWAL_LABEL: &str = "wallet-sso";
 
 fn pairing_device_renewal_target(statement_account_id: [u8; 32]) -> StatementRenewalTarget {
     StatementRenewalTarget::Account {
@@ -2380,7 +2648,7 @@ async fn renew_pairing_allowances(
         }
     };
 
-    let mut required_labels = vec!["wallet-sso".to_string()];
+    let mut required_labels = vec![WALLET_SSO_RENEWAL_LABEL.to_string()];
     required_labels.extend(
         required_device_ids
             .iter()
@@ -3064,6 +3332,7 @@ async fn pairing_interactive_loop(
     product: Arc<frame_server::ProductSelection>,
     runtime: Arc<PairingHostRuntime>,
     storage: Arc<CliPlatform>,
+    script_projects: PathBuf,
     mut ui: ActiveTerminalUi,
     log_controller: LogController,
 ) -> Result<()> {
@@ -3128,7 +3397,7 @@ async fn pairing_interactive_loop(
                 }
             }
             ShellCommand::Quit => return Ok(()),
-            ShellCommand::Script(script) => {
+            ShellCommand::Script(command) => {
                 let current_state_path = storage
                     .state_dir()
                     .context("pairing host storage is not configured")?;
@@ -3136,32 +3405,21 @@ async fn pairing_interactive_loop(
                     pairing_state_path = current_state_path;
                     last_script = sessions::session_last_script(&pairing_state_path)?;
                 }
-                let scratch_script_directory = pairing_state_path.join("scripts");
-                let script = match script {
-                    Some(script) => {
-                        remember_script(Some(&pairing_state_path), &mut last_script, script)
-                    }
-                    None => {
-                        let script =
-                            select_script_to_edit(&scratch_script_directory, &mut last_script);
-                        match script {
-                            Ok(script) => match sessions::store_session_last_script(
-                                &pairing_state_path,
-                                &script,
-                            ) {
-                                Ok(()) => edit_script_in(script, &mut ui).await,
-                                Err(error) => Err(error),
-                            },
-                            Err(error) => Err(error),
-                        }
-                    }
-                };
+                let script = select_interactive_script(
+                    &command,
+                    &script_projects,
+                    Some(&pairing_state_path),
+                    &mut last_script,
+                    &mut ui,
+                )
+                .await;
                 match script {
-                    Ok(script) => {
+                    Ok(Some(script)) => {
                         let product_id = product.current();
                         run_pairing_script(&frame_url, &product_id, &script, input, &mut ui)
                             .await?;
                     }
+                    Ok(None) => {}
                     Err(error) => ui.error(error.to_string()),
                 }
             }
@@ -3458,19 +3716,31 @@ async fn signing_interactive_loop(
                 };
                 run_interactive_pairing_image(session, input, &mut ui).await?;
             }
-            ShellCommand::Script(None) => match edit_session_script(session, &mut ui).await {
-                Ok(script) => {
+            ShellCommand::Script(command) => match select_interactive_script(
+                &command,
+                &session.script_projects,
+                session
+                    .profile
+                    .as_ref()
+                    .map(|profile| profile.path.as_path()),
+                &mut session.last_script,
+                &mut ui,
+            )
+            .await
+            {
+                Ok(Some(script)) => {
                     let product_id = product.current();
                     run_interactive_operation(
                         session,
                         &frame_url,
                         &product_id,
-                        ShellCommand::Script(Some(script)),
+                        ShellCommand::Script(ScriptCommand::Run(Some(script))),
                         input,
                         &mut ui,
                     )
                     .await?;
                 }
+                Ok(None) => {}
                 Err(error) => ui.error(error.to_string()),
             },
             command => {
@@ -3571,7 +3841,7 @@ async fn execute_interactive_operation(
         ShellCommand::Pair(PairCommand::Scan) => {
             bail!("clipboard image paste must be handled by the terminal UI")
         }
-        ShellCommand::Script(Some(script)) => {
+        ShellCommand::Script(ScriptCommand::Run(Some(script))) => {
             let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
             let script =
                 remember_script(session_path.as_deref(), &mut session.last_script, script)?;
@@ -3588,7 +3858,7 @@ async fn execute_interactive_operation(
                 code: status.code().unwrap_or(1),
             });
         }
-        ShellCommand::Script(None) => bail!("new scripts must be edited by the terminal UI"),
+        ShellCommand::Script(_) => bail!("script selection must be handled by the terminal UI"),
         ShellCommand::Session(SessionCommand::Switch(name)) => {
             switch_session(session, name).await?;
         }
@@ -3635,14 +3905,27 @@ async fn execute_non_interactive_command(
         ShellCommand::Pair(PairCommand::Scan) => bail!(
             "clipboard image paste needs an interactive signing host; use /pair <image-path> or /pair <polkadotapp://pair?...>"
         ),
-        ShellCommand::Script(script) => {
-            let script = match script {
-                Some(script) => {
-                    let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
-                    remember_script(session_path.as_deref(), &mut session.last_script, script)?
-                }
-                None => edit_session_script_plain(session).await?,
+        ShellCommand::Script(command) => {
+            if command.edits() && !terminal_ui::is_interactive_terminal() {
+                bail!(
+                    "/script without a path requires an interactive terminal; use /script --run or /script <path>"
+                );
+            }
+            let script =
+                select_script(&command, &session.script_projects, &mut session.last_script)?;
+            let session_path = session
+                .profile
+                .as_ref()
+                .map(|profile| profile.path.as_path());
+            let script = remember_script(session_path, &mut session.last_script, script)?;
+            let script = if command.edits() {
+                edit_script_plain(script).await?
+            } else {
+                script
             };
+            if !command.runs() {
+                return Ok(None);
+            }
             ensure_signer(session).await?;
             let product_id = product.current();
             let status = script_runner::run(
@@ -3735,23 +4018,43 @@ async fn execute_non_interactive_command(
     Ok(None)
 }
 
-fn scratch_script_directory(session: &SigningHostSession) -> PathBuf {
-    session.profile.as_ref().map_or_else(
-        || std::env::temp_dir().join("truapi-host").join("scripts"),
-        |profile| profile.path.join("scripts"),
-    )
-}
-
 fn select_script_to_edit(
     scratch_script_directory: &std::path::Path,
     last_script: &mut Option<PathBuf>,
 ) -> Result<PathBuf> {
-    if let Some(script) = last_script.as_ref().filter(|script| script.is_file()) {
-        return Ok(script.clone());
+    if let Some(script) = last_script
+        .as_ref()
+        .map(|script| script_project::remembered_script(script))
+        .transpose()?
+        .flatten()
+    {
+        return Ok(script);
     }
-    let script = script_runner::create_scratch_script(scratch_script_directory)?;
+    let script = script_project::create(scratch_script_directory, None)?;
     *last_script = Some(script.clone());
     Ok(script)
+}
+
+fn select_script(
+    command: &ScriptCommand,
+    projects: &Path,
+    last_script: &mut Option<PathBuf>,
+) -> Result<PathBuf> {
+    match command {
+        ScriptCommand::Edit | ScriptCommand::EditOnly => {
+            select_script_to_edit(projects, last_script)
+        }
+        ScriptCommand::New(directory) => script_project::create(projects, directory.as_deref()),
+        ScriptCommand::Run(Some(script)) => Ok(script.clone()),
+        ScriptCommand::Run(None) => last_script
+            .as_ref()
+            .map(|script| script_project::remembered_script(script))
+            .transpose()?
+            .flatten()
+            .context(
+                "no script selected; use /script to create one or /script <path> to select one",
+            ),
+    }
 }
 
 fn remember_script(
@@ -3773,24 +4076,37 @@ fn remember_script(
     Ok(script)
 }
 
-fn session_script_to_edit(session: &mut SigningHostSession) -> Result<PathBuf> {
-    let directory = scratch_script_directory(session);
-    let script = select_script_to_edit(&directory, &mut session.last_script)?;
-    if let Some(profile) = &session.profile {
-        session.catalog.store_last_script(profile, &script)?;
-    }
-    Ok(script)
-}
-
-async fn edit_session_script(
-    session: &mut SigningHostSession,
+async fn select_interactive_script(
+    command: &ScriptCommand,
+    projects: &Path,
+    session_path: Option<&Path>,
+    last_script: &mut Option<PathBuf>,
     ui: &mut ActiveTerminalUi,
-) -> Result<PathBuf> {
-    let script = session_script_to_edit(session)?;
-    edit_script_in(script, ui).await
+) -> Result<Option<PathBuf>> {
+    let script = select_script(command, projects, last_script)?;
+    let script = remember_script(session_path, last_script, script)?;
+    let script = if command.edits() {
+        edit_script_in(script, ui).await?
+    } else {
+        script
+    };
+    Ok(command.runs().then_some(script))
 }
 
 async fn edit_script_in(script: PathBuf, ui: &mut ActiveTerminalUi) -> Result<PathBuf> {
+    match ui
+        .drive(
+            "Preparing script",
+            script_project::prepare(&script, Some(ui.handle())),
+        )
+        .await?
+    {
+        DriveResult::Complete(result) => result?,
+        DriveResult::Cancelled => bail!(
+            "script setup cancelled; project retained at {}",
+            script.display()
+        ),
+    }
     ui.system(format!("Opening {} in your editor", script.display()));
     ui.suspend()?;
     let edit_result = script_runner::edit(&script).await;
@@ -3810,11 +4126,8 @@ async fn edit_script_in(script: PathBuf, ui: &mut ActiveTerminalUi) -> Result<Pa
     Ok(script)
 }
 
-async fn edit_session_script_plain(session: &mut SigningHostSession) -> Result<PathBuf> {
-    if !terminal_ui::is_interactive_terminal() {
-        bail!("/script without a path requires an interactive terminal");
-    }
-    let script = session_script_to_edit(session)?;
+async fn edit_script_plain(script: PathBuf) -> Result<PathBuf> {
+    script_project::prepare(&script, None).await?;
     eprintln!("EDITING_SCRIPT {}", script.display());
     let status = script_runner::edit(&script).await?;
     if !status.success() {
@@ -4113,6 +4426,54 @@ mod cli_tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn script_completion_removes_the_private_frame_socket_before_returning() -> Result<()> {
+        struct UnusedRuntimeFactory;
+
+        impl frame_server::ProductRuntimeFactory for UnusedRuntimeFactory {
+            fn product_runtime(
+                &self,
+                _product: truapi_server::ProductContext,
+                _sink: Arc<dyn truapi_server::FrameSink>,
+            ) -> truapi_server::ProductRuntime {
+                panic!("the completed script must not open a product connection")
+            }
+        }
+
+        for script_failed in [false, true] {
+            let frame_server = frame_server::bind(None).await?;
+            let socket = PathBuf::from(
+                frame_server
+                    .endpoint()
+                    .strip_prefix("ws+unix:")
+                    .context("expected a private Unix socket")?,
+            );
+            let directory = socket.parent().context("socket has no directory")?;
+            assert!(socket.exists());
+            let product = frame_server::ProductSelection::new(
+                "script-cleanup.testnet".to_string(),
+                ProductExecutionKind::App,
+            )?;
+            let result = with_frame_server(
+                Arc::new(UnusedRuntimeFactory),
+                product,
+                frame_server,
+                async move {
+                    anyhow::ensure!(!script_failed, "script failed");
+                    Ok(())
+                },
+            )
+            .await;
+
+            assert_eq!(
+                (result.is_err(), socket.exists(), directory.exists()),
+                (script_failed, false, false),
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn dev_force_kills_a_term_ignoring_descendant_after_its_launcher_exits() -> Result<()> {
         const READY_PATH_ENV: &str = "TRUAPI_DEV_COMMAND_TEST_READY_PATH";
 
@@ -4305,6 +4666,43 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
     }
 
     #[test]
+    fn rerun_without_a_selected_script_does_not_create_or_edit_a_project() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let projects = temporary.path().join("scripts");
+
+        let error = select_script(&ScriptCommand::Run(None), &projects, &mut None).unwrap_err();
+
+        assert_eq!(
+            (error.to_string(), projects.exists()),
+            (
+                "no script selected; use /script to create one or /script <path> to select one"
+                    .to_string(),
+                false
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_sessions_keeps_managed_script_projects() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let base = Some(temporary.path().to_path_buf());
+        let catalog = SessionCatalog::new(state_base_path(base.clone()), "testnet")?;
+        let profile = catalog.ensure_profile(DEFAULT_SESSION_NAME)?;
+        let projects = script_project_directory(base);
+        let script = select_script_to_edit(&projects, &mut None)?;
+        sessions::store_session_last_script(&profile.path, &script)?;
+
+        catalog.clear(&SessionClearTarget::All)?;
+
+        assert_eq!(
+            (projects, script.is_file(), profile.path.exists()),
+            (temporary.path().join("scripts"), true, false)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn bare_script_selection_reuses_the_last_existing_script() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let mut last_script = None;
@@ -4325,7 +4723,9 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
         let temporary = tempfile::tempdir()?;
         let scripts = temporary.path().join("scripts");
         std::fs::create_dir_all(&scripts)?;
-        let mut last_script = Some(script_runner::create_scratch_script(&scripts)?);
+        let scratch = scripts.join("scratch.ts");
+        std::fs::write(&scratch, "console.log('scratch');")?;
+        let mut last_script = Some(scratch);
         let explicit = temporary.path().join("product-script.ts");
         std::fs::write(&explicit, "console.log('product');")?;
 

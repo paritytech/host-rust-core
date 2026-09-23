@@ -1,7 +1,10 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.recycling
 
+import io.paritytech.polkadotapp.common.data.time.TimeProvider
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinRecyclingState
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerFungibility
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerIndex
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher.Location
@@ -13,6 +16,7 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageAsset
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TrackedCoin
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.TrackedVoucher
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.CoinRepository
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.test_shared.any
 import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.flow.flowOf
@@ -22,6 +26,8 @@ import org.junit.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.math.BigInteger
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Instant
 
 private const val FULL_RING = 767
 private const val FORCED_AGE = 14
@@ -34,12 +40,17 @@ class CoinageAssetSelectorTest {
     private val quotaTracker: UnloadQuotaTracker = mock()
     private val coinRepository: CoinRepository = mock()
 
+    private var now = Instant.fromEpochMilliseconds(0)
+    private val timeProvider = object : TimeProvider {
+        override fun now(): Instant = now
+    }
+
     private val selector = CoinageAssetSelector(
         coinageAssetsUseCase = coinageAssetsUseCase,
         strategyProvider = RecyclingStrategyProvider(ForcedRecyclingAgeProvider(coinRepository), quotaTracker),
         settings = settings,
         evaluator = evaluator,
-        voucherUsabilityContextFactory = VoucherUsabilityContextFactory(ringCapacityProvider),
+        voucherUsabilityContextFactory = VoucherUsabilityContextFactory(ringCapacityProvider, timeProvider),
     )
 
     private val spendable = coinOf(derivationIndex = 1)
@@ -149,6 +160,29 @@ class CoinageAssetSelectorTest {
         assertEquals(listOf(gaining), selector.getVouchersGainingPrivacy())
     }
 
+    @Test
+    fun `maturity makes the voucher selectable without confirmation in both modes`() = runBlocking<Unit> {
+        val voucher = voucherOf(ringVrfKeyIndex = 1, members = 32, enteredAt = now)
+        withVouchers(voucher)
+        val outcomes = listOf(RecyclingStrategyType.BALANCED, RecyclingStrategyType.MAX_PRIVACY).map { type ->
+            withStrategy(type)
+            now = Instant.fromEpochMilliseconds(0)
+            val before = selector.getSelectableVouchersByScope()
+            now += 10.minutes
+            val after = selector.getSelectableVouchersByScope()
+            before to after
+        }
+
+        val ready = SpendScope.entries.associateWith { listOf(voucher) }
+        assertEquals(
+            listOf(
+                mapOf(SpendScope.SPENDABLE to emptyList(), SpendScope.WITH_CONFIRMATION to listOf(voucher)) to ready,
+                SpendScope.entries.associateWith { emptyList<RecyclerVoucher>() } to ready,
+            ),
+            outcomes,
+        )
+    }
+
     private suspend fun withStrategy(type: RecyclingStrategyType) {
         whenever(settings.getStrategy()).thenReturn(type)
     }
@@ -161,17 +195,20 @@ class CoinageAssetSelectorTest {
     private fun freeCoin(coin: Coin) = TrackedCoin(coin, CoinageAssetState.UNTRACKED)
 
     private fun coinOf(derivationIndex: Int) = Coin(
-        derivationIndex = derivationIndex,
+        derivationIndex = testKey(derivationIndex),
         valueExponent = ValueExponent(1),
         age = Coin.Age.Known(3),
         isOnChain = true,
         accountId = mock(),
+        provenance = CoinProvenance.UNKNOWN,
     )
 
-    private fun voucherOf(ringVrfKeyIndex: Int, members: Int) = RecyclerVoucher(
-        ringVrfKeyIndex = ringVrfKeyIndex,
+    private fun voucherOf(ringVrfKeyIndex: Int, members: Int, enteredAt: Instant? = null) = RecyclerVoucher(
+        ringVrfKeyIndex = testKey(ringVrfKeyIndex),
         ringVrfPublicKey = mock(),
         recyclerValue = ValueExponent(1),
-        location = Location.InRecycler(RecyclerIndex(BigInteger.ONE), recyclerMembers = members),
+        location = Location.InRecycler(RecyclerIndex(BigInteger.ONE), recyclerMembers = members, enteredAt = enteredAt),
+        recyclerFungibility = RecyclerFungibility.NONE,
+        maxRecyclerFungibility = RecyclerFungibility.NONE,
     )
 }

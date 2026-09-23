@@ -25,26 +25,26 @@ enum FuzzAction: Equatable {
     /// A pass with one read failing throughout it, so every evidence path has an unknown to handle.
     case runPassWithFault(FuzzFault)
     case reorg(depth: Int)
-    case registerSpend(coin: DerivationIndex)
+    case registerSpend(coin: CoinageKeyIndex)
     /// One voucher in, one coin out.
-    case registerUnload(voucher: DerivationIndex)
+    case registerUnload(voucher: CoinageKeyIndex)
     /// Several vouchers of one ring in, one coin out.
-    case registerMultiUnload(first: DerivationIndex, second: DerivationIndex)
+    case registerMultiUnload(first: CoinageKeyIndex, second: CoinageKeyIndex)
     /// One coin in, nothing trackable out.
-    case registerOffboard(coin: DerivationIndex)
+    case registerOffboard(coin: CoinageKeyIndex)
     /// One coin in, two coins out.
-    case registerSplit(coin: DerivationIndex)
-    case registerVoucherMint(coin: DerivationIndex, voucher: DerivationIndex)
+    case registerSplit(coin: CoinageKeyIndex)
+    case registerVoucherMint(coin: CoinageKeyIndex, voucher: CoinageKeyIndex)
     /// Nothing in, one voucher out.
-    case registerExternalLoad(voucher: DerivationIndex)
-    case handOff(coin: DerivationIndex)
-    case peerSpends(coin: DerivationIndex)
-    case registerBatch(first: DerivationIndex, second: DerivationIndex)
+    case registerExternalLoad(voucher: CoinageKeyIndex)
+    case handOff(coin: CoinageKeyIndex)
+    case peerSpends(coin: CoinageKeyIndex)
+    case registerBatch(first: CoinageKeyIndex, second: CoinageKeyIndex)
     case crash
     case relaunch
-    case archiveRecycler(voucher: DerivationIndex)
+    case archiveRecycler(voucher: CoinageKeyIndex)
     /// The queued voucher takes a place in a ring, which is what makes it unloadable.
-    case placeVoucherInRing(voucher: DerivationIndex, ring: Int)
+    case placeVoucherInRing(voucher: CoinageKeyIndex, ring: Int)
     /// Identified by the entry's sequence rather than its id, so a recorded walk survives replay
     /// (the store mints a fresh random id each run, but sequence is deterministic).
     case includeTx(sequence: Int64, success: Bool)

@@ -14,10 +14,27 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | `@parity/truapi-host/web`            | Browser pairing and signing hosts: `createIframeHost`, `createWebWorkerPairingHostRuntime`, and `createWebWorkerSigningHostRuntime`. |
 | `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
 | `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
+| `@parity/truapi-host/testing`        | `createMockHost`: the in-memory host seam a product is tested against.                                              |
+| `@parity/truapi-host/testing/playwright` | Playwright fixture that boots the test host and embeds the product in an iframe.                                |
+| `@parity/truapi-host/testing/server` | Node server that serves the host page and its bundle.                                                              |
+| `@parity/truapi-host/testing/client` | `createMockClient`: a product client over the mock with no iframe, for unit tests.                                  |
+| `@parity/truapi-host/testing/dev-accounts` | Named dev accounts derived from fixed BIP-39 entropy, which sign for real.                                    |
+| `@parity/truapi-host/testing/host-page` | The browser half the fixture drives, for a suite that boots its own page.                                        |
+| `@parity/truapi-host/wasm/testing`   | The raw glue for the signing-enabled bundle the test host runs on.                                                  |
 
 The shipped WASM includes `WasmSigningHostRuntime`. Its configuration requires
 `runtimeConfig.networkSuffix`: the bare TLD (`dot`, `paseo`, or `testnet`)
 matching the People chain and the wallet's onboarding configuration.
+`scripts/build-wasm.mjs` builds two WASM bundles, both `--no-default-features`.
+`wasm/web` is the production browser host and excludes
+`WasmSigningHostRuntime`; `wasm/testing` adds the Rust `wasm-signing-host` and
+`test-host` features, which is what lets the test host hold keys and answer
+resource allocation as granted without allocating anything.
+`ProductRuntimeConfig` configures the pairing host and requires no network
+suffix. The signing constructor's configuration requires
+`runtimeConfig.networkSuffix` in addition: the bare TLD (`dot`, `paseo`, or
+`testnet`) matching the People chain and the wallet's onboarding
+configuration.
 
 `runtimeConfig.assetHub` is required by both configurations, pairing and
 signing. It is the Asset Hub genesis hash, in the same shape as
@@ -315,6 +332,25 @@ await runtime.activateStoredSession().catch(() => {});
 
 const provider = await runtime.createProvider({ productId: "first.dot" });
 ```
+
+### Statement-store traffic of the host's own
+
+A host that runs its own statement-store traffic — P2P chat, device sync — signs
+with the account its device advertises in the pairing QR. The paired wallet
+registers that account's statement-store allowance while answering the
+handshake, so it is the only account whose statements the network accepts from
+this host. A locally minted key gets no allowance, and every submission fails
+with `no allowance set for account`.
+
+| Value                                    | Where                                  |
+| ---------------------------------------- | -------------------------------------- |
+| `SessionUiInfo.deviceStatementAccountId` | On every `AuthState.Connected`         |
+| `getDeviceStatementKey()`                | Runtime method, 64-byte sr25519 secret |
+
+Peers are told to address that same account, so it is also what a host derives
+its own statement topics from. Both are `undefined` without an active session,
+and the account is rotated per login: read it from the current session rather
+than caching it across sign-ins.
 
 ## Worker lifecycle
 

@@ -49,6 +49,7 @@ export function openerIndexOf(
 export type FrameRole =
   | "request"
   | "response"
+  | "cancel"
   | "start"
   | "stop"
   | "receive"
@@ -79,7 +80,7 @@ export interface ObservedFrame {
   frameId: number;
   /**
    * The wire's own leg marker (`Payload.messageType`): `Request`/`Start` = 0,
-   * `Response`/`Receive` = 1, `Interrupt` = 2, `Stop` = 3. `-1` for a frame
+   * `Response`/`Receive` = 1, `Interrupt` = 2, `Stop` = 3, `Cancel` = 4. `-1` for a frame
    * that failed to decode at all (the `"malformed"` sentinel).
    */
   messageType: number;

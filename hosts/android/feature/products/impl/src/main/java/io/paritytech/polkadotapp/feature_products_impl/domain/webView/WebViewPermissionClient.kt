@@ -8,6 +8,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.net.toUri
+import io.parity.truapi.TrUAPIProductExecution
+import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.common.utils.notFoundResponse
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsTldProvider
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
@@ -16,8 +18,12 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.getProduct
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionGuard
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.NetworkAccessPermissionHandler
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import timber.log.Timber
+import uniffi.truapi.RemotePermission
+import uniffi.truapi.RemotePermissionRequest
 import javax.inject.Inject
 
 class WebViewPermissionClientFactory @Inject constructor(
@@ -41,6 +47,17 @@ class WebViewPermissionClient(
     private val permissionGuard: ProductPermissionGuard,
     private val dotNsTldProvider: DotNsTldProvider
 ) : WebViewClient() {
+    @Volatile
+    private var remoteAuthorization: (suspend (ProductId, String) -> Boolean)? = null
+
+    fun useTrUAPIPermissions(productId: ProductId, execution: TrUAPIProductExecution, scope: CoroutineScope) {
+        remoteAuthorization = { caller, domain ->
+            caller == productId && withContext(scope.coroutineContext) {
+                execution.authorizeRemotePermission(RemotePermissionRequest(RemotePermission.Remote(listOf(domain))))
+            }
+        }
+    }
+
     /**
      * Last two entries from back-forward history, captured on [onPageStarted].
      *
@@ -67,9 +84,9 @@ class WebViewPermissionClient(
     }
 
     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest?): WebResourceResponse? {
-        val url = request?.url ?: return super.shouldInterceptRequest(view, request)
-        if (url.scheme == "data") return super.shouldInterceptRequest(view, request)
-        if (request.isForMainFrame) return super.shouldInterceptRequest(view, request)
+        val url = request?.url ?: return null
+        if (url.scheme == "data") return null
+        if (request.isForMainFrame) return null
 
         val callingProductId = runBlocking { productIdProvider.getProductIdOrNull() }
 
@@ -82,16 +99,23 @@ class WebViewPermissionClient(
             ProductId.fromUrl(url, tld).getOrNull()
         }
         if (requestProductId == callingProductId || requestProductId in recentProductIds || url.isFirstParty()) {
-            return super.shouldInterceptRequest(view, request)
+            return null
         }
 
         val domain = NetworkAccessPermissionHandler.extractDomain(url.toString())
         if (domain != null) {
-            val granted = runBlocking {
-                permissionGuard.consumePermission(callingProductId, ProductPermission.RemotePermission.NetworkAccess(domain))
-            }
+            val granted = runCatching {
+                runBlocking {
+                    val authorization = remoteAuthorization
+                    if (authorization != null) {
+                        authorization(callingProductId, domain)
+                    } else {
+                        permissionGuard.consumePermission(callingProductId, ProductPermission.RemotePermission.NetworkAccess(domain))
+                    }
+                }
+            }.logFailure("WebView HTTP authorization failed").getOrDefault(false)
             if (granted) {
-                return super.shouldInterceptRequest(view, request)
+                return null
             }
         }
 

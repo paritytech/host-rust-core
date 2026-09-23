@@ -50,8 +50,10 @@ class FooSyncWorker @AssistedInject constructor(
 6. **Periodic vs one-shot** — `PeriodicWorkRequestBuilder` only when the OS scheduling is what you want. For "run when X happens", an event-driven path (subscription + one-shot enqueue) is usually better.
 7. **Unique work names** — every enqueue must specify a unique name and a `ExistingWorkPolicy` (`KEEP` for idempotent, `REPLACE` when re-enqueuing supersedes). Constants in the worker companion.
 8. **Foreground / expedited workers** — if you mark a worker as expedited via `setExpedited(...)`, you **must** override `getForegroundInfo()`. Otherwise WorkManager silently demotes the worker to non-expedited and it may not run promptly.
-9. **Background chain access** — if the worker submits extrinsics or holds a long subscription, wrap in `ChainConnectionRefCounter.withConnectionEnabled(...)` (`architecture/transactions.md § Background chain work`).
-10. **No UI work in `doWork`** — notification posting belongs in a separate helper that takes the result. Workers should be pure logic.
+9. **In-process executors a worker keeps alive are started in `doWork()`** — a worker restarted after process death runs without the UI-driven starters, so anything it only hosts (e.g. `DurableSubmissionExecutor`) must be started by the worker itself.
+10. **A Room query `Flow` used as a work trigger must not be `distinctUntilChanged`** — Room drops intermediate invalidations, so two equal emissions can hide a row that left and came back.
+11. **Background chain access** — if the worker submits extrinsics or holds a long subscription, wrap in `ChainConnectionRefCounter.withConnectionEnabled(...)` (`architecture/transactions.md § Background chain work`).
+12. **No UI work in `doWork`** — notification posting belongs in a separate helper that takes the result. Workers should be pure logic.
 
 ### Enqueue from a feature
 

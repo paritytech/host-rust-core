@@ -214,7 +214,7 @@ impl<T> Drop for JsSubscriptionStream<T> {
 
 fn invoke_js_subscription<T>(
     fn_: &Function,
-    payload: Option<Vec<u8>>,
+    payload: Option<JsValue>,
     parse_item: fn(JsValue) -> Result<T, String>,
 ) -> BoxStream<'static, Result<T, v01::GenericError>>
 where
@@ -231,15 +231,12 @@ where
     }) as Box<dyn FnMut(JsValue)>);
 
     let call_result = match payload {
-        Some(payload) => {
-            let arg = Uint8Array::from(payload.as_slice());
-            fn_.call3(
-                &JsValue::NULL,
-                &arg,
-                send_item.as_ref().unchecked_ref(),
-                send_error.as_ref().unchecked_ref(),
-            )
-        }
+        Some(arg) => fn_.call3(
+            &JsValue::NULL,
+            &arg,
+            send_item.as_ref().unchecked_ref(),
+            send_error.as_ref().unchecked_ref(),
+        ),
         None => fn_.call2(
             &JsValue::NULL,
             send_item.as_ref().unchecked_ref(),
@@ -988,6 +985,13 @@ impl WasmPairingHostRuntime {
             .map(|key| key.to_vec())
     }
 
+    /// Read the active session's sr25519 statement-store secret, or
+    /// `undefined` when no session is active.
+    #[wasm_bindgen(js_name = deviceStatementKey)]
+    pub fn device_statement_key(&self) -> Option<Vec<u8>> {
+        self.runtime.device_statement_key().map(|key| key.to_vec())
+    }
+
     /// Read this device's X25519 encryption secret, generating and persisting
     /// it on first read.
     #[wasm_bindgen(js_name = deviceEncryptionKey)]
@@ -1189,6 +1193,18 @@ pub struct WasmSigningHostRuntime {
 #[cfg(feature = "wasm-signing-host")]
 #[wasm_bindgen]
 impl WasmSigningHostRuntime {
+    /// Answer resource allocation as granted without performing it.
+    ///
+    /// A test host serves suites that exercise allowance-dependent product
+    /// paths without an on-chain personhood identity. Nothing is allocated, so
+    /// a green run says the product handles a grant, not that a host would
+    /// have given one.
+    #[cfg(feature = "test-host")]
+    #[wasm_bindgen(js_name = setGrantAllowancesUnchecked)]
+    pub fn set_grant_allowances_unchecked(&self, granted: bool) {
+        self.runtime.set_grant_allowances_unchecked(granted);
+    }
+
     /// Build a shared signing runtime from host callbacks and host config.
     #[wasm_bindgen(constructor)]
     pub fn new(

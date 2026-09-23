@@ -65,6 +65,10 @@ jobs:
 
       - name: cargo check no-std guest SDK
         run: cargo check --locked -p truapi -p truapi-client --no-default-features
+      - name: Check Rust library documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --lib --all-features --no-deps
 
       - name: cargo check wasm32
         run: cargo check --target wasm32-unknown-unknown -p truapi-server
@@ -85,6 +89,73 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --all-features
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Test launcher isolation from product configuration
+        run: cargo test -p truapi-host-cli --bin truapi-host caller_configuration_cannot_execute_before_the_sandbox -- --include-ignored
+
+  headless-install:
+    name: Headless source install
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
+      TRUAPI_HOST_NO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: nightly
+          components: rustfmt
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Isolate the installation
+        run: |
+          printf '%s\n' \
+            "CARGO_INSTALL_ROOT=$RUNNER_TEMP/headless-install/cargo" \
+            "TRUAPI_HOST_INSTALL_DIR=$RUNNER_TEMP/headless-install/prebuilt" \
+            "TRUAPI_HOST_BIN_DIR=$RUNNER_TEMP/headless-install/bin" >> "$GITHUB_ENV"
+
+      - name: Build and install from a fresh checkout
+        run: make headless install
+
+      - name: Build and install with stale generated sources
+        run: |
+          printf '%s\n' 'compile_error!("stale generated dispatcher");' > rust/crates/truapi-server/src/generated/dispatcher.rs
+          printf '%s\n' 'const staleGeneratedClient: never = "stale";' > js/packages/truapi/src/generated/client.ts
+          make headless install
+
+      - name: Smoke-test the installed CLI
+        run: |
+          "$CARGO_INSTALL_ROOT/bin/truapi-host" --version
+          printf '%s\n' 'assert(typeof truapi === "object"); console.log("headless-install-ok");' > "$RUNNER_TEMP/headless-smoke.ts"
+          timeout 60s "$CARGO_INSTALL_ROOT/bin/truapi-host" pairing-host \
+            --script "$RUNNER_TEMP/headless-smoke.ts" \
+            --base-path "$RUNNER_TEMP/headless-state" > "$RUNNER_TEMP/headless-smoke.log" 2>&1 \
+            || { cat "$RUNNER_TEMP/headless-smoke.log"; exit 1; }
+          cat "$RUNNER_TEMP/headless-smoke.log"
+          grep -q headless-install-ok "$RUNNER_TEMP/headless-smoke.log"
 
   wasm-provider:
     name: truapi-provider (wasm browser tests)
@@ -165,6 +236,9 @@ jobs:
       - name: Run codegen
         run: ./scripts/codegen.sh
 
+      - name: Type-check headless host scripts
+        run: node scripts/check-host-script-types.mjs
+
       - name: Upload codegen output
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -178,6 +252,7 @@ jobs:
             js/packages/truapi/src/explorer/versions.ts
             js/packages/truapi-host/src/generated
             playground/test/generated
+            rust/crates/truapi-host-cli/js/script-types.d.ts
             rust/crates/truapi-server/src/generated
             rust/crates/truapi-server/src/wasm
 
@@ -226,6 +301,7 @@ jobs:
       sdk_swift: ${{ steps.filter.outputs.sdk_swift }}
       sdk_kotlin: ${{ steps.filter.outputs.sdk_kotlin }}
       sdk_provider_kotlin: ${{ steps.filter.outputs.sdk_provider_kotlin }}
+      host_android: ${{ steps.filter.outputs.host_android }}
       cli_package: ${{ steps.filter.outputs.cli_package }}
       workflows: ${{ steps.filter.outputs.workflows }}
       needs_changeset: ${{ steps.filter.outputs.needs_changeset }}
@@ -263,6 +339,7 @@ jobs:
               echo "sdk_swift=true"
               echo "sdk_kotlin=true"
               echo "sdk_provider_kotlin=true"
+              echo "host_android=true"
               echo "cli_package=true"
               echo "workflows=true"
             } >> "$GITHUB_OUTPUT"
@@ -279,7 +356,7 @@ jobs:
           }
 
           gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
-          gate workflows '^(\.github/workflows/|\.github/actions/|hosts/[a-z]+/\.github/)'
+          gate workflows '^(\.github/workflows/|\.github/actions/|\.github/labeler\.yml$|\.github/CODEOWNERS$|hosts/[a-z]+/\.github/|scripts/(lint-composite-shell|check-path-routing)\.py$)'
           gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
           # The provider AAR is generated from its own cdylib and compiles
@@ -287,6 +364,10 @@ jobs:
           # shell: the crate, the two it depends on, the bindings generator and
           # the Gradle wiring that compiles the result.
           gate sdk_provider_kotlin '^(android/truapi-provider/|rust/crates/truapi-provider/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/uniffi-bindgen-cli/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|\.github/workflows/ci\.yml$)'
+          # The vendored Android host, plus the crates its bindings are
+          # generated from. Nothing gated on this tree before, so a core change
+          # that broke it reached a release with no gate in between.
+          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
 
           # The packaging path has its own inputs: the archive layout in the
           # Makefile, the runner bundle, the generated sources cli-dist refuses
@@ -294,7 +375,7 @@ jobs:
           # survive. `@parity/truapi` is here because the runner inlines it from
           # source, and bundling it is a step no other job performs. A release
           # is the wrong place to find out one of them moved.
-          gate cli_package '^(rust/crates/truapi-host-cli/|js/packages/truapi/(src/|package\.json$|tsconfig[^/]*\.json$)|Makefile$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|\.github/workflows/(ci|cli-package)\.yml$)'
+          gate cli_package '^(rust/crates/(truapi-host-cli|truapi|truapi-codegen|truapi-macros)/|js/container/|js/packages/truapi/(src/|package\.json$|tsconfig[^/]*\.json$)|Makefile$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|scripts/(codegen\.sh|build-cli-runner\.ts|cli-runner-package\.test\.ts)$|\.github/workflows/(ci|cli-package|release-cli)\.yml$)'
 
           # Include generators, dependency pins and package build configuration:
           # these can change a published artifact without touching its sources.
@@ -307,7 +388,7 @@ jobs:
           gate adds_changeset '^\.changeset/[^/]+\.md$'
 
   ios-swift:
-    name: iOS package (swift compile)
+    name: iOS package (Swift + WebKit)
     needs: [changes, codegen]
     if: needs.changes.outputs.sdk_swift == 'true'
     runs-on: macos-15
@@ -340,7 +421,7 @@ jobs:
         with:
           name: codegen-output
 
-      # Simulator slice only, debug profile. This gate compiles Swift and ships
+      # Simulator slice only, debug profile. This gate tests Swift and ships
       # no binary, so the device slice and release codegen are waste. The
       # published binary is older than the current Rust surface, so
       # TRUAPI_USE_LOCAL_BINARY points the manifest at this build instead.
@@ -360,7 +441,10 @@ jobs:
       # so SwiftPM refuses to resolve the package until this exists.
       - name: Build the lockdown container bundle
         run: |
+          npm ci --ignore-scripts
+          npm run build --prefix js/packages/truapi
           npm --prefix js/container install --no-fund --no-audit
+          npm --prefix js/container run typecheck
           npm --prefix js/container run build
 
       - name: Build the simulator XCFramework for TrUAPIProvider
@@ -393,16 +477,15 @@ jobs:
       - name: Compile the package and its tests from the tag
         run: |
           set -euo pipefail
+          simulator="$(node --input-type=module -e 'import { selectSimulator } from "./scripts/lib/ios-simulator.mjs"; console.log(selectSimulator().udid)')"
+          echo "TRUAPI_TEST_SIMULATOR=$simulator" >> "$GITHUB_ENV"
           probe="$RUNNER_TEMP/tag-probe"
           mkdir -p "$probe/ios/truapi-host/Binaries" "$probe/ios/truapi-provider/Binaries"
           cp -R ios/truapi-host/Binaries/truapi_server.xcframework "$probe/ios/truapi-host/Binaries/"
           cp -R ios/truapi-provider/Binaries/truapi_provider.xcframework "$probe/ios/truapi-provider/Binaries/"
           cd "$probe"
-          xcodebuild build-for-testing \
-            -scheme TrUAPIHost \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
-            CODE_SIGNING_ALLOWED=NO
+          TRUAPI_TEST_SIMULATOR="$simulator" ./ios/truapi-host/scripts/test.sh build-for-testing \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost"
           # Built for the simulator like TrUAPIHost above, not with `swift build`,
           # which targets macOS: the xcframeworks carry iOS slices only, and the
           # generated bindings use Swift concurrency, which the package's macOS
@@ -412,6 +495,37 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIProviderDerivedData" \
             CODE_SIGNING_ALLOWED=NO
+
+      - name: Test native product network permissions in WKWebView
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/tag-probe"
+          ./ios/truapi-host/scripts/test.sh test-without-building \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost" \
+            -only-testing:NetworkPermissionTests/ProductNetworkAccessTests \
+            -resultBundlePath "$RUNNER_TEMP/TrUAPINetworkTests.xcresult"
+
+      - name: Export native test diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/TrUAPINetworkTests.xcresult"
+          if [[ -d "$result" ]]; then
+            xcrun xcresulttool get test-results summary --path "$result"
+            xcrun xcresulttool get test-results tests --path "$result"
+            xcrun xcresulttool export diagnostics --path "$result" \
+              --output-path "$RUNNER_TEMP/TrUAPINetworkDiagnostics"
+          fi
+
+      - name: Upload native test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-network-test-results
+          path: |
+            ${{ runner.temp }}/TrUAPINetworkTests.xcresult
+            ${{ runner.temp }}/TrUAPINetworkDiagnostics
+          if-no-files-found: ignore
 
   # Compile gate for the Android host module: regenerates the UniFFI Kotlin
   # bindings and compiles the shell against them. No cross-compile, no
@@ -456,6 +570,114 @@ jobs:
         run: make uniffi-kotlin
       - name: Compile the shell against the bindings
         run: gradle :truapi-host:assembleRelease
+
+  # The app tree vendored at hosts/android consumes the core in this repository
+  # rather than a published package, so a core change that breaks it fails here
+  # instead of at the next version bump. The job builds the core, generates the
+  # Kotlin bindings, and compiles the app code that pattern matches over the
+  # generated types, which is where a removed or renamed variant surfaces.
+  #
+  # Scoped to :feature:products:impl and what it depends on. That is where every
+  # consumer of the generated types lives, and it configures from environment
+  # placeholders, where the app module would need values this repository does
+  # not hold.
+  host-android-bindings:
+    name: Android host app (compile and unit tests)
+    needs: changes
+    if: needs.changes.outputs.host_android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Shared with the Android distribution workflows, so a toolchain moves
+      # in one place. This job compiles rather than signs, so it takes no
+      # configuration or keystore, and it is the one that writes the cache the
+      # others read.
+      - name: Set up the Android build
+        id: setup
+        uses: ./.github/actions/setup-android-build
+        with:
+          save_cache: ${{ github.event_name == 'push' }}
+
+      # No truapi.dir: the core resolves two levels up, which is one of the
+      # properties this job keeps true.
+      #
+      # The target is the module that consumes the bindings, not the module that
+      # produces them. Generated bindings cannot disagree with the library they
+      # were generated from, so compiling them proves nothing; the signal is in
+      # the app code that pattern matches over core types. Compiling this module
+      # builds :bindings:truapi-host on the way, so both are covered.
+      #
+      # These values are configuration rather than credentials, and the app tree
+      # reads each of them from the environment when it is absent from
+      # local.properties. Placeholders are enough to configure the module, and
+      # keep the gate independent of secrets this repository does not hold.
+      - name: Compile Android consumers and instrumentation, run product unit tests
+        working-directory: hosts/android
+        env:
+          # The real id, because it is the one the Google configuration is
+          # built for. Inert in this job, which compiles a library module and
+          # never applies the Google Services plugin.
+          APPLICATION_ID: io.parity.polkadotapp
+          APPLICATION_NAME: Polkadot
+          CURRENCY_SYMBOL: DOT
+          FIRESTORE_DATABASE_ID: ci
+          GOOGLE_OAUTH_ID: ci
+          # Typed as a long, so a non-numeric placeholder is a compile error.
+          GOOGLE_PROJECT_ID: "0"
+          LOG_COLLECTION_EMAIL: ci@example.invalid
+          NIGHTLY_FUNDING_MNEMONIC: ci
+          PRIVACY_POLICY_URL: https://example.invalid/privacy
+          SENTRY_ORG: ci
+          SENTRY_PROJECT: ci
+          TERMS_OF_USE_URL: https://example.invalid/terms
+        run: >-
+          ./gradlew --configure-on-demand
+          :feature:products:impl:testReleaseUnitTest
+          :bindings:truapi-host:compileDebugAndroidTestKotlin
+
+  host-android-detekt:
+    name: Android host (detekt)
+    needs: changes
+    if: needs.changes.outputs.host_android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Reads the cache the compile gate writes rather than writing its own,
+      # since the two want the same toolchain and only one of them needs to
+      # pay for it.
+      - name: Set up the Android build
+        uses: ./.github/actions/setup-android-build
+
+      # Static analysis reads sources, but Gradle configures the whole build to
+      # find the task, and configuration is where a missing value throws. This
+      # needs CONTACT_EMAIL where the compile gate does not: that gate names a
+      # module and configures on demand, while detekt at the root configures
+      # every module, including the one that reads it.
+      - name: Run detekt
+        working-directory: hosts/android
+        env:
+          APPLICATION_ID: io.parity.polkadotapp
+          APPLICATION_NAME: Polkadot
+          CONTACT_EMAIL: ci@example.invalid
+          CURRENCY_SYMBOL: DOT
+          FIRESTORE_DATABASE_ID: ci
+          GOOGLE_OAUTH_ID: ci
+          GOOGLE_PROJECT_ID: "0"
+          LOG_COLLECTION_EMAIL: ci@example.invalid
+          NIGHTLY_FUNDING_MNEMONIC: ci
+          PRIVACY_POLICY_URL: https://example.invalid/privacy
+          SENTRY_ORG: ci
+          SENTRY_PROJECT: ci
+          TERMS_OF_USE_URL: https://example.invalid/terms
+        run: ./gradlew detekt --no-daemon
 
   # The provider ships as its own AAR, so its bindings compile on a path the
   # host gate never touches. `make provider-android-check` generates first and
@@ -537,6 +759,11 @@ jobs:
       - name: Test
         run: npm test --prefix js/packages/truapi
 
+      - name: Test shared product container
+        run: |
+          npm ci --prefix js/container --ignore-scripts
+          bun test js/container/src
+
   ts-host:
     name: "@parity/truapi-host"
     timeout-minutes: 10
@@ -567,6 +794,59 @@ jobs:
 
       - name: Build
         run: npm run build --prefix js/packages/truapi-host
+
+      - name: Test
+        run: npm test --prefix js/packages/truapi-host
+
+  host-wasm:
+    name: "@parity/truapi-host (wasm bridge)"
+    runs-on: ubuntu-latest
+    needs: codegen
+    env:
+      TRUAPI_REQUIRE_GENERATED: 1
+      # Without this a missing artefact skips the bridge suite green, which is
+      # how it went unrun on every pull request until now.
+      REQUIRE_WASM: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
+
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build --prefix js/packages/truapi-host
+
+      # Builds both bundles: the production browser host and the
+      # signing-enabled `testing` one the mock host runs on.
+      - name: Build wasm
+        run: npm run build:wasm --prefix js/packages/truapi-host
 
       - name: Test
         run: npm test --prefix js/packages/truapi-host
@@ -794,10 +1074,10 @@ jobs:
         run: shellcheck --version
 
       # Deliberate uses of a constant condition, which actionlint reports as
-      # if-cond: the e2e job while its smoke test is stabilised, and every iOS
-      # workflow that can reach Apple, held until the cutover. Drop this ignore
-      # only once both #686 and #764 have removed theirs, or workflow-lint goes
-      # red.
+      # if-cond: the e2e job while its smoke test is stabilised, the nightly's
+      # safetynet leg and the workflow that builds it on demand, and the failure
+      # notification, which has no room of its own to announce into. Drop this
+      # ignore once those four are gone, or workflow-lint goes red.
       #
       # The flag matches on message text across the whole tree, so it also
       # silences any accidental constant condition added elsewhere.
@@ -832,6 +1112,27 @@ jobs:
           fi
           printf 'linting %s\n' "${scripts[@]}"
           shellcheck "${scripts[@]}"
+
+      # A composite action's shell usually lives inline in its action.yml
+      # rather than in a file of its own, where the step above cannot see it.
+      #
+      # The parser is installed rather than assumed: the runner image does not
+      # ship PyYAML, and it imports today only because an unrelated system
+      # package happens to depend on it. Were that to change, every run would
+      # fail on an import error instead of linting.
+      - name: Lint the inline composite action shell
+        env:
+          SHELLCHECK_OPTS: "--exclude=SC2012,SC2129"
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          python3 scripts/lint-composite-shell.py
+
+      # Labelling and reviewer assignment answer the same question about the
+      # same paths, in two formats that cannot be one file. This holds them to
+      # the same set so neither quietly stops describing an area.
+      - name: Check labelling and ownership describe the same paths
+        run: python3 scripts/check-path-routing.py
   release-guard:
     name: Release guard
     timeout-minutes: 10
@@ -952,6 +1253,7 @@ jobs:
     needs:
       [
         rust,
+        headless-install,
         wasm-provider,
         licenses,
         codegen,
@@ -960,9 +1262,12 @@ jobs:
         ios-swift,
         android-bindings,
         provider-android-bindings,
+        host-android-bindings,
+        host-android-detekt,
         cli-package,
         ts-client,
         ts-host,
+        host-wasm,
         ts-debugger,
         playground,
         explorer,
@@ -1005,12 +1310,15 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           REQUIRED: >-
-            rust wasm-provider licenses codegen ios-bindings changes ios-swift
-            android-bindings provider-android-bindings cli-package ts-client
-            ts-host ts-debugger playground explorer e2e workflow-lint
+            rust headless-install wasm-provider licenses codegen ios-bindings changes ios-swift
+            android-bindings provider-android-bindings host-android-bindings
+            host-android-detekt
+            cli-package ts-client
+            ts-host host-wasm ts-debugger playground explorer e2e workflow-lint
             release-guard changeset-guard
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -1072,6 +1380,19 @@ jobs:
             jq -r 'to_entries | sort_by(.key) | .[] | "| \(.key) | \(.value.result) |"' <<<"$NEEDS"
             echo
             echo "</details>"
+            echo
+            # Credential expiry should be found by a schedule rather than by
+            # a failed release, so what that schedule last said belongs where
+            # someone is already looking. Never run, or unreadable, is
+            # reported as such rather than as healthy.
+            creds="$(gh run list --workflow=validate-signing-credentials.yml \
+              --limit 1 --json conclusion,updatedAt \
+              --jq '.[0] | "\(.conclusion) \(.updatedAt[0:10])"' 2>/dev/null || true)"
+            case "${creds%% *}" in
+              success) echo "Signing credentials: valid as of ${creds##* }" ;;
+              "")      echo "Signing credentials: never checked" ;;
+              *)       echo "Signing credentials: **${creds%% *}** as of ${creds##* }, a release may fail" ;;
+            esac
             echo
             echo "<sub>Commit \`${SHA:0:8}\` &middot; [run log]($RUN_URL)</sub>"
           } > "$RUNNER_TEMP/ci-summary.md"

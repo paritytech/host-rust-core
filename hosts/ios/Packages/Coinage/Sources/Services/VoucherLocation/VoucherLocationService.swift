@@ -138,20 +138,27 @@ extension VoucherLocationService {
                 logger: logger
             )
 
+        // Member updates arrive keyed by the voucher's public key, the way they were subscribed.
+        let indexByPublicKey = Dictionary(
+            vouchers.map { ($0.publicKey, $0.derivationIndex) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
         let positionsStream = memberStream
-            .scan([DerivationIndex: UncertainStorage<MembersPallet.RingPosition?>]()) { positions, result in
+            .scan([CoinageKeyIndex: UncertainStorage<MembersPallet.RingPosition?>]()) { positions, result in
                 var positions = positions
                 for update in result.ringPositionUpdates {
+                    guard let index = indexByPublicKey[update.publicKey] else { continue }
                     // The update was delivered, so it is `.defined`; a delivered empty reading is
                     // `.defined(nil)` (retraction) rather than a dropped key, so it can revert the voucher.
                     // A key never delivered stays absent — that, not `.undefined`, is "not changed".
-                    positions[update.derivationIndex] = .defined(update.ringPosition)
+                    positions[index] = .defined(update.ringPosition)
                 }
                 return positions
             }
 
         let resolvedStream = positionsStream
-            .flatMapLatest { [weak self] positions -> AnyAsyncSequence<[DerivationIndex: VoucherLocationUpdate]> in
+            .flatMapLatest { [weak self] positions -> AnyAsyncSequence<[CoinageKeyIndex: VoucherLocationUpdate]> in
                 guard let self else {
                     return AsyncEmptySequence().eraseToAnyAsyncSequence()
                 }
@@ -174,11 +181,11 @@ extension VoucherLocationService {
     /// a complete status snapshot, and resolves each voucher's location against it. When no voucher is yet
     /// placed in a ring, emits the onboarding-only resolution once so those writes still happen.
     private func resolvedLocationsStream(
-        positions: [DerivationIndex: UncertainStorage<MembersPallet.RingPosition?>],
+        positions: [CoinageKeyIndex: UncertainStorage<MembersPallet.RingPosition?>],
         vouchers: [Voucher],
         capacities: [Int16: Int],
         keysPerPage: Int
-    ) -> AnyAsyncSequence<[DerivationIndex: VoucherLocationUpdate]> {
+    ) -> AnyAsyncSequence<[CoinageKeyIndex: VoucherLocationUpdate]> {
         let voucherByIndex = Dictionary(uniqueKeysWithValues: vouchers.map { ($0.derivationIndex, $0) })
         let recyclers = Self.recyclers(positions: positions, voucherByIndex: voucherByIndex)
         // One request per distinct ring, however many vouchers share it.
@@ -238,7 +245,7 @@ private extension VoucherLocationService {
         vouchers.map { voucher in
             let publicKey = voucher.publicKey
             let collectionId = RecyclerCollectionIdentifier.identifier(instanceId: instanceId, for: voucher.exponent)
-            let mappingKey = SubscriptionKey.member(derivationIndex: voucher.derivationIndex).mappingKey
+            let mappingKey = SubscriptionKey.member(publicKey: publicKey).mappingKey
 
             let innerRequest = DoubleMapSubscriptionRequest(
                 storagePath: MembersPallet.Storage.members(),
@@ -311,9 +318,9 @@ extension VoucherLocationService {
     /// The ring each placed voucher sits in. Vouchers that share a ring map to one ``RecyclerKey``,
     /// which is what collapses their subscriptions into a single request each.
     static func recyclers(
-        positions: [DerivationIndex: UncertainStorage<MembersPallet.RingPosition?>],
-        voucherByIndex: [DerivationIndex: Voucher]
-    ) -> [DerivationIndex: RecyclerKey] {
+        positions: [CoinageKeyIndex: UncertainStorage<MembersPallet.RingPosition?>],
+        voucherByIndex: [CoinageKeyIndex: Voucher]
+    ) -> [CoinageKeyIndex: RecyclerKey] {
         positions.reduce(into: [:]) { recyclers, entry in
             guard case let .defined(.some(position)) = entry.value,
                   let ringIndex = position.ringIndex,
@@ -366,11 +373,11 @@ extension VoucherLocationService {
     /// - A status not delivered yet leaves the voucher deferred (no entry emitted) rather than guessed at.
     /// - Anything else (onboarding/suspended position) is onboarding.
     static func resolveLocations(
-        positions: [DerivationIndex: UncertainStorage<MembersPallet.RingPosition?>],
-        statuses: [DerivationIndex: UncertainStorage<MembersPallet.RingKeysStatus?>],
+        positions: [CoinageKeyIndex: UncertainStorage<MembersPallet.RingPosition?>],
+        statuses: [CoinageKeyIndex: UncertainStorage<MembersPallet.RingKeysStatus?>],
         keysPerPage: Int,
         observedAt: Date = .now
-    ) -> [DerivationIndex: Voucher.OnChainState] {
+    ) -> [CoinageKeyIndex: Voucher.OnChainState] {
         positions.reduce(into: [:]) { resolved, entry in
             let (derivationIndex, positionEntry) = entry
 
@@ -415,11 +422,11 @@ extension VoucherLocationService {
     /// optimistic one — this drives a privacy indicator, so an absent reading must not read as
     /// "nothing unloaded".
     static func updates(
-        locations: [DerivationIndex: Voucher.OnChainState],
-        unloadedCounts: [DerivationIndex: UncertainStorage<UInt32?>],
-        voucherByIndex: [DerivationIndex: Voucher],
+        locations: [CoinageKeyIndex: Voucher.OnChainState],
+        unloadedCounts: [CoinageKeyIndex: UncertainStorage<UInt32?>],
+        voucherByIndex: [CoinageKeyIndex: Voucher],
         capacities: [Int16: Int]
-    ) -> [DerivationIndex: VoucherLocationUpdate] {
+    ) -> [CoinageKeyIndex: VoucherLocationUpdate] {
         locations.reduce(into: [:]) { updates, entry in
             let (derivationIndex, location) = entry
 
@@ -461,7 +468,7 @@ extension VoucherLocationService {
 // MARK: - Persistence
 
 private extension VoucherLocationService {
-    func write(_ updates: [DerivationIndex: VoucherLocationUpdate]) async throws {
+    func write(_ updates: [CoinageKeyIndex: VoucherLocationUpdate]) async throws {
         guard !updates.isEmpty else { return }
 
         // A dedicated write-only mapper touches only the location and fungibility columns, so a

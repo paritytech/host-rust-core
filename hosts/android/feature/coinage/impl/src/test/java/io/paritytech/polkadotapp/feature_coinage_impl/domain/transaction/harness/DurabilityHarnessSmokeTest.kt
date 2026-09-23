@@ -1,11 +1,12 @@
 package io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness
 
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageInput
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.FINALIZED
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.transaction.harness.TestActionFinality.IN_BEST
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -42,13 +43,13 @@ class DurabilityHarnessSmokeTest {
     fun `an uncommitted handoff is released on relaunch and a committed one is not`() = scenario {
         mintCoinsOnChain(SPENT_COIN, finality = FINALIZED)
 
-        service.preCommitHandoff(listOf(OwnAsset.Coin(SPENT_COIN))).getOrThrow()
+        service.preCommitHandoff(listOf(OwnAsset.Coin(testKey(SPENT_COIN)))).getOrThrow()
         assertTrue(repository.getHandoffKeys().getOrThrow().contains(coinKeyOf(SPENT_COIN)))
 
         relaunch()
         assertTrue(repository.getHandoffKeys().getOrThrow().isEmpty())
 
-        service.preCommitHandoff(listOf(OwnAsset.Coin(SPENT_COIN))).getOrThrow().commit().getOrThrow()
+        service.preCommitHandoff(listOf(OwnAsset.Coin(testKey(SPENT_COIN)))).getOrThrow().commit().getOrThrow()
         relaunch()
         assertTrue(repository.getHandoffKeys().getOrThrow().contains(coinKeyOf(SPENT_COIN)))
     }
@@ -89,8 +90,8 @@ class DurabilityHarnessSmokeTest {
 
         val id = service.submitTransaction(
             extrinsic = extrinsicAnchoredAtFinalizedHead(),
-            inputs = listOf(CoinageInput.Voucher(VOUCHER)),
-            outputs = listOf(OwnAsset.Coin(MINTED_COIN)),
+            inputs = listOf(CoinageInput.Voucher(testKey(VOUCHER))),
+            outputs = listOf(OwnAsset.Coin(testKey(MINTED_COIN))),
             groupId = null,
         ).getOrThrow()
         releaseSubmissions()

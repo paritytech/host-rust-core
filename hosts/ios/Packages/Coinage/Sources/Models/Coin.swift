@@ -4,7 +4,7 @@ import SubstrateSdk
 
 public struct Coin: Hashable, CoinageDerivable, Sendable {
     public let exponent: Int16 // 2^n
-    public let derivationIndex: DerivationIndex
+    public let derivationIndex: CoinageKeyIndex
 
     /// On-chain age. `nil` means the coin was never seen on chain; `0` is fresh from unload/split.
     public let age: Int16?
@@ -29,7 +29,7 @@ public struct Coin: Hashable, CoinageDerivable, Sendable {
 
     public init(
         exponent: Int16,
-        derivationIndex: DerivationIndex,
+        derivationIndex: CoinageKeyIndex,
         age: Int16?,
         isOnchain: Bool = false,
         handoffMark: CoinHandoffMark = .none,
@@ -96,8 +96,8 @@ extension Coin: Operation_iOS.Identifiable {
 public extension Coin {
     /// The storage identifier for a coin at `derivationIndex`. Single source of truth so no
     /// call site hand-writes the string form.
-    static func identifier(for derivationIndex: DerivationIndex) -> String {
-        "\(derivationIndex)"
+    static func identifier(for derivationIndex: CoinageKeyIndex) -> String {
+        derivationIndex.toString()
     }
 
     var hasEverBeenOnChain: Bool {

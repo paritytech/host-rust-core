@@ -17,15 +17,20 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
 import io.paritytech.polkadotapp.common.presentation.validation.compose.rememberValidationActionHandle
 import io.paritytech.polkadotapp.common.utils.progressStallReport.StallReportContent
 import io.paritytech.polkadotapp.common.utils.progressStallReport.previewStallReportOperations
 import io.paritytech.polkadotapp.common.utils.progressStallReport.previewStallReportSteps
 import io.paritytech.polkadotapp.design.components.button.common.PolkadotButtonShape
+import io.paritytech.polkadotapp.design.components.button.default.PolkadotButtonSize
 import io.paritytech.polkadotapp.design.components.button.default.PolkadotTextButton
+import io.paritytech.polkadotapp.design.components.icon.NovaIcons
+import io.paritytech.polkadotapp.design.components.icon.vectors.ArrowUpwards
 import io.paritytech.polkadotapp.design.components.progress.LoadingScreenState
 import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
 import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
@@ -57,7 +62,8 @@ internal fun SendEnterAmountScreen(contract: SendEnterAmountContract) {
         when (state) {
             is LoadingState.Loaded -> SendEnterAmountScreenInternal(
                 state = state.data,
-                stallReport = { contract.stalenessReport.DisplayReport() },
+                // Hidden for now: diagnostics are still collected, just not shown.
+                stallReport = {},
                 onAmountChange = contract::onNewInput,
                 onConfirmClick = contract::onConfirmClick,
                 onBackClick = contract::onBackClick
@@ -175,16 +181,23 @@ private fun SendEnterAmountScreenInternal(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(PolkadotTheme.spacings.large),
-            text = stringResource(
-                when (progress) {
-                    is SendProgress.Idle -> RCommon.string.common_send
-                    is SendProgress.Submitting -> RCommon.string.send_enter_amount_submitting
-                    is SendProgress.Settling -> RCommon.string.send_enter_amount_settling
-                }
-            ),
+            text = when (progress) {
+                is SendProgress.Idle ->
+                    if (state.isAmountPositive) {
+                        stringResource(RCommon.string.send_enter_amount_send_button, state.input, symbol)
+                            .withCurrencyTickerStyle(PolkadotTheme.typography.title.medium)
+                    } else {
+                        AnnotatedString(stringResource(RCommon.string.common_send))
+                    }
+
+                is SendProgress.Submitting -> AnnotatedString(stringResource(RCommon.string.send_enter_amount_submitting))
+                is SendProgress.Settling -> AnnotatedString(stringResource(RCommon.string.send_enter_amount_settling))
+            },
+            size = PolkadotButtonSize.large(),
             onClick = onConfirmClick,
             enabled = state.isSendEnabled && progress is SendProgress.Idle,
-            shape = PolkadotButtonShape.pill
+            shape = PolkadotButtonShape.pill,
+            iconStart = NovaIcons.ArrowUpwards
         )
     }
 }
@@ -244,6 +257,7 @@ private fun SendEnterAmountScreenAllWidgetPreview() {
                     gainingPrivacy = TokenAmountModel.mock(150),
                     sendProgress = SendProgress.Idle,
                     showBalanceError = true,
+                    isAmountPositive = true,
                     isSendEnabled = false,
                     isAmountLocked = false,
                     recipientAvatarColor = AvatarColorScheme.Garnet

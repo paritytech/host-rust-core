@@ -13,7 +13,7 @@ public final class CoinKeypairFactory {
 }
 
 extension CoinKeypairFactory: CoinKeyDeriving {
-    public func derivePublicKey(index: DerivationIndex) throws -> PublicKey {
+    public func derivePublicKey(index: CoinageKeyIndex) throws -> PublicKey {
         try WalletMnemonicKeypairFactory(
             derivationPath: coinPath(for: index),
             entropyManager: entropyManager
@@ -22,7 +22,7 @@ extension CoinKeypairFactory: CoinKeyDeriving {
         .rawData()
     }
 
-    public func derivePrivateKey(index: DerivationIndex) throws -> PrivateKey {
+    public func derivePrivateKey(index: CoinageKeyIndex) throws -> PrivateKey {
         try WalletMnemonicKeypairFactory(
             derivationPath: coinPath(for: index),
             entropyManager: entropyManager
@@ -34,10 +34,10 @@ extension CoinKeypairFactory: CoinKeyDeriving {
 }
 
 public extension CoinKeypairFactory {
-    func coinPath(for derivationIndex: DerivationIndex) -> String {
+    func coinPath(for derivationIndex: CoinageKeyIndex) -> String {
         let purse = CoinageConstants.Derivation.mainPurse
-        let page = CoinageConstants.Derivation.page
+        let page = derivationIndex.installation.pageSegment
 
-        return "//coinage//\(purse)//\(page)/\(derivationIndex)"
+        return "//coinage//\(purse)//\(page)/\(derivationIndex.item)"
     }
 }

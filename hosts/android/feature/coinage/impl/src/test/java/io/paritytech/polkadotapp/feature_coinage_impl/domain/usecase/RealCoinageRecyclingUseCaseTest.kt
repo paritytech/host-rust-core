@@ -12,7 +12,11 @@ import io.paritytech.polkadotapp.common.domain.model.intoAccountId
 import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
 import io.paritytech.polkadotapp.feature_coinage_api.domain.common.VoucherAllocator
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinProvenance
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerFungibility
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerIndex
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclerVoucher
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RecyclingStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.CoinageTransactionService
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageAssetState
@@ -20,23 +24,32 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.Co
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionRequest
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.FINALIZED_SUCCESS
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus.PENDING
+import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.VoucherRingDerivation
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.CoinRepository
+import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.VoucherRepository
 import io.paritytech.polkadotapp.feature_coinage_impl.data.signer.origins.CoinageTransactionOrigins
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
 import io.paritytech.polkadotapp.feature_transactions.api.data.EnrichedSendableExtrinsic
 import io.paritytech.polkadotapp.feature_transactions.api.data.ExtrinsicService
 import io.paritytech.polkadotapp.feature_transactions.api.data.FormMultiExtrinsic
 import io.paritytech.polkadotapp.feature_transactions.api.data.StoringMultiExtrinsicBuilder
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FAILURE
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.FINALIZED_SUCCESS
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus.PENDING_SUCCESS
 import io.paritytech.polkadotapp.test_shared.testDispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.math.BigInteger
 
 class RealCoinageRecyclingUseCaseTest {
     private val coinRepository: CoinRepository = mockk()
@@ -48,6 +61,7 @@ class RealCoinageRecyclingUseCaseTest {
     private val chainRegistry: ChainRegistry = mockk()
     private val extrinsicService: ExtrinsicService = mockk()
     private val chainAssetProvider: ChainAssetProvider = mockk()
+    private val voucherRepository: VoucherRepository = mockk()
 
     private val recyclingAge = 14
     private val chainId = "test-chain-id"
@@ -58,6 +72,7 @@ class RealCoinageRecyclingUseCaseTest {
         every { chainAssetProvider.chainId() } returns chainId
         coEvery { chainConnectionRefCounter.requestConnectionEnabled(any(), any()) } returns mockk(relaxed = true)
         coEvery { chainRegistry.getChain(any()) } returns mockk(relaxed = true)
+        coEvery { transactionService.getOperationGroupStatuses(any()) } returns Result.success(emptyList())
         // The read answers for every asset it is asked about, untracked included — as the real one does.
         coEvery { transactionService.getAssetStates(any()) } answers {
             Result.success(firstArg<List<OwnAsset>>().associateWith { CoinageAssetState.UNTRACKED })
@@ -78,6 +93,7 @@ class RealCoinageRecyclingUseCaseTest {
         extrinsicService = extrinsicService,
         chainAssetProvider = chainAssetProvider,
         transactionService = transactionService,
+        voucherRepository = voucherRepository,
         dispatchers = testDispatchers(),
     )
 
@@ -286,6 +302,121 @@ class RealCoinageRecyclingUseCaseTest {
         coVerify { voucherRingDerivation.deriveBandersnatch(vouchers[1].ringVrfKeyIndex) }
     }
 
+    // ---- caller's group ----
+
+    @Test
+    fun `recycling under a caller's group registers under that group`() = runTest {
+        val useCase = createUseCase()
+
+        val coins = listOf(createCoin(exponent = 1))
+        withAllocatedVouchers(coins, listOf(createVoucher(ringVrfKeyIndex = 5, exponent = 1)))
+        withBuiltExtrinsics(count = 1)
+
+        useCase.recycle(coins, GROUP)
+
+        assertEquals(GROUP, batches.single().groupId)
+    }
+
+    /** The payment that asked for this recycling died and is retrying it: those coins are already on their way. */
+    @Test
+    fun `a group an earlier attempt already submitted is not recycled again`() = runTest {
+        val useCase = createUseCase()
+        coEvery { transactionService.getOperationGroupStatuses(GROUP) } returns
+            Result.success(listOf(recyclingInto(5, PENDING)))
+
+        val result = useCase.recycle(listOf(createCoin(exponent = 1)), GROUP)
+
+        assertTrue(result.isSuccess)
+        coVerify(exactly = 0) { transactionService.submitTransactions(any(), any()) }
+    }
+
+    @Test
+    fun `a ledger that cannot be read fails recycling under a caller's group`() = runTest {
+        val useCase = createUseCase()
+        coEvery { transactionService.getOperationGroupStatuses(GROUP) } returns
+            Result.failure(IllegalStateException("no ledger"))
+
+        val result = useCase.recycle(listOf(createCoin(exponent = 1)), GROUP)
+
+        assertTrue(result.isFailure)
+        coVerify(exactly = 0) { transactionService.submitTransactions(any(), any()) }
+    }
+
+    // ---- status ----
+
+    @Test
+    fun `recycling still in flight is pending`() = runTest {
+        givenRecycling(listOf(recyclingInto(5, PENDING_SUCCESS), recyclingInto(6, PENDING)), vouchers = emptyList())
+
+        assertEquals(RecyclingStatus.Pending, createUseCase().observeRecyclingStatus(GROUP).first())
+    }
+
+    @Test
+    fun `a coin that will never become a voucher leaves the recycling incomplete`() = runTest {
+        givenRecycling(listOf(recyclingInto(5, FINALIZED_SUCCESS), recyclingInto(6, FAILURE)), vouchers = emptyList())
+
+        assertEquals(RecyclingStatus.Incomplete, createUseCase().observeRecyclingStatus(GROUP).first())
+    }
+
+    /** Nothing was registered, so nothing will ever arrive — waiting on it would wait forever. */
+    @Test
+    fun `a group with nothing registered is incomplete`() = runTest {
+        givenRecycling(emptyList(), vouchers = emptyList())
+
+        assertEquals(RecyclingStatus.Incomplete, createUseCase().observeRecyclingStatus(GROUP).first())
+    }
+
+    /** The unload that follows needs the recycler the voucher sits in, which the location sync reports later. */
+    @Test
+    fun `recycled at the best head but not yet seen in its recycler is still pending`() = runTest {
+        givenRecycling(
+            listOf(recyclingInto(5, PENDING_SUCCESS)),
+            vouchers = listOf(createVoucher(ringVrfKeyIndex = 5, exponent = 1, location = RecyclerVoucher.Location.Onboarding)),
+        )
+
+        assertEquals(RecyclingStatus.Pending, createUseCase().observeRecyclingStatus(GROUP).first())
+    }
+
+    @Test
+    fun `recycled at the best head reports the vouchers it became, not yet finalized`() = runTest {
+        val vouchers = listOf(voucherInRecycler(5), voucherInRecycler(6))
+        givenRecycling(listOf(recyclingInto(5, PENDING_SUCCESS), recyclingInto(6, FINALIZED_SUCCESS)), vouchers)
+
+        assertEquals(
+            RecyclingStatus.AllRecycled(vouchers = vouchers, finalized = false),
+            createUseCase().observeRecyclingStatus(GROUP).first(),
+        )
+    }
+
+    @Test
+    fun `recycling finalized for every coin reports finalized`() = runTest {
+        val vouchers = listOf(voucherInRecycler(5), voucherInRecycler(6))
+        givenRecycling(listOf(recyclingInto(5, FINALIZED_SUCCESS), recyclingInto(6, FINALIZED_SUCCESS)), vouchers)
+
+        assertEquals(
+            RecyclingStatus.AllRecycled(vouchers = vouchers, finalized = true),
+            createUseCase().observeRecyclingStatus(GROUP).first(),
+        )
+    }
+
+    private fun givenRecycling(states: List<CoinageTransactionState>, vouchers: List<RecyclerVoucher>) {
+        every { transactionService.subscribeOperationGroupStatuses(GROUP) } returns flowOf(states)
+        every { voucherRepository.subscribeAllVouchers() } returns flowOf(vouchers)
+    }
+
+    private fun recyclingInto(voucherIndex: Int, status: DurableTxStatus) = CoinageTransactionState(
+        id = CoinageTransactionId(voucherIndex.toLong()),
+        status = status,
+        inputs = listOf(CoinageInput.Coin.Own(testKey(100 + voucherIndex))),
+        outputs = listOf(OwnAsset.Voucher(testKey(voucherIndex))),
+    )
+
+    private fun voucherInRecycler(ringVrfKeyIndex: Int) = createVoucher(
+        ringVrfKeyIndex = ringVrfKeyIndex,
+        exponent = 1,
+        location = RecyclerVoucher.Location.InRecycler(RecyclerIndex(BigInteger.ONE), recyclerMembers = 32, enteredAt = null),
+    )
+
     /** Runs the block the use case hands to the builder, instead of only checking that it was handed over. */
     private fun withFormedExtrinsics(count: Int) {
         // BandersnatchEntropy is a value class over ByteArray, which a relaxed mock cannot produce — it
@@ -302,20 +433,27 @@ class RealCoinageRecyclingUseCaseTest {
 
     private fun createCoin(exponent: Int): Coin {
         return Coin(
-            derivationIndex = exponent,
+            derivationIndex = testKey(exponent),
             valueExponent = ValueExponent(exponent),
             age = Coin.Age.Known(recyclingAge),
             isOnChain = true,
-            accountId = byteArrayOf(exponent.toByte()).intoAccountId()
+            accountId = byteArrayOf(exponent.toByte()).intoAccountId(),
+            provenance = CoinProvenance.UNKNOWN,
         )
     }
 
-    private fun createVoucher(ringVrfKeyIndex: Int, exponent: Int): RecyclerVoucher {
+    private fun createVoucher(
+        ringVrfKeyIndex: Int,
+        exponent: Int,
+        location: RecyclerVoucher.Location = RecyclerVoucher.Location.Unknown,
+    ): RecyclerVoucher {
         return RecyclerVoucher(
-            ringVrfKeyIndex = ringVrfKeyIndex,
+            ringVrfKeyIndex = testKey(ringVrfKeyIndex),
             ringVrfPublicKey = byteArrayOf(ringVrfKeyIndex.toByte()).toDataByteArray(),
             recyclerValue = ValueExponent(exponent),
-            location = RecyclerVoucher.Location.Unknown,
+            location = location,
+            recyclerFungibility = RecyclerFungibility.NONE,
+            maxRecyclerFungibility = RecyclerFungibility.NONE,
         )
     }
 
@@ -371,5 +509,9 @@ class RealCoinageRecyclingUseCaseTest {
             vouchers.map { listOf(OwnAsset.Voucher(it.ringVrfKeyIndex)) },
             batch.requests.map { it.outputs },
         )
+    }
+
+    private companion object {
+        val GROUP = CoinageOperationGroupId("external-payment-recycle:origin:id")
     }
 }

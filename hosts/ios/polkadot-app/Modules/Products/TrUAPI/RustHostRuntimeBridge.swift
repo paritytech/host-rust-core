@@ -52,12 +52,18 @@ final class RustHostRuntimeBridge: HostBridge, @unchecked Sendable {
         throw HostNavigateRejection.Navigate(.unknown(reason: "navigation unavailable at host level: \(url)"))
     }
 
-    func devicePermission(request _: HostDevicePermissionRequest) async throws -> Bool {
-        false
+    func devicePermission(
+        product _: ProductExecutionConfig,
+        request _: HostDevicePermissionRequest
+    ) async throws -> TrUAPIPermissionDecision {
+        .deny
     }
 
-    func remotePermission(request _: RemotePermission) async throws -> Bool {
-        false
+    func remotePermission(
+        product _: ProductExecutionConfig,
+        request _: RemotePermission
+    ) async throws -> TrUAPIPermissionDecision {
+        .deny
     }
 
     func chainConnect(genesisHash: Data) throws -> UInt32? {
@@ -75,6 +81,10 @@ final class RustHostRuntimeBridge: HostBridge, @unchecked Sendable {
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool {
         // TODO: pass the real SSO host identity once it is available at host level.
         await confirmationPresenter.confirm(review: review, from: "host")
+    }
+
+    func confirmPermission(review: UserConfirmationReview) async throws -> TrUAPIPermissionDecision {
+        await confirmationPresenter.confirmPermission(review: review, from: "host")
     }
 
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool {

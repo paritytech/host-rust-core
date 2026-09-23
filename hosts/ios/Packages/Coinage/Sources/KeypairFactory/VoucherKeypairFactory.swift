@@ -4,7 +4,7 @@ import NovaCrypto
 
 public protocol VoucherKeyDeriving: VoucherKeypairFactoryProtocol {
     /// Creates a key manager for a voucher index to perform Bandersnatch operations (proofs, signing, aliases).
-    func createKeyManager(index: DerivationIndex) throws -> any BandersnatchKeyManaging
+    func createKeyManager(index: CoinageKeyIndex) throws -> any BandersnatchKeyManaging
 }
 
 public extension VoucherKeyDeriving {
@@ -27,11 +27,11 @@ public final class VoucherKeypairFactory {
 }
 
 extension VoucherKeypairFactory: VoucherKeyDeriving {
-    public func derivePublicKey(index: DerivationIndex) throws -> PublicKey {
+    public func derivePublicKey(index: CoinageKeyIndex) throws -> PublicKey {
         try createKeyManager(index: index).getMemberKey()
     }
 
-    public func createKeyManager(index: DerivationIndex) throws -> any BandersnatchKeyManaging {
+    public func createKeyManager(index: CoinageKeyIndex) throws -> any BandersnatchKeyManaging {
         BandersnatchKeyManager(
             entropyDeriver: VoucherEntropyDeriving(path: voucherPath(for: index)),
             entropyManager: entropyManager
@@ -40,11 +40,11 @@ extension VoucherKeypairFactory: VoucherKeyDeriving {
 }
 
 public extension VoucherKeypairFactory {
-    func voucherPath(for derivationIndex: DerivationIndex) -> String {
+    func voucherPath(for derivationIndex: CoinageKeyIndex) -> String {
         let purse = CoinageConstants.Derivation.mainPurse
-        let page = CoinageConstants.Derivation.page
+        let page = derivationIndex.installation.pageSegment
 
-        return "//coinage-ring-vrf//\(purse)//\(page)//\(derivationIndex)"
+        return "//coinage-ring-vrf//\(purse)//\(page)//\(derivationIndex.item)"
     }
 }
 

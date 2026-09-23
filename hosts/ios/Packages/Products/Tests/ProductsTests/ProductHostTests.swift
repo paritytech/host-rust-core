@@ -260,6 +260,26 @@ struct ProductHostTests {
         #expect(ProductHost.fromNavigationDestination("invalid", tld: "dot") == nil)
     }
 
+    @Test func fromNavigationDestinationSchemelessHostWithFragmentRoute() {
+        let host = ProductHost.fromNavigationDestination("getcash.paseo/#/", tld: "paseo")
+        #expect(host?.name == "getcash")
+        #expect(host?.toDotDomain() == "getcash.paseo")
+    }
+
+    @Test func fromNavigationDestinationSchemelessHostWithPath() {
+        let host = ProductHost.fromNavigationDestination("browse.dot/onboarding?ref=abc", tld: "dot")
+        #expect(host?.name == "browse")
+    }
+
+    @Test func fromNavigationDestinationSchemelessShareHostWithPath() {
+        let host = ProductHost.fromNavigationDestination("browse.dot.li/#/onboarding", tld: "dot")
+        #expect(host?.toDotDomain() == "browse.dot")
+    }
+
+    @Test func fromNavigationDestinationSchemelessExternalHostWithPath() {
+        #expect(ProductHost.fromNavigationDestination("stg.revx.dev/editor", tld: "dot") == nil)
+    }
+
     @Test func fromNavigationDestinationRejectsExternalHost() {
         #expect(ProductHost.fromNavigationDestination("https://stg.revx.dev/editor", tld: "dot")
             == nil)

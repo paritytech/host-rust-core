@@ -8,20 +8,37 @@ struct WalletView: View {
     @State private var scrollAtTop: Bool = true
     @Namespace private var cardNamespace
     private let peekHeight: CGFloat = 64
+    private let scrollTopAnchor = "walletScrollTop"
+    @State private var overscroll: CGFloat = 0
 
     var body: some View {
         ZStack(alignment: .top) {
-            ScrollView {
-                ZStack(alignment: .top) {
-                    assetCard
-                    identityCard
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    ZStack(alignment: .top) {
+                        assetCard
+                        identityCard
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 16)
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height + proxy.safeAreaInsets.bottom
+                    } action: {
+                        viewHeight = $0
+                    }
+                    .id(scrollTopAnchor)
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.size.height + proxy.safeAreaInsets.bottom
-                } action: {
-                    viewHeight = $0
+                .safeAreaInset(edge: .bottom) {
+                    if viewModel.expandedSection == .assetDetails {
+                        AssetDetailsFundingBar(viewModel: viewModel.assetDetailsViewModel)
+                    }
+                }
+                .modifier(OverscrollReader(overscroll: $overscroll))
+                .onChange(of: viewModel.expandedSection) { _, newValue in
+                    guard newValue == .none else { return }
+                    withAnimation(.spring(duration: 0.45, bounce: 0.15)) {
+                        scrollProxy.scrollTo(scrollTopAnchor, anchor: .top)
+                    }
                 }
             }
         }
@@ -86,6 +103,7 @@ struct WalletView: View {
             viewModel: viewModel.identityDetailsViewModel,
             isExpanded: viewModel.expandedSection == .identityDetails,
             onCardTapped: { viewModel.onUsername?() },
+            overscroll: overscroll,
             onCollapse: { viewModel.onCollapse?() }
         )
         .matchedGeometryEffect(id: "identity", in: cardNamespace)
@@ -104,9 +122,8 @@ struct WalletView: View {
             onCardTapped: {
                 viewModel.onBalance?()
             },
-            onCollapse: {
-                viewModel.onCollapse?()
-            }
+            overscroll: overscroll,
+            onCollapse: { viewModel.onCollapse?() }
         )
         .matchedGeometryEffect(id: "asset", in: cardNamespace)
         .scaleEffect(assetScale)
@@ -223,6 +240,25 @@ struct WalletView: View {
         case .identityDetails,
              .collectiblesDetails:
             false
+        }
+    }
+}
+
+/// The host scroll view's rubber-band distance past the top. Scroll geometry is an iOS 18 API; on
+/// iOS 17 the value stays 0, so an expanded header stretches with its details on a pull.
+private struct OverscrollReader: ViewModifier {
+    @Binding var overscroll: CGFloat
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    max(0, -(geometry.contentOffset.y + geometry.contentInsets.top))
+                } action: { _, newValue in
+                    overscroll = newValue
+                }
+        } else {
+            content
         }
     }
 }

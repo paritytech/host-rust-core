@@ -8,6 +8,8 @@ import io.novasama.substrate_sdk_android.runtime.metadata.decodeOutput
 import io.novasama.substrate_sdk_android.runtime.metadata.method
 import io.novasama.substrate_sdk_android.runtime.metadata.runtimeApi
 import io.novasama.substrate_sdk_android.wsrpc.SocketService
+import io.paritytech.polkadotapp.chains.network.binding.BlockHash
+import io.paritytech.polkadotapp.chains.network.rpc.requests.StateCallAtRequest
 import io.paritytech.polkadotapp.chains.network.rpc.stateCall
 import io.paritytech.polkadotapp.chains.util.EncodedArguments
 
@@ -18,7 +20,8 @@ interface RuntimeCallsApi {
         section: String,
         method: String,
         arguments: Map<String, Any?>,
-        returnBinding: (Any?) -> R
+        at: BlockHash? = null,
+        returnBinding: (Any?) -> R,
     ): R
 }
 
@@ -26,12 +29,14 @@ suspend inline fun <reified T> RuntimeCallsApi.call(
     section: String,
     method: String,
     arguments: EncodedArguments,
+    at: BlockHash? = null,
 ): T {
     return call(
         section = section,
         method = method,
         arguments = arguments.encoded,
-        returnBinding = Scale::decode
+        at = at,
+        returnBinding = Scale::decode,
     )
 }
 
@@ -43,10 +48,12 @@ internal class RealRuntimeCallsApi(
         section: String,
         method: String,
         arguments: Map<String, Any?>,
-        returnBinding: (Any?) -> R
+        at: BlockHash?,
+        returnBinding: (Any?) -> R,
     ): R {
         val apiMethod = runtime.metadata.runtimeApi(section).method(method)
-        val request = apiMethod.createRequest(runtime, arguments)
+        val latestRequest = apiMethod.createRequest(runtime, arguments)
+        val request = at?.let { StateCallAtRequest(latestRequest, it) } ?: latestRequest
 
         val response = socketService.stateCall(request)
 

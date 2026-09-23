@@ -6,7 +6,6 @@ import io.paritytech.polkadotapp.feature_usernames_impl.domain.interactor.Userna
 import io.paritytech.polkadotapp.feature_usernames_impl.domain.model.ClaimUsernameOutcome
 import io.paritytech.polkadotapp.feature_usernames_impl.domain.model.UsernameAvailabilityState
 import io.paritytech.polkadotapp.feature_usernames_impl.presentation.UsernamesRouter
-import io.paritytech.polkadotapp.feature_web3summit_api.presentation.PostOnboardingFlow
 import io.paritytech.polkadotapp.test_shared.any
 import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +29,6 @@ private const val USERNAME = "alicent"
 class ClaimUsernameViewModelTest {
     private val router: UsernamesRouter = mock(UsernamesRouter::class.java)
     private val interactor: UsernamesClaimInteractor = mock(UsernamesClaimInteractor::class.java)
-    private val postOnboardingFlow: PostOnboardingFlow = mock(PostOnboardingFlow::class.java)
 
     // viewModelScope runs on Dispatchers.Main, and the availability pipeline debounces by 300ms.
     private val testScope = TestScope()
@@ -144,7 +142,6 @@ class ClaimUsernameViewModelTest {
     private fun createViewModel() = ClaimUsernameViewModel(
         router = router,
         interactor = interactor,
-        postOnboardingFlow = postOnboardingFlow,
     )
 }
 

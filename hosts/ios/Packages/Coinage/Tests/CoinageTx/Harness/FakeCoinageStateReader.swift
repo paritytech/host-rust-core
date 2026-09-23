@@ -53,7 +53,7 @@ private extension FakeCoinageStateReader {
     /// only for a ring-placed voucher whose alias reads set; without a ring index there is no alias, so
     /// it reads not-unloaded.
     func readVoucher(
-        index: DerivationIndex,
+        index: CoinageKeyIndex,
         memberKey: PublicKey,
         in state: CoinageChainState
     ) -> ReadResult<AssetPresence> {

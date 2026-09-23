@@ -29,9 +29,7 @@ use truapi::versioned::chain::{
 use truapi::{CallContext, CallError, Subscription, v01};
 
 use crate::host_logic::features::{chain_info, supported_chains};
-use crate::runtime::{
-    ProductRuntimeHost, REMOTE_PERMISSION_DENIED_REASON, runtime_failure_to_call_error,
-};
+use crate::runtime::{PERMISSION_DENIED_REASON, ProductRuntimeHost, runtime_failure_to_call_error};
 
 #[truapi::async_trait]
 impl Chain for ProductRuntimeHost {
@@ -225,7 +223,7 @@ impl Chain for ProductRuntimeHost {
         let RemoteChainTransactionBroadcastRequest::V1(inner) = request;
         self.require_chain_submit(RemoteChainTransactionBroadcastError::V1(
             v01::GenericError {
-                reason: REMOTE_PERMISSION_DENIED_REASON.to_string(),
+                reason: PERMISSION_DENIED_REASON.to_string(),
             },
         ))
         .await?;

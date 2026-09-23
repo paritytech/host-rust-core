@@ -21,6 +21,7 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, decodes copied pairing QR images or accepts deeplinks, registers statement allowance on-chain, signs. |
+| `dev` | Run a local development product with the shared container loaded by a script tag. |
 | `identity-check` | Probe the root and the network's `uid.<tld>` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
@@ -52,8 +53,11 @@ moves that one link.
 | `TRUAPI_HOST_BIN_DIR` | Directory the `PATH` symlink goes in, default `~/.local/bin`. |
 
 Product scripts (`--script`, `/script`) work from an installed binary: the
-archive ships a `runner.js` with the `@parity/truapi` client bundled in. You
-still need `bun` on `PATH`, since it executes the runner and your script.
+archive ships a self-contained `runner.js` with the `@parity/truapi` client and
+shared web API permission checks bundled in, plus `script-types.d.ts` for the
+globals it injects. You still need `bun` on `PATH`, since it executes the runner
+and your script. The development container is shipped separately as
+`sandbox-assets/container.js`.
 
 Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
 default, so starting either host does not reserve a TCP port. Pass
@@ -98,13 +102,15 @@ updates it. Nothing contacts GitHub.
 
 Reserved identities derive under `uid.paseo` / `peopl.paseo` on
 `paseo-next-v2`, and `uid.testnet` / `peopl.testnet` on `previewnet`.
-All managed CLI state lives under `<base-path>/v2`, including accounts,
-sessions, pairings, core and product storage, managed scripts, and log
+Managed host state lives under `<base-path>/v2`, including accounts,
+sessions, pairings, core and product storage, and log
 preferences. The CLI appends `v2` to both the default base path and a path set
 through `--base-path` or `TRUAPI_HOST_BASE_PATH`. For example,
 `--base-path ./truapi-host-paseo` uses `./truapi-host-paseo/v2`.
+New script projects live separately under `<base-path>/scripts` so clearing
+host sessions does not delete them.
 
-The CLI leaves previous state outside `v2` untouched and unused, and starts
+The CLI leaves previous host state outside `v2` untouched and unused, and starts
 normal onboarding automatically. There is no state migration. Pair devices
 again; sign out first on any paired host that still uses an old identity.
 Existing `.dot` personhood membership does not transfer to the new keys.
@@ -113,12 +119,16 @@ Existing `.dot` personhood membership does not transfer to the new keys.
 
 A source build resolves the product-script runner from the checkout, so it also
 needs the generated `@parity/truapi` sources. (An installed release ships its
-own bundled runner and does not.) To build and install the CLI yourself:
+own bundled runner and does not.) Dev also needs the container bundle generated
+by `make headless` or `make cli-runner`. To build and install the CLI yourself:
 
 ```bash
 make headless install  # build dependencies and install truapi-host once
 truapi-host signing-host
 ```
+
+Requires stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and Bun. The target installs missing workspace
+build tools and regenerates Rust and TypeScript sources on every run, including after updating an existing checkout.
 
 ### Raw proof contexts (development only)
 
@@ -146,10 +156,16 @@ itself:
 )}
 ```
 
-That script installs the same `window.__HOST_API_PORT__` a native webview host
-injects, so the SDK adopts it with no product-side package, import, or
-environment variable. `--app-port` names the development server's port when it
-is not 3000, and the product id defaults to that origin, so the host and the
+That script installs the SDK bridge and the shared `js/container` sandbox
+synchronously. Keep it before application scripts, without `async` or `defer`.
+Updated SDKs use the injected `__HOST_API_CLIENT__` across reconnects. Older SDKs
+can still start through the `__HOST_API_PORT__` adapter but require a page reload
+after a disconnect. SDK calls and sandbox permission checks share one host
+WebSocket and its temporary permissions.
+`/script` uses the same fetch and WebSocket permission checks in Bun, and the
+XHR wrapper when that API is available. Dev keeps automatic approvals, and the
+app server handles assets and hot reload. `--app-port` names the development
+server's port when it is not 3000, and the product id defaults to that origin, so the host and the
 product cannot disagree about who they are. `--port` changes the bridge and
 frame port, but the development-only tag must change to the same value.
 
@@ -170,8 +186,8 @@ bridge script, so the product tag is unchanged:
 truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id my-product.dot
 ```
 
-A product that would rather name the endpoint itself can skip the tag and call
-the SDK directly, before anything else touches the client:
+For an API connection without installing the container, a product can call
+the SDK directly before anything else touches the client:
 
 ```ts
 import { connectWebSocketHost } from "@parity/truapi/sandbox";
@@ -232,8 +248,11 @@ Commands always start with `/`:
 | `/approval` | Show whether signing-host confirmations are manual or automatic. |
 | `/approval manual` | Prompt for every future signing-host confirmation. |
 | `/approval automatic` | Approve every future signing-host confirmation automatically. |
-| `/script` | Reopen the session's last TypeScript scratch script (or create one), then run it. |
+| `/script` | Edit and run the remembered script, creating a project when needed. |
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
+| `/script --run` | Rerun the remembered script without opening the editor. |
+| `/script --edit` | Edit the remembered script without running it. |
+| `/script --new [directory]` | Create a project in a new directory, then edit and run it. |
 | `/login` | Start pairing for the selected product, show its QR code, and copy its deeplink to the clipboard. |
 | `/logout` | Disconnect the pairing host and discard its old pairing keypair. |
 | `/log <level>` | Save tracing as `error`, `warn`, `info`, `debug`, or `trace`, and apply it now. |
@@ -320,15 +339,47 @@ as bold is therefore not rendered in the full-screen UI.
 
 Bare `/script` reopens the last script recorded for the active session,
 including a path previously selected with `/script <path>`. If that file is
-missing or the session has no script yet, it creates a durable Bun TypeScript
-file under the active host state's `scripts/` directory. The dependency-free
-starter calls `truapi.account.getUserId()` and prints the returned user id.
-Scripts opened from an npm project can import packages installed by that
-project.
+missing or the session has no script yet, it creates a Bun TypeScript project
+under `<base-path>/scripts/`, outside the versioned session data. Projects
+survive session clearing, including projects created with `--mnemonic`.
+Each contains `script.ts`, host declarations, `package.json`, and `tsconfig.json`.
+The starter runs the Product SDK quickstart: create an app, connect wallet
+accounts, and write and read local storage. The runner supplies the SDK's host
+connection automatically. The first open installs SDK and editor dependencies with
+Bun. Successful setup saves a lockfile; later opens reuse
+the installation without a network request. Setup errors or cancellation keep
+the project so you can fix the problem and retry `/script`.
+
+`/script --new my examples` creates another project at that relative path;
+the directory must not already exist. `/script --edit` only edits, while
+`/script --run` reruns without opening an editor. Paths may contain spaces.
+Use `/script -- --run` to select a file literally named `--run`.
+
+Missing npm imports are installed into Bun's cache at runtime. For editor types
+and locked versions, add packages locally with `bun add`, plus separate types
+when needed (for example, `bun add -d @types/lodash`). Check types with
+`bun run typecheck`. The project's `package.json` entry
+`"truapiHost": { "script": "script.ts" }` identifies its root, which is also
+its execution directory. This remains true when copied or selected through
+an explicit path. Update that entry when renaming the main script. Ordinary
+existing npm/pnpm/Bun projects keep their dependencies, lockfiles, and the
+CLI's original working directory; the host does not install into them.
+
 The TUI temporarily yields the terminal to `$VISUAL`, then `$EDITOR`, or
 `vi` when neither is set. After the editor exits successfully, the TUI is
 restored and the saved script runs through the public frame endpoint. Editor
 settings containing arguments, such as `EDITOR='code --wait'`, are supported.
+Configure a waiting editor command: an editor process that returns immediately
+also lets execution start immediately. Editor failure preserves the script
+without running it. Managed projects open the editor from their project root,
+so editor commands such as `bun run typecheck` use that project's dependencies.
+
+New projects request the latest Product SDK, TypeScript, and Bun editor types.
+The SDK is installed locally so its dependencies and editor types are available.
+Choose your own version with `bun add @parity/product-sdk@<version>`, or remove
+it with `bun remove @parity/product-sdk` when your script does not use it.
+The project lockfile records installed versions. Host updates preserve existing
+project dependencies.
 
 Managed sessions isolate signer accounts, product/core storage, and permissions.
 Once a signer identity is known, its public session name is the Lite username
@@ -346,8 +397,9 @@ is resolved. It is hidden from session completion and listing and cannot be
 selected with `/session default`. User session names contain lowercase ASCII
 letters, digits, `.`, `_`, or `-`; they cannot be paths. Switching prepares the
 target while the old session remains active, then stops all responders for the
-old session, resets product WebSocket connections so clients reconnect against
-the new runtime, and restores every paired device saved for the target session.
+old session, resets product WebSocket connections, and restores every paired
+device saved for the target session. Reload browser dev pages to connect to the
+new runtime.
 
 `/session --mnemonic "<phrase>"` brings an already-onboarded account into the
 session catalog. The host derives its `uid.<tld>` identity, reads any existing
@@ -375,8 +427,8 @@ numerical alias; session names with fewer than six letters use `session`.
 full-person base name on dotNS for a newly created account, to be claimed later
 with `register-name`; the CLI refuses labels the registrar has already minted.
 The selected username and last script reference are cached in `session.json`
-inside the displayed session path. Scratch scripts use a portable filename;
-explicit scripts use an absolute path. On restart, an
+inside the displayed session path. Legacy session-local scripts use a portable
+filename; managed projects and explicit scripts use an absolute path. On restart, an
 already-provisioned local signer is activated from disk without an
 identity-backend or ring-membership round trip, and bare `/script` restores that
 session's editor context. A session with no signer yet reports
@@ -416,7 +468,8 @@ host may continue to show stale connected state, but it cannot reach a responder
 on this signing host.
 
 `/session --clear <name>` permanently deletes that session's local signer
-keys, scripts, core/product storage, and permissions. `/session --clear-all`
+keys, session-local scripts, core/product storage, and permissions. Persistent
+script projects under `<base-path>/scripts` are preserved. `/session --clear-all`
 does the same for every signing-host session on the current network, including
 the network's signing-host bootstrap state, while preserving other networks and
 pairing-host state. Neither command deregisters an on-chain username. The interactive UI
@@ -474,19 +527,83 @@ so its pairing runs only for the current process and `/devices` is unavailable.
 
 A product script is top-level JavaScript or TypeScript (an ES module) run by
 Bun. It can import npm dependencies available beside the script or in a parent
-project. The runner injects three globals before running it:
+project. Before importing it, the runner installs the same fetch and WebSocket
+permission wrappers used by `dev`, plus the XHR wrapper when that API exists.
+Rust decides Allow once, Allow always or Deny; domain grants cover all ports.
+Public SDK calls and permission checks share one product execution.
 
-- **`truapi`** — the `@parity/truapi` client connected to the pairing host and
+Scripts retain Bun/Node filesystem, environment, subprocess and import access.
+Both CLI flows use ordinary SDK authorization requests to test permissions on
+patched web APIs. Product code can deliberately bypass these development checks,
+including through native networking in Bun. Native hosts retain their separate
+authorization protection.
+
+Start the host with the product id used by the SDK quickstart:
+
+```bash
+truapi-host pairing-host --product-id my-app.dot
+```
+
+Use `/login` to connect a signing host, then `/script` to open the starter:
+
+```ts
+import { createApp } from "@parity/product-sdk";
+
+const app = await createApp({
+  name: "my-app",
+  logLevel: "info",
+});
+
+// Connect to host-provided accounts.
+const { accounts } = await app.wallet.connect();
+
+console.log("Connected accounts:", accounts);
+
+// Persist a value. Namespaced under the app name in host storage.
+await app.localStorage.set("lastVisit", new Date().toISOString());
+
+const lastVisit = await app.localStorage.get("lastVisit");
+console.log("Last visit:", lastVisit);
+```
+
+The SDK resolves `my-app` to the wallet product `my-app.dot`, so keep the app
+name and host product id aligned. The quickstart uses default cloud storage
+on Paseo, the CLI's default network. When signed out, wallet connection can
+return an empty account list. Existing projects use the same ordinary SDK
+imports and their installed dependencies. Check a managed project with
+`bun run typecheck`.
+
+Await all work, including subscription completion: the script process exits
+when its module and optional default function finish. After losing the host
+connection, rerun the script.
+
+For direct TrUAPI calls, the runner also injects three globals:
+
+- **`truapi`** is the `@parity/truapi` client connected to the host and
   scoped to the host's `--product-id`. Call `truapi.account.requestLogin(...)`,
   `truapi.signing.signRaw(...)`, `truapi.localStorage.write(...)`, etc.
-- **`host`** — just `host.productId` and `host.productAccount(index?)`. That is
-  all it does: it keeps product accounts in sync with the host's `--product-id`
-  (hardcoding a mismatched id fails signing with `PermissionDenied`). Use
-  `console.log` and `throw` for everything else.
-- **`assert`** — throw when its condition is false, using any following values
+- **`host`** provides `host.productId` and `host.productAccount(index?)`.
+  Product accounts use the host's `--product-id`; a mismatched id
+  fails signing with `PermissionDenied`.
+- **`assert`** throws when its condition is false, using any following values
   as the error message.
 
-Write it top-level and `throw` (or reject) to fail the run:
+Declare those globals from the project's generated types when using them in
+TypeScript. The declarations stay local to each script:
+
+```ts
+import type {
+  TrUApiClient,
+  HostContext,
+  ScriptAssert,
+} from "./script.types.d.ts";
+
+declare const truapi: TrUApiClient;
+declare const host: HostContext;
+declare const assert: ScriptAssert;
+```
+
+Write calls at the top level and `throw` (or reject) to fail the run:
 
 ```ts
 const login = await truapi.account.requestLogin({ reason: undefined });
@@ -508,12 +625,58 @@ res.match(
 );
 ```
 
+For product-account signing through the SDK, use the `host` and `assert`
+declarations above with:
+
+```ts
+import { getAccountsProvider } from "@parity/product-sdk/host";
+
+const accounts = await getAccountsProvider();
+assert(accounts, "Host accounts API unavailable");
+const account = await accounts.getProductAccount(host.productId);
+if (account.isErr()) {
+  throw new Error("Product account unavailable", { cause: account.error });
+}
+const signer = accounts.getProductAccountSigner(account.value);
+const signature = await signer.signBytes(new TextEncoder().encode("hello"));
+console.log("signature", signature);
+```
+
+This subscription example awaits the first locale value and unsubscribes before
+the script exits:
+
+```ts
+import {
+  getLocaleProvider,
+  type HostSubscription,
+} from "@parity/product-sdk/host";
+
+const locales = await getLocaleProvider();
+assert(locales, "Host locale API unavailable");
+let subscription: HostSubscription | undefined;
+let removeInterrupt: (() => void) | undefined;
+try {
+  await new Promise<void>((resolve, reject) => {
+    subscription = locales.subscribeLocale((locale) => {
+      console.log("language", locale.languageTag);
+      resolve();
+    });
+    removeInterrupt = subscription.onInterrupt((reason) => {
+      reject(new Error("Locale subscription interrupted", { cause: reason }));
+    });
+  });
+} finally {
+  removeInterrupt?.();
+  subscription?.unsubscribe();
+}
+```
+
 `--product-id` (a dotNS name ending in `.dot`, `.paseo` or `.testnet`, or a
 `localhost` identifier; default
 `headless-playground.dot`) sets the initial product. `/product <id>` changes it
 for the lifetime of the process. Switching disconnects active product
-WebSockets so clients reconnect with a new product context; the network,
-pairing relationship, signing-host session, and wallet identity stay active.
+WebSockets. Reload browser dev pages to use the new product context. The
+network, pairing relationship, signing-host session, and wallet identity stay active.
 Product-owned storage, permissions, and derived product accounts are scoped by
 the selected id, so the newly selected product sees its own state. The next
 `/script` also receives the new id through `host.productId`.
@@ -643,13 +806,13 @@ happens.
 
 Both hosts take `--auto-accept`. Without it, confirmations a web/iOS host would
 show as a modal (sign requests, permission prompts, and cross-product Ring-VRF
-requests) are rendered prominently in the signing-host transcript and answered
-directly with `y` or `n` (typed `yes`/`no` plus Enter also works). Approval
+requests) are rendered prominently in the signing-host transcript. Actions use
+`y` to approve and `n` to reject. Permissions use `o` for Allow once, `a` for
+Allow always and `n` for Deny. Typed answers plus Enter also work. Approval
 cards summarize and redact signing payloads rather than dumping debug objects.
-The current command draft is
-restored afterward; Esc safely rejects. Concurrent approvals are serialized.
-In non-interactive `exec` mode, a TTY gets a plain yes/no prompt and non-TTY
-stdin safely rejects instead of hanging. Same-product Ring-VRF requests do not
+The current command draft is restored afterward; Esc rejects. Concurrent
+approvals are serialized. Plain mode offers the same choices when stdin is a
+TTY; non-TTY stdin rejects instead of hanging. Same-product Ring-VRF requests do not
 prompt, matching the iOS signing host. Pass `--auto-accept` for unattended
 runs; every auto-approved decision is still printed.
 
@@ -688,6 +851,36 @@ level when `RUST_LOG` is absent; otherwise it shows the exact `RUST_LOG` value.
 `/log` replaces the startup filter with the selected level. Without `RUST_LOG`,
 `--log-level` and `/log` apply to TrUAPI targets while other third-party
 dependencies remain at `warn`.
+
+## Wire debugger
+
+`--debugger <URL>` streams every product frame this host sends or receives to a
+[`@parity/truapi-debugger`](../../../js/packages/truapi-debugger) listening on a
+loopback `ws://` address. `TRUAPI_DEBUGGER_URL` sets the same value; an explicit
+flag wins over it.
+
+```bash
+# in one shell
+( cd js/packages/truapi-debugger && npm run serve )   # 127.0.0.1:9231
+
+# in another
+truapi-host dev --debugger ws://127.0.0.1:9231 -- yarn dev
+```
+
+The switch is meaningful only on the commands that serve frames: `pairing-host`,
+`dev` and `signing-host`. A URL that is not loopback fails startup rather than
+warning, since a host that runs on without the debugger it was asked for looks,
+from the debugger's side, exactly like a host nobody switched on. Starting the
+debugger after the host is fine: the sink dials lazily and reconnects.
+
+Every run says which way it went, either `Streaming wire frames to a debugger`,
+naming the endpoint and the switch clap read it from, or `Wire debugger off`.
+That report is the reason the flag needs no build gate: a stale exported
+`TRUAPI_DEBUGGER_URL` cannot tap a session quietly.
+
+Frames are forwarded whole and the debugger decodes all of them, so a tapped
+signing host puts its payloads on that socket. Point it at a debugger you are
+running yourself.
 
 ## Statement-store allowance
 
@@ -771,8 +964,8 @@ cleans up a unique temporary Unix socket.
 
 ## Serving a dev server (one process, no terminal)
 
-`truapi-host dev` is the shorthand for this when the thing being supervised is a
-development server; reach for `--serve` when something else owns the process.
+`truapi-host dev` serves the browser bootstrap. Use `--serve` when a separate
+process needs the raw product-frame endpoint.
 
 `signing-host --serve` runs the host as a background service instead of a
 terminal UI, so a dev server or test harness can supervise it:

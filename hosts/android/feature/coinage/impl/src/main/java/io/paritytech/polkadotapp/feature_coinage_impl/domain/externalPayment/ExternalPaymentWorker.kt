@@ -72,9 +72,9 @@ class ExternalPaymentWorker @AssistedInject constructor(
         while (true) {
             val pending = repository.getNextPending() ?: return Result.success()
 
-            coinageLogD("External payment processing payment=${pending.id} stage=${pending.stage}")
+            coinageLogD("External payment processing payment=${pending.key} stage=${pending.stage}")
 
-            val outcome = stateMachineFactory.create(pending.id)
+            val outcome = stateMachineFactory.create(pending.key)
                 .executeUntilPossible()
                 .toWorkerResult(retryOnFailure = true)
 

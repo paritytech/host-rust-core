@@ -1,12 +1,12 @@
 package io.paritytech.polkadotapp.feature_products_impl.presentation.signTransaction
 
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.paritytech.polkadotapp.common.domain.model.toSubstrateAddress
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.common.presentation.ui.errors.SigningFailedPresentationError
 import io.paritytech.polkadotapp.common.presentation.ui.errors.UnexpectedPresentationError
 import io.paritytech.polkadotapp.common.utils.combineResults
-import io.paritytech.polkadotapp.common.utils.flatMap
 import io.paritytech.polkadotapp.common.utils.flowOf
 import io.paritytech.polkadotapp.common.utils.inBackground
 import io.paritytech.polkadotapp.common.utils.launchUnit
@@ -73,8 +73,7 @@ class TransactionSignViewModel @Inject constructor(
 
         Timber.d("Approve clicked for ${signingContext.requesterName}")
 
-        interactor.sign()
-            .flatMap { signingContext.deliverSignedResult(it) }
+        signingContext.approve { interactor.sign() }
             .onSuccess {
                 showMessage(RCommon.string.sign_transaction_signed)
 
@@ -109,7 +108,8 @@ class TransactionSignViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
 
-        signingContextHolder.clear()
+        signingContext.onAbandoned()
+        signingContextHolder.clear(signingContext)
     }
 
     private fun SigningAccount.toUi(): SigningAccountUi {
@@ -120,7 +120,15 @@ class TransactionSignViewModel @Inject constructor(
             )
 
             SigningAccount.IdentityAccount -> SigningAccountUi.IdentityAccount
+
+            is SigningAccount.Legacy -> SigningAccountUi.Legacy(accountId.toSubstrateAddress(GENERIC_SS58_PREFIX))
         }
+    }
+
+    private companion object {
+        // The sheet has no chain for a legacy account, so it shows the
+        // network-agnostic form rather than implying one.
+        const val GENERIC_SS58_PREFIX: Short = 42
     }
 
     private fun ParsedSigningContent.toSigningContent(humanReadable: String): SigningContent {

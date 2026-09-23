@@ -138,11 +138,8 @@ jobs:
           TRUAPI_USE_LOCAL_BINARY: "1"
         run: |
           set -euo pipefail
-          xcodebuild test \
-            -scheme TrUAPIHost-Package \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
-            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
-            CODE_SIGNING_ALLOWED=NO
+          ./ios/truapi-host/scripts/test.sh test \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData"
 
       - name: Publish XCFramework
         id: ios_publish

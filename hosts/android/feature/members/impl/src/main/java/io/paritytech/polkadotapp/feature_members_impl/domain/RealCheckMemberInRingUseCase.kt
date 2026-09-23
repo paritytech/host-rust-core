@@ -4,6 +4,7 @@ import io.paritytech.polkadotapp.bandersnatch_crypto.BandersnatchPublicKey
 import io.paritytech.polkadotapp.bandersnatch_crypto.memberKey
 import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.ChainId
 import io.paritytech.polkadotapp.common.data.cache.CacheableDataConsistency
+import io.paritytech.polkadotapp.common.utils.combineResults
 import io.paritytech.polkadotapp.common.utils.firstIsInstance
 import io.paritytech.polkadotapp.common.utils.flatMap
 import io.paritytech.polkadotapp.common.utils.flatMapNotNull
@@ -33,9 +34,11 @@ class RealCheckMemberInRingUseCase @Inject constructor(
         collectionId: RingCollectionId,
         memberSource: MemberSource,
     ): Result<Unit> {
-        return resolveKey(memberSource).mapCatching { key ->
+        return combineResults(resolveKey(memberSource), membersRepository.getRingKeysPageSize(chainId)) { key, keysPerPage ->
+            key to keysPerPage
+        }.mapCatching { (key, keysPerPage) ->
             val included = awaitMemberIncluded(chainId, collectionId, key)
-            awaitRingIncludesKey(chainId, collectionId, included)
+            awaitRingIncludesKey(chainId, collectionId, included, keysPerPage)
         }
     }
 
@@ -48,8 +51,10 @@ class RealCheckMemberInRingUseCase @Inject constructor(
             membersRepository.getMember(chainId, collectionId, key, FRESH)
                 .map { it?.includedOrNull() }
                 .flatMapNotNull { included ->
-                    membersRepository.getRingStatus(chainId, collectionId, included.ringIndex, FRESH)
-                        .map { it != null && it.includesKey(included) }
+                    combineResults(
+                        membersRepository.getRingStatus(chainId, collectionId, included.ringIndex, FRESH),
+                        membersRepository.getRingKeysPageSize(chainId),
+                    ) { status, keysPerPage -> status != null && status.includesKey(included, keysPerPage) }
                 }
                 .map { it ?: false }
         }
@@ -69,10 +74,11 @@ class RealCheckMemberInRingUseCase @Inject constructor(
         chainId: ChainId,
         collectionId: RingCollectionId,
         included: RingPosition.Included,
+        keysPerPage: Int,
     ) {
         membersRepository.subscribeRingStatus(chainId, collectionId, included.ringIndex)
             .mapNotNull { it.getOrNull() }
-            .first { it.includesKey(included) }
+            .first { it.includesKey(included, keysPerPage) }
     }
 
     private suspend fun resolveKey(memberSource: MemberSource): Result<BandersnatchPublicKey> = runCatching {

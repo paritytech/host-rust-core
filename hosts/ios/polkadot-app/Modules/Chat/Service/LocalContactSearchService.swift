@@ -6,6 +6,7 @@ protocol LocalContactSearching {
     func searchContacts(usernamePrefix: String) -> AnyDataProviderRepository<Chat.Contact>
     func contact(accountId: AccountId) -> AnyDataProviderRepository<Chat.Contact>
     func allContacts() -> AnyDataProviderRepository<Chat.Contact>
+    func blockedContacts() -> AnyDataProviderRepository<Chat.Contact>
 }
 
 final class LocalContactSearchService: LocalContactSearching {
@@ -28,5 +29,9 @@ final class LocalContactSearchService: LocalContactSearching {
     func allContacts() -> AnyDataProviderRepository<Chat.Contact> {
         let predicate = NSPredicate.isContact()
         return repositoryFactory.createRepository(forFilter: predicate)
+    }
+
+    func blockedContacts() -> AnyDataProviderRepository<Chat.Contact> {
+        repositoryFactory.createRepository(forFilter: .blockedContacts())
     }
 }

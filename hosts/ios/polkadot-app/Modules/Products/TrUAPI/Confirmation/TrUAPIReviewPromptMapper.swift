@@ -20,9 +20,9 @@ struct TrUAPIAllowanceRequest: Equatable {
 /// and the statement-sign prompt.
 protocol TrUAPIReviewPromptMapping: Sendable {
     func makePermissionRequest(from review: IdentityDisclosureReview) -> TrUAPIPermissionRequest
-    func makePermissionRequest(from review: PreimageSubmitReview) -> TrUAPIPermissionRequest
+    func makeActionRequest(from review: PreimageSubmitReview, requester: ProductId) -> TrUAPIActionConfirmationRequest
     func makePermissionRequest(from review: AccountAccessReview) -> TrUAPIPermissionRequest
-    func makePermissionRequest(from review: ProductSubtreeReview) -> TrUAPIPermissionRequest
+    func makeActionRequest(from review: ProductSubtreeReview) -> TrUAPIActionConfirmationRequest
     func makePermissionRequest(from review: AccountAliasReview) -> TrUAPIPermissionRequest
     func makeCreateProofRequest(from review: CreateProofReview) throws -> CreateProofConfirmationRequest
     func makeAllowanceRequest(from review: ResourceAllocationReview) throws -> TrUAPIAllowanceRequest
@@ -40,13 +40,11 @@ struct TrUAPIReviewPromptMapper: TrUAPIReviewPromptMapping {
         )
     }
 
-    /// `PreimageSubmitReview` carries no product identity: the submit is
-    /// host-mediated, so the prompt is raised without a product scope.
-    func makePermissionRequest(from _: PreimageSubmitReview) -> TrUAPIPermissionRequest {
-        TrUAPIPermissionRequest(
-            productId: "",
-            permissions: [.preimageSubmitAccess]
-        )
+    func makeActionRequest(
+        from review: PreimageSubmitReview,
+        requester: ProductId
+    ) -> TrUAPIActionConfirmationRequest {
+        .preimageSubmit(productId: requester, size: review.size)
     }
 
     func makePermissionRequest(from review: AccountAccessReview) -> TrUAPIPermissionRequest {
@@ -56,11 +54,8 @@ struct TrUAPIReviewPromptMapper: TrUAPIReviewPromptMapping {
         )
     }
 
-    func makePermissionRequest(from review: ProductSubtreeReview) -> TrUAPIPermissionRequest {
-        TrUAPIPermissionRequest(
-            productId: review.productId,
-            permissions: [.accountAccess(targetProductId: review.productId)]
-        )
+    func makeActionRequest(from review: ProductSubtreeReview) -> TrUAPIActionConfirmationRequest {
+        .productSubtree(productId: review.productId)
     }
 
     /// An alias is derived within the context product's ring, so it is presented

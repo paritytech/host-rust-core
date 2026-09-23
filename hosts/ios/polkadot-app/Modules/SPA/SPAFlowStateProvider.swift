@@ -2,6 +2,8 @@ import Foundation
 import os
 import Products
 import ChainRegistry
+import Operation_iOS
+import Revive
 
 protocol SPAFlowStateProviding: AnyObject {
     func flowState() -> SPAFlowState
@@ -32,7 +34,11 @@ final class SPAFlowStateProvider: SPAFlowStateProviding {
         }
 
         let contractApi = ReviveDotNsContractApi(
-            chainRegistry: chainRegistry,
+            contractApi: ReviveContractApi(
+                chainId: config.contractsChainId,
+                chainResource: chainRegistry,
+                operationQueue: OperationManagerFacade.sharedDefaultQueue
+            ),
             configProvider: { config }
         )
 

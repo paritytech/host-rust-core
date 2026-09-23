@@ -63,6 +63,14 @@ extension ExtrinsicSubmissionMonitorFacade: ExtrinsicSubmissionMonitorFacadeProt
         try extrinsicServiceFactory.createOperationFactory(chain: chain)
     }
 
+    /// Same, pinned to a format the caller resolved from the runtime (see `ExtrinsicVersionProvider`).
+    func createOperationFactory(
+        chain: ChainProtocol,
+        extrinsicVersion: Extrinsic.Version
+    ) throws -> ExtrinsicOperationFactoryProtocol {
+        try extrinsicServiceFactory.createOperationFactory(chain: chain, extrinsicVersion: extrinsicVersion)
+    }
+
     /// The fork-protected submitter (pre-submission validation + resubmit-on-fork). `trackingTill`
     /// controls how far the watch follows: `.inBlock` completes on inclusion, `.finalized` keeps
     /// tracking until the block is finalized (used by Coinage's durability tracker).
@@ -71,6 +79,18 @@ extension ExtrinsicSubmissionMonitorFacade: ExtrinsicSubmissionMonitorFacadeProt
         trackingTill: ExtrinsicTrackingTill = .inBlock
     ) throws -> ExtrinsicSubmitting {
         try extrinsicServiceFactory.makeForkProtectedSubmitter(chain: chain, trackingTill: trackingTill)
+    }
+
+    func makeForkProtectedSubmitter(
+        chain: ChainProtocol,
+        trackingTill: ExtrinsicTrackingTill,
+        extrinsicVersion: Extrinsic.Version
+    ) throws -> ExtrinsicSubmitting {
+        try extrinsicServiceFactory.makeForkProtectedSubmitter(
+            chain: chain,
+            trackingTill: trackingTill,
+            extrinsicVersion: extrinsicVersion
+        )
     }
 }
 

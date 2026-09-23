@@ -22,6 +22,9 @@ interface DeepLinkHandler {
     }
 }
 
+/** Swaps the scheme rather than prefixing it: ensureHttpsProtocol would mangle a polkadotapp:// deeplink. */
+fun Uri.asWebUri(): Uri = buildUpon().scheme(DeepLinkHandler.WEB_HTTPS_SCHEME).build()
+
 sealed class DeeplinkProcessingOutcome {
     class ShowMessage(val message: String) : DeeplinkProcessingOutcome()
 

@@ -2,7 +2,7 @@
 //!
 //! This module is the only place allowance-key material becomes a signer, and
 //! it only ever signs the `store` call it builds itself: the public surface
-//! takes raw preimage bytes plus a [`BulletinAllowanceKey`], never
+//! takes raw preimage bytes plus a `BulletinAllowanceKey`, never
 //! caller-supplied call data.
 
 use subxt::client::{ClientAtBlock, OnlineClientAtBlockT};

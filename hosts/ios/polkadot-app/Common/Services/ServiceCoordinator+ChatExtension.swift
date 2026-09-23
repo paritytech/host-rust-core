@@ -70,6 +70,10 @@ extension ServiceCoordinator {
             )
         }
 
+        // Detached from the registry: the row is the host's own, drawn before the product runs.
+        // It gives up rather than waiting forever, so a second assembly leaves no task behind.
+        Task { await HostPlacedRoomPlacer().placeRooms() }
+
         return (registry, workerFacade)
     }
 }

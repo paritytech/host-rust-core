@@ -7,40 +7,31 @@ struct AssetDetailsView: View {
     @State var viewModel: AssetDetailsViewModelProtocol
     var isExpanded: Bool = false
     var onCardTapped: () -> Void
+    var overscroll: CGFloat = 0
     var onCollapse: (() -> Void)?
 
     init(
         viewModel: AssetDetailsViewModelProtocol = AssetDetailsViewModel(),
         isExpanded: Bool = false,
         onCardTapped: @escaping () -> Void,
+        overscroll: CGFloat = 0,
         onCollapse: (() -> Void)? = nil
     ) {
         _viewModel = State(initialValue: viewModel)
         self.isExpanded = isExpanded
         self.onCardTapped = onCardTapped
+        self.overscroll = overscroll
         self.onCollapse = onCollapse
     }
 
     var body: some View {
         DSExpandableCardLayout(
             isExpanded: isExpanded,
+            overscroll: overscroll,
             onCollapse: onCollapse,
             card: { headerCard },
             details: { expandedBody }
         )
-        .safeAreaInset(edge: .bottom) {
-            if !viewModel.fundingStates.isEmpty {
-                AssetFundingStatusView(
-                    states: $viewModel.fundingStates,
-                    isExpanded: $viewModel.isFundingExpanded,
-                    configuration: .fundingDigitalDollarConfiguration(
-                        onCompletedAction: viewModel.onFundingCompleted,
-                        onFailedAction: viewModel.onFundingFailed
-                    )
-                )
-                .frame(maxWidth: .infinity)
-            }
-        }
     }
 
     @ViewBuilder
@@ -54,6 +45,9 @@ struct AssetDetailsView: View {
     @ViewBuilder
     private var expandedBody: some View {
         VStack(spacing: 16) {
+            if viewModel.showsAccountBackupPending {
+                AccountBackupPendingView()
+            }
             if viewModel.showsBackupNotification {
                 backupCard()
             } else {
@@ -61,10 +55,7 @@ struct AssetDetailsView: View {
             }
             if let breakdown = viewModel.coinageBreakdown,
                viewModel.balanceCardModel != nil {
-                CoinageBalanceBreakdownView(
-                    breakdown: breakdown,
-                    onMakeAllVouchersReady: viewModel.onMakeAllVouchersReady
-                )
+                CoinageBalanceBreakdownView(breakdown: breakdown)
             }
 
             #if TESTNET_FEATURE
@@ -79,12 +70,6 @@ struct AssetDetailsView: View {
                 testnetTopUpButton()
             #endif
         }
-        // The expanded card is sized to the whole screen, so the bottom of its content lands under
-        // the tab bar chrome, which is an overlay: content there is drawn but cannot be tapped. The
-        // chrome's inset does not reach this hierarchy, so clear it explicitly from the height the
-        // bar itself publishes, on top of the device's own inset.
-        .safeAreaPadding(.bottom)
-        .padding(.bottom, DSTabBarView.preferredHeight())
     }
 
     private func balanceCard(
@@ -173,10 +158,27 @@ struct AssetDetailsView: View {
     #endif
 }
 
+/// Funding progress banner. Pinned by the wallet host while the asset card is expanded.
+struct AssetDetailsFundingBar: View {
+    @Bindable var viewModel: AssetDetailsViewModel
+
+    var body: some View {
+        if !viewModel.fundingStates.isEmpty {
+            AssetFundingStatusView(
+                states: $viewModel.fundingStates,
+                isExpanded: $viewModel.isFundingExpanded,
+                configuration: .fundingDigitalDollarConfiguration(
+                    onCompletedAction: viewModel.onFundingCompleted,
+                    onFailedAction: viewModel.onFundingFailed
+                )
+            )
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
 private struct CoinageBalanceBreakdownView: View {
     let breakdown: CoinageBalanceBreakdownViewModel
-
-    var onMakeAllVouchersReady: (() -> Void)?
 
     @State private var showDetails = false
     @State private var showExplanation = false
@@ -194,20 +196,6 @@ private struct CoinageBalanceBreakdownView: View {
                 .padding(.vertical, 2)
 
             summaryLegend
-
-            if let onMakeAllVouchersReady {
-                Button {
-                    onMakeAllVouchersReady()
-                } label: {
-                    Text(verbatim: "Make all vouchers ready")
-                        .textStyle(.body14SemiBold())
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .foregroundStyle(.fgPrimaryInverted)
-                }
-                .background(.bgActionPrimary, in: RoundedRectangle(cornerRadius: 12))
-                .accessibilityId(AccessibilityID.Wallet.makeVouchersReadyButton)
-            }
 
             Button {
                 withAnimation { showDetails.toggle() }
@@ -317,22 +305,21 @@ private struct CoinageBalanceBreakdownView: View {
     }
 }
 
-/// Two columns, laid out as a grid so the value column takes the width of the widest value in
-/// the list and every depiction starts at the same x. Sizing each row on its own would give the
-/// bars different columns to scale against, and a fixed width would either clip long values or
-/// shrink them out of alignment.
+/// Two columns in a lazy stack: holdings run into the hundreds and every depiction is a `Canvas`
+/// or a measured bar, so only visible rows are built. A lazy stack cannot see every row, so the
+/// value column takes the width of the longest value, measured once off-screen; with tabular
+/// digits the longest string is also the widest, and every depiction starts at the same x.
 private struct CoinageDetailsView: View {
     let breakdown: CoinageBalanceBreakdownViewModel
 
+    @State private var amountColumnWidth: CGFloat?
+
     var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 18) {
+        LazyVStack(spacing: 18) {
             ForEach(breakdown.holdings) { holding in
-                GridRow {
-                    Text(verbatim: holding.amount ?? "—")
-                        .textStyle(.body14Regular())
-                        .foregroundStyle(.fgPrimary)
-                        .lineLimit(1)
-                        .gridColumnAlignment(.trailing)
+                HStack(spacing: 12) {
+                    amountText(holding.amount)
+                        .frame(width: amountColumnWidth, alignment: .trailing)
 
                     switch holding.status {
                     case let .coin(model):
@@ -343,6 +330,31 @@ private struct CoinageDetailsView: View {
                 }
             }
         }
+        .background {
+            amountText(longestAmount)
+                .fixedSize()
+                .hidden()
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.width
+                } action: {
+                    amountColumnWidth = $0
+                }
+        }
+    }
+}
+
+private extension CoinageDetailsView {
+    var longestAmount: String? {
+        breakdown.holdings.compactMap(\.amount).max { $0.count < $1.count }
+    }
+
+    func amountText(_ amount: String?) -> some View {
+        Text(verbatim: amount ?? "—")
+            .textStyle(.body14Regular())
+            .monospacedDigit()
+            .foregroundStyle(.fgPrimary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.9)
     }
 }
 

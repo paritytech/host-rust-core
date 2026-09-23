@@ -24,8 +24,7 @@ enum CheckUsernameViewFactory {
 
         let interactor = CheckUsernameInteractor(
             selectedWallet: selectedWallet,
-            identityService: identityService,
-            settingsManager: SettingsManager.shared
+            identityService: identityService
         )
 
         let wireframe = CheckUsernameWireframe(observer: observer)

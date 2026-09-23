@@ -14,9 +14,10 @@ import io.paritytech.polkadotapp.bandersnatch_crypto.BandersnatchEntropy
 import io.paritytech.polkadotapp.bandersnatch_crypto.BandersnatchPublicKey
 import io.paritytech.polkadotapp.common.domain.model.AccountId
 import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.DerivationIndex
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageKeyIndex
 import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.CoinKeypairDerivation
 import io.paritytech.polkadotapp.feature_coinage_impl.data.derivation.VoucherRingDerivation
+import io.paritytech.polkadotapp.feature_coinage_impl.testKey
 import io.paritytech.polkadotapp.feature_transactions.api.data.EnrichedSendableExtrinsic
 import io.paritytech.polkadotapp.feature_transactions.api.data.Mortality
 import io.paritytech.polkadotapp.feature_transactions.api.data.withMortality
@@ -26,17 +27,24 @@ import org.mockito.Mockito.mock
 private const val KEY_SIZE = 32
 
 /** A coin's on-chain key in the harness: the derivation index, so a scenario can name a coin by its number. */
-fun coinKeyOf(derivationIndex: DerivationIndex): AccountId = keyBytes(derivationIndex).toDataByteArray()
+fun coinKeyOf(derivationIndex: CoinageKeyIndex): AccountId = keyBytes(derivationIndex).toDataByteArray()
+
+fun coinKeyOf(item: Int): AccountId = coinKeyOf(testKey(item))
 
 /** A voucher's member key. Disjoint from [coinKeyOf] so the same index is two different assets. */
-fun voucherKeyOf(derivationIndex: DerivationIndex): BandersnatchPublicKey =
+fun voucherKeyOf(derivationIndex: CoinageKeyIndex): BandersnatchPublicKey =
     keyBytes(derivationIndex).also { it[KEY_SIZE - 1] = 1 }.toDataByteArray()
 
-private fun keyBytes(index: Int) = ByteArray(KEY_SIZE).also {
+fun voucherKeyOf(item: Int): BandersnatchPublicKey = voucherKeyOf(testKey(item))
+
+/** The installation's leading bytes go in too, so the same item under two installations is two keys. */
+private fun keyBytes(key: CoinageKeyIndex) = ByteArray(KEY_SIZE).also {
+    val index = key.item
     it[0] = (index shr 24).toByte()
     it[1] = (index shr 16).toByte()
     it[2] = (index shr 8).toByte()
     it[3] = index.toByte()
+    key.installation.value.value.copyInto(it, destinationOffset = 4, startIndex = 0, endIndex = 4)
 }
 
 /**
@@ -44,12 +52,12 @@ private fun keyBytes(index: Int) = ByteArray(KEY_SIZE).also {
  * cannot see past, and the fuzz driver derives a key on every step.
  */
 class FakeCoinKeypairDerivation : CoinKeypairDerivation {
-    override suspend fun deriveKeypair(derivationIndex: DerivationIndex): Keypair = keypairOf(derivationIndex)
+    override suspend fun deriveKeypair(derivationIndex: CoinageKeyIndex): Keypair = keypairOf(derivationIndex)
 
-    override suspend fun deriveKeypairs(derivationIndices: List<DerivationIndex>): List<Keypair> =
+    override suspend fun deriveKeypairs(derivationIndices: List<CoinageKeyIndex>): List<Keypair> =
         derivationIndices.map(::keypairOf)
 
-    private fun keypairOf(derivationIndex: DerivationIndex) = Sr25519Keypair(
+    private fun keypairOf(derivationIndex: CoinageKeyIndex) = Sr25519Keypair(
         privateKey = keyBytes(derivationIndex),
         publicKey = keyBytes(derivationIndex),
         nonce = ByteArray(KEY_SIZE),
@@ -61,9 +69,9 @@ class FakeCoinKeypairDerivation : CoinKeypairDerivation {
  * the member key and the alias rather than the entropy they come from.
  */
 class FakeVoucherRingDerivation : VoucherRingDerivation {
-    override suspend fun deriveBandersnatch(derivationIndex: DerivationIndex) = BandersnatchEntropy(keyBytes(derivationIndex))
+    override suspend fun deriveBandersnatch(derivationIndex: CoinageKeyIndex) = BandersnatchEntropy(keyBytes(derivationIndex))
 
-    override suspend fun deriveBandersnatchBatch(derivationIndices: List<DerivationIndex>) =
+    override suspend fun deriveBandersnatchBatch(derivationIndices: List<CoinageKeyIndex>) =
         derivationIndices.map { BandersnatchEntropy(keyBytes(it)) }
 
     var memberKeyCalls = 0
@@ -71,13 +79,13 @@ class FakeVoucherRingDerivation : VoucherRingDerivation {
     var aliasCalls = 0
         private set
 
-    override suspend fun memberKeyOf(derivationIndex: DerivationIndex): BandersnatchPublicKey {
+    override suspend fun memberKeyOf(derivationIndex: CoinageKeyIndex): BandersnatchPublicKey {
         memberKeyCalls++
 
         return voucherKeyOf(derivationIndex)
     }
 
-    override suspend fun aliasOf(derivationIndex: DerivationIndex, context: BandersnatchContext): BandersnatchAlias {
+    override suspend fun aliasOf(derivationIndex: CoinageKeyIndex, context: BandersnatchContext): BandersnatchAlias {
         aliasCalls++
 
         return aliasWithoutCounting(derivationIndex, context)
@@ -89,7 +97,7 @@ class FakeVoucherRingDerivation : VoucherRingDerivation {
      * [aliasCalls] is evidence that production code derived an alias; a scenario computing the same key to
      * write chain state must not inflate it.
      */
-    fun aliasWithoutCounting(derivationIndex: DerivationIndex, context: BandersnatchContext): BandersnatchAlias =
+    fun aliasWithoutCounting(derivationIndex: CoinageKeyIndex, context: BandersnatchContext): BandersnatchAlias =
         BandersnatchAlias(keyBytes(derivationIndex) + context.value)
 }
 

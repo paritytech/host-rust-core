@@ -8,6 +8,7 @@ import io.paritytech.polkadotapp.chains.storage.source.query.api.QueryableModule
 import io.paritytech.polkadotapp.chains.storage.source.query.api.QueryableStorageEntry1
 import io.paritytech.polkadotapp.chains.storage.source.query.api.QueryableStorageEntry2
 import io.paritytech.polkadotapp.chains.storage.source.query.api.QueryableStorageEntry3
+import io.paritytech.polkadotapp.chains.storage.source.query.api.constant
 import io.paritytech.polkadotapp.chains.storage.source.query.api.storage1
 import io.paritytech.polkadotapp.chains.storage.source.query.api.storage2
 import io.paritytech.polkadotapp.chains.storage.source.query.api.storage3
@@ -16,6 +17,7 @@ import io.paritytech.polkadotapp.chains.util.WithRuntime
 import io.paritytech.polkadotapp.feature_members_api.data.model.PageIndex
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingCollection
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingCollectionId
+import io.paritytech.polkadotapp.feature_members_api.data.model.RingExponent
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingIndex
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingKeys
 import io.paritytech.polkadotapp.feature_members_api.data.model.RingMembersState
@@ -51,6 +53,11 @@ val MembersApi.collections: QueryableStorageEntry1<RingCollectionId, RingCollect
 context(withRuntime: WithRuntime)
 val MembersApi.ringsState: QueryableStorageEntry1<RingCollectionId, RingMembersState>
     get() = storage1("RingsState")
+
+/** Its capacity is the page size of [ringKeys]. */
+context(withRuntime: WithRuntime)
+val MembersApi.maxFlexibleRingExponent: RingExponent
+    get() = constant("MaxFlexibleRingExponent")
 
 context(withRuntime: WithRuntime)
 val MembersApi.onboardingSize: QueryableStorageEntry1<RingCollectionId, Int>

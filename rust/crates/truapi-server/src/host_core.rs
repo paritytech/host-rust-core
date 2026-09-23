@@ -34,9 +34,10 @@ use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
 use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
-    ActionChannel, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
-    PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
-    SigningHostRole, SigningHostSsoService, disconnect_paired_host, establish_pairing,
+    ActionChannel, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, DevicePairingObserver,
+    LocalActivation, PairedSsoPeer, PairingHostRole, ProductAuthority, ProductRuntimeHost,
+    ResponderExit, RuntimeServices, SigningHostRole, SigningHostSsoService, disconnect_paired_host,
+    establish_pairing, notify_pairing_allowance_allocation, notify_pairing_failed,
     respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
@@ -58,51 +59,7 @@ pub trait FrameSink: Send + Sync {
 /// the frame path and must not fail the operation that produced the event, so a
 /// slow, absent, or crashed debugger only loses the trace, never a session.
 pub trait DebugSink: Send + Sync {
-    /// Hand one event to the sink.
-    ///
-    /// Must not block, and must not panic: `emit` is called from inside the
-    /// inbound and outbound frame paths, so a panic here would otherwise unwind
-    /// into a live dispatch. The core contains a panic at both tap sites
-    /// ([`emit_debug`]) rather than trusting the contract, because the trait is
-    /// public and implementable out-of-repo, and because the profiles that can
-    /// unwind are exactly the ones a developer runs: the workspace defines no
-    /// `[profile.dev]`, so `dev` keeps Cargo's default `panic = "unwind"`, and an
-    /// out-of-repo or test sink can be installed under it. (The only in-repo
-    /// installer is the wasm host, which cannot unwind at all; `truapi-host-cli`
-    /// installs no sink.) Serialize and enqueue only; never do fallible work
-    /// that can `unwrap`/panic on the caller's thread.
-    ///
-    /// The two halves of that contract are NOT equally enforced, and the asymmetry
-    /// is deliberate rather than an oversight. Panics are contained: both tap sites
-    /// go through [`emit_debug`], which wraps the call in `catch_unwind`. Blocking
-    /// is caller-enforced only - nothing here bounds how long `emit` may take.
-    ///
-    /// It is not enforced HERE, at the trait boundary, and that is a choice worth
-    /// stating precisely rather than dressing up. A bounded queue drained by a
-    /// spawned task does solve the realistic case: it bounds per-frame work to a
-    /// serialize-and-push and converts an overloaded debugger into counted trace
-    /// loss. `WsDebugSink` does exactly that, and `services.spawner` is in hand
-    /// where the sink transport is built, so the core could impose it.
-    ///
-    /// What it does not solve is a sink that never yields at all - on wasm32 the
-    /// drain needs the same single-threaded event loop the tap is blocking, so a
-    /// truly hung `emit` stalls regardless. The trait therefore requires the sink to
-    /// own that queue rather than wrapping every sink in one here, which would add a
-    /// hop to the frame path for every well-behaved implementation to defend against
-    /// a case it still cannot fix.
-    ///
-    /// So the cost is stated rather than papered over. Whatever thread installs a
-    /// sink is the thread a hung one blocks, and it blocks all of that thread's
-    /// work: every channel, and the outbound path too, which taps synchronously
-    /// inside `Transport::send` while a dispatch is live. Tap ordering buys nothing
-    /// against a hang; it only decides whether a corrupt frame is still observed.
-    ///
-    /// In practice the wasm sink is installed from a Web Worker entry point, so the
-    /// blast radius is that worker rather than the page - but that is CONVENTION,
-    /// not enforcement: nothing gates sink installation on worker scope, and the
-    /// raw wasm glue is publicly exported, so a main-thread consumer can install one
-    /// and hang the page. A sink that may be slow must own its own queue and return
-    /// immediately.
+    /// Hand one event to the sink. Serialize and enqueue only; never block.
     fn emit(&self, event: DebugEvent);
 }
 
@@ -393,6 +350,13 @@ impl PairingHostRuntime {
             .identity_chat_private_key
     }
 
+    /// Read the active session's sr25519 statement-store secret, for hosts
+    /// running their own statement-store traffic against the advertised account.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.device_statement_key"))]
+    pub fn device_statement_key(&self) -> Option<[u8; 64]> {
+        Some(self.pairing_host.session_state().current()?.sso?.ss_secret)
+    }
+
     /// Read this device's X25519 encryption secret, for hosts running device
     /// sync. Generated and persisted on first read.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.device_encryption_key"))]
@@ -533,6 +497,7 @@ fn pairing_login_error_reason(
         | truapi::CallError::MalformedFrame { reason } => reason,
         truapi::CallError::Denied => "login denied".to_string(),
         truapi::CallError::Unsupported => "login unsupported".to_string(),
+        truapi::CallError::Cancelled => "login cancelled".to_string(),
     }
 }
 
@@ -560,6 +525,14 @@ pub struct SigningHostRuntime {
 }
 
 impl SigningHostRuntime {
+    /// Answer resource allocation as granted without performing it.
+    ///
+    /// For test hosts only, with the `test-host` feature enabled.
+    #[cfg(feature = "test-host")]
+    pub fn set_grant_allowances_unchecked(&self, granted: bool) {
+        self.signing_host.set_grant_allowances_unchecked(granted);
+    }
+
     /// Build a long-lived signing-host runtime around a platform implementation.
     /// Chat is answered `Unsupported`; [`Self::with_chat_platform`] serves it.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.new"))]
@@ -630,6 +603,17 @@ impl SigningHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_pocket_platform"))]
     pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
         self.services.install_pocket_platform(platform)
+    }
+
+    /// Install the host's [`DevicePairingObserver`], told whenever a device
+    /// finishes pairing with this signing host.
+    ///
+    /// Set-once, so the surface that announces a new device cannot change
+    /// hands between two pairings. Returns whether this call installed it.
+    /// Call it before answering any pairing deeplink.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_device_pairing_observer"))]
+    pub fn set_device_pairing_observer(&self, observer: Arc<dyn DevicePairingObserver>) -> bool {
+        self.services.install_device_pairing_observer(observer)
     }
 
     /// Build a product-facing runtime from this signing host.
@@ -910,6 +894,44 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Tell a pairing host that allowance allocation is under way, so it leaves
+    /// its QR screen while the allocation runs.
+    ///
+    /// Answering needs this host's own statement-store allowance, so register
+    /// the `WalletSso` renewal target before calling.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.notify_pairing_allowance_allocation"))]
+    pub async fn notify_pairing_allowance_allocation(
+        &self,
+        deeplink: &str,
+    ) -> Result<crate::runtime::AnnouncedPairing, v01::GenericError> {
+        notify_pairing_allowance_allocation(
+            self.services.clone(),
+            self.signing_host.clone(),
+            deeplink,
+        )
+        .await
+        .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Tell a pairing host that pairing failed, so it reports `reason` and
+    /// offers a retry.
+    ///
+    /// Owed to any host that was sent
+    /// [`Self::notify_pairing_allowance_allocation`]: it has dropped its QR and
+    /// waits without a deadline. Takes that call's handle, so the notice is
+    /// signed by the account that already reached this host even if the signer
+    /// has rotated since.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.notify_pairing_failed"))]
+    pub async fn notify_pairing_failed(
+        &self,
+        announced: &crate::runtime::AnnouncedPairing,
+        reason: String,
+    ) -> Result<(), v01::GenericError> {
+        notify_pairing_failed(self.services.clone(), announced, reason)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Answer a pairing host's handshake without entering its long-lived serve loop.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.establish_pairing"))]
     pub async fn establish_pairing(&self, deeplink: &str) -> Result<(), v01::GenericError> {
@@ -1073,6 +1095,8 @@ pub(crate) struct ConnectionAdapters {
     /// product execution, so the object that reports OS state has to be the
     /// same one that presents the prompt.
     pub(crate) permission_status: Option<Arc<dyn PermissionStatusHost>>,
+    /// SDK and internal network connections must share an execution's one-use grants.
+    pub(crate) permission_grants: Arc<crate::host_logic::permissions::TemporaryPermissions>,
     pub(crate) chat: Arc<ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
     pub(crate) renderer:
         Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
@@ -1086,6 +1110,7 @@ impl ConnectionAdapters {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
             permission_status: services.permission_status_host(),
+            permission_grants: Arc::default(),
             chat: Arc::new(ActionChannel::chat()),
             renderer: Arc::new(ActionChannel::renderer()),
             pocket_platform: services.pocket_platform(),
@@ -1114,8 +1139,8 @@ pub struct HostAdmin {
 }
 
 impl HostAdmin {
-    /// Test-only access to the product-facing runtime this handle wraps.
-    #[cfg(test)]
+    /// Access the execution's product-facing capabilities and permission grants.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn product_runtime(&self) -> &Arc<ProductRuntimeHost> {
         &self.product_runtime
     }
@@ -1225,6 +1250,15 @@ impl CoreAdmin for HostAdmin {
             .session_state()
             .current()
             .and_then(|session| session.identity_chat_private_key))
+    }
+
+    async fn get_device_statement_key(&self) -> Result<Option<Vec<u8>>, v01::GenericError> {
+        Ok(self
+            .authority
+            .session_state()
+            .current()
+            .and_then(|session| session.sso)
+            .map(|sso| sso.ss_secret.to_vec()))
     }
 
     async fn get_device_encryption_key(&self) -> Result<[u8; 32], v01::GenericError> {
@@ -1523,10 +1557,19 @@ impl ProductRuntime {
         // would poison this mutex and every later `receive_frame` would then panic
         // here, which is exactly the production-host-killing shape the debug tap
         // above was fixed for.
-        self.in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(dispatch_id, abort_handle);
+        //
+        // Re-check under the disposal lock so a racing dispatch cannot register
+        // after `dispose` has drained the active requests.
+        {
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.disposed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            in_flight.insert(dispatch_id, abort_handle);
+        }
 
         let transport: Arc<dyn Transport> = self.transport.clone();
         let _ = Abortable::new(self.core.dispatch(message, transport), abort_registration).await;
@@ -1617,19 +1660,25 @@ impl ProductRuntime {
     /// futures, and cancels active subscriptions.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.dispose"))]
     pub fn dispose(&self) {
-        if self.disposed.swap(true, Ordering::AcqRel) {
+        // Aborting under the lock can wake code that re-enters disposal.
+        if self.disposed.load(Ordering::Acquire) {
             return;
         }
-        for (_, handle) in self
-            .in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain()
         {
-            handle.abort();
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if self.disposed.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            for (_, handle) in in_flight.drain() {
+                handle.abort();
+            }
         }
         self.admin.product_runtime.detach_chat();
         self.admin.product_runtime.detach_renderer();
+        self.admin.product_runtime.release_open_operations();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
@@ -1658,13 +1707,14 @@ impl SinkTransport {
         // under this guard can unwind, the body being an
         // `Option<(ChannelId, Arc<..>)>` clone.
         //
-        // Two independent reasons that poisoner is already unreachable in what
-        // ships, neither of them the profile. `wasm.rs` is the ONLY non-test
-        // `set_debug_sink` caller in the repo (`truapi-host-cli` installs no sink
-        // at all): the wasm32 target cannot unwind, AND that call site builds a
-        // fresh `SinkTransport` per `product_runtime()` and installs at most once
-        // on it, so `previous` is always `None` and there is no destructor to run
-        // under the lock regardless of profile.
+        // That poisoner is unreachable in what ships, and not because of the
+        // profile. There are two non-test `set_debug_sink` callers: `wasm.rs`, on a
+        // target that cannot unwind, and `truapi-host-cli`'s `DebugTappedRuntime`
+        // behind `--debugger`, which can. Both share the property that actually
+        // closes the hole: each builds a fresh `SinkTransport` per
+        // `product_runtime()` and installs at most once on it, so `previous` is
+        // always `None` and there is no destructor to run under the lock, whatever
+        // the profile or target.
         //
         // The recovery is kept regardless, because this guard sits on the per-frame
         // path in both directions and outside `emit_debug`'s `catch_unwind`, so any
@@ -1743,7 +1793,7 @@ impl Transport for SinkTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{Payload, ProtocolMessage, subscription_ids};
+    use crate::frame::{Payload, ProtocolMessage, request_ids, subscription_ids};
     use crate::host_logic::product_account::derive_identity_keypair;
     use crate::host_logic::sso::messages::{
         RemoteMessage, RemoteMessageData, decode_incoming_sso_request, v1,
@@ -1756,6 +1806,9 @@ mod tests {
     use crate::test_support::{StubPlatform, runtime_config, test_spawner, wait_until};
     use parity_scale_codec::Encode;
     use std::sync::atomic::Ordering;
+    use truapi::api::Permissions;
+    use truapi::latest::{RemotePermission, RemotePermissionRequest, RemotePermissionResponse};
+    use truapi::versioned::permissions;
 
     #[derive(Default)]
     struct RecordingSink {
@@ -1818,6 +1871,269 @@ mod tests {
     fn assert_send<T: Send>(_: T) {}
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    fn network_permission(domains: &[&str]) -> RemotePermissionRequest {
+        RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: domains.iter().map(|domain| domain.to_string()).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn network_access_reuses_product_grants_and_prompts_only_for_new_domains() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform::default());
+            let (config, _) = runtime_config("fetch.dot");
+            let runtime = PairingHostRuntime::new(platform.clone(), config, test_spawner());
+            let admin = runtime.product_admin(product_context("fetch.dot").unwrap());
+            let cx = CallContext::default();
+            let request = network_permission(&["api.example.com"]);
+            let granted = admin
+                .product_runtime
+                .request_remote_permission(
+                    &cx,
+                    permissions::RemotePermissionRequest::V1(request.clone()),
+                )
+                .await
+                .unwrap();
+            let mut decisions = Vec::new();
+            for domain in ["API.EXAMPLE.COM.", "api.example.com", "Bücher.example"] {
+                decisions.push(
+                    admin
+                        .product_runtime
+                        .authorize_remote_permission(
+                            &cx,
+                            permissions::RemotePermissionRequest::V1(network_permission(&[domain])),
+                        )
+                        .await
+                        .unwrap(),
+                );
+            }
+            let saved = admin
+                .permission_authorization_status(PermissionAuthorizationRequest::Remote(
+                    network_permission(&["xn--bcher-kva.example"]),
+                ))
+                .await
+                .unwrap();
+            let prompted = platform.remote_permission_requests.lock().unwrap().clone();
+            let allowed = permissions::RemotePermissionResponse::V1(RemotePermissionResponse {
+                granted: true,
+            });
+            assert_eq!(
+                (granted, decisions, saved, prompted),
+                (
+                    allowed.clone(),
+                    vec![allowed; 3],
+                    PermissionAuthorizationStatus::Authorized,
+                    vec![request, network_permission(&["Bücher.example"])],
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn remote_authorization_frames_consume_one_use_grants() {
+        use truapi::CallError;
+        use truapi_platform::PermissionDecision;
+
+        futures::executor::block_on(async {
+            for request_upfront in [false, true] {
+                let platform = Arc::new(StubPlatform {
+                    remote_permission_denied: true,
+                    remote_permission_decisions: Mutex::new([PermissionDecision::AllowOnce].into()),
+                    ..Default::default()
+                });
+                let sink = Arc::new(RecordingSink::default());
+                let (config, product) = runtime_config("fetch.dot");
+                let runtime = ProductRuntime::from_platform_with_config(
+                    platform.clone(),
+                    config,
+                    product,
+                    test_spawner(),
+                    sink.clone(),
+                );
+                let permission = network_permission(&["api.example.com"]);
+                let request = permissions::RemotePermissionRequest::V1(permission.clone()).encode();
+                let response = |granted| {
+                    Ok::<_, CallError<permissions::RemotePermissionError>>(
+                        permissions::RemotePermissionResponse::V1(RemotePermissionResponse {
+                            granted,
+                        }),
+                    )
+                    .encode()
+                };
+                let mut requests = Vec::new();
+                if request_upfront {
+                    requests.push(("permissions_request_remote_permission", true));
+                }
+                requests.extend([
+                    ("permissions_authorize_remote_permission", true),
+                    ("permissions_authorize_remote_permission", false),
+                ]);
+                let mut expected = Vec::new();
+                for (index, (method, granted)) in requests.into_iter().enumerate() {
+                    let ids = crate::frame::request_ids(method).expect("known permission request");
+                    let mut frame = ProtocolMessage {
+                        request_id: format!("permission:{index}"),
+                        payload: Payload {
+                            trait_id: ids.trait_id,
+                            method_id: ids.method_id,
+                            message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                            value: request.clone(),
+                        },
+                    };
+                    runtime.receive_frame(frame.encode()).await.unwrap();
+                    frame.payload.message_type = crate::frame::MESSAGE_TYPE_RESPONSE;
+                    frame.payload.value = response(granted);
+                    expected.push(frame.encode());
+                }
+                assert_eq!(
+                    (
+                        sink.frames.lock().unwrap().clone(),
+                        platform.remote_permission_requests.lock().unwrap().clone(),
+                    ),
+                    (expected, vec![permission.clone(), permission]),
+                    "request_upfront={request_upfront}",
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn network_access_honors_wildcard_precedence_revocation_and_product_isolation() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                remote_permission_denied: true,
+                ..Default::default()
+            });
+            let (config, _) = runtime_config("fetch.dot");
+            let runtime = PairingHostRuntime::new(platform.clone(), config, test_spawner());
+            let admin = runtime.product_admin(product_context("fetch.dot").unwrap());
+            let cx = CallContext::default();
+            admin
+                .set_permission_authorization_status(
+                    PermissionAuthorizationRequest::Remote(network_permission(&["*.example.com"])),
+                    PermissionAuthorizationStatus::Authorized,
+                )
+                .await
+                .unwrap();
+            let mut decisions = Vec::new();
+            for domain in ["api.example.com", "deep.api.example.com", "example.com"] {
+                decisions.push(
+                    admin
+                        .product_runtime
+                        .authorize_remote_permission(
+                            &cx,
+                            permissions::RemotePermissionRequest::V1(network_permission(&[domain])),
+                        )
+                        .await
+                        .unwrap(),
+                );
+            }
+            admin
+                .set_permission_authorization_status(
+                    PermissionAuthorizationRequest::Remote(network_permission(&[
+                        "api.example.com",
+                    ])),
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            for domain in ["api.example.com", "other.example.com"] {
+                decisions.push(
+                    admin
+                        .product_runtime
+                        .authorize_remote_permission(
+                            &cx,
+                            permissions::RemotePermissionRequest::V1(network_permission(&[domain])),
+                        )
+                        .await
+                        .unwrap(),
+                );
+            }
+            let other = runtime.product_admin(product_context("other.dot").unwrap());
+            for _ in 0..2 {
+                decisions.push(
+                    other
+                        .product_runtime
+                        .authorize_remote_permission(
+                            &cx,
+                            permissions::RemotePermissionRequest::V1(network_permission(&[
+                                "other.example.com",
+                            ])),
+                        )
+                        .await
+                        .unwrap(),
+                );
+            }
+            assert_eq!(
+                (
+                    decisions,
+                    platform.remote_permission_requests.lock().unwrap().clone(),
+                ),
+                (
+                    [true, true, false, false, true, false, false]
+                        .map(|granted| permissions::RemotePermissionResponse::V1(
+                            RemotePermissionResponse { granted }
+                        ))
+                        .to_vec(),
+                    vec![
+                        network_permission(&["example.com"]),
+                        network_permission(&["other.example.com"]),
+                    ],
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn network_access_trusted_products_still_honor_explicit_denial() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform::default());
+            let (config, _) = runtime_config("peopl.dot");
+            let runtime = PairingHostRuntime::new(platform.clone(), config, test_spawner());
+            let admin = runtime.product_admin(product_context("peopl.dot").unwrap());
+            let cx = CallContext::default();
+            let request = network_permission(&["api.example.com"]);
+            let allowed = admin
+                .product_runtime
+                .authorize_remote_permission(
+                    &cx,
+                    permissions::RemotePermissionRequest::V1(request.clone()),
+                )
+                .await
+                .unwrap();
+            admin
+                .set_permission_authorization_status(
+                    PermissionAuthorizationRequest::Remote(request.clone()),
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            let denied = admin
+                .product_runtime
+                .authorize_remote_permission(&cx, permissions::RemotePermissionRequest::V1(request))
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    allowed,
+                    denied,
+                    platform.remote_permission_requests.lock().unwrap().clone(),
+                ),
+                (
+                    permissions::RemotePermissionResponse::V1(RemotePermissionResponse {
+                        granted: true
+                    }),
+                    permissions::RemotePermissionResponse::V1(RemotePermissionResponse {
+                        granted: false
+                    }),
+                    vec![],
+                )
+            );
+        });
+    }
 
     #[test]
     fn a_cached_subtree_answers_without_reaching_the_wallet() {
@@ -2880,6 +3196,172 @@ mod tests {
         assert_eq!(response.payload.value, expected);
     }
 
+    // The debug tap deliberately blocks to expose the registration race reliably.
+    #[test]
+    fn a_dispatch_racing_dispose_does_not_reach_the_platform() {
+        struct ParkingDebugSink {
+            entered: std::sync::mpsc::SyncSender<()>,
+            release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        }
+
+        impl DebugSink for ParkingDebugSink {
+            fn emit(&self, _event: DebugEvent) {
+                let _ = self.entered.try_send(());
+                if let Some(release) = self
+                    .release
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
+                    let _ = release.recv();
+                }
+            }
+        }
+
+        let navigations = Arc::new(Mutex::new(Vec::new()));
+        let platform = Arc::new(StubPlatform {
+            navigations: navigations.clone(),
+            ..Default::default()
+        });
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = Arc::new(ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        ));
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        runtime.set_debug_sink(
+            ChannelId("race".to_string()),
+            Arc::new(ParkingDebugSink {
+                entered: entered_tx,
+                release: Mutex::new(Some(release_rx)),
+            }),
+        );
+
+        let ids = request_ids("system_navigate_to").expect("known request method");
+        let frame = ProtocolMessage {
+            request_id: "nav:1".to_string(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::system::HostNavigateToRequest::V1(
+                    v01::HostNavigateToRequest {
+                        url: "https://example.invalid/".to_string(),
+                    },
+                )
+                .encode(),
+            },
+        }
+        .encode();
+
+        let dispatching = {
+            let runtime = runtime.clone();
+            std::thread::spawn(move || {
+                futures::executor::block_on(runtime.receive_frame(frame)).expect("receive frame");
+            })
+        };
+
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("frame never reached the debug tap");
+        runtime.dispose();
+        let _ = release_tx.send(());
+        dispatching.join().expect("dispatch thread panicked");
+
+        assert!(
+            navigations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "a dispatch that lost the race with dispose still reached the platform"
+        );
+    }
+
+    #[test]
+    fn dispose_releases_the_demand_open_operations_hold() {
+        let platform = Arc::new(StubPlatform::default());
+        let sink = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform,
+            host_config,
+            product,
+            test_spawner(),
+            sink,
+        );
+        let host = runtime.admin.product_runtime().clone();
+
+        futures::executor::block_on(truapi::api::Worker::begin_operation(
+            host.as_ref(),
+            &truapi::CallContext::default(),
+            truapi::versioned::worker::HostWorkerBeginOperationRequest::V1(
+                truapi::v01::HostWorkerBeginOperationRequest { label: None },
+            ),
+        ))
+        .expect("begin operation");
+        assert_eq!(host.services().worker_ledger.count("myapp.dot"), 1);
+
+        runtime.dispose();
+
+        // A disposed connection can outlive its last `Arc` holder, so the
+        // release cannot wait for `Drop`.
+        assert_eq!(
+            host.services().worker_ledger.count("myapp.dot"),
+            0,
+            "disposing a connection drops the demand its open operations held"
+        );
+    }
+
+    #[test]
+    fn dispose_ends_the_operations_the_host_is_still_holding() {
+        let platform = Arc::new(StubPlatform::default());
+        let sink = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            test_spawner(),
+            sink,
+        );
+        let host = runtime.admin.product_runtime().clone();
+
+        futures::executor::block_on(truapi::api::Worker::begin_operation(
+            host.as_ref(),
+            &truapi::CallContext::default(),
+            truapi::versioned::worker::HostWorkerBeginOperationRequest::V1(
+                truapi::v01::HostWorkerBeginOperationRequest { label: None },
+            ),
+        ))
+        .expect("begin operation");
+
+        runtime.dispose();
+
+        // Teardown ends the operation off the disposing thread.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let ended = platform
+                .ended_operations
+                .lock()
+                .expect("ended operations mutex poisoned")
+                .clone();
+            if ended == vec![("myapp.dot".to_string(), 1)] {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the host's own record of the operation is closed, not left to \
+                 accumulate; saw {ended:?}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn dispose_cancels_active_subscriptions() {
         let theme_stream_dropped = Arc::new(AtomicBool::new(false));
@@ -2920,6 +3402,38 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    /// A second installer must not take over the announcement between two
+    /// pairings.
+    #[test]
+    fn the_device_pairing_observer_is_installed_once() {
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        struct Inert;
+        impl crate::DevicePairingObserver for Inert {
+            fn device_paired(&self, _device: crate::PairedSsoPeer) {}
+        }
+
+        let config = SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+            [0xcc; 32],
+            "paseo".to_string(),
+        )
+        .expect("signing host config is valid");
+        let runtime =
+            SigningHostRuntime::new(Arc::new(StubPlatform::default()), config, test_spawner());
+
+        assert!(runtime.set_device_pairing_observer(Arc::new(Inert)));
+        assert!(!runtime.set_device_pairing_observer(Arc::new(Inert)));
     }
 
     #[test]

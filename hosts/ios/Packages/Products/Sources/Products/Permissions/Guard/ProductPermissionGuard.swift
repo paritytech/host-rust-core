@@ -15,6 +15,16 @@ public protocol ProductPermissionGuarding: Sendable {
         permissions: [ProductPermission]
     ) async throws -> Bool
 
+    func requestDevicePermissionDecision(
+        productId: String,
+        capability: DeviceCapabilityType
+    ) async throws -> PermissionDecision
+
+    func requestPermissionsDecision(
+        productId: String,
+        permissions: [ProductPermission]
+    ) async throws -> PermissionDecision
+
     /// Consumes a previously-issued permission. Falls back to
     /// ``requestPermission(productId:permission:)`` if permission wasn't granted.
     func consumePermission(productId: String, permission: ProductPermission) async throws -> Bool
@@ -108,6 +118,29 @@ public final class ProductPermissionGuard: ProductPermissionGuarding, @unchecked
         case .deny:
             return false
         }
+    }
+
+    public func requestDevicePermissionDecision(
+        productId: String,
+        capability: DeviceCapabilityType
+    ) async throws -> PermissionDecision {
+        try await deviceHandler.requestDecision(productId: productId, capability: capability)
+    }
+
+    public func requestPermissionsDecision(
+        productId: String,
+        permissions: [ProductPermission]
+    ) async throws -> PermissionDecision {
+        var undecided: [ProductPermission] = []
+        for permission in permissions.removingDuplicates() {
+            let state = try await repository.getPermissionState(productId: productId, permission: permission)
+            if state != .allowedOnce, try await check(productId: productId, permission: permission) {
+                continue
+            }
+            undecided.append(permission)
+        }
+        guard !undecided.isEmpty else { return .allowAlways }
+        return await requester.promptBatched(productId: productId, permissions: undecided)
     }
 
     public func consumePermission(
