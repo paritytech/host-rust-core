@@ -244,6 +244,9 @@ pub(crate) struct PairingHost {
     /// People-chain statement store RPC client.
     pub(super) statement_store: StatementStoreRpc,
     session_disconnects: Arc<SessionDisconnects>,
+    /// `message_id` of the request the session's request channel carries,
+    /// the only one a `Cancel` may name without replacing another request.
+    newest_request: Mutex<Option<String>>,
     disconnect_monitor: Mutex<Option<SsoDisconnectMonitor>>,
     login_in_flight: Mutex<Option<LoginInFlight>>,
     login_generation: Mutex<u64>,
@@ -296,6 +299,7 @@ impl PairingHost {
             auth_state,
             statement_store: services.statement_store.clone(),
             session_disconnects: Arc::new(SessionDisconnects::default()),
+            newest_request: Mutex::new(None),
             disconnect_monitor: Mutex::new(None),
             login_in_flight: Mutex::new(None),
             login_generation: Mutex::new(0),
@@ -352,6 +356,15 @@ impl PairingHost {
     #[cfg(test)]
     pub(crate) fn start_session_store_sync_for_tests(self: Arc<Self>, spawner: Spawner) {
         self.start_session_store_sync(spawner);
+    }
+
+    /// `message_id` of the request the session's request channel carries.
+    #[cfg(test)]
+    pub(crate) fn newest_request_for_tests(&self) -> Option<String> {
+        self.newest_request
+            .lock()
+            .expect("newest request mutex poisoned")
+            .clone()
     }
 
     /// Change notifications the sync task has finished reconciling.

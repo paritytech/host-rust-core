@@ -473,6 +473,21 @@ pub(crate) fn submitted_remote_message(
     message
 }
 
+/// Every SSO message this host has published, oldest first.
+pub(crate) fn submitted_remote_messages(
+    platform: &Arc<StubPlatform>,
+    session: &SessionInfo,
+) -> Vec<RemoteMessage> {
+    platform
+        .sent_rpc
+        .lock()
+        .expect("rpc list mutex poisoned")
+        .iter()
+        .filter(|request| request.contains("\"statement_submit\""))
+        .map(|submit| submitted_sso_request_from_submit(submit, session).1)
+        .collect()
+}
+
 fn submitted_sso_request_from_submit(
     submit: &str,
     session: &SessionInfo,
