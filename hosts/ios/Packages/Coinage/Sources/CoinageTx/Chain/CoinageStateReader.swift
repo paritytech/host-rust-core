@@ -63,7 +63,7 @@ private extension CoinageStateReader {
             asset.isCoin ? (position, asset.publicKey) : nil
         }
 
-        let vouchers = assets.enumerated().compactMap { position, asset -> (position: Int, index: DerivationIndex)? in
+        let vouchers = assets.enumerated().compactMap { position, asset -> (position: Int, index: CoinageKeyIndex)? in
             guard case let .recyclerVoucher(index, _) = asset else { return nil }
             return (position, index)
         }
@@ -104,7 +104,7 @@ private extension CoinageStateReader {
     /// must never read as absence (only a coin's absence is consumption). So an absent membership reads
     /// `failedRead` — an unknown the rules withhold a verdict on — rather than `absent`. The alias, not
     /// membership, is a voucher's only proof of being spent.
-    func fetchVouchers(indices: [DerivationIndex], at block: BlockRef) async -> [ReadResult<AssetPresence>] {
+    func fetchVouchers(indices: [CoinageKeyIndex], at block: BlockRef) async -> [ReadResult<AssetPresence>] {
         guard !indices.isEmpty else { return [] }
 
         guard let responses = try? await voucherQuery.fetchVouchers(for: indices, atBlockHash: block.hash),

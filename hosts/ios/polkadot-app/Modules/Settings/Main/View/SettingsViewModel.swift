@@ -10,6 +10,7 @@ enum SettingsViewModel {
     enum CellType: Hashable {
         case backup
         case theme
+        case tabBarLabels
         case currency
         case linkedDevices
         case apps
@@ -22,6 +23,7 @@ enum SettingsViewModel {
             switch self {
             case .backup: String(localized: .settingsCellBackup)
             case .theme: String(localized: .settingsCellTheme)
+            case .tabBarLabels: String(localized: .settingsCellTabBarLabels)
             case .currency: String(localized: .settingsCellCurrency)
             case .linkedDevices: String(localized: .settingsCellLinkedDevices)
             case .apps: String(localized: .settingsCellApps)
@@ -62,7 +64,7 @@ enum SettingsViewModel {
 
         var cells: [CellType] {
             switch self {
-            case .general: [.theme]
+            case .general: [.theme, .tabBarLabels]
             case .security: Self.securityCells
             case .legal: [.privacy, .termsOfUse]
             case .support: [.contactUs]

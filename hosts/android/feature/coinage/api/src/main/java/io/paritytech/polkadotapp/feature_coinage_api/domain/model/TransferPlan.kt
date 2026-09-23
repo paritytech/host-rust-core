@@ -7,7 +7,7 @@ data class TransferPlan(
 )
 
 data class PlannedMemoEntry(
-    val coinDerivationIndex: Int,
+    val coinDerivationIndex: CoinageKeyIndex,
     val valueExponent: ValueExponent
 )
 

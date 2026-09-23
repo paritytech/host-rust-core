@@ -12,14 +12,14 @@ struct MemoBuilderTests {
     // MARK: - Mock Private Key Deriver
 
     private final class MockCoinKeyDeriver: CoinKeyDeriving {
-        var derivedKeys: [UInt64: Data] = [:]
+        var derivedKeys: [CoinageKeyIndex: Data] = [:]
         var shouldThrow: Error?
 
-        func derivePublicKey(index _: DerivationIndex) throws -> PublicKey {
+        func derivePublicKey(index _: CoinageKeyIndex) throws -> PublicKey {
             Data(repeating: 0, count: 32)
         }
 
-        func derivePrivateKey(index: DerivationIndex) throws -> PrivateKey {
+        func derivePrivateKey(index: CoinageKeyIndex) throws -> PrivateKey {
             if let error = shouldThrow {
                 throw error
             }
@@ -27,7 +27,7 @@ struct MemoBuilderTests {
                 return key
             }
             // Default: generate deterministic key based on derivation index
-            return Data(repeating: UInt8(index % 256), count: 32)
+            return Data(repeating: UInt8(truncatingIfNeeded: index.item), count: 32)
         }
     }
 
@@ -43,7 +43,7 @@ struct MemoBuilderTests {
 
     private func makeEntry(
         exponent: Int16,
-        derivationIndex: UInt64
+        derivationIndex: CoinageKeyIndex
     ) -> PlannedMemoEntry {
         PlannedMemoEntry(coinDerivationIndex: derivationIndex, valueExponent: exponent)
     }

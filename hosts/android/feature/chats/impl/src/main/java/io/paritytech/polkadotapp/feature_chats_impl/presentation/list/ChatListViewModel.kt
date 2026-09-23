@@ -197,7 +197,8 @@ class ChatListViewModel @Inject constructor(
                 Payment(
                     timestamp = timestamp,
                     isIncoming = isIncoming,
-                    tokenAmount = tokenAmount
+                    tokenAmount = tokenAmount,
+                    paymentStatus = messageMappingHelper.mapPaymentStatus(content.status)
                 )
             }
 

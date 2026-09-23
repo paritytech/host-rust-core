@@ -41,7 +41,11 @@ fn generate_explorer_types_code(api: &ApiDefinition, target_version: u32) -> Res
     // unversioned type itself is the chosen alias source.
     let aliased_public_names: BTreeSet<&String> = aliases.values().collect();
     let mut entries: Vec<DataTypeEntry> = Vec::new();
+    let internal_types = internal_type_names(api);
     for ty in &api.types {
+        if internal_types.contains(&ty.name) {
+            continue;
+        }
         if detect_versioned_wrapper(ty).is_some() {
             continue;
         }

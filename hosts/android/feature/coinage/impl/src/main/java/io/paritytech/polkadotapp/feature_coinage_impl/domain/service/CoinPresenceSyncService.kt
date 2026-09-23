@@ -6,6 +6,9 @@ import io.paritytech.polkadotapp.common.utils.getOrEmpty
 import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Coin
 import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinUpdate
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageKeyIndex
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.Hop
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.transferHop
 import io.paritytech.polkadotapp.feature_coinage_impl.data.model.OnChainCoinInfo
 import io.paritytech.polkadotapp.feature_coinage_impl.data.repository.CoinRepository
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogD
@@ -54,9 +57,45 @@ class CoinPresenceSyncService @Inject constructor(
                         )
 
                         coinRepository.updateCoins(updates)
+                        coinRepository.updateCoinHops(coins.toHopUpdates(onChainData))
                     }
             }
             .launchIn(scope)
+    }
+
+    /**
+     * Fills in the hops of coins that arrived knowing nothing about themselves — claimed from a peer, or
+     * recovered by backup.
+     *
+     * The chain's age is the only record of how far such a coin has travelled, and it is not readable at
+     * claim time, which is why this is the moment the history gets written. Coins that already know their
+     * provenance are left alone: a split's change coin inherits a real history from the coin it came from,
+     * and rebuilding it from the age would throw that away.
+     */
+    private fun List<Coin>.toHopUpdates(
+        onChainData: Map<AccountId, OnChainCoinInfo?>
+    ): Map<CoinageKeyIndex, List<Hop>> {
+        return filter { it.provenance.isUnobserved }
+            .mapNotNull { coin ->
+                val age = onChainData[coin.accountId]?.age ?: return@mapNotNull null
+
+                // An age of zero leaves the coin unobserved, so a later tick tries again rather than
+                // freezing an empty history the moment the coin appears.
+                if (age <= 0) return@mapNotNull null
+
+                coin.derivationIndex to coin.hopsForAge(age)
+            }
+            .toMap()
+    }
+
+    private fun Coin.hopsForAge(age: Int): List<Hop> {
+        // The chain says how many times the coin moved, never what moved alongside it. Only the newest hop
+        // has a crowd we recorded — the batch it was claimed in — so every older one stands alone.
+        val newestBundleSize = provenance.incomingBundleSize ?: LONE_TRANSFER
+
+        return List(age) { index ->
+            transferHop(if (index == age - 1) newestBundleSize else LONE_TRANSFER)
+        }
     }
 
     private fun List<Coin>.toPresenceUpdates(onChainData: Map<AccountId, OnChainCoinInfo?>) = mapNotNull { coin ->
@@ -81,5 +120,9 @@ class CoinPresenceSyncService @Inject constructor(
         } else {
             null
         }
+    }
+
+    private companion object {
+        const val LONE_TRANSFER = 1
     }
 }

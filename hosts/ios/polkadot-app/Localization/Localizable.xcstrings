@@ -917,7 +917,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start a conversation with someone \nby typing their username"
+            "value": "Tap + below to find someone by\nusername"
           }
         }
       }
@@ -928,7 +928,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No active chats"
+            "value": "Add your first contact"
           }
         }
       }
@@ -2828,6 +2828,17 @@
         }
       }
     },
+    "settings.cell.tab.bar.labels": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab bar labels"
+          }
+        }
+      }
+    },
     "settings.cell.terms": {
       "extractionState": "manual",
       "localizations": {
@@ -3037,6 +3048,17 @@
         }
       }
     },
+    "tab.apps": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apps"
+          }
+        }
+      }
+    },
     "tab.browse": {
       "extractionState": "manual",
       "localizations": {
@@ -3066,6 +3088,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "More"
+          }
+        }
+      }
+    },
+    "tab.network": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network"
           }
         }
       }

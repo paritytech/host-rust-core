@@ -14,6 +14,9 @@
 #                                     --platform-wasm-adapter-output js/packages/truapi-host/src/generated
 #                                     --platform-rust-output rust/crates/truapi-server/src/wasm
 #
+# The codec version is not passed: it defaults to `truapi::WIRE_CODEC_VERSION`,
+# so the generated client and the host's handshake derive it from one place.
+#
 # The client surface defaults to the latest wire version any versioned
 # wrapper exposes; pass `--client-version V<N>` to pin to an older one.
 # The codec version defaults to truapi::WIRE_CODEC_VERSION in the generator;
@@ -34,9 +37,9 @@ unset DYLD_LIBRARY_PATH
 
 # Both crates in one invocation: rustdoc starts once and truapi is documented
 # once for both, rather than a second process re-reading it.
-RUSTDOCFLAGS="-Z unstable-options --output-format json" \
-  cargo +"$NIGHTLY_TOOLCHAIN" doc --locked -p truapi -p truapi-platform --no-deps
-cargo run --locked -p truapi-codegen -- \
+RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings -Z unstable-options --output-format json" \
+  cargo +"$NIGHTLY_TOOLCHAIN" doc -p truapi -p truapi-platform --no-deps
+cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
   --playground-output js/packages/truapi/src/playground \

@@ -14,7 +14,7 @@ enum CoinageBreakdownFactory {
         let exponent: Int16
         /// Tie-break within one value: spendable coins, then vouchers, then held-back coins.
         let rank: Int
-        let derivationIndex: DerivationIndex
+        let derivationIndex: CoinageKeyIndex
         let status: CoinageHoldingViewModel.Status
     }
 

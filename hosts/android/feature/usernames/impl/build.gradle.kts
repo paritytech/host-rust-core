@@ -19,7 +19,6 @@ dependencies {
     implementation(project(":feature:usernames:api"))
     implementation(project(":feature:chain-resources:api"))
     implementation(project(":feature:dotns-gateway:api"))
-    implementation(project(":feature:web3summit:api"))
 
     implementation(project(":tools:integrity:api"))
     implementation(project(":tools:jwt-auth:api"))

@@ -16,7 +16,7 @@ enum UserStorageParams {
     ///  - switch version of UserStorageParams.modelVersion;
     static let modelVersion: UserStorageVersion = .version49
     static let modelDirectory: String = "UserDataModel.momd"
-    static let databaseName = "UserDataModel_v2.sqlite"
+    static let databaseName = "UserDataModel_v3.sqlite"
 
     static let sharedStorageDirectoryURL: URL = SharedContainerGroup
         .containerURL

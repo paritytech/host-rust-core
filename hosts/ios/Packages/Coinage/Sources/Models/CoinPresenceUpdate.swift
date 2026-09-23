@@ -5,11 +5,11 @@ import Operation_iOS
 /// write never reads-then-overwrites the coin's other fields (handoff mark, etc.), which a peer
 /// operation may have changed in between.
 public struct CoinPresenceUpdate: Equatable, Sendable {
-    public let derivationIndex: DerivationIndex
+    public let derivationIndex: CoinageKeyIndex
     public let age: Int16?
     public let isOnchain: Bool
 
-    public init(derivationIndex: DerivationIndex, age: Int16?, isOnchain: Bool) {
+    public init(derivationIndex: CoinageKeyIndex, age: Int16?, isOnchain: Bool) {
         self.derivationIndex = derivationIndex
         self.age = age
         self.isOnchain = isOnchain

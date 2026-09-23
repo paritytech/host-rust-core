@@ -11,8 +11,10 @@ struct SettingsContentInput {
     let selectedThemeName: String?
     let selectedPrivacyStrategy: RecyclingStrategyType?
     let appVersion: String?
+    let isTabBarLabelsEnabled: Bool
     let onSelect: (SettingsViewModel.CellType) -> Void
     let onSelectPrivacyStrategy: (RecyclingStrategyType) -> Void
+    let onToggleTabBarLabels: (Bool) -> Void
 }
 
 protocol SettingsViewModelMaking {
@@ -30,13 +32,7 @@ final class SettingsViewModelFactory: SettingsViewModelMaking {
                     header: section.header,
                     leadingContent: privacyLeadingContent(for: section, input: input),
                     items: cells.map { cellType in
-                        makeItem(
-                            cellType: cellType,
-                            attentionItems: input.attentionItems,
-                            selectedCurrencyCode: input.selectedCurrencyCode,
-                            selectedThemeName: input.selectedThemeName,
-                            onSelect: input.onSelect
-                        )
+                        makeItem(cellType: cellType, input: input)
                     }
                 )
             }
@@ -57,25 +53,19 @@ private extension SettingsViewModelFactory {
 
     func makeItem(
         cellType: SettingsViewModel.CellType,
-        attentionItems: Set<SettingsViewModel.CellType>,
-        selectedCurrencyCode: String?,
-        selectedThemeName: String?,
-        onSelect: @escaping (SettingsViewModel.CellType) -> Void
+        input: SettingsContentInput
     ) -> DSMenuListItem {
-        let needsAttention = attentionItems.contains(cellType)
+        let needsAttention = input.attentionItems.contains(cellType)
+        let usesToggle = cellType == .tabBarLabels
         return DSMenuListItem(
             id: cellType,
             title: cellType.title,
             description: needsAttention ? cellType.attentionDetails?.message : nil,
             style: needsAttention ? .attention : .default,
             icon: icon(for: cellType),
-            rightSlot: rightSlot(
-                for: cellType,
-                selectedCurrencyCode: selectedCurrencyCode,
-                selectedThemeName: selectedThemeName
-            ),
+            rightSlot: rightSlot(for: cellType, input: input),
             accessibilityId: AccessibilityID.Settings.menuItem(for: cellType),
-            action: { onSelect(cellType) }
+            action: usesToggle ? nil : { input.onSelect(cellType) }
         )
     }
 
@@ -83,6 +73,7 @@ private extension SettingsViewModelFactory {
         switch cellType {
         case .backup: .iconCloud
         case .theme: .iconPalette
+        case .tabBarLabels: .iconPalette
         case .currency: .iconDollar
         case .linkedDevices: .iconLaptopMinimal
         case .apps: .iconGrid
@@ -95,14 +86,18 @@ private extension SettingsViewModelFactory {
 
     func rightSlot(
         for cellType: SettingsViewModel.CellType,
-        selectedCurrencyCode: String?,
-        selectedThemeName: String?
+        input: SettingsContentInput
     ) -> DSMenuListItemRightSlot.Style? {
         switch cellType {
         case .theme:
-            selectedThemeName.map(DSMenuListItemRightSlot.Style.labelChevron)
+            input.selectedThemeName.map(DSMenuListItemRightSlot.Style.labelChevron)
+        case .tabBarLabels:
+            .toggle(Binding(
+                get: { input.isTabBarLabelsEnabled },
+                set: input.onToggleTabBarLabels
+            ))
         case .currency:
-            if let selectedCurrencyCode {
+            if let selectedCurrencyCode = input.selectedCurrencyCode {
                 .labelChevron(selectedCurrencyCode)
             } else {
                 .chevron

@@ -18,12 +18,20 @@ rust/crates/
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
   truapi-polkavm-host/  optional native composition pinned to
                         paritytech/polkavm-host-runtime
+  truapi-host-cli/       CLI pairing/signing hosts; Bun scripts share the container web API gates
 js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
   truapi-host/            @parity/truapi-host: WASM-backed host runtime. Subpath entries:
                           `.` (shared host types), `/web` (iframe + Web
-                          Worker), `/worker-runtime` (Worker entry).
-                          WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
+                          Worker), `/worker-runtime` (Worker entry), and the
+                          test host `/testing` (createMockHost),
+                          `/testing/playwright` (fixture), `/testing/server`
+                          (node server), `/testing/client` (no-iframe client),
+                          `/testing/dev-accounts`, `/testing/host-page`.
+                          Two WASM bundles (gitignored) under dist/wasm/, built
+                          via `make wasm`: `web/` is the production browser host
+                          and `testing/` adds the `wasm-signing-host` and
+                          `test-host` Cargo features the test host needs
   truapi-debugger/        @parity/truapi-debugger (published to npm): the debugger.
                           Owns all decoding of the wire frames the Rust host tap
                           (truapi-server's DebugSink) streams out, and decodes
@@ -37,8 +45,8 @@ js/packages/
                           same-page host, no server, no dial). @parity/truapi has
                           no debug seam. Where the app ultimately lives is still
                           an open decision.
-js/container/              TS lockdown container for the iOS host web view; `npm run build`
-                           bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
+js/container/              Shared TS lockdown container for native web views and CLI dev; scripts reuse its web API gates
+                           `npm run build` bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
 ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over UniFFI);
                            second product of the root Package.swift, released on its
                            own tag (@parity/ios-provider@<v>) via its scripts/
@@ -65,6 +73,10 @@ scripts/refresh-host-import.sh
                            refresh a vendored host tree from its source repository
 scripts/truapi-host-installer.sh
                            one-liner installer for the prebuilt truapi-host CLI
+scripts/build-cli-runner.ts
+                           bundles the CLI runner and development container
+scripts/cli-runner-package.test.ts
+                           verifies the installed runner and development container
 .github/consumers.json     maps each released package to the repos notified by a bump issue
 .github/registry-drift-exceptions.json
                            documents intentionally unpublished npm package versions
@@ -109,7 +121,9 @@ from this repository.
   `release: @parity/truapi <version>` therefore also publishes prebuilt
   `truapi-host` binaries through `.github/workflows/release-cli.yml`: one
   archive per target (`aarch64-apple-darwin`, `x86_64-unknown-linux-musl`,
-  `aarch64-unknown-linux-musl`) plus a `.sha256`, uploaded to the
+  `aarch64-unknown-linux-musl`) plus a `.sha256`. Each archive includes the
+  native binary, self-contained Bun runner and development container.
+  Archives are uploaded to the
   `@parity/truapi@<version>` release, followed by the `truapi-host-cli-stable`
   pointer that `scripts/truapi-host-installer.sh` and the CLI's own updater
   read. Release asset URLs must percent-encode the tag
@@ -174,6 +188,8 @@ from this repository.
 - Every `pub` Rust item (functions, methods, types, traits, modules, constants) carries a doc comment (`///` or `//!`).
   Keep it short and focused on intent or invariants, not on what the signature already says.
 - Do not add code comments or doc comments that narrate migrations, compatibility shims, or historical changes. Comments should describe only the current code.
+- Everything else about comments, including when an inline comment earns its place, is in [`AGENTS.md`](AGENTS.md). That file also covers shared-branch
+  hygiene, the scope of a change, tests, and editing existing Rust.
 - Remove legacy compatibility code by default. Keep or add it only when explicitly requested.
 - In Rust format strings, prefer inlined variables: `"log value: {value:?}"` over `"log value: {:?}", value`.
 - For Rust modules, prefer `foo.rs` plus an optional `foo/` directory for
@@ -274,12 +290,13 @@ yarn lint
 ```
 
 The fastest way to exercise the playground is `truapi-host dev -- yarn dev`
-from `playground/`, which starts a signing host on `127.0.0.1:9955`, serves the
-browser bridge at `/bootstrap.js`, and runs the dev server with the host live.
-The playground's root layout carries the development-only `<script>` tag that
-loads it. TCP frame peers and browser origins are limited to loopback. On Unix,
-the CLI owns the wrapped command's process group and applies a five-second
-SIGTERM grace period before killing remaining descendants.
+from `playground/`. Open `http://localhost:3000` in any existing browser. The
+layout's first blocking script loads the CLI bridge and shared container from
+`http://127.0.0.1:9955/bootstrap.js`. Dev keeps the app server's assets and hot
+reload and automatically approves confirmations. A source build needs the
+container bundle generated by `make headless` or `make cli-runner`. On Unix, the
+CLI owns the wrapped command's process group and cleans it up with a five-second
+SIGTERM grace period.
 
 The playground must otherwise be opened from inside a TrUAPI host. The fastest
 local setup is to run dotli's preview server alongside the playground and open

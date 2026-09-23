@@ -31,11 +31,11 @@ enum CoinageTxAssetLinker {
 }
 
 private extension CoinageTxAssetLinker {
-    static func coin(index: DerivationIndex, in context: NSManagedObjectContext) -> CDCoin? {
+    static func coin(index: CoinageKeyIndex, in context: NSManagedObjectContext) -> CDCoin? {
         try? context.first(for: NSPredicate(format: "identifier == %@", Coin.identifier(for: index)))
     }
 
-    static func voucher(index: DerivationIndex, in context: NSManagedObjectContext) -> CDVoucher? {
+    static func voucher(index: CoinageKeyIndex, in context: NSManagedObjectContext) -> CDVoucher? {
         try? context.first(for: NSPredicate(format: "identifier == %@", Voucher.identifier(for: index)))
     }
 }

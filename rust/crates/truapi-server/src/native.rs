@@ -6,8 +6,10 @@
 //! [`truapi_platform::Platform`] trait to a corresponding callback. The
 //! resulting platform is fed into [`SigningHostRuntime`] so the rest of the
 //! dispatcher pipeline behaves identically to the WS-bridge and wasm flavors.
-//! A native host therefore owns the signer: there is no pairing flow here, and
-//! the pairing-host-only entry points are inert.
+//! A native host therefore owns the signer, so it never pairs itself with a
+//! wallet and the pairing-host entry points are inert. It does answer other
+//! devices pairing with it: the signing host's responder side is exposed here,
+//! from the handshake answer through serving and ending the session.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,16 +26,17 @@ use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoinageWalletHost, CoreAdmin, CoreStorage,
     CoreStorageKey, Features, HopProvider, HostInfo, JsonRpcConnection, LocaleHost,
     NativeChatFileExportRequest, NativeChatFilePickRequest, NativeChatFilesHost,
-    NativeChatPickedFile, NativeCoinageRequest, NativeCoinageResponse, Navigation, Notifications,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Permissions, PlatformInfo,
-    PreimageHost, ProductContext, ProductExecutionKind, ProductStorage,
-    RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
+    NativeChatPickedFile, NativeCoinageRequest, NativeCoinageResponse, Navigation,
+    Notifications, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
+    PermissionDecision, Permissions, PlatformInfo, PreimageHost, ProductContext,
+    ProductExecutionKind, ProductOperations, ProductStorage, RuntimeConfigValidationError,
+    SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 
-use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::{NavigateDecision, PocketDeeplinkAction};
+use crate::host_logic::permissions::TemporaryPermissions;
 use crate::host_logic::sso::messages::{
     RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
     decode_remote_message, v1,
@@ -42,10 +45,14 @@ use crate::host_logic::worker::WorkerTransition;
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeRendererObserver, NativeRendererSubscription};
+use crate::runtime::AnnouncedPairing;
 use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
-use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
+use crate::ws_bridge::{BridgeLogger, SharedWsBridge, WsBridgeEndpoint, WsBridgeStartError};
+use crate::{
+    DevicePairingObserver, PairedSsoPeer, PairingProposal, ResponderExit, SigningHostRuntime,
+};
 
 /// Host-thrown storage failure wrapping the canonical error payload, so its
 /// variants remain defined once in `truapi`.
@@ -364,6 +371,15 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     }
 }
 
+impl From<&ProductContext> for NativeProductExecutionConfig {
+    fn from(product: &ProductContext) -> Self {
+        Self {
+            product_id: product.product_id.clone(),
+            execution_kind: product.execution_kind,
+        }
+    }
+}
+
 impl TryFrom<NativeProductExecutionConfig> for ProductContext {
     type Error = NativeRuntimeConfigError;
 
@@ -447,6 +463,49 @@ pub fn native_describe_core_storage_key(
     })
 }
 
+/// The bridge script a host injects into a product's web view, for the `port`
+/// and `token` a `WsBridgeEndpoint` carries.
+///
+/// Inject it at document start, before the product's own scripts and before the
+/// lockdown container, which reads the endpoint this publishes.
+#[uniffi::export]
+pub fn localhost_bridge_bootstrap_script(port: u16, token: String) -> String {
+    crate::bootstrap::script(&format!("ws://127.0.0.1:{port}/?t={token}"))
+}
+
+/// Read what a pairing deeplink offers: the peer it advertises, and how that
+/// peer describes itself.
+///
+/// A host needs the peer's `statement_account_id` before it answers: the
+/// peer's device statement account has to be a tracked renewal target by the
+/// time the session opens, or the peer has no allowance to author its own
+/// session statements under. It is also what a failed pairing untracks again,
+/// unless the device was already paired. Neither the notice, the answer, nor
+/// [`HostCallbacks::device_paired`] yields it in time for that, so the host
+/// reads it here first.
+///
+/// The core prompts for nothing here, so the pairing prompt is the host's, and
+/// [`crate::PairingProposalMetadata`] is what it names the peer by. It arrives
+/// sanitized for rendering but unverified: nothing signs it, so it says what
+/// the peer calls itself and not who it is.
+///
+/// Pure and stateless, and the same decoder the responder itself runs, so a
+/// deeplink this rejects is one no pairing call would have accepted either.
+#[uniffi::export]
+pub fn parse_pairing_deeplink(deeplink: String) -> Result<PairingProposal, NativePairingError> {
+    PairingProposal::from_deeplink(&deeplink)
+        .map_err(|reason| NativePairingError::UndecodableDeeplink { reason })
+}
+
+/// Refuse a deeplink the core's decoder would refuse anyway, so the caller
+/// hears [`NativePairingError::UndecodableDeeplink`] rather than the
+/// [`NativePairingError::Rejected`] every later failure shares.
+fn reject_undecodable_deeplink(deeplink: &str) -> Result<(), NativePairingError> {
+    PairingProposal::from_deeplink(deeplink)
+        .map(|_| ())
+        .map_err(|reason| NativePairingError::UndecodableDeeplink { reason })
+}
+
 /// Whether `product_id` is a first-party product the host grants every
 /// [`truapi::latest::RemotePermission`] without prompting.
 ///
@@ -480,6 +539,7 @@ pub fn has_trusted_remote_permissions(product_id: String) -> bool {
 /// directly: an async callback method returning a type from another UniFFI
 /// namespace lowers into that namespace's `RustBuffer`, and the generated
 /// Kotlin then fails to compile. The conversion is total.
+/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum NativeDevicePermissionStatus {
     /// The OS grants this capability to the host application.
@@ -526,13 +586,75 @@ pub trait NativeCoinageCallbacks: Send + Sync {
     ) -> Result<NativeCoinageCallbackResult, HostRejection>;
 }
 
+/// Keeps async permission callbacks in this UniFFI namespace for the same
+/// Kotlin `RustBuffer` constraint as [`NativeDevicePermissionStatus`].
+/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativePermissionDecision {
+    /// Approves one operation in this execution.
+    AllowOnce,
+    /// Approves subsequent operations until the setting changes.
+    AllowAlways,
+    /// Refuses subsequent operations until the setting changes.
+    Deny,
+}
+
+impl From<NativePermissionDecision> for PermissionDecision {
+    fn from(decision: NativePermissionDecision) -> Self {
+        match decision {
+            NativePermissionDecision::AllowOnce => Self::AllowOnce,
+            NativePermissionDecision::AllowAlways => Self::AllowAlways,
+            NativePermissionDecision::Deny => Self::Deny,
+        }
+    }
+}
+
+/// Outcome of a native room registration, kept in this UniFFI namespace for the
+/// same Kotlin `RustBuffer` constraint as [`NativeDevicePermissionStatus`].
+/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeChatRoomRegistrationStatus {
+    /// The room was created.
+    New,
+    /// A room with this id already existed.
+    Exists,
+}
+
+impl From<NativeChatRoomRegistrationStatus> for v01::ChatRoomRegistrationStatus {
+    fn from(status: NativeChatRoomRegistrationStatus) -> Self {
+        match status {
+            NativeChatRoomRegistrationStatus::New => Self::New,
+            NativeChatRoomRegistrationStatus::Exists => Self::Exists,
+        }
+    }
+}
+
+/// Outcome of a native bot registration, mirrored for the same reason as
+/// [`NativeChatRoomRegistrationStatus`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeChatBotRegistrationStatus {
+    /// The bot was registered.
+    New,
+    /// A bot with this id already existed.
+    Exists,
+}
+
+impl From<NativeChatBotRegistrationStatus> for v01::ChatBotRegistrationStatus {
+    fn from(status: NativeChatBotRegistrationStatus) -> Self {
+        match status {
+            NativeChatBotRegistrationStatus::New => Self::New,
+            NativeChatBotRegistrationStatus::Exists => Self::Exists,
+        }
+    }
+}
+
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback executes on the shared bridge
 /// executor's worker threads, and blocking one of those threads can stall
 /// the entire bridge — not just the request being served. Async callbacks
 /// (`navigate_to`, `push_notification`, `device_permission`,
-/// `remote_permission`, `feature_supported`, `confirm_user_action`,
+/// `remote_permission`, `feature_supported`, `confirm_user_action`, `confirm_permission`,
 /// `lookup_preimage`) are awaited by the core — implementations hop to the
 /// main thread for any UI and may keep the future pending arbitrarily long,
 /// but must suspend rather than block the polling thread (foreign
@@ -560,12 +682,14 @@ pub trait HostCallbacks: Send + Sync {
     /// Cancel a notification by id.
     fn cancel_notification(&self, id: u32) -> Result<(), HostRejection>;
 
-    /// Prompt the user for a device-level permission (camera, mic, ...);
-    /// the host returns whether the permission was granted.
+    /// Prompt the user for a device-level permission (camera, mic, ...)
+    /// `product` requested; the host preserves whether approval applies once
+    /// or always.
     async fn device_permission(
         &self,
+        product: NativeProductExecutionConfig,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<bool, HostRejection>;
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Report the OS status of a device capability without prompting.
     ///
@@ -582,11 +706,12 @@ pub trait HostCallbacks: Send + Sync {
         request: v01::HostDevicePermissionRequest,
     ) -> Result<NativeDevicePermissionStatus, HostRejection>;
 
-    /// Prompt the user for a remote (product-scoped) permission.
+    /// Prompt the user for a remote permission `product` requested.
     async fn remote_permission(
         &self,
+        product: NativeProductExecutionConfig,
         request: v01::RemotePermission,
-    ) -> Result<bool, HostRejection>;
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Observe an auth state change, in transition order: render `Pairing` as
     /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
@@ -677,6 +802,11 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Idempotently discard a partial export, never a completed user export.
     async fn cancel_chat_file_export(&self, export_id: String) -> Result<(), HostRejection>;
+    /// Preserve the lifetime of consent for identity and account disclosures.
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<NativePermissionDecision, HostRejection>;
 
     /// Look up one preimage value by key. The native shim emits this as the
     /// current item in its subscription stream.
@@ -727,52 +857,77 @@ pub trait HostCallbacks: Send + Sync {
     /// on another thread from inside it.
     fn worker_demand_changed(&self, product_id: String, transition: WorkerTransition);
 
+    /// A device finished pairing with this signing host.
+    ///
+    /// The core has no chat of its own, so announcing the new device to the
+    /// user's existing contacts is the host's to do. At least once per
+    /// pairing, and the host keeps its own record of which devices it has
+    /// already seen: a resumed pairing reports nothing and the core has no
+    /// list to replay.
+    ///
+    /// Arrives on the thread answering the handshake, while the pairing call
+    /// is still running: hand the device off rather than announcing it
+    /// inline.
+    fn device_paired(&self, device: PairedSsoPeer);
+
     /// Read a value from the host's scoped key-value store.
     fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
     /// Write a value to the host's scoped key-value store.
     fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), HostStorageError>;
     /// Clear a value from the host's scoped key-value store.
     fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
+
+    /// Record a pending operation, whose id keeps the product's worker alive
+    /// until it ends.
+    async fn begin_operation(
+        &self,
+        product_id: String,
+        label: String,
+    ) -> Result<u32, HostRejection>;
+    /// End a pending operation. Idempotent: an unknown or already-ended id
+    /// succeeds, so a retry after an ambiguous failure is safe.
+    async fn end_operation(&self, product_id: String, id: u32) -> Result<(), HostRejection>;
 }
 
 /// Native Chat storage and UI adapter. Hosts that support the Chat modality
 /// pass an implementation to
 /// [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
-/// simply pass `None`. Callbacks run inline on the process-wide dispatch pool
-/// shared by every product execution, so one that blocks stalls the others.
+/// simply pass `None`. Callbacks run on the process-wide dispatch pool shared by
+/// every product execution.
 #[uniffi::export(rust, foreign)]
+#[async_trait::async_trait]
 pub trait NativeChatCallbacks: Send + Sync {
     /// Create or resolve a native product Chat room.
-    fn create_room(
+    async fn create_room(
         &self,
         room_id: String,
         name: String,
         icon: String,
-    ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection>;
+    ) -> Result<NativeChatRoomRegistrationStatus, HostRejection>;
 
     /// Register or resolve a native product Chat bot.
-    fn register_bot(
+    async fn register_bot(
         &self,
         bot_id: String,
         name: String,
         icon: String,
-    ) -> Result<v01::ChatBotRegistrationStatus, HostRejection>;
+    ) -> Result<NativeChatBotRegistrationStatus, HostRejection>;
 
     /// Persist a product-authored message in native Chat storage. A host that
     /// cannot render a given content variant returns a rejection for it.
     ///
-    /// The returned id is what [`ActionTrigger::message_id`] carries back, so
-    /// it must name this message for as long as the host stores it.
+    /// The returned id is [`HostChatPostMessageResponse`]'s `message_id`, which
+    /// chat actions carry back for as long as the host stores this message.
     ///
-    /// [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
-    fn post_message(
+    /// [`HostChatPostMessageResponse`]: truapi::latest::HostChatPostMessageResponse
+    async fn post_message(
         &self,
         room_id: String,
         content: v01::ChatMessageContent,
     ) -> Result<String, HostRejection>;
 
     /// Return the current product-scoped native Chat room list.
-    fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
+    async fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
 }
 
 /// Native Pocket collection adapter. Hosts with a Pocket surface pass an
@@ -813,6 +968,8 @@ pub struct NativeTrUApiHostRuntime {
     events: Arc<NativeEventBus>,
     #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
+    #[cfg(feature = "ws-bridge")]
+    ws_bridge: Arc<SharedWsBridge>,
     /// The one Worker execution per product; opening another replaces it.
     worker_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
 }
@@ -831,6 +988,7 @@ impl NativeTrUApiHostRuntime {
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: events.clone(),
         });
         let spawner = native_thread_pool_spawner(&callbacks);
         let native_wallet = native_wallet.map(|callbacks| -> Arc<dyn CoinageWalletHost> {
@@ -845,8 +1003,14 @@ impl NativeTrUApiHostRuntime {
         ));
         runtime.set_identity_backend_host(platform.clone());
         assert!(
-            runtime.worker_ledger().install_demand_observer(platform),
+            runtime
+                .worker_ledger()
+                .install_demand_observer(platform.clone()),
             "a freshly built runtime installs its worker demand observer once"
+        );
+        assert!(
+            runtime.set_device_pairing_observer(platform),
+            "a freshly built runtime installs its device pairing observer once"
         );
         if let Some(secret) = runtime_config.local_session_secret {
             futures::executor::block_on(runtime.activate_local_session_with_identity(
@@ -862,6 +1026,10 @@ impl NativeTrUApiHostRuntime {
             events,
             #[cfg(feature = "ws-bridge")]
             spawner,
+            #[cfg(feature = "ws-bridge")]
+            ws_bridge: Arc::new(SharedWsBridge::new(Arc::new(move |marker, detail| {
+                callbacks.on_core_log(marker.to_string(), detail.to_string());
+            }))),
             worker_executions: Mutex::new(HashMap::new()),
         }))
     }
@@ -877,6 +1045,7 @@ impl NativeTrUApiHostRuntime {
         let callback_platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: self.events.clone(),
         });
         let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
             callback_platform.clone();
@@ -902,6 +1071,7 @@ impl NativeTrUApiHostRuntime {
             chat,
             pocket,
             permission_status,
+            permission_grants: Arc::new(TemporaryPermissions::default()),
             events,
             shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -912,7 +1082,9 @@ impl NativeTrUApiHostRuntime {
             chat_connection: Arc::new(crate::runtime::ActionChannel::chat()),
             renderer_connection: Arc::new(crate::runtime::ActionChannel::renderer()),
             #[cfg(feature = "ws-bridge")]
-            bridge: Mutex::new(None),
+            ws_bridge: self.ws_bridge.clone(),
+            #[cfg(feature = "ws-bridge")]
+            bridge_token: Mutex::new(None),
             #[cfg(feature = "ws-bridge")]
             product_control: Arc::new(Mutex::new(None)),
         });
@@ -953,6 +1125,58 @@ pub enum NativeStatementRenewalTarget {
         /// Human-readable name used in logs and reports.
         label: String,
     },
+}
+
+/// A refused pairing call on the signing host's responder side.
+///
+/// The two variants differ in what the host still owes the peer, which is why
+/// they are told apart here rather than by reading `reason`.
+#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
+pub enum NativePairingError {
+    /// The deeplink carries no pairing proposal.
+    ///
+    /// Purely local: nothing was announced, no renewal target was tracked and
+    /// no peer is waiting, so there is nothing to undo and nobody to notify.
+    #[error("{reason}")]
+    UndecodableDeeplink {
+        /// Human-readable rejection reason.
+        reason: String,
+    },
+    /// The core refused a call it had already decoded the peer for.
+    ///
+    /// A peer that was announced is still waiting on a
+    /// [`NativeTrUApiHostRuntime::notify_pairing_failed`], and a renewal
+    /// target tracked for it is still tracked.
+    #[error("{reason}")]
+    Rejected {
+        /// Human-readable rejection reason.
+        reason: String,
+    },
+}
+
+impl From<v01::GenericError> for NativePairingError {
+    fn from(error: v01::GenericError) -> Self {
+        Self::Rejected {
+            reason: error.reason,
+        }
+    }
+}
+
+/// Handle to a pairing this host has told the peer it is working on, taken
+/// back by [`NativeTrUApiHostRuntime::notify_pairing_failed`].
+///
+/// Opaque on purpose. The value carries the responder statement secret the
+/// first notice was signed with, so that the second is signed by the same
+/// account even if this host's signer rotates in between. Exposing it as a
+/// record would put that secret on the FFI surface for no caller that needs
+/// to read it.
+///
+/// Nothing consumes the handle, so it holds that secret for as long as the
+/// host keeps a reference: release it once the pairing settles, on the
+/// succeeding path as well as the failing one.
+#[derive(uniffi::Object)]
+pub struct NativeAnnouncedPairing {
+    inner: AnnouncedPairing,
 }
 
 /// A refused renewal-ledger call: tracking, untracking or reading it back.
@@ -1095,6 +1319,108 @@ impl NativeTrUApiHostRuntime {
     /// releasing with none held is a no-op.
     pub fn release_worker(&self, product_id: String) {
         self.runtime.worker_ledger().release(&product_id);
+    }
+
+    /// Tell the pairing host behind `deeplink` that allowance allocation is
+    /// under way, so it leaves its QR screen while the allocation runs.
+    ///
+    /// Answering at all needs this host's own statement-store allowance, so
+    /// register the `WalletSso` renewal target first. The peer's own device
+    /// statement account is the other target, read with
+    /// [`parse_pairing_deeplink`] and tracked before
+    /// [`Self::establish_pairing`] runs; the allocation this notice covers is
+    /// what that call waits on. The returned handle is owed a
+    /// [`Self::notify_pairing_failed`] if the pairing then fails: the peer has
+    /// dropped its QR and waits without a deadline of its own. No handle comes
+    /// back on [`NativePairingError::UndecodableDeeplink`], which is refused
+    /// before anything reaches the peer.
+    pub async fn notify_pairing_allowance_allocation(
+        &self,
+        deeplink: String,
+    ) -> Result<Arc<NativeAnnouncedPairing>, NativePairingError> {
+        reject_undecodable_deeplink(&deeplink)?;
+        self.runtime
+            .notify_pairing_allowance_allocation(&deeplink)
+            .await
+            .map(|inner| Arc::new(NativeAnnouncedPairing { inner }))
+            .map_err(NativePairingError::from)
+    }
+
+    /// Tell a pairing host that already dropped its QR why pairing stopped.
+    ///
+    /// Takes the handle from [`Self::notify_pairing_allowance_allocation`], so
+    /// the notice is signed by the account that already reached that peer even
+    /// if this host's signer has rotated since.
+    pub async fn notify_pairing_failed(
+        &self,
+        announced: Arc<NativeAnnouncedPairing>,
+        reason: String,
+    ) -> Result<(), NativePairingError> {
+        self.runtime
+            .notify_pairing_failed(&announced.inner, reason)
+            .await
+            .map_err(NativePairingError::from)
+    }
+
+    /// Answer a pairing host's handshake deeplink, without serving the session
+    /// it opens.
+    ///
+    /// The answer is signed by this host's own SSO statement identity, so the
+    /// `WalletSso` renewal target has to be allocated for it to reach the
+    /// Statement Store at all. The peer's device statement account is the
+    /// other tracked target, since this host allocates the allowance the peer
+    /// authors its own session statements under; read it from the deeplink
+    /// with [`parse_pairing_deeplink`]. A pairing that fails after that leaves
+    /// the peer's target to untrack again, unless the device was already
+    /// paired and the target still carries a live pairing. That is what
+    /// [`NativePairingError::Rejected`] means here;
+    /// [`NativePairingError::UndecodableDeeplink`] never reached the peer and
+    /// leaves nothing tracked.
+    ///
+    /// A device that pairs here is reported to
+    /// [`HostCallbacks::device_paired`]. Serving the session is
+    /// [`Self::resume_pairing`], which the host calls with the peer it
+    /// persisted.
+    pub async fn establish_pairing(&self, deeplink: String) -> Result<(), NativePairingError> {
+        reject_undecodable_deeplink(&deeplink)?;
+        self.runtime
+            .establish_pairing(&deeplink)
+            .await
+            .map_err(NativePairingError::from)
+    }
+
+    /// Serve a paired host's SSO session until it ends.
+    ///
+    /// Runs for the life of the session, so call it off the host's main
+    /// thread. Only [`ResponderExit::PeerDisconnected`] authorizes dropping
+    /// the stored pairing; after [`ResponderExit::SubscriptionEnded`] or an
+    /// error the peer is still paired and the call can be made again.
+    pub async fn resume_pairing(
+        &self,
+        peer: PairedSsoPeer,
+    ) -> Result<ResponderExit, NativePairingError> {
+        self.runtime
+            .resume_pairing(peer)
+            .await
+            .map_err(NativePairingError::from)
+    }
+
+    /// Tell a paired host this signing host is ending their SSO session.
+    ///
+    /// Submits the disconnect notice and nothing else. The local side is the
+    /// caller's: cancel that peer's [`Self::resume_pairing`] task, which
+    /// otherwise keeps answering a host this one no longer considers paired,
+    /// and untrack its device statement account, which otherwise keeps being
+    /// renewed every period. Dropping the stored pairing alone leaves both
+    /// running.
+    pub async fn disconnect_paired_host(
+        &self,
+        peer: PairedSsoPeer,
+    ) -> Result<(), NativePairingError> {
+        self.runtime
+            .disconnect_paired_host(peer)
+            .await
+            .map_err(NativePairingError::from)
     }
 
     /// Core-owned logout for the process-wide authentication session.
@@ -1287,6 +1613,8 @@ pub struct NativeProductExecution {
     /// The same `CallbackPlatform` as `platform`, kept separately because
     /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
     permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
+    /// One-use grants follow this execution across its product and admin connections.
+    permission_grants: Arc<TemporaryPermissions>,
     events: Arc<NativeEventBus>,
     /// Host-runtime events back the process-wide services shared by every
     /// product execution (chain, Statement Store, and Bulletin). Native
@@ -1307,7 +1635,9 @@ pub struct NativeProductExecution {
     >,
     closed: AtomicBool,
     #[cfg(feature = "ws-bridge")]
-    bridge: Mutex<Option<WsBridge>>,
+    ws_bridge: Arc<SharedWsBridge>,
+    #[cfg(feature = "ws-bridge")]
+    bridge_token: Mutex<Option<String>>,
     #[cfg(feature = "ws-bridge")]
     product_control: Arc<Mutex<Option<crate::ProductRuntimeControl>>>,
 }
@@ -1318,6 +1648,7 @@ impl NativeProductExecution {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
             permission_status: Some(self.permission_status.clone()),
+            permission_grants: self.permission_grants.clone(),
             chat: self.chat_connection.clone(),
             renderer: self.renderer_connection.clone(),
             pocket_platform: self.pocket.clone(),
@@ -1350,13 +1681,14 @@ impl NativeProductExecution {
 
     #[cfg(feature = "ws-bridge")]
     fn stop_bridge(&self) {
-        if let Some(mut bridge) = self
-            .bridge
+        // Release the token lock before waiting for connection cancellation.
+        let token = self
+            .bridge_token
             .lock()
             .expect("native product bridge mutex poisoned")
-            .take()
-        {
-            bridge.stop();
+            .take();
+        if let Some(token) = token {
+            self.ws_bridge.revoke(&token);
         }
         *self
             .product_control
@@ -1367,6 +1699,38 @@ impl NativeProductExecution {
 
 #[uniffi::export]
 impl NativeProductExecution {
+    /// Authorize one native operation using this execution's saved and one-use permissions.
+    pub async fn authorize_remote_permission(
+        &self,
+        request: truapi::latest::RemotePermissionRequest,
+    ) -> Result<bool, HostRejection> {
+        use truapi::api::Permissions;
+        use truapi::versioned::IntoLatest;
+
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostRejection::Rejected {
+                reason: "product execution is closed".to_string(),
+            });
+        }
+        let response = self
+            .admin()
+            .product_runtime()
+            .authorize_remote_permission(
+                &truapi::CallContext::default(),
+                truapi::versioned::permissions::RemotePermissionRequest::V1(request),
+            )
+            .await
+            .map_err(|error| HostRejection::Rejected {
+                reason: format!("{error:?}"),
+            })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostRejection::Rejected {
+                reason: "product execution is closed".to_string(),
+            });
+        }
+        Ok(response.into_latest().granted)
+    }
+
     /// Read a product-scoped permission authorization without prompting.
     ///
     /// A device capability resolves the host application's OS gate as well as
@@ -1440,6 +1804,14 @@ impl NativeProductExecution {
     /// Push a preimage lookup replacement to this execution's subscriptions.
     pub fn notify_preimage_changed(&self, key: Vec<u8>, value: Option<Vec<u8>>) {
         self.events.notify_preimage_changed(&key, value);
+    }
+
+    /// Push a host storage change to the product's subscriptions for `key`.
+    ///
+    /// Storage is one namespace per product rather than per execution, so this
+    /// reaches every execution of the product, not only this one.
+    pub fn notify_storage_changed(&self, key: String, value: Option<Vec<u8>>) {
+        self.shared_events.notify_storage_changed(&key, value);
     }
 
     /// Notify this execution's chain adapter of one JSON-RPC response.
@@ -1527,6 +1899,7 @@ impl NativeProductExecution {
         }
         #[cfg(feature = "ws-bridge")]
         self.stop_bridge();
+        self.permission_grants.clear();
         self.chat_connection.close();
         self.renderer_connection.close();
     }
@@ -1535,7 +1908,8 @@ impl NativeProductExecution {
 #[cfg(feature = "ws-bridge")]
 #[uniffi::export]
 impl NativeProductExecution {
-    /// Start this execution's independently authenticated localhost bridge.
+    /// Register this execution with its own token on the host's shared listener.
+    /// `bind_port` applies only when the listener first starts.
     pub fn start_ws_bridge(&self, bind_port: u16) -> Result<WsBridgeEndpoint, WsBridgeStartError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(WsBridgeStartError::Io(
@@ -1543,7 +1917,7 @@ impl NativeProductExecution {
             ));
         }
         let mut guard = self
-            .bridge
+            .bridge_token
             .lock()
             .expect("native product bridge mutex poisoned");
         if guard.is_some() {
@@ -1567,12 +1941,14 @@ impl NativeProductExecution {
                 .expect("native product control mutex poisoned") = Some(product_runtime.control());
             product_runtime
         });
-        let (bridge, endpoint) = WsBridge::start(bind_port, runtime_factory, logger)?;
-        *guard = Some(bridge);
+        let endpoint = self
+            .ws_bridge
+            .register(bind_port, runtime_factory, logger)?;
+        *guard = Some(endpoint.token.clone());
         Ok(endpoint)
     }
 
-    /// Stop the active bridge while leaving the execution reusable.
+    /// Revoke this execution's bridge registration while leaving it reusable.
     pub fn stop_ws_bridge(&self) {
         self.stop_bridge();
     }
@@ -1623,12 +1999,22 @@ fn native_thread_pool_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
 struct CallbackPlatform {
     callbacks: Arc<dyn HostCallbacks>,
     events: Arc<NativeEventBus>,
+    /// Storage changes are product-wide rather than per-execution: a worker
+    /// and the screen share one namespace, so they subscribe and publish on
+    /// the runtime-wide bus instead of this execution's own.
+    storage_events: Arc<NativeEventBus>,
 }
 
 impl crate::host_logic::worker::WorkerDemandObserver for CallbackPlatform {
     fn worker_demand_changed(&self, product_id: &str, transition: WorkerTransition) {
         self.callbacks
             .worker_demand_changed(product_id.to_string(), transition);
+    }
+}
+
+impl DevicePairingObserver for CallbackPlatform {
+    fn device_paired(&self, device: PairedSsoPeer) {
+        self.callbacks.device_paired(device);
     }
 }
 
@@ -1639,16 +2025,28 @@ struct NativeEventBus {
     locale_changes:
         Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostLocaleSubscribeItem, v01::GenericError>>>>,
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
-    chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
+    storage_changes: Mutex<Vec<StorageSubscription>>,
+    chain_events: Mutex<NativeChainEvents>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
     pocket_card_changes: Mutex<
         Vec<mpsc::UnboundedSender<Result<v01::HostPocketListSubscribeItem, v01::GenericError>>>,
     >,
 }
 
+#[derive(Default)]
+struct NativeChainEvents {
+    responses: HashMap<u32, mpsc::UnboundedSender<String>>,
+    early_close_generation: u64,
+}
+
 struct PreimageSubscription {
     key: Vec<u8>,
     tx: mpsc::UnboundedSender<Result<Option<Vec<u8>>, v01::GenericError>>,
+}
+
+struct StorageSubscription {
+    key: String,
+    tx: mpsc::UnboundedSender<Result<v01::HostLocalStorageChangeItem, v01::GenericError>>,
 }
 
 impl NativeEventBus {
@@ -1714,45 +2112,99 @@ impl NativeEventBus {
             });
     }
 
-    fn register_chain(&self, connection_id: u32) -> mpsc::UnboundedReceiver<String> {
+    fn subscribe_storage_changes(
+        &self,
+        key: String,
+    ) -> mpsc::UnboundedReceiver<Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
         let (tx, rx) = mpsc::unbounded();
-        self.chain_responses
+        self.storage_changes
             .lock()
-            .expect("native chain subscribers mutex poisoned")
-            .insert(connection_id, tx);
+            .expect("native storage subscribers mutex poisoned")
+            .push(StorageSubscription { key, tx });
         rx
     }
 
-    fn notify_chain_response(&self, connection_id: u32, json: String) {
-        let mut responses = self
-            .chain_responses
+    fn notify_storage_changed(&self, key: &str, value: Option<Vec<u8>>) {
+        let item = v01::HostLocalStorageChangeItem { value };
+        self.storage_changes
+            .lock()
+            .expect("native storage subscribers mutex poisoned")
+            .retain(|sub| {
+                if sub.key != key {
+                    return true;
+                }
+                sub.tx.unbounded_send(Ok(item.clone())).is_ok()
+            });
+    }
+
+    fn chain_close_generation(&self) -> u64 {
+        self.chain_events
+            .lock()
+            .expect("native chain subscribers mutex poisoned")
+            .early_close_generation
+    }
+
+    fn register_chain(
+        &self,
+        connection_id: u32,
+        close_generation: u64,
+    ) -> Option<mpsc::UnboundedReceiver<String>> {
+        let mut events = self
+            .chain_events
             .lock()
             .expect("native chain subscribers mutex poisoned");
-        let Some(tx) = responses.get(&connection_id) else {
+        if events.early_close_generation != close_generation {
+            return None;
+        }
+        let (tx, rx) = mpsc::unbounded();
+        events.responses.insert(connection_id, tx);
+        Some(rx)
+    }
+
+    fn notify_chain_response(&self, connection_id: u32, json: String) {
+        let mut events = self
+            .chain_events
+            .lock()
+            .expect("native chain subscribers mutex poisoned");
+        let Some(tx) = events.responses.get(&connection_id) else {
             return;
         };
         if tx.unbounded_send(json).is_err() {
-            responses.remove(&connection_id);
+            events.responses.remove(&connection_id);
         }
     }
 
     fn notify_chain_closed(&self, connection_id: u32) {
-        self.chain_responses
+        let mut events = self
+            .chain_events
+            .lock()
+            .expect("native chain subscribers mutex poisoned");
+        if events.responses.remove(&connection_id).is_none() {
+            // Native callbacks can close a connection before returning its ID.
+            events.early_close_generation = events.early_close_generation.wrapping_add(1);
+        }
+    }
+
+    fn unregister_chain(&self, connection_id: u32) {
+        self.chain_events
             .lock()
             .expect("native chain subscribers mutex poisoned")
+            .responses
             .remove(&connection_id);
     }
 
-    fn subscribe_chat_rooms(
-        &self,
-        current: v01::HostChatListSubscribeItem,
-    ) -> BoxStream<'static, v01::HostChatListSubscribeItem> {
+    /// Register for later room changes, separately from the snapshot: a mutex
+    /// cannot be held across the host's await the way `subscribe_pocket_cards` does.
+    fn chat_room_changes(&self) -> BoxStream<'static, v01::HostChatListSubscribeItem> {
         let (tx, rx) = mpsc::unbounded();
-        self.chat_room_changes
+        let mut subscribers = self
+            .chat_room_changes
             .lock()
-            .expect("native Chat room subscribers mutex poisoned")
-            .push(tx);
-        stream::once(async move { current }).chain(rx).boxed()
+            .expect("native Chat room subscribers mutex poisoned");
+        subscribers.retain(|tx| !tx.is_closed());
+        subscribers.push(tx);
+        drop(subscribers);
+        rx.boxed()
     }
 
     fn notify_chat_rooms_changed(&self, rooms: Vec<v01::ChatRoom>) {
@@ -1957,36 +2409,36 @@ impl truapi_platform::PermissionStatusHost for CallbackPlatform {
 impl Permissions for CallbackPlatform {
     async fn device_permission(
         &self,
+        product: &ProductContext,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
+    ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.device_permission".to_string(),
             format!("{request}"),
         );
 
-        let granted = self
-            .callbacks
-            .device_permission(request)
+        self.callbacks
+            .device_permission(product.into(), request)
             .await
-            .map_err(v01::GenericError::from)?;
-        Ok(v01::HostDevicePermissionResponse { granted })
+            .map(Into::into)
+            .map_err(v01::GenericError::from)
     }
 
     async fn remote_permission(
         &self,
+        product: &ProductContext,
         request: v01::RemotePermissionRequest,
-    ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+    ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.remote_permission".to_string(),
             format!("{request}"),
         );
 
-        let granted = self
-            .callbacks
-            .remote_permission(request.permission)
+        self.callbacks
+            .remote_permission(product.into(), request.permission)
             .await
-            .map_err(v01::GenericError::from)?;
-        Ok(v01::RemotePermissionResponse { granted })
+            .map(Into::into)
+            .map_err(v01::GenericError::from)
     }
 }
 
@@ -2033,12 +2485,72 @@ impl ProductStorage for CallbackPlatform {
         value: Vec<u8>,
     ) -> Result<(), v01::HostLocalStorageReadError> {
         self.callbacks
-            .local_storage_write(key, value)
-            .map_err(Into::into)
+            .local_storage_write(key.clone(), value.clone())
+            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.storage_events
+            .notify_storage_changed(&key, Some(value));
+        Ok(())
     }
 
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
-        self.callbacks.local_storage_clear(key).map_err(Into::into)
+        self.callbacks
+            .local_storage_clear(key.clone())
+            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.storage_events.notify_storage_changed(&key, None);
+        Ok(())
+    }
+
+    fn subscribe_storage(
+        &self,
+        key: String,
+    ) -> BoxStream<'static, Result<v01::HostLocalStorageChangeItem, v01::GenericError>> {
+        // Subscribe before reading, so a change landing between the two repeats
+        // rather than being lost. The host pushes later changes via
+        // `notify_storage_changed`.
+        let rx = self.storage_events.subscribe_storage_changes(key.clone());
+        let callbacks = self.callbacks.clone();
+        let current = async move {
+            callbacks
+                .local_storage_read(key)
+                .map(|value| v01::HostLocalStorageChangeItem { value })
+                .map_err(|error| {
+                    let error: v01::HostLocalStorageReadError = error.into();
+                    v01::GenericError {
+                        reason: error.to_string(),
+                    }
+                })
+        };
+        stream::once(current).chain(rx).boxed()
+    }
+}
+
+#[async_trait]
+impl ProductOperations for CallbackPlatform {
+    async fn begin_operation(
+        &self,
+        product: &ProductContext,
+        label: String,
+    ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
+        self.callbacks
+            .begin_operation(product.product_id.clone(), label)
+            .await
+            .map(|id| v01::HostWorkerBeginOperationResponse { id })
+            .map_err(|error| v01::HostWorkerOperationError::Unknown {
+                reason: error.to_string(),
+            })
+    }
+
+    async fn end_operation(
+        &self,
+        product: &ProductContext,
+        id: u32,
+    ) -> Result<(), v01::HostWorkerOperationError> {
+        self.callbacks
+            .end_operation(product.product_id.clone(), id)
+            .await
+            .map_err(|error| v01::HostWorkerOperationError::Unknown {
+                reason: error.to_string(),
+            })
     }
 }
 
@@ -2115,7 +2627,7 @@ impl JsonRpcConnection for NativeJsonRpcConnection {
         if self.closed.swap(true, Ordering::Relaxed) {
             return;
         }
-        self.events.notify_chain_closed(self.id);
+        self.events.unregister_chain(self.id);
         if let Err(err) = self.callbacks.chain_close(self.id) {
             self.callbacks.on_core_log(
                 "truapi.native.callback.chain_close_failed".to_string(),
@@ -2141,6 +2653,7 @@ impl ChainProvider for CallbackPlatform {
         &self,
         genesis_hash: [u8; 32],
     ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+        let close_generation = self.events.chain_close_generation();
         let Some(connection_id) = self
             .callbacks
             .chain_connect(genesis_hash.to_vec())
@@ -2150,15 +2663,22 @@ impl ChainProvider for CallbackPlatform {
                 reason: "chain provider unavailable".to_string(),
             });
         };
-        let response_rx = self.events.register_chain(connection_id);
-        Ok(Box::new(NativeJsonRpcConnection {
+        let response_rx = self.events.register_chain(connection_id, close_generation);
+        let registered = response_rx.is_some();
+        let connection = NativeJsonRpcConnection {
             id: connection_id,
             callbacks: self.callbacks.clone(),
             events: self.events.clone(),
-            response_rx: Mutex::new(Some(response_rx)),
+            response_rx: Mutex::new(response_rx),
             closed: AtomicBool::new(false),
             private_rpc: false,
-        }))
+        };
+        if !registered {
+            return Err(v01::GenericError {
+                reason: "chain connection closed during setup".to_string(),
+            });
+        }
+        Ok(Box::new(connection))
     }
 }
 
@@ -2181,6 +2701,7 @@ impl HopProvider for CallbackPlatform {
     ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
         let allowed = self.allowed_hop_endpoints(bulletin_genesis_hash).await?;
         truapi_platform::ensure_allowed_hop_endpoint(&endpoint, &allowed)?;
+        let close_generation = self.events.chain_close_generation();
         let Some(connection_id) = self
             .callbacks
             .hop_connect(bulletin_genesis_hash.to_vec(), endpoint)
@@ -2190,15 +2711,22 @@ impl HopProvider for CallbackPlatform {
                 reason: "HOP provider unavailable".to_string(),
             });
         };
-        let response_rx = self.events.register_chain(connection_id);
-        Ok(Box::new(NativeJsonRpcConnection {
+        let response_rx = self.events.register_chain(connection_id, close_generation);
+        let registered = response_rx.is_some();
+        let connection = NativeJsonRpcConnection {
             id: connection_id,
             callbacks: self.callbacks.clone(),
             events: self.events.clone(),
-            response_rx: Mutex::new(Some(response_rx)),
+            response_rx: Mutex::new(response_rx),
             closed: AtomicBool::new(false),
             private_rpc: true,
-        }))
+        };
+        if !registered {
+            return Err(v01::GenericError {
+                reason: "HOP connection closed during setup".to_string(),
+            });
+        }
+        Ok(Box::new(connection))
     }
 }
 
@@ -2214,6 +2742,21 @@ impl AuthPresenter for CallbackPlatform {
 
 #[async_trait]
 impl UserConfirmation for CallbackPlatform {
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<PermissionDecision, v01::GenericError> {
+        self.callbacks.on_core_log(
+            "truapi.native.callback.confirm_permission".to_string(),
+            String::new(),
+        );
+        self.callbacks
+            .confirm_permission(review)
+            .await
+            .map(PermissionDecision::from)
+            .map_err(v01::GenericError::from)
+    }
+
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,
@@ -2320,15 +2863,17 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         _product: &ProductContext,
         request: v01::HostChatCreateRoomRequest,
     ) -> Result<v01::HostChatCreateRoomResponse, v01::HostChatCreateRoomError> {
-        let status = self
+        let status: v01::ChatRoomRegistrationStatus = self
             .chat
             .create_room(request.room_id, request.name, request.icon)
+            .await
             .map_err(|error| v01::HostChatCreateRoomError::Unknown {
                 reason: error.to_string(),
-            })?;
+            })?
+            .into();
 
         if status == v01::ChatRoomRegistrationStatus::New
-            && let Ok(rooms) = self.chat.list_rooms()
+            && let Ok(rooms) = self.chat.list_rooms().await
         {
             self.events.notify_chat_rooms_changed(rooms);
         }
@@ -2344,9 +2889,11 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         let status = self
             .chat
             .register_bot(request.bot_id, request.name, request.icon)
+            .await
             .map_err(|error| v01::HostChatRegisterBotError::Unknown {
                 reason: error.to_string(),
-            })?;
+            })?
+            .into();
 
         // No room-list republish: a bot identity is not a room. A host that
         // joins the bot to one signals that via `notify_chat_rooms_changed`.
@@ -2361,6 +2908,7 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         let message_id = self
             .chat
             .post_message(request.room_id, request.payload)
+            .await
             .map_err(|error| v01::HostChatPostMessageError::Unknown {
                 reason: error.to_string(),
             })?;
@@ -2371,10 +2919,18 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         &self,
         _product: &ProductContext,
     ) -> BoxStream<'static, Result<v01::HostChatListSubscribeItem, v01::GenericError>> {
-        let current = v01::HostChatListSubscribeItem {
-            rooms: self.chat.list_rooms().unwrap_or_default(),
-        };
-        Box::pin(self.events.subscribe_chat_rooms(current).map(Ok))
+        // Registered before the snapshot: a change landing while the host answers
+        // must be queued, not dropped.
+        let changes = self.events.chat_room_changes();
+        let chat = Arc::clone(&self.chat);
+        stream::once(async move {
+            v01::HostChatListSubscribeItem {
+                rooms: chat.list_rooms().await.unwrap_or_default(),
+            }
+        })
+        .chain(changes)
+        .map(Ok)
+        .boxed()
     }
 }
 
@@ -2737,9 +3293,10 @@ mod tests {
     }
 
     struct EventCallbacks {
-        chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
+        logs: Mutex<Vec<String>>,
+        chat_room_status: Mutex<NativeChatRoomRegistrationStatus>,
         chat_created_rooms: Mutex<Vec<(String, String, String)>>,
-        chat_bot_status: Mutex<v01::ChatBotRegistrationStatus>,
+        chat_bot_status: Mutex<NativeChatBotRegistrationStatus>,
         chat_registered_bots: Mutex<Vec<(String, String, String)>>,
         chat_bot_rejection: Mutex<Option<String>>,
         chat_post_rejection: Mutex<Option<String>>,
@@ -2751,13 +3308,31 @@ mod tests {
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
+        on_chain_connect: Mutex<Option<Box<dyn FnOnce() + Send>>>,
         chain_connects: Mutex<Vec<Vec<u8>>>,
         chain_sends: Mutex<Vec<(u32, String)>>,
         chain_closes: Mutex<Vec<u32>>,
         /// Worker demand transitions, in arrival order.
         worker_demand: Mutex<Vec<(String, WorkerTransition)>>,
+        /// Devices reported as paired, in arrival order.
+        paired_devices: Mutex<Vec<PairedSsoPeer>>,
         /// Capability this host reports as refused by the OS, if any.
         os_refused: Option<v01::HostDevicePermissionRequest>,
+        /// Configurable prompt outcome for grant, denial, and callback failure tests.
+        remote_permission_result: Result<NativePermissionDecision, HostRejection>,
+        remote_permission_reply: Mutex<
+            Option<
+                futures::channel::oneshot::Receiver<
+                    Result<NativePermissionDecision, HostRejection>,
+                >,
+            >,
+        >,
+        core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+        /// Disclosure consent is distinct from boolean action confirmation.
+        permission_confirmation_result: NativePermissionDecision,
+        /// Counts prompts across the execution's separate connections.
+        remote_permission_calls: std::sync::atomic::AtomicUsize,
+        remote_permission_products: Mutex<Vec<(String, ProductExecutionKind)>>,
     }
 
     impl EventCallbacks {
@@ -2771,9 +3346,10 @@ mod tests {
 
         fn new() -> Self {
             Self {
-                chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
+                logs: Mutex::new(Vec::new()),
+                chat_room_status: Mutex::new(NativeChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
-                chat_bot_status: Mutex::new(v01::ChatBotRegistrationStatus::New),
+                chat_bot_status: Mutex::new(NativeChatBotRegistrationStatus::New),
                 chat_registered_bots: Mutex::new(Vec::new()),
                 chat_bot_rejection: Mutex::new(None),
                 chat_post_rejection: Mutex::new(None),
@@ -2790,11 +3366,19 @@ mod tests {
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
                 chain_id: Mutex::new(None),
+                on_chain_connect: Mutex::new(None),
                 chain_connects: Mutex::new(Vec::new()),
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
                 worker_demand: Mutex::new(Vec::new()),
+                paired_devices: Mutex::new(Vec::new()),
                 os_refused: None,
+                remote_permission_result: Ok(NativePermissionDecision::Deny),
+                remote_permission_reply: Mutex::new(None),
+                core_storage: Mutex::default(),
+                permission_confirmation_result: NativePermissionDecision::Deny,
+                remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
+                remote_permission_products: Mutex::new(Vec::new()),
             }
         }
     }
@@ -2853,12 +3437,21 @@ mod tests {
                 reason: "no identity provider in event fixture".into(),
             })
         }
-        fn on_core_log(&self, _marker: String, _detail: String) {}
+        fn on_core_log(&self, marker: String, _detail: String) {
+            self.logs.lock().expect("logs mutex poisoned").push(marker);
+        }
         fn worker_demand_changed(&self, product_id: String, transition: WorkerTransition) {
             self.worker_demand
                 .lock()
                 .expect("worker demand mutex poisoned")
                 .push((product_id, transition));
+        }
+
+        fn device_paired(&self, device: PairedSsoPeer) {
+            self.paired_devices
+                .lock()
+                .expect("paired device mutex poisoned")
+                .push(device);
         }
         async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
             Ok(())
@@ -2874,9 +3467,10 @@ mod tests {
         }
         async fn device_permission(
             &self,
+            _product: NativeProductExecutionConfig,
             _request: v01::HostDevicePermissionRequest,
-        ) -> Result<bool, HostRejection> {
-            Ok(false)
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            Ok(NativePermissionDecision::Deny)
         }
         async fn device_permission_status(
             &self,
@@ -2890,9 +3484,19 @@ mod tests {
         }
         async fn remote_permission(
             &self,
+            product: NativeProductExecutionConfig,
             _request: v01::RemotePermission,
-        ) -> Result<bool, HostRejection> {
-            Ok(false)
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            self.remote_permission_calls.fetch_add(1, Ordering::SeqCst);
+            self.remote_permission_products
+                .lock()
+                .unwrap()
+                .push((product.product_id, product.execution_kind));
+            let reply = self.remote_permission_reply.lock().unwrap().take();
+            match reply {
+                Some(reply) => reply.await.unwrap(),
+                None => self.remote_permission_result.clone(),
+            }
         }
         fn auth_state_changed(&self, state: AuthState) {
             self.auth_states
@@ -2900,13 +3504,15 @@ mod tests {
                 .expect("auth state mutex poisoned")
                 .push(state);
         }
-        fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
-            Ok(None)
+        fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            Ok(self.core_storage.lock().unwrap().get(&key).cloned())
         }
-        fn core_storage_write(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<(), HostRejection> {
+        fn core_storage_write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), HostRejection> {
+            self.core_storage.lock().unwrap().insert(key, value);
             Ok(())
         }
-        fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
+        fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection> {
+            self.core_storage.lock().unwrap().remove(&key);
             Ok(())
         }
         async fn allowed_hop_endpoints(&self, _: Vec<u8>) -> Result<Vec<String>, HostRejection> {
@@ -2920,6 +3526,10 @@ mod tests {
                 .lock()
                 .expect("chain connects mutex poisoned")
                 .push(genesis_hash);
+            let on_connect = self.on_chain_connect.lock().unwrap().take();
+            if let Some(on_connect) = on_connect {
+                on_connect();
+            }
             Ok(*self.chain_id.lock().expect("chain id mutex poisoned"))
         }
         fn chain_send(&self, connection_id: u32, request: String) -> Result<(), HostRejection> {
@@ -2941,6 +3551,12 @@ mod tests {
             _review: UserConfirmationReview,
         ) -> Result<bool, HostRejection> {
             Ok(false)
+        }
+        async fn confirm_permission(
+            &self,
+            _review: UserConfirmationReview,
+        ) -> Result<NativePermissionDecision, HostRejection> {
+            Ok(self.permission_confirmation_result)
         }
         async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
             Ok(self
@@ -2982,6 +3598,16 @@ mod tests {
         fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
             Ok(())
         }
+        async fn begin_operation(
+            &self,
+            _product_id: String,
+            _label: String,
+        ) -> Result<u32, HostRejection> {
+            Ok(1)
+        }
+        async fn end_operation(&self, _product_id: String, _id: u32) -> Result<(), HostRejection> {
+            Ok(())
+        }
     }
 
     impl NativePocketCallbacks for EventCallbacks {
@@ -3015,13 +3641,14 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl NativeChatCallbacks for EventCallbacks {
-        fn create_room(
+        async fn create_room(
             &self,
             room_id: String,
             name: String,
             icon: String,
-        ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection> {
+        ) -> Result<NativeChatRoomRegistrationStatus, HostRejection> {
             self.chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
@@ -3032,12 +3659,12 @@ mod tests {
                 .expect("room status mutex poisoned"))
         }
 
-        fn register_bot(
+        async fn register_bot(
             &self,
             bot_id: String,
             name: String,
             icon: String,
-        ) -> Result<v01::ChatBotRegistrationStatus, HostRejection> {
+        ) -> Result<NativeChatBotRegistrationStatus, HostRejection> {
             if let Some(reason) = self
                 .chat_bot_rejection
                 .lock()
@@ -3056,7 +3683,7 @@ mod tests {
                 .expect("bot status mutex poisoned"))
         }
 
-        fn post_message(
+        async fn post_message(
             &self,
             room_id: String,
             content: v01::ChatMessageContent,
@@ -3079,7 +3706,7 @@ mod tests {
             Ok(format!("message-{}", posted.len()))
         }
 
-        fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
+        async fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
             let mut room_ids: Vec<String> = self
                 .chat_created_rooms
                 .lock()
@@ -3105,8 +3732,114 @@ mod tests {
         let platform = CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
+            storage_events: events.clone(),
         };
         (callbacks, events, platform)
+    }
+
+    #[test]
+    fn a_product_write_reaches_a_storage_subscription_on_the_same_key() {
+        let (_callbacks, _events, platform) = event_platform();
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = platform.subscribe_storage(key.clone());
+
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        futures::executor::block_on(ProductStorage::write(&platform, key, vec![1, 2, 3]))
+            .expect("write");
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![1, 2, 3]),
+            }))),
+            "a write the product made is a change its own subscribers must see"
+        );
+    }
+
+    #[test]
+    fn a_worker_write_reaches_a_storage_subscription_in_the_products_other_execution() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config, None)
+            .expect("host runtime config should be valid");
+        let screen = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::App),
+            )
+            .expect("open app execution");
+        let worker = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::Worker),
+            )
+            .expect("open worker execution");
+
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = screen.platform.subscribe_storage(key.clone());
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        futures::executor::block_on(worker.platform.write(key, vec![9])).expect("write");
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![9]),
+            }))),
+            "the screen and the worker share one storage namespace, so a write in one \
+             reaches a subscription in the other"
+        );
+    }
+
+    #[test]
+    fn a_host_pushed_storage_change_reaches_the_products_subscription() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config, None)
+            .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("myapp.dot", ProductExecutionKind::App),
+            )
+            .expect("open app execution");
+
+        let key = "myapp.dot/progress".to_string();
+        let mut subscription = execution.platform.subscribe_storage(key.clone());
+        assert_eq!(
+            futures::executor::block_on(futures::StreamExt::next(&mut subscription)),
+            Some(Ok(v01::HostLocalStorageChangeItem { value: None })),
+            "a subscription opens on the key's current value"
+        );
+
+        execution.notify_storage_changed(key, Some(vec![7]));
+
+        assert_eq!(
+            futures::FutureExt::now_or_never(futures::StreamExt::next(&mut subscription)),
+            Some(Some(Ok(v01::HostLocalStorageChangeItem {
+                value: Some(vec![7]),
+            }))),
+            "a change the host made itself still reaches the product"
+        );
     }
 
     fn native_host_runtime_config() -> NativeHostRuntimeConfig {
@@ -3154,6 +3887,230 @@ mod tests {
             native_execution_config(product_id, ProductExecutionKind::App),
         )
         .expect("product execution config should be valid")
+    }
+
+    /// A deeplink that is not hex at all, and one that is hex but not a
+    /// proposal. The two render differently, so asserting on either alone
+    /// passes for a decoder that never saw the second kind.
+    const UNDECODABLE_DEEPLINKS: [(&str, &str); 2] = [
+        ("not-a-deeplink", "invalid pairing deeplink hex"),
+        (
+            "polkadotapp://pair?handshake=ff",
+            "invalid pairing handshake proposal",
+        ),
+    ];
+
+    /// Reads the reason out of either refusal, so a test names the failure it
+    /// expected rather than the enum shape.
+    fn pairing_rejection(failure: NativePairingError) -> String {
+        match failure {
+            NativePairingError::UndecodableDeeplink { reason }
+            | NativePairingError::Rejected { reason } => reason,
+        }
+    }
+
+    /// Build a deeplink carrying `peer` and `metadata`, the way a pairing host
+    /// puts its QR together.
+    fn proposal_deeplink(
+        peer: PairedSsoPeer,
+        metadata: Vec<crate::host_logic::sso::pairing::v2::MetadataEntry>,
+    ) -> String {
+        let proposal = crate::host_logic::sso::pairing::VersionedHandshakeProposal::V2(
+            crate::host_logic::sso::pairing::v2::Proposal {
+                device: crate::host_logic::sso::pairing::v2::Device {
+                    statement_account_id: peer.statement_account_id,
+                    encryption_public_key: peer.encryption_public_key,
+                },
+                metadata,
+            },
+        );
+        format!(
+            "polkadotapp://pair?handshake={}",
+            hex::encode(parity_scale_codec::Encode::encode(&proposal))
+        )
+    }
+
+    /// The peer a host must register a renewal target for before it answers,
+    /// and the name it prompts with. Without this entry point that account is
+    /// unreachable from a native host, the answer goes out with no allowance
+    /// behind it, and the prompt can only name the peer by its raw key.
+    #[test]
+    fn a_pairing_deeplink_yields_the_proposal_it_carries() {
+        use crate::PairingProposalMetadata;
+        use crate::host_logic::sso::pairing::v2::{MetadataEntry, MetadataKey};
+
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: [0x42; 32],
+        };
+        let deeplink = proposal_deeplink(
+            peer,
+            vec![
+                MetadataEntry(MetadataKey::HostName, "Polkadot Desktop Host".to_string()),
+                MetadataEntry(MetadataKey::PlatformType, "macOS".to_string()),
+                MetadataEntry(MetadataKey::Custom("seat".to_string()), "3".to_string()),
+            ],
+        );
+
+        assert_eq!(
+            parse_pairing_deeplink(deeplink).expect("a well-formed deeplink decodes"),
+            PairingProposal {
+                peer,
+                metadata: PairingProposalMetadata {
+                    host_name: Some("Polkadot Desktop Host".to_string()),
+                    platform_type: Some("macOS".to_string()),
+                    ..PairingProposalMetadata::default()
+                },
+            }
+        );
+
+        for (deeplink, expected) in UNDECODABLE_DEEPLINKS {
+            let reason = pairing_rejection(
+                parse_pairing_deeplink(deeplink.to_string())
+                    .expect_err("an undecodable deeplink carries no peer"),
+            );
+            assert!(
+                reason.contains(expected),
+                "{deeplink} did not reach the core's decoder: {reason}"
+            );
+        }
+    }
+
+    /// Both deeplink entry points have to reach the core's own decoder. One
+    /// wired to nothing would answer the same way for every input.
+    ///
+    /// The variant is what a host branches on: an undecodable deeplink
+    /// announced nothing and tracked nothing, so reading it as an ordinary
+    /// refusal would have the host untrack a target it never tracked and
+    /// notify a peer that never heard from it.
+    #[test]
+    fn the_deeplink_entry_points_reject_what_they_cannot_decode() {
+        let host = native_host_runtime_no_session();
+
+        for (deeplink, expected) in UNDECODABLE_DEEPLINKS {
+            let answered =
+                futures::executor::block_on(host.establish_pairing(deeplink.to_string()))
+                    .expect_err("an undecodable deeplink cannot be answered");
+            let announced = futures::executor::block_on(
+                host.notify_pairing_allowance_allocation(deeplink.to_string()),
+            )
+            .err()
+            .expect("an undecodable deeplink cannot be announced");
+
+            for failure in [answered, announced] {
+                assert!(
+                    matches!(failure, NativePairingError::UndecodableDeeplink { .. }),
+                    "{deeplink} was not reported as undecodable: {failure:?}"
+                );
+                let reason = pairing_rejection(failure);
+                assert!(
+                    reason.contains(expected),
+                    "{deeplink} did not reach the core's decoder: {reason}"
+                );
+            }
+        }
+    }
+
+    /// A deeplink that decodes and then fails is the opposite case: the peer
+    /// may have been reached and its renewal target tracked, so the host owes
+    /// both an undo. Sharing one variant with the undecodable case would leave
+    /// that difference readable only by matching on the reason string.
+    #[test]
+    fn a_decodable_deeplink_that_fails_is_not_reported_as_undecodable() {
+        let host = native_host_runtime_no_session();
+        let deeplink = proposal_deeplink(
+            PairedSsoPeer {
+                statement_account_id: [0x31; 32],
+                encryption_public_key: [0x42; 32],
+            },
+            Vec::new(),
+        );
+
+        let answered = futures::executor::block_on(host.establish_pairing(deeplink.clone()))
+            .expect_err("no session means no handshake to answer");
+        let announced =
+            futures::executor::block_on(host.notify_pairing_allowance_allocation(deeplink))
+                .err()
+                .expect("no session means no notice to sign");
+
+        for failure in [answered, announced] {
+            assert!(
+                matches!(failure, NativePairingError::Rejected { .. }),
+                "a decodable deeplink was reported as undecodable: {failure:?}"
+            );
+            let reason = pairing_rejection(failure);
+            assert!(
+                reason.contains("no active local session"),
+                "the core's session check did not reach the host: {reason}"
+            );
+        }
+    }
+
+    /// The two peer entry points have to reach the core's signing host. One
+    /// wired to nothing would answer without a session to answer from.
+    #[test]
+    fn the_peer_entry_points_need_the_core_signing_host() {
+        let host = native_host_runtime_no_session();
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: [0x42; 32],
+        };
+
+        for failure in [
+            pairing_rejection(
+                futures::executor::block_on(host.resume_pairing(peer))
+                    .expect_err("no session means no pairing to serve"),
+            ),
+            pairing_rejection(
+                futures::executor::block_on(host.disconnect_paired_host(peer))
+                    .expect_err("no session means no disconnect to sign"),
+            ),
+        ] {
+            assert!(
+                failure.contains("no active local session"),
+                "the core's session check did not reach the host: {failure}"
+            );
+        }
+    }
+
+    /// Without this a paired device stops at the core and the host never hears
+    /// of it, so no contact is told a new device joined.
+    #[test]
+    fn a_paired_device_reaches_the_host_callbacks() {
+        let (callbacks, _events, platform) = event_platform();
+        let device = PairedSsoPeer {
+            statement_account_id: [0x31; 32],
+            encryption_public_key: [0x42; 32],
+        };
+
+        crate::DevicePairingObserver::device_paired(&platform, device);
+
+        assert_eq!(
+            *callbacks
+                .paired_devices
+                .lock()
+                .expect("paired device mutex poisoned"),
+            vec![device]
+        );
+    }
+
+    /// The runtime installs its own observer, so a host cannot be left with a
+    /// pairing nobody forwards.
+    #[test]
+    fn the_native_runtime_installs_the_pairing_observer() {
+        struct Inert;
+        impl crate::DevicePairingObserver for Inert {
+            fn device_paired(&self, _device: PairedSsoPeer) {}
+        }
+
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+            None,
+        )
+        .expect("host runtime config should be valid");
+
+        assert!(!host.runtime.set_device_pairing_observer(Arc::new(Inert)));
     }
 
     #[test]
@@ -3486,6 +4443,7 @@ mod tests {
                 chat_public_key: None,
                 device_enc_public_key: None,
                 peer_statement_account_id: None,
+                device_statement_account_id: None,
                 lite_username: Some("alice".to_string()),
                 full_username: None,
             },
@@ -3508,6 +4466,7 @@ mod tests {
                     chat_public_key: None,
                     device_enc_public_key: None,
                     peer_statement_account_id: None,
+                    device_statement_account_id: None,
                     lite_username: Some("alice".to_string()),
                     full_username: None,
                 }),
@@ -3977,7 +4936,7 @@ mod tests {
         *callbacks
             .chat_bot_status
             .lock()
-            .expect("bot status mutex poisoned") = v01::ChatBotRegistrationStatus::Exists;
+            .expect("bot status mutex poisoned") = NativeChatBotRegistrationStatus::Exists;
         let existing = futures::executor::block_on(
             truapi_platform::ChatPlatform::register_chat_bot(&platform, &product, request),
         )
@@ -4052,7 +5011,7 @@ mod tests {
         *callbacks
             .chat_room_status
             .lock()
-            .expect("room status mutex poisoned") = v01::ChatRoomRegistrationStatus::Exists;
+            .expect("room status mutex poisoned") = NativeChatRoomRegistrationStatus::Exists;
         let existing = futures::executor::block_on(
             truapi_platform::ChatPlatform::create_chat_room(&platform, &product, request),
         )
@@ -4098,6 +5057,68 @@ mod tests {
                 },
             )]
         );
+    }
+
+    #[test]
+    fn native_chain_provider_rejects_an_early_close_and_allows_a_later_retry() {
+        let (callbacks, events, platform) = event_platform();
+        *callbacks.chain_id.lock().unwrap() = Some(42);
+        let closing_events = events.clone();
+        *callbacks.on_chain_connect.lock().unwrap() = Some(Box::new(move || {
+            closing_events.notify_chain_closed(42);
+        }));
+
+        let closed = futures::executor::block_on(ChainProvider::connect(&platform, [9; 32]));
+        assert_eq!(
+            closed.map(|_| ()),
+            Err(v01::GenericError {
+                reason: "chain connection closed during setup".to_string(),
+            })
+        );
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![42]);
+
+        *callbacks.chain_id.lock().unwrap() = Some(43);
+        let connection =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut responses = connection.responses();
+        events.notify_chain_response(43, "after retry".to_string());
+        assert_eq!(
+            futures::executor::block_on(responses.next()),
+            Some("after retry".to_string())
+        );
+        events.notify_chain_closed(43);
+        assert_eq!(futures::executor::block_on(responses.next()), None);
+        drop(connection);
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![42, 43]);
+    }
+
+    #[test]
+    fn native_chain_provider_keeps_new_setup_when_an_active_connection_closes() {
+        let (callbacks, events, platform) = event_platform();
+        *callbacks.chain_id.lock().unwrap() = Some(41);
+        let previous =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut previous_responses = previous.responses();
+        *callbacks.chain_id.lock().unwrap() = Some(42);
+        let closing_events = events.clone();
+        *callbacks.on_chain_connect.lock().unwrap() = Some(Box::new(move || {
+            closing_events.notify_chain_closed(41);
+            previous.close();
+        }));
+
+        let connection =
+            futures::executor::block_on(ChainProvider::connect(&platform, [9; 32])).unwrap();
+        let mut responses = connection.responses();
+        events.notify_chain_response(42, "new connection".to_string());
+        assert_eq!(
+            (
+                futures::executor::block_on(previous_responses.next()),
+                futures::executor::block_on(responses.next()),
+            ),
+            (None, Some("new connection".to_string()))
+        );
+        drop(connection);
+        assert_eq!(*callbacks.chain_closes.lock().unwrap(), vec![41, 42]);
     }
 
     #[test]
@@ -4158,8 +5179,8 @@ mod tests {
                 native_execution_config("chain.dot", ProductExecutionKind::App),
             )
             .expect("App execution should open");
-        let mut shared_responses = host.events.register_chain(41);
-        let mut scoped_responses = execution.events.register_chain(41);
+        let mut shared_responses = host.events.register_chain(41, 0).unwrap();
+        let mut scoped_responses = execution.events.register_chain(41, 0).unwrap();
         let response = r#"{"jsonrpc":"2.0","id":"truapi:1","result":true}"#.to_string();
 
         execution.notify_chain_response(41, response.clone());
@@ -4360,8 +5381,16 @@ mod tests {
                     reason: "no identity provider in fixture".into(),
                 })
             }
+            async fn confirm_permission(
+                &self,
+                _review: UserConfirmationReview,
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
+            }
+
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
+            fn device_paired(&self, _device: PairedSsoPeer) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
@@ -4376,9 +5405,10 @@ mod tests {
             }
             async fn device_permission(
                 &self,
+                _product: NativeProductExecutionConfig,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             async fn device_permission_status(
                 &self,
@@ -4388,9 +5418,10 @@ mod tests {
             }
             async fn remote_permission(
                 &self,
+                _product: NativeProductExecutionConfig,
                 _request: v01::RemotePermission,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
             fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -4477,6 +5508,20 @@ mod tests {
                 Ok(())
             }
             fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+                Ok(())
+            }
+            async fn begin_operation(
+                &self,
+                _product_id: String,
+                _label: String,
+            ) -> Result<u32, HostRejection> {
+                Ok(1)
+            }
+            async fn end_operation(
+                &self,
+                _product_id: String,
+                _id: u32,
+            ) -> Result<(), HostRejection> {
                 Ok(())
             }
         }
@@ -4561,8 +5606,16 @@ mod tests {
                     reason: "no identity provider in permission fixture".into(),
                 })
             }
+            async fn confirm_permission(
+                &self,
+                _review: UserConfirmationReview,
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
+            }
+
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
+            fn device_paired(&self, _device: PairedSsoPeer) {}
             async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
@@ -4577,8 +5630,9 @@ mod tests {
             }
             async fn device_permission(
                 &self,
+                _product: NativeProductExecutionConfig,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<bool, HostRejection> {
+            ) -> Result<NativePermissionDecision, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
                 self.release
                     .lock()
@@ -4586,7 +5640,7 @@ mod tests {
                     .recv()
                     .await
                     .expect("release signal");
-                Ok(true)
+                Ok(NativePermissionDecision::AllowAlways)
             }
             async fn device_permission_status(
                 &self,
@@ -4596,9 +5650,10 @@ mod tests {
             }
             async fn remote_permission(
                 &self,
+                _product: NativeProductExecutionConfig,
                 _request: v01::RemotePermission,
-            ) -> Result<bool, HostRejection> {
-                Ok(false)
+            ) -> Result<NativePermissionDecision, HostRejection> {
+                Ok(NativePermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
             fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -4685,6 +5740,20 @@ mod tests {
                 Ok(())
             }
             fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+                Ok(())
+            }
+            async fn begin_operation(
+                &self,
+                _product_id: String,
+                _label: String,
+            ) -> Result<u32, HostRejection> {
+                Ok(1)
+            }
+            async fn end_operation(
+                &self,
+                _product_id: String,
+                _id: u32,
+            ) -> Result<(), HostRejection> {
                 Ok(())
             }
         }
@@ -4834,6 +5903,249 @@ mod tests {
         execution.stop_ws_bridge();
     }
 
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn closing_an_execution_releases_its_callbacks_while_the_host_lives() {
+        let host = native_host_runtime_no_session();
+        let callbacks = Arc::new(EventCallbacks::new());
+        let weak_callbacks = Arc::downgrade(&callbacks);
+        let execution = host
+            .open_product_execution(
+                callbacks,
+                None,
+                None,
+                native_execution_config("first.dot", ProductExecutionKind::App),
+            )
+            .expect("open execution");
+        execution.start_ws_bridge(0).expect("start bridge");
+
+        execution.shutdown();
+        drop(execution);
+
+        assert!(
+            weak_callbacks.upgrade().is_none(),
+            "the listener must not retain a closed execution's callbacks"
+        );
+        drop(host);
+    }
+
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn bridge_logs_follow_the_host_and_authenticated_execution() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        let callbacks = [
+            Arc::new(EventCallbacks::new()),
+            Arc::new(EventCallbacks::new()),
+            Arc::new(EventCallbacks::new()),
+        ];
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks[0].clone(),
+            native_host_runtime_config(),
+            None,
+        )
+        .expect("create host");
+        let executions = [(1, "first.dot"), (2, "second.dot")].map(|(index, product_id)| {
+            host.open_product_execution(
+                callbacks[index].clone(),
+                None,
+                None,
+                native_execution_config(product_id, ProductExecutionKind::App),
+            )
+            .expect("open execution")
+        });
+        executions[0].start_ws_bridge(0).expect("start first");
+        let endpoint = executions[1].start_ws_bridge(0).expect("start second");
+        let client = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        let socket = client.block_on(async {
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+                "ws://127.0.0.1:{}/?t={}",
+                endpoint.port, endpoint.token
+            ))
+            .await
+            .expect("connect second");
+            socket
+                .send(WsMessage::Text("ignored".into()))
+                .await
+                .expect("send text");
+            socket
+        });
+        crate::test_support::wait_until(
+            || {
+                callbacks.iter().any(|callbacks| {
+                    callbacks
+                        .logs
+                        .lock()
+                        .expect("logs mutex poisoned")
+                        .iter()
+                        .any(|marker| marker == "truapi.ws_bridge.text_frame_ignored")
+                })
+            },
+            "connection did not process the text frame",
+        );
+        let logs = callbacks.map(|callbacks| {
+            callbacks
+                .logs
+                .lock()
+                .expect("logs mutex poisoned")
+                .iter()
+                .filter(|marker| marker.starts_with("truapi.ws_bridge."))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            logs,
+            [
+                vec!["truapi.ws_bridge.started"],
+                vec![],
+                vec![
+                    "truapi.ws_bridge.connection_open",
+                    "truapi.ws_bridge.text_frame_ignored"
+                ],
+            ]
+        );
+        drop(socket);
+    }
+
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn two_executions_share_one_bridge_through_the_native_api() {
+        use futures::SinkExt;
+        use parity_scale_codec::Decode;
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+        use truapi::versioned::system::HostFeatureSupportedRequest;
+
+        use crate::frame::{Payload, ProtocolMessage, request_ids};
+
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+            None,
+        )
+        .expect("host runtime config should be valid");
+        let app = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::new()),
+                None,
+                None,
+                native_execution_config("shared.dot", ProductExecutionKind::App),
+            )
+            .expect("App execution should open");
+        let chat_host = Arc::new(EventCallbacks::new());
+        let chat = host
+            .open_product_execution(
+                chat_host.clone(),
+                Some(chat_host),
+                None,
+                native_execution_config("shared.dot", ProductExecutionKind::Worker),
+            )
+            .expect("Chat execution should open");
+
+        let app_endpoint = app.start_ws_bridge(0).expect("start app bridge");
+        let chat_endpoint = chat.start_ws_bridge(0).expect("start chat bridge");
+        assert_eq!(
+            app_endpoint.port, chat_endpoint.port,
+            "both executions must share the one listener port"
+        );
+        assert_ne!(
+            app_endpoint.token, chat_endpoint.token,
+            "each execution must get its own token"
+        );
+
+        let feature_ids = request_ids("system_feature_supported").expect("known request method");
+        let round_trip = |request_id: &str| ProtocolMessage {
+            request_id: request_id.into(),
+            payload: Payload {
+                trait_id: feature_ids.trait_id,
+                method_id: feature_ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: HostFeatureSupportedRequest::V1(v01::HostFeatureSupportedRequest::Chain {
+                    genesis_hash: vec![0u8; 32],
+                })
+                .encode(),
+            },
+        };
+        async fn answer<S>(ws: &mut S) -> ProtocolMessage
+        where
+            S: futures::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+                + Unpin,
+        {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    match ws.next().await {
+                        Some(Ok(WsMessage::Binary(bytes))) => {
+                            break ProtocolMessage::decode(&mut &bytes[..])
+                                .expect("decode response");
+                        }
+                        Some(Ok(_)) => continue,
+                        Some(Err(err)) => panic!("ws error: {err}"),
+                        None => panic!("connection closed before response"),
+                    }
+                }
+            })
+            .await
+            .expect("must answer")
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+
+        rt.block_on(async {
+            let app_url = format!(
+                "ws://127.0.0.1:{}/?t={}",
+                app_endpoint.port, app_endpoint.token
+            );
+            let chat_url = format!(
+                "ws://127.0.0.1:{}/?t={}",
+                chat_endpoint.port, chat_endpoint.token
+            );
+
+            let (mut app_ws, _) = tokio_tungstenite::connect_async(&app_url)
+                .await
+                .expect("app dial");
+            let (mut chat_ws, _) = tokio_tungstenite::connect_async(&chat_url)
+                .await
+                .expect("chat dial");
+
+            app_ws
+                .send(WsMessage::Binary(round_trip("app:1").encode()))
+                .await
+                .expect("send on app connection");
+            assert_eq!(answer(&mut app_ws).await.request_id, "app:1");
+
+            chat_ws
+                .send(WsMessage::Binary(round_trip("chat:1").encode()))
+                .await
+                .expect("send on chat connection");
+            assert_eq!(answer(&mut chat_ws).await.request_id, "chat:1");
+
+            app.stop_ws_bridge();
+
+            chat_ws
+                .send(WsMessage::Binary(round_trip("chat:2").encode()))
+                .await
+                .expect("send on chat connection after App stops");
+            assert_eq!(
+                answer(&mut chat_ws).await.request_id,
+                "chat:2",
+                "Chat's connection must keep answering after a sibling execution stops"
+            );
+
+            assert!(
+                tokio_tungstenite::connect_async(&app_url).await.is_err(),
+                "a revoked token must not still be accepted"
+            );
+
+            chat.stop_ws_bridge();
+        });
+    }
+
     fn native_host_runtime_no_session() -> Arc<NativeTrUApiHostRuntime> {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
@@ -4963,6 +6275,298 @@ mod tests {
         )
         .expect("review must lift back");
         assert_eq!(lifted, review);
+    }
+
+    #[test]
+    fn native_remote_authorization_uses_the_execution_permission_callback() {
+        for (answer, granted) in [
+            (Ok(NativePermissionDecision::AllowAlways), true),
+            (Ok(NativePermissionDecision::Deny), false),
+            (
+                Err(HostRejection::Rejected {
+                    reason: "permission UI unavailable".to_string(),
+                }),
+                false,
+            ),
+        ] {
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                Arc::new(EventCallbacks::new()),
+                native_host_runtime_config(),
+                None,
+            )
+            .unwrap();
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_result: answer,
+                ..EventCallbacks::new()
+            });
+            let execution = host
+                .open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config("fetch.dot", ProductExecutionKind::Worker),
+                )
+                .unwrap();
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            let response =
+                futures::executor::block_on(execution.authorize_remote_permission(request))
+                    .unwrap();
+            assert_eq!(
+                (
+                    response,
+                    callbacks.remote_permission_products.lock().unwrap().clone()
+                ),
+                (
+                    granted,
+                    vec![("fetch.dot".to_string(), ProductExecutionKind::Worker)]
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn native_permission_confirmation_preserves_consent_lifetime() {
+        futures::executor::block_on(async {
+            for decision in [
+                NativePermissionDecision::AllowOnce,
+                NativePermissionDecision::AllowAlways,
+                NativePermissionDecision::Deny,
+            ] {
+                let platform = CallbackPlatform {
+                    callbacks: Arc::new(EventCallbacks {
+                        permission_confirmation_result: decision,
+                        ..EventCallbacks::new()
+                    }),
+                    events: Arc::default(),
+                    storage_events: Arc::default(),
+                };
+                let review = UserConfirmationReview::IdentityDisclosure(
+                    truapi_platform::IdentityDisclosureReview {
+                        product_id: "product.dot".to_string(),
+                    },
+                );
+                assert_eq!(
+                    (
+                        platform.confirm_permission(review.clone()).await.unwrap(),
+                        platform.confirm_user_action(review).await.unwrap(),
+                    ),
+                    (PermissionDecision::from(decision), false),
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn native_execution_shares_one_use_permissions_across_connections_only() {
+        use truapi::api::Permissions;
+
+        let callbacks = Arc::new(EventCallbacks {
+            remote_permission_result: Ok(NativePermissionDecision::AllowOnce),
+            ..EventCallbacks::new()
+        });
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            native_host_runtime_config(),
+            None,
+        )
+        .unwrap();
+        let open = || {
+            host.open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("fetch.dot", ProductExecutionKind::App),
+            )
+            .unwrap()
+        };
+        let execution = open();
+        let other = open();
+        futures::executor::block_on(async {
+            let admin = execution.admin();
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            let context = truapi::CallContext::default();
+            let sdk_request = || {
+                admin.product_runtime().request_remote_permission(
+                    &context,
+                    truapi::versioned::permissions::RemotePermissionRequest::V1(request.clone()),
+                )
+            };
+            let granted = sdk_request().await.unwrap();
+            let permission = PermissionAuthorizationRequest::Remote(request.clone());
+            let other_status = other
+                .permission_authorization_status(permission.clone())
+                .await
+                .unwrap();
+            let consumed = execution
+                .authorize_remote_permission(request.clone())
+                .await
+                .unwrap();
+            let after_use = execution
+                .permission_authorization_status(permission.clone())
+                .await
+                .unwrap();
+            let prompts_after_use = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+            let next_operation = execution
+                .authorize_remote_permission(request.clone())
+                .await
+                .unwrap();
+            let other_operation = other
+                .authorize_remote_permission(request.clone())
+                .await
+                .unwrap();
+            let prompts_after_operations = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+            sdk_request().await.unwrap();
+            execution.shutdown();
+            let after_shutdown = admin
+                .permission_authorization_status(permission)
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    granted,
+                    other_status,
+                    consumed,
+                    after_use,
+                    prompts_after_use,
+                    next_operation,
+                    other_operation,
+                    prompts_after_operations,
+                    after_shutdown
+                ),
+                (
+                    truapi::versioned::permissions::RemotePermissionResponse::V1(
+                        truapi::latest::RemotePermissionResponse { granted: true },
+                    ),
+                    PermissionAuthorizationStatus::NotDetermined,
+                    true,
+                    PermissionAuthorizationStatus::NotDetermined,
+                    1,
+                    true,
+                    true,
+                    3,
+                    PermissionAuthorizationStatus::NotDetermined,
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn native_remote_authorization_reuses_stored_product_decisions() {
+        for (decision, granted) in [
+            (NativePermissionDecision::AllowAlways, true),
+            (NativePermissionDecision::Deny, false),
+        ] {
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_result: Ok(decision),
+                ..EventCallbacks::new()
+            });
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                callbacks.clone(),
+                native_host_runtime_config(),
+                None,
+            )
+            .unwrap();
+            let open = |product_id| {
+                host.open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config(product_id, ProductExecutionKind::App),
+                )
+                .unwrap()
+            };
+            let first_execution = open("fetch.dot");
+            let next_execution = open("fetch.dot");
+            let other_product = open("other.dot");
+            let request = truapi::latest::RemotePermissionRequest {
+                permission: truapi::latest::RemotePermission::Remote {
+                    domains: vec!["api.example.com".to_string()],
+                },
+            };
+            futures::executor::block_on(async {
+                let first = first_execution
+                    .authorize_remote_permission(request.clone())
+                    .await
+                    .unwrap();
+                let next = next_execution
+                    .authorize_remote_permission(request.clone())
+                    .await
+                    .unwrap();
+                let prompts_for_product = callbacks.remote_permission_calls.load(Ordering::SeqCst);
+                let other = other_product
+                    .authorize_remote_permission(request)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (
+                        first,
+                        next,
+                        prompts_for_product,
+                        other,
+                        callbacks.remote_permission_calls.load(Ordering::SeqCst),
+                    ),
+                    (granted, granted, 1, granted, 2),
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn native_remote_authorization_rejects_closed_and_closing_executions() {
+        for pending in [false, true] {
+            let (reply, response) = futures::channel::oneshot::channel();
+            let callbacks = Arc::new(EventCallbacks {
+                remote_permission_reply: Mutex::new(Some(response)),
+                ..EventCallbacks::new()
+            });
+            let host = NativeTrUApiHostRuntime::with_runtime_config(
+                callbacks.clone(),
+                native_host_runtime_config(),
+                None,
+            )
+            .unwrap();
+            let execution = host
+                .open_product_execution(
+                    callbacks.clone(),
+                    None,
+                    None,
+                    native_execution_config("fetch.dot", ProductExecutionKind::App),
+                )
+                .unwrap();
+            futures::executor::block_on(async {
+                let request = execution.authorize_remote_permission(
+                    truapi::latest::RemotePermissionRequest {
+                        permission: truapi::latest::RemotePermission::Remote {
+                            domains: vec!["api.example.com".to_string()],
+                        },
+                    },
+                );
+                futures::pin_mut!(request);
+                if pending {
+                    assert!(futures::poll!(&mut request).is_pending());
+                }
+                execution.shutdown();
+                reply.send(Ok(NativePermissionDecision::AllowOnce)).unwrap();
+                assert_eq!(
+                    (
+                        request.await.err().map(|error| error.to_string()),
+                        callbacks.remote_permission_calls.load(Ordering::SeqCst),
+                    ),
+                    (
+                        Some("product execution is closed".to_string()),
+                        usize::from(pending)
+                    ),
+                );
+            });
+        }
     }
 
     /// Drives the whole native chain for a status read: foreign callback,

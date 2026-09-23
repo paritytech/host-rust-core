@@ -3,10 +3,12 @@ import Foundation
 
 func makeExecutionModel(
     execution: MockProductExecution = MockProductExecution(),
-    chainConnections: MockChainConnections = MockChainConnections()
+    chainConnections: MockChainConnections = MockChainConnections(),
+    osPermissionAsker: MockOSPermissionAsker = MockOSPermissionAsker()
 ) -> RustRuntimeEnvironment.ExecutionModel {
     RustRuntimeEnvironment.ExecutionModel(
         execution: execution,
-        chainConnections: chainConnections
+        chainConnections: chainConnections,
+        osPermissionAsker: osPermissionAsker
     )
 }

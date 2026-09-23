@@ -61,8 +61,9 @@ final class ContactsListViewController: UIViewController, ViewHolder, RootScreen
         }
 
         if rootView.isEmpty {
-            contentUnavailableConfiguration = UIContentUnavailableConfiguration.titleSubtitle(
-                with: String(localized: .chatsEmptyListTitle),
+            contentUnavailableConfiguration = UIContentUnavailableConfiguration.illustrated(
+                image: .chatsEmptyIllustration,
+                title: String(localized: .chatsEmptyListTitle),
                 subtitle: String(localized: .chatsEmptyListMessage)
             )
         } else {

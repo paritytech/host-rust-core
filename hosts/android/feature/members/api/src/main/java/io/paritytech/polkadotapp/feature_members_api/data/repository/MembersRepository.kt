@@ -56,6 +56,9 @@ interface MembersRepository {
         consistency: CacheableDataConsistency,
     ): Result<Int?>
 
+    /** How many keys one page of a ring holds; a member's ring position counts within its page. */
+    suspend fun getRingKeysPageSize(chainId: ChainId): Result<Int>
+
     suspend fun getRingsState(
         chainId: ChainId,
         collectionId: RingCollectionId,

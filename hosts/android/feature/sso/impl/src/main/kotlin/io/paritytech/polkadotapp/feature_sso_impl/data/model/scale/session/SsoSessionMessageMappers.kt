@@ -378,7 +378,7 @@ private fun RawPayloadContent.toScale(): SsoPayloadTypeScale {
 
 // ==================== SignerPayloadJson mappers ====================
 
-private fun SsoSignerPayloadJsonScale.toDomain(): SignerPayloadJson {
+private fun SsoSignerPayloadJsonScale.toDomain(): SignerPayloadJson<ProductAccountId> {
     return SignerPayloadJson(
         account = account.toDomain().getOrThrow(),
         blockHash = blockHash,
@@ -399,7 +399,7 @@ private fun SsoSignerPayloadJsonScale.toDomain(): SignerPayloadJson {
     )
 }
 
-private fun SignerPayloadJson.toScale(): SsoSignerPayloadJsonScale {
+private fun SignerPayloadJson<ProductAccountId>.toScale(): SsoSignerPayloadJsonScale {
     return SsoSignerPayloadJsonScale(
         account = account.toScale(),
         blockHash = blockHash,

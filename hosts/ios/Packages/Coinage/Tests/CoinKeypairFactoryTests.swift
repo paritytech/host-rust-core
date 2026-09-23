@@ -56,8 +56,28 @@ struct CoinKeypairFactoryTests {
         #expect(key1 != key2)
     }
 
-    @Test("Base derivation path is correct")
+    @Test("The path names the installation as the page and the item as a soft junction")
     func derivationPathCorrectness() {
-        #expect(factory.coinPath(for: 123) == "//coinage//4294967295//0/123")
+        let page = CoinageInstallationId.test.pageSegment
+        #expect(factory.coinPath(for: 123) == "//coinage//4294967295//\(page)/123")
+    }
+
+    @Test("An installation page is used as the chain code unchanged")
+    func pageIsChainCode() throws {
+        let chaincodes = try SubstrateJunctionFactory().parse(path: "//" + CoinageInstallationId.test.pageSegment)
+            .chaincodes
+
+        #expect(chaincodes.map(\.data) == [CoinageInstallationId.test.value])
+        #expect(chaincodes.map(\.type) == [.hard])
+    }
+
+    @Test("The same item under two installations is two keys")
+    func installationsDiffer() throws {
+        try mockEntropyManager.createRootEntropy(Data(repeating: 0xAB, count: 32))
+
+        let current = try factory.derivePublicKey(index: CoinageKeyIndex(installation: .test, item: 7))
+        let other = try factory.derivePublicKey(index: CoinageKeyIndex(installation: .other, item: 7))
+
+        #expect(current != other)
     }
 }

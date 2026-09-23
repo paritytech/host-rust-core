@@ -5,7 +5,9 @@
 //! binary messages. One binary WS message carries exactly one SCALE
 //! `ProtocolMessage`, matching the browser transport's framing.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::task::{Context as TaskContext, Poll};
@@ -29,8 +31,8 @@ use tracing::{debug, warn};
 use crate::bootstrap;
 use truapi_platform::ProductExecutionKind;
 use truapi_server::{
-    FrameSink, PairingHostRuntime, ProductContext, ProductRuntime, ProductRuntimeError,
-    SigningHostRuntime,
+    ChannelId, DebugSink, FrameSink, PairingHostRuntime, ProductContext, ProductRuntime,
+    ProductRuntimeError, SigningHostRuntime,
 };
 
 /// Pause after a failed `accept()` before trying again.
@@ -137,6 +139,53 @@ impl ProductRuntimeFactory for PairingHostRuntime {
 impl ProductRuntimeFactory for SigningHostRuntime {
     fn product_runtime(&self, product: ProductContext, sink: Arc<dyn FrameSink>) -> ProductRuntime {
         SigningHostRuntime::product_runtime(self, product, sink)
+    }
+}
+
+/// A [`ProductRuntimeFactory`] that installs `sink` on every product runtime the
+/// wrapped factory hands out.
+///
+/// Wrapping the factory rather than each host role keeps the tap in one place:
+/// pairing, signing, and the switchable signing runtime all reach the debugger
+/// through the same decorator, and none of them knows it is being observed.
+pub struct DebugTappedRuntime {
+    inner: Arc<dyn ProductRuntimeFactory>,
+    sink: Arc<dyn DebugSink>,
+    connections: AtomicU64,
+}
+
+impl DebugTappedRuntime {
+    /// Wrap `inner` so the runtimes it builds report their frames to `sink`.
+    pub fn new(inner: Arc<dyn ProductRuntimeFactory>, sink: Arc<dyn DebugSink>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            sink,
+            connections: AtomicU64::new(0),
+        })
+    }
+}
+
+impl ProductRuntimeFactory for DebugTappedRuntime {
+    fn product_runtime(&self, product: ProductContext, sink: Arc<dyn FrameSink>) -> ProductRuntime {
+        // One runtime is built per accepted socket, and request ids are minted per
+        // connection (`p:1`, `p:2`, ...). The product id alone therefore repeats
+        // across concurrent peers - a browser page alongside the bundled script
+        // runner, or a reload whose new socket overlaps the old - and §4 keys
+        // traces on `(channelId, requestId)`, so both id spaces would land on one
+        // channel and interleave. The ordinal separates them; the debugger treats
+        // a channel id as opaque, so it only has to be distinct and readable.
+        let ordinal = self.connections.fetch_add(1, Ordering::Relaxed);
+        let channel_id = format!("{}#{ordinal}", product.product_id);
+        let runtime = self.inner.product_runtime(product, sink);
+        runtime.set_debug_sink(ChannelId(channel_id), Arc::clone(&self.sink));
+        runtime
+    }
+
+    /// Delegated to the wrapped factory. A decorator that answered the default
+    /// `None` here would silently keep product connections alive across a
+    /// session switch that is meant to invalidate them.
+    fn connection_reset(&self) -> Option<watch::Receiver<u64>> {
+        self.inner.connection_reset()
     }
 }
 
@@ -288,6 +337,7 @@ async fn accept_tcp_loop(
     listener: TcpListener,
     endpoint: String,
 ) -> Result<()> {
+    let container = bootstrap::container_path();
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -304,8 +354,11 @@ async fn accept_tcp_loop(
         let runtime = runtime.clone();
         let product = product.clone();
         let endpoint = endpoint.clone();
+        let container = container.clone();
         tokio::spawn(async move {
-            if let Err(err) = serve_tcp_connection(runtime, product, stream, &endpoint).await {
+            if let Err(err) =
+                serve_tcp_connection(runtime, product, stream, &endpoint, &container).await
+            {
                 debug!(%peer, %err, "frame connection ended");
             }
         });
@@ -319,6 +372,7 @@ async fn serve_tcp_connection(
     product: Arc<ProductSelection>,
     mut stream: TcpStream,
     endpoint: &str,
+    container: &Path,
 ) -> Result<()> {
     let peer = ConnectionPeer::Tcp(stream.peer_addr().context("read TCP peer address")?);
     let request = tokio::time::timeout(REQUEST_HEAD_TIMEOUT, read_request_head(&mut stream))
@@ -327,7 +381,7 @@ async fn serve_tcp_connection(
     if is_websocket_upgrade(request.head()) {
         return serve_connection(runtime, product, request.replay(stream), peer).await;
     }
-    serve_bridge_script(&mut stream, request.head(), endpoint).await
+    serve_bridge_script(&mut stream, request.head(), endpoint, container).await
 }
 
 struct BufferedRequestHead {
@@ -453,13 +507,25 @@ fn header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a str> {
 /// cross-origin request no CORS header can gate, so the script carries no
 /// secret. What keeps another page from using the endpoint it names is the
 /// origin check on the WebSocket handshake.
-async fn serve_bridge_script(stream: &mut TcpStream, head: &[u8], endpoint: &str) -> Result<()> {
+async fn serve_bridge_script(
+    stream: &mut TcpStream,
+    head: &[u8],
+    endpoint: &str,
+    container: &Path,
+) -> Result<()> {
     let response = match request_path(head).as_deref() {
-        Some(bootstrap::PATH) => http_response(
-            "200 OK",
-            "application/javascript; charset=utf-8",
-            &bootstrap::script(endpoint),
-        ),
+        Some(bootstrap::PATH) => match bootstrap::read_container(container) {
+            Ok(container) => http_response(
+                "200 OK",
+                "application/javascript; charset=utf-8",
+                &bootstrap::script(endpoint, &container),
+            ),
+            Err(error) => http_response(
+                "500 Internal Server Error",
+                "text/plain; charset=utf-8",
+                &format!("{error:#}\n"),
+            ),
+        },
         _ => http_response(
             "404 Not Found",
             "text/plain; charset=utf-8",
@@ -739,9 +805,11 @@ mod tests {
         let address = listener.local_addr()?;
         let endpoint = format!("ws://{address}");
         let product = ProductSelection::new("localhost:3000".into(), ProductExecutionKind::App)?;
+        let container = tempfile::NamedTempFile::new()?;
+        std::fs::write(container.path(), "installSandbox();")?;
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await?;
-            serve_tcp_connection(runtime, product, stream, &endpoint).await
+            serve_tcp_connection(runtime, product, stream, &endpoint, container.path()).await
         });
         Ok((address, server))
     }
@@ -828,15 +896,20 @@ mod tests {
     async fn the_bridge_script_is_served_beside_the_frame_socket() -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        async fn fetch(target: &str, endpoint: &str) -> Result<String> {
+        async fn fetch(target: &str, endpoint: &str, asset_present: bool) -> Result<String> {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let address = listener.local_addr()?;
             let endpoint = endpoint.to_string();
+            let container = tempfile::NamedTempFile::new()?;
+            std::fs::write(container.path(), "installSandbox();")?;
+            if !asset_present {
+                std::fs::remove_file(container.path())?;
+            }
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await?;
                 let request = read_request_head(&mut stream).await?;
                 assert!(!is_websocket_upgrade(request.head()));
-                serve_bridge_script(&mut stream, request.head(), &endpoint).await
+                serve_bridge_script(&mut stream, request.head(), &endpoint, container.path()).await
             });
 
             let mut client = TcpStream::connect(address).await?;
@@ -850,17 +923,28 @@ mod tests {
         }
 
         let endpoint = "ws://127.0.0.1:9955";
-        let script = fetch(bootstrap::PATH, endpoint).await?;
+        let script = fetch(bootstrap::PATH, endpoint, true).await?;
         assert!(script.starts_with("HTTP/1.1 200 OK"), "{script}");
         assert!(script.contains("application/javascript"));
         assert!(
-            script.contains(&format!(r#"var url = "{endpoint}";"#)),
+            script.contains(&format!(
+                r#"window.__truapi_localhost = {{ url: "{endpoint}" }};"#
+            )),
             "{script}"
         );
-        assert!(script.contains("window.__HOST_API_PORT__ = channel.port1;"));
+        assert!(script.ends_with("\ninstallSandbox();"));
 
-        let missing = fetch("/nope", endpoint).await?;
+        let missing = fetch("/nope", endpoint, true).await?;
         assert!(missing.starts_with("HTTP/1.1 404 Not Found"), "{missing}");
+        let missing_asset = fetch(bootstrap::PATH, endpoint, false).await?;
+        assert!(
+            missing_asset.starts_with("HTTP/1.1 500 Internal Server Error"),
+            "{missing_asset}"
+        );
+        assert!(
+            missing_asset.contains("reinstall truapi-host"),
+            "{missing_asset}"
+        );
         Ok(())
     }
 
@@ -884,7 +968,9 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
         assert!(
-            response.contains(&format!(r#"var url = "ws://{address}";"#)),
+            response.contains(&format!(
+                r#"window.__truapi_localhost = {{ url: "ws://{address}" }};"#
+            )),
             "{response}"
         );
         Ok(())
@@ -913,11 +999,14 @@ mod tests {
             anyhow::ensure!(response.starts_with("HTTP/1.1 200 OK\r\n"), response);
             Ok::<(), anyhow::Error>(())
         };
+        let container = tempfile::NamedTempFile::new()?;
+        std::fs::write(container.path(), "installSandbox();")?;
         let server_exchange = serve_tcp_connection(
             Arc::new(UnusedRuntimeFactory),
             product,
             server_stream,
             &endpoint,
+            container.path(),
         );
 
         tokio::try_join!(server_exchange, client_exchange)?;
@@ -1340,5 +1429,159 @@ mod tests {
             );
             Ok(())
         }
+    }
+
+    /// A sink that records nothing: these tests are about the decorator's
+    /// delegation, not about what reaches the debugger.
+    struct SilentSink;
+
+    impl DebugSink for SilentSink {
+        fn emit(&self, _event: truapi_server::DebugEvent) {}
+    }
+
+    /// A factory that reports a reset signal and refuses to build runtimes, so a
+    /// test can observe `connection_reset` forwarding on its own.
+    struct ResettingFactory {
+        tx: watch::Sender<u64>,
+    }
+
+    impl ProductRuntimeFactory for ResettingFactory {
+        fn product_runtime(
+            &self,
+            _product: ProductContext,
+            _sink: Arc<dyn FrameSink>,
+        ) -> ProductRuntime {
+            panic!("this test observes connection_reset only")
+        }
+
+        fn connection_reset(&self) -> Option<watch::Receiver<u64>> {
+            Some(self.tx.subscribe())
+        }
+    }
+
+    /// `DebugTappedRuntime` must forward `connection_reset`, not fall back to the
+    /// trait default. Returning `None` would leave product connections alive
+    /// across a session switch that exists to invalidate them, and nothing else
+    /// in the accept loop would report the omission.
+    #[tokio::test]
+    async fn the_debug_tap_forwards_the_connection_reset_signal() -> Result<()> {
+        let (tx, _keepalive) = watch::channel(0u64);
+        let inner: Arc<dyn ProductRuntimeFactory> = Arc::new(ResettingFactory { tx: tx.clone() });
+        let tapped = DebugTappedRuntime::new(inner, Arc::new(SilentSink));
+
+        let mut reset = tapped
+            .connection_reset()
+            .context("the tap dropped the reset signal")?;
+        tx.send(7)?;
+        reset.changed().await?;
+        assert_eq!(*reset.borrow_and_update(), 7);
+        Ok(())
+    }
+
+    /// A factory with no reset signal must stay that way through the decorator:
+    /// forwarding is delegation, not fabrication.
+    #[test]
+    fn the_debug_tap_reports_no_reset_signal_when_the_inner_factory_has_none() {
+        let tapped = DebugTappedRuntime::new(Arc::new(UnusedRuntimeFactory), Arc::new(SilentSink));
+        assert!(tapped.connection_reset().is_none());
+    }
+
+    /// Frame sink for the runtimes the tests below build and dispose.
+    struct DiscardingFrameSink;
+
+    impl FrameSink for DiscardingFrameSink {
+        fn emit_frame(&self, _frame: Vec<u8>) {}
+    }
+
+    /// Records what actually reached the debugger, so the tap is asserted on its
+    /// effect rather than on the wiring call not panicking.
+    #[derive(Default)]
+    struct RecordingDebugSink {
+        frames: std::sync::Mutex<Vec<(String, truapi_server::FrameDirection, Vec<u8>)>>,
+    }
+
+    impl DebugSink for RecordingDebugSink {
+        fn emit(&self, event: truapi_server::DebugEvent) {
+            // `DebugEvent` is `#[non_exhaustive]` so host-internal events can be
+            // added without a break; a tap that only wants frames ignores the rest.
+            if let truapi_server::DebugEvent::Frame {
+                channel_id,
+                dir,
+                bytes,
+            } = event
+            {
+                self.frames
+                    .lock()
+                    .expect("recording debug sink mutex poisoned")
+                    .push((channel_id.0, dir, bytes));
+            }
+        }
+    }
+
+    impl RecordingDebugSink {
+        fn taken(&self) -> Vec<(String, truapi_server::FrameDirection, Vec<u8>)> {
+            self.frames
+                .lock()
+                .expect("recording debug sink mutex poisoned")
+                .clone()
+        }
+    }
+
+    fn tapped_product(
+        tapped: &Arc<DebugTappedRuntime>,
+        product_id: &str,
+    ) -> Result<ProductRuntime> {
+        let product =
+            ProductContext::new_with_execution(product_id.into(), ProductExecutionKind::App)?;
+        Ok(tapped.product_runtime(product, Arc::new(DiscardingFrameSink)))
+    }
+
+    /// The decorator builds its runtime through the wrapped factory, and the
+    /// frames that runtime receives reach the sink under the channel id the
+    /// decorator minted. Asserting only that the wiring call returns leaves the
+    /// feature itself - that anything arrives at all - uncovered.
+    ///
+    /// Arbitrary bytes are enough: the inbound tap fires before decode, so this
+    /// does not depend on a well-formed `ProtocolMessage`.
+    #[tokio::test]
+    async fn the_debug_tap_streams_received_frames_to_the_sink() -> Result<()> {
+        let sink = Arc::new(RecordingDebugSink::default());
+        let tapped = DebugTappedRuntime::new(signing_runtime()?, sink.clone());
+        let runtime = tapped_product(&tapped, "localhost:3000")?;
+
+        let frame = vec![0xde, 0xad, 0xbe, 0xef];
+        let _ = runtime.receive_frame(frame.clone()).await;
+        runtime.dispose();
+
+        assert_eq!(
+            sink.taken(),
+            vec![(
+                "localhost:3000#0".to_string(),
+                truapi_server::FrameDirection::In,
+                frame
+            )]
+        );
+        Ok(())
+    }
+
+    /// Request ids are minted per connection (`p:1`, `p:2`, ...), and §4 keys a
+    /// trace on `(channelId, requestId)`. Two peers under one host - a browser
+    /// page alongside the script runner, or a reload overlapping its predecessor -
+    /// therefore collide unless the channel ids differ.
+    #[tokio::test]
+    async fn concurrent_connections_get_their_own_channel_ids() -> Result<()> {
+        let sink = Arc::new(RecordingDebugSink::default());
+        let tapped = DebugTappedRuntime::new(signing_runtime()?, sink.clone());
+
+        let first = tapped_product(&tapped, "localhost:3000")?;
+        let second = tapped_product(&tapped, "localhost:3000")?;
+        let _ = first.receive_frame(vec![1]).await;
+        let _ = second.receive_frame(vec![2]).await;
+        first.dispose();
+        second.dispose();
+
+        let channels: Vec<String> = sink.taken().into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(channels, vec!["localhost:3000#0", "localhost:3000#1"]);
+        Ok(())
     }
 }

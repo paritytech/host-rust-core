@@ -154,9 +154,12 @@ export function frameIdOf(trait: number, method: number): number {
  * `messageType` alone cannot name the leg, because its first two values are
  * shared across kinds: 0 is a request's `Request` and a subscription's
  * `Start`, 1 is a `Response` and a `Receive`. `kind` is what resolves that.
- * A subscription's remaining values are unambiguous (`Interrupt` 2, `Stop`
- * 3). Returns `"unknown"` when `kind` is unset (an off-table id) or
- * `messageType` is out of range for that kind.
+ * A request's `Cancel` (4) and a subscription's remaining values are
+ * unambiguous (`Interrupt` 2, `Stop` 3). Returns `"unknown"` when `kind` is
+ * unset (an off-table id) or `messageType` is out of range for that kind.
+ *
+ * `cancel` names a frame inside an op rather than one that ends it: the call
+ * it names still closes on its own `response`.
  */
 export function resolveRole(
   messageType: number,
@@ -166,6 +169,7 @@ export function resolveRole(
   if (kind === "request") {
     if (messageType === 0) return "request";
     if (messageType === 1) return "response";
+    if (messageType === 4) return "cancel";
     return "unknown";
   }
   switch (messageType) {

@@ -33,6 +33,8 @@ struct CoinageHoldingViewModel: Identifiable {
 protocol AssetDetailsViewModelProtocol: Observation.Observable {
     var balanceCardModel: AssetDetailsBalanceCard.ViewModel? { get set }
     var showsBackupNotification: Bool { get set }
+    /// This installation's on-chain registration has not landed in the expected time (D4).
+    var showsAccountBackupPending: Bool { get set }
     var fundingStates: [AssetFundingStatusView.FundingState] { get set }
     var isFundingExpanded: Bool { get set }
     var isUpdating: Bool { get set }
@@ -51,9 +53,6 @@ protocol AssetDetailsViewModelProtocol: Observation.Observable {
     var onWithdraw: (() -> Void)? { get set }
 
     var coinageBreakdown: CoinageBalanceBreakdownViewModel? { get set }
-    /// Set only in builds that carry the debug affordances; nil elsewhere, which is what hides the
-    /// button rather than a second conditional in the view.
-    var onMakeAllVouchersReady: (() -> Void)? { get set }
     #if TESTNET_FEATURE
         var isTestnetTopUpInProgress: Bool { get set }
         var onTestnetTopUp: (() -> Void)? { get set }
@@ -64,6 +63,7 @@ protocol AssetDetailsViewModelProtocol: Observation.Observable {
 class AssetDetailsViewModel: AssetDetailsViewModelProtocol {
     var balanceCardModel: AssetDetailsBalanceCard.ViewModel?
     var showsBackupNotification: Bool = false
+    var showsAccountBackupPending: Bool = false
     var fundingStates: [AssetFundingStatusView.FundingState] = []
     var isFundingExpanded: Bool = false
     var isUpdating: Bool = false
@@ -82,7 +82,6 @@ class AssetDetailsViewModel: AssetDetailsViewModelProtocol {
     var onWithdraw: (() -> Void)?
 
     var coinageBreakdown: CoinageBalanceBreakdownViewModel?
-    var onMakeAllVouchersReady: (() -> Void)?
     #if TESTNET_FEATURE
         var isTestnetTopUpInProgress: Bool = false
         var onTestnetTopUp: (() -> Void)?

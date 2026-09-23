@@ -1,21 +1,18 @@
 import Foundation
-import TrUAPIHost
 import Products
 
-extension TrUAPIProductExecutionProtocol {
-    /// Camera/mic media-capture (getUserMedia) permission handler for the rust
-    /// runtime. Answers query-only from the execution's persisted device
-    /// authorization — the rust core's `devicePermission` flow prompts and
-    /// persists earlier; this only enforces at capture time.
+extension OSPermissionAsking {
+    /// Product consent was consumed by the container before WebKit asks its delegate.
     func makeDeviceCapabilityHandler() -> JSDeviceCapabilityHandler {
         { capability in
-            let request: HostDevicePermissionRequest =
-                switch capability {
-                case .camera: .camera
-                case .microphone: .microphone
-                }
-            let status = try await self.permissionAuthorizationStatus(request: .device(request))
-            return status == .authorized ? .allowed : .denied
+            switch await self.checkPermission(for: capability.deviceCapabilityType) {
+            case .allowed:
+                .allowed
+            case .denied:
+                .denied
+            case .notDetermined:
+                await self.requestPermission(for: capability.deviceCapabilityType) ? .allowed : .denied
+            }
         }
     }
 }

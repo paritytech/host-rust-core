@@ -33,7 +33,7 @@ import kotlinx.coroutines.withContext
 import java.math.BigInteger
 
 class SignPayloadJsonInteractor @AssistedInject constructor(
-    @Assisted private val payload: SignerPayloadJson,
+    @Assisted private val payload: SignerPayloadJson<*>,
     @Assisted private val signingSource: ProductSigningSource,
     @param:ExtrinsicSerializer private val extrinsicSerializerGson: Gson,
     private val chainRegistry: ChainRegistry,
@@ -43,7 +43,7 @@ class SignPayloadJsonInteractor @AssistedInject constructor(
 ) : TransactionSignInteractor {
     @AssistedFactory
     interface Factory {
-        fun create(payload: SignerPayloadJson, signingSource: ProductSigningSource): SignPayloadJsonInteractor
+        fun create(payload: SignerPayloadJson<*>, signingSource: ProductSigningSource): SignPayloadJsonInteractor
     }
 
     override val account get() = signingSource.resolveAccount()
@@ -85,8 +85,9 @@ class SignPayloadJsonInteractor @AssistedInject constructor(
                 call = context.parsedExtrinsic.call,
                 account = account.accountId,
             )
-            // Identity-account transactions are not sponsored.
-            SigningAccount.IdentityAccount -> Result.success(Unit)
+            // Identity-account transactions are not sponsored, and a legacy
+            // account never reaches signing: the core signs those itself.
+            SigningAccount.IdentityAccount, is SigningAccount.Legacy -> Result.success(Unit)
         }
     }
 
@@ -94,7 +95,7 @@ class SignPayloadJsonInteractor @AssistedInject constructor(
         return signingSource.createTransactionOrigin()
     }
 
-    private suspend fun SignerPayloadJson.toParsedExtrinsic(): DAppParsedExtrinsic {
+    private suspend fun <Signer> SignerPayloadJson<Signer>.toParsedExtrinsic(): DAppParsedExtrinsic<Signer> {
         val chainId = chainId()
         val runtime = chainRegistry.getRuntime(chainId)
 
@@ -172,7 +173,7 @@ class SignPayloadJsonInteractor @AssistedInject constructor(
     private data class ExtrinsicBuildingContext(
         val chain: Chain,
         val origin: TransactionOrigin,
-        val parsedExtrinsic: DAppParsedExtrinsic,
+        val parsedExtrinsic: DAppParsedExtrinsic<*>,
     )
 
     private suspend fun chainId(): ChainId {

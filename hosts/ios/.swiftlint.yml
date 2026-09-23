@@ -1,10 +1,12 @@
 excluded:
+  - build/
   - Package.swift
   - "**/*.generated.swift"
   - polkadot-appTests
   - polkadot-appIntegrationTests
   - vendor/bundle
   - ".git/"
+  - ".claude/"
   - ".gitignore"
   - ".gitmodules"
   - ".build/"

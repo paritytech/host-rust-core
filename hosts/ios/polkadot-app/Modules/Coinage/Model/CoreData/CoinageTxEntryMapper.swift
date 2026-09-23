@@ -53,13 +53,10 @@ enum CoinageTxAssetRows {
                 return try .coin(.received(Data(hexString: hex)))
             }
             if let coin = row.coin {
-                return try .coin(.own(DerivationIndex.fromCoreData(coin.derivationIndex), publicKey(coin.publicKey)))
+                return try .coin(.own(coin.keyIndex(), publicKey(coin.publicKey)))
             }
             if let voucher = row.voucher {
-                return try .recyclerVoucher(
-                    DerivationIndex.fromCoreData(voucher.derivationIndex),
-                    publicKey(voucher.publicKey)
-                )
+                return try .recyclerVoucher(voucher.keyIndex(), publicKey(voucher.publicKey))
             }
             return nil
         }
@@ -69,13 +66,10 @@ enum CoinageTxAssetRows {
         guard let rows = rows as? Set<CDCoinageTxOutput> else { return [] }
         return try rows.compactMap { row in
             if let coin = row.coin {
-                return try .coin(DerivationIndex.fromCoreData(coin.derivationIndex), publicKey(coin.publicKey))
+                return try .coin(coin.keyIndex(), publicKey(coin.publicKey))
             }
             if let voucher = row.voucher {
-                return try .recyclerVoucher(
-                    DerivationIndex.fromCoreData(voucher.derivationIndex),
-                    publicKey(voucher.publicKey)
-                )
+                return try .recyclerVoucher(voucher.keyIndex(), publicKey(voucher.publicKey))
             }
             return nil
         }

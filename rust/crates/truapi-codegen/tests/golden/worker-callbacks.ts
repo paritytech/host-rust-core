@@ -37,9 +37,12 @@ export const CALLBACK_NAMES = [
   "devicePermission",
   "remotePermission",
   "removePocketCard",
+  "beginOperation",
+  "endOperation",
   "read",
   "write",
   "clear",
+  "confirmPermission",
   "confirmUserAction",
 ] as const;
 export type CallbackName = (typeof CALLBACK_NAMES)[number];
@@ -49,6 +52,7 @@ export const SUBSCRIPTION_NAMES = [
   "subscribeLocale",
   "subscribePocketCards",
   "lookupPreimage",
+  "subscribeStorage",
   "subscribeTheme",
 ] as const;
 export type SubscriptionName = (typeof SUBSCRIPTION_NAMES)[number];
@@ -60,7 +64,7 @@ export interface WorkerCallbackBridge {
   ): Promise<unknown>;
   startSubscription<T>(
     name: SubscriptionName,
-    payload: Uint8Array | null,
+    payload: Uint8Array | string | null,
     sendItem: (value: T) => void,
     sendError: (error: GenericError) => void,
   ): () => void;
@@ -92,9 +96,12 @@ function rawCallbacks(
     | "cancelNotification"
     | "devicePermission"
     | "remotePermission"
+    | "beginOperation"
+    | "endOperation"
     | "read"
     | "write"
     | "clear"
+    | "confirmPermission"
     | "confirmUserAction"
   >
 > {
@@ -169,13 +176,23 @@ function rawCallbacks(
       bridge.callbackRequest("cancelNotification", [id]) as ReturnType<
         Required<RawCallbacks>["cancelNotification"]
       >,
-    devicePermission: (request) =>
-      bridge.callbackRequest("devicePermission", [request]) as ReturnType<
-        Required<RawCallbacks>["devicePermission"]
+    devicePermission: (product, request) =>
+      bridge.callbackRequest("devicePermission", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["devicePermission"]>,
+    remotePermission: (product, request) =>
+      bridge.callbackRequest("remotePermission", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["remotePermission"]>,
+    beginOperation: (product, label) =>
+      bridge.callbackRequest("beginOperation", [product, label]) as ReturnType<
+        Required<RawCallbacks>["beginOperation"]
       >,
-    remotePermission: (request) =>
-      bridge.callbackRequest("remotePermission", [request]) as ReturnType<
-        Required<RawCallbacks>["remotePermission"]
+    endOperation: (product, id) =>
+      bridge.callbackRequest("endOperation", [product, id]) as ReturnType<
+        Required<RawCallbacks>["endOperation"]
       >,
     read: (key) =>
       bridge.callbackRequest("read", [key]) as ReturnType<
@@ -189,6 +206,10 @@ function rawCallbacks(
       bridge.callbackRequest("clear", [key]) as ReturnType<
         Required<RawCallbacks>["clear"]
       >,
+    confirmPermission: (review) =>
+      bridge.callbackRequest("confirmPermission", [review]) as ReturnType<
+        Required<RawCallbacks>["confirmPermission"]
+      >,
     confirmUserAction: (review) =>
       bridge.callbackRequest("confirmUserAction", [review]) as ReturnType<
         Required<RawCallbacks>["confirmUserAction"]
@@ -199,13 +220,18 @@ function rawCallbacks(
 function subscriptionRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<
-  Pick<RawCallbacks, "subscribeLocale" | "lookupPreimage" | "subscribeTheme">
+  Pick<
+    RawCallbacks,
+    "subscribeLocale" | "lookupPreimage" | "subscribeStorage" | "subscribeTheme"
+  >
 > {
   return {
     subscribeLocale: (sendItem, sendError) =>
       bridge.startSubscription("subscribeLocale", null, sendItem, sendError),
     lookupPreimage: (key, sendItem, sendError) =>
       bridge.startSubscription("lookupPreimage", key, sendItem, sendError),
+    subscribeStorage: (key, sendItem, sendError) =>
+      bridge.startSubscription("subscribeStorage", key, sendItem, sendError),
     subscribeTheme: (sendItem, sendError) =>
       bridge.startSubscription("subscribeTheme", null, sendItem, sendError),
   };
@@ -343,13 +369,13 @@ export function createWorkerRawCallbacks(
 export function startRawSubscription(
   callbacks: RawCallbacks,
   name: SubscriptionName,
-  payload: Uint8Array | null,
+  payload: Uint8Array | string | null,
   sendItem: (value?: unknown) => void,
   sendError: (error: GenericError) => void,
 ): (() => void) | void {
   switch (name) {
     case "subscribeChatRooms":
-      if (payload === null) {
+      if (!(payload instanceof Uint8Array)) {
         console.warn(`[truapi worker] ${name} requires payload`);
         return undefined;
       }
@@ -357,17 +383,23 @@ export function startRawSubscription(
     case "subscribeLocale":
       return callbacks.subscribeLocale(sendItem, sendError);
     case "subscribePocketCards":
-      if (payload === null) {
+      if (!(payload instanceof Uint8Array)) {
         console.warn(`[truapi worker] ${name} requires payload`);
         return undefined;
       }
       return callbacks.subscribePocketCards?.(payload, sendItem, sendError);
     case "lookupPreimage":
-      if (payload === null) {
+      if (!(payload instanceof Uint8Array)) {
         console.warn(`[truapi worker] ${name} requires payload`);
         return undefined;
       }
       return callbacks.lookupPreimage(payload, sendItem, sendError);
+    case "subscribeStorage":
+      if (typeof payload !== "string") {
+        console.warn(`[truapi worker] ${name} requires payload`);
+        return undefined;
+      }
+      return callbacks.subscribeStorage(payload, sendItem, sendError);
     case "subscribeTheme":
       return callbacks.subscribeTheme(sendItem, sendError);
   }

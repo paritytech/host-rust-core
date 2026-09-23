@@ -15,7 +15,6 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.model.ValueExponent
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.CoinageTransactionService
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageOperationGroupId
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionState
-import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.CoinageTransactionStatus
 import io.paritytech.polkadotapp.feature_coinage_api.domain.transaction.model.OwnAsset
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinAmountBreakdownUseCase
 import io.paritytech.polkadotapp.feature_coinage_api.domain.usecase.CoinageAssetValueUseCase
@@ -28,6 +27,7 @@ import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogI
 import io.paritytech.polkadotapp.feature_coinage_impl.domain.coinageLogW
 import io.paritytech.polkadotapp.feature_tokens_api.di.DigitalDollarChainAssetProvider
 import io.paritytech.polkadotapp.feature_tokens_api.domain.ChainAssetProvider
+import io.paritytech.polkadotapp.feature_transactions.api.domain.durable.DurableTxStatus
 import io.paritytech.polkadotapp.feature_transactions.api.domain.model.TransactionSignerSource
 import io.paritytech.polkadotapp.feature_transactions.api.domain.model.accountId
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -267,7 +267,7 @@ class RealOnboardingUseCase @Inject constructor(
      * point would leave the amount short for good if a fork took the block away.
      */
     private suspend fun List<CoinageTransactionState>.finalizedDenominations(): List<ValueExponent> =
-        filter { it.status == CoinageTransactionStatus.FINALIZED_SUCCESS }.mintedDenominations()
+        filter { it.status == DurableTxStatus.FINALIZED_SUCCESS }.mintedDenominations()
 
     /** Denominations with a voucher of ours in a block: the reporting threshold. */
     private suspend fun List<CoinageTransactionState>.arrivedDenominations(): List<ValueExponent> =
@@ -298,7 +298,7 @@ class RealOnboardingUseCase @Inject constructor(
             // voucher actually failed: on the happy path a batch lands one voucher at a time, and reporting
             // the running total would walk the user through every inclusion of an onboarding that is simply
             // in progress.
-            arrived.isNotEmpty() && any { it.status == CoinageTransactionStatus.FAILURE } ->
+            arrived.isNotEmpty() && any { it.status == DurableTxStatus.FAILURE } ->
                 CoinageTransferDetection.ClaimingRest(valueMintedBy(arrived))
 
             isEmpty() -> CoinageTransferDetection.Detecting

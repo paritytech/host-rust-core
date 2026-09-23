@@ -2,14 +2,11 @@ package io.paritytech.polkadotapp.feature_coinage_impl.domain.externalPayment.mo
 
 import io.paritytech.polkadotapp.chains.network.binding.Balance
 import io.paritytech.polkadotapp.common.domain.model.AccountId
-import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentId
-import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.PaymentOrigin
-import io.paritytech.polkadotapp.feature_coinage_api.domain.model.RingVrfIndex
-import java.util.UUID
+import io.paritytech.polkadotapp.feature_coinage_api.domain.externalPayment.ExternalPaymentKey
+import io.paritytech.polkadotapp.feature_coinage_api.domain.model.CoinageKeyIndex
 
 data class ExternalPayment(
-    val id: PaymentId,
-    val origin: PaymentOrigin,
+    val key: ExternalPaymentKey,
     val amount: Balance,
     val destination: AccountId,
     val stage: Stage,
@@ -19,29 +16,29 @@ data class ExternalPayment(
     sealed interface Stage {
         data object EnsureVouchers : Stage
 
+        data class AwaitRecycling(val exactVoucherKeys: List<CoinageKeyIndex>) : Stage
+
         data class OffboardVouchers(
-            val selectedVoucherKeys: List<RingVrfIndex>,
+            val selectedVoucherKeys: List<CoinageKeyIndex>,
             val surplus: Balance,
         ) : Stage
 
         data object Completed : Stage
 
-        /** Some of the unload executed. Terminal, and reported to callers as completed. */
-        data class PartiallyCompleted(val reason: String) : Stage
+        data class PartiallyCompleted(val claimed: Balance) : Stage
 
         data class Failed(val reason: String) : Stage
     }
 
     companion object {
         fun new(
-            origin: PaymentOrigin,
+            key: ExternalPaymentKey,
             amount: Balance,
             destination: AccountId,
         ): ExternalPayment {
             val now = System.currentTimeMillis()
             return ExternalPayment(
-                id = UUID.randomUUID().toString(),
-                origin = origin,
+                key = key,
                 amount = amount,
                 destination = destination,
                 stage = Stage.EnsureVouchers,

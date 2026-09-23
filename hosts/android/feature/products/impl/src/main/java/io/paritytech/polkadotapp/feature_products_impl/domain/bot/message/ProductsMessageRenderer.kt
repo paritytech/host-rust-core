@@ -24,9 +24,9 @@ import io.paritytech.polkadotapp.feature_chats_api.presentation.model.ChatMessag
 import io.paritytech.polkadotapp.feature_chats_api.presentation.model.LastMessageUiModel
 import io.paritytech.polkadotapp.feature_products_api.model.Product
 import io.paritytech.polkadotapp.feature_products_api.model.toChatExtensionId
+import io.paritytech.polkadotapp.feature_products_api.presentation.widget.JsWidgetRenderer
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWorker
 import io.paritytech.polkadotapp.feature_products_impl.presentation.ProductsMessageViewModel
-import io.paritytech.polkadotapp.feature_products_impl.presentation.compose.JsWidgetRenderer
 import kotlinx.serialization.KSerializer
 import io.paritytech.polkadotapp.common.R as RCommon
 

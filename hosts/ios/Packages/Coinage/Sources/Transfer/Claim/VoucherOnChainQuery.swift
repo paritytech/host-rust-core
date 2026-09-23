@@ -36,14 +36,14 @@ protocol VoucherOnChainQuerying: Sendable {
     /// Returns an array of optionals in the same order as the input indices.
     /// Returns nil for an index when either the recycler location or member record is absent.
     func fetchVouchers(
-        for derivationIndices: [DerivationIndex],
+        for derivationIndices: [CoinageKeyIndex],
         atBlockHash: Data?
     ) async throws -> [VoucherOnChainInfo?]
 }
 
 extension VoucherOnChainQuerying {
     func fetchVouchers(
-        for derivationIndices: [DerivationIndex]
+        for derivationIndices: [CoinageKeyIndex]
     ) async throws -> [VoucherOnChainInfo?] {
         try await fetchVouchers(for: derivationIndices, atBlockHash: nil)
     }
@@ -57,16 +57,16 @@ final class VoucherOnChainQueryService: VoucherOnChainQuerying, @unchecked Senda
     private let connection: any JSONRPCEngine
     private let runtimeService: any RuntimeCodingServiceProtocol
     private let storageRequestFactory: any StorageRequestFactoryProtocol
-    private let publicKeyProvider: (DerivationIndex) throws -> Data
-    private let aliasProvider: (DerivationIndex) throws -> Data
+    private let publicKeyProvider: (CoinageKeyIndex) throws -> Data
+    private let aliasProvider: (CoinageKeyIndex) throws -> Data
 
     init(
         instanceId: CoinageInstanceId,
         connection: any JSONRPCEngine,
         runtimeService: any RuntimeCodingServiceProtocol,
         storageRequestFactory: any StorageRequestFactoryProtocol,
-        publicKeyProvider: @escaping (DerivationIndex) throws -> Data,
-        aliasProvider: @escaping (DerivationIndex) throws -> Data
+        publicKeyProvider: @escaping (CoinageKeyIndex) throws -> Data,
+        aliasProvider: @escaping (CoinageKeyIndex) throws -> Data
     ) {
         self.instanceId = instanceId
         self.connection = connection
@@ -77,13 +77,13 @@ final class VoucherOnChainQueryService: VoucherOnChainQuerying, @unchecked Senda
     }
 
     func fetchVouchers(
-        for derivationIndices: [DerivationIndex],
+        for derivationIndices: [CoinageKeyIndex],
         atBlockHash: Data?
     ) async throws -> [VoucherOnChainInfo?] {
-        typealias IndexedKey = (index: DerivationIndex, publicKey: Data)
-        typealias IndexedKeyWithExponent = (index: DerivationIndex, publicKey: Data, exponent: Int16)
+        typealias IndexedKey = (index: CoinageKeyIndex, publicKey: Data)
+        typealias IndexedKeyWithExponent = (index: CoinageKeyIndex, publicKey: Data, exponent: Int16)
         typealias IndexedKeyWithPosition = (
-            index: DerivationIndex,
+            index: CoinageKeyIndex,
             publicKey: Data,
             exponent: Int16,
             ringPosition: MembersPallet.RingPosition
@@ -126,13 +126,13 @@ final class VoucherOnChainQueryService: VoucherOnChainQuerying, @unchecked Senda
         // Onboarding and Suspended verdicts come from the position alone, so a failed alias never erases
         // what a position already proves.
         let placed = members.compactMap {
-            member -> (derivationIndex: DerivationIndex, exponent: Int16, ringIndex: MembersPallet.RingIndex)? in
+            member -> (derivationIndex: CoinageKeyIndex, exponent: Int16, ringIndex: MembersPallet.RingIndex)? in
             guard let ringIndex = member.ringPosition.ringIndex else { return nil }
             return (member.index, member.exponent, ringIndex)
         }
 
         let aliasFetchSucceeded: Bool
-        var aliasByIndex: [DerivationIndex: CoinagePallet.AliasState?] = [:]
+        var aliasByIndex: [CoinageKeyIndex: CoinagePallet.AliasState?] = [:]
         if let aliasStates = try? await fetchAliasStates(for: placed, atBlockHash: atBlockHash) {
             aliasFetchSucceeded = true
             for (key, aliasState) in zip(placed, aliasStates) {
@@ -146,7 +146,7 @@ final class VoucherOnChainQueryService: VoucherOnChainQuerying, @unchecked Senda
         // ring size rather than a placeholder. A ring with no status row simply leaves the count nil.
         let ringMembersByIndex = try await fetchRingMemberCounts(for: placed, atBlockHash: atBlockHash)
 
-        let infoByIndex: [DerivationIndex: VoucherOnChainInfo] = members.reduce(into: [:]) { dict, member in
+        let infoByIndex: [CoinageKeyIndex: VoucherOnChainInfo] = members.reduce(into: [:]) { dict, member in
             dict[member.index] = VoucherOnChainInfo(
                 publicKey: member.publicKey,
                 exponent: member.exponent,
@@ -243,7 +243,7 @@ private extension VoucherOnChainQueryService {
     }
 
     func fetchAliasStates(
-        for keys: [(derivationIndex: DerivationIndex, exponent: Int16, ringIndex: MembersPallet.RingIndex)],
+        for keys: [(derivationIndex: CoinageKeyIndex, exponent: Int16, ringIndex: MembersPallet.RingIndex)],
         atBlockHash: Data?
     ) async throws -> [CoinagePallet.AliasState?] {
         guard !keys.isEmpty else { return [] }
@@ -273,9 +273,9 @@ private extension VoucherOnChainQueryService {
     }
 
     func fetchRingMemberCounts(
-        for keys: [(derivationIndex: DerivationIndex, exponent: Int16, ringIndex: MembersPallet.RingIndex)],
+        for keys: [(derivationIndex: CoinageKeyIndex, exponent: Int16, ringIndex: MembersPallet.RingIndex)],
         atBlockHash: BlockHashData?
-    ) async throws -> [DerivationIndex: UInt32] {
+    ) async throws -> [CoinageKeyIndex: UInt32] {
         guard !keys.isEmpty else { return [:] }
 
         let coderFactory = try await runtimeService.fetchCoderFactoryOperation().asyncExecute()

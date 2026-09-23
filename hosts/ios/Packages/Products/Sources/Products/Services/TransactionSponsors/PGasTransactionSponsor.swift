@@ -4,6 +4,7 @@ import ChainStore
 import Foundation
 import Individuality
 import Operation_iOS
+import Revive
 import SubstrateSdk
 import SubstrateStorageQuery
 import StructuredConcurrency
@@ -24,7 +25,6 @@ public enum PGasTransactionSponsorError: Error {
 
 public final class PGasTransactionSponsor {
     private static let sufficientBalancePercent: BigUInt = 20
-    private static let reviveModuleName = "Revive"
 
     private let pgasChainAssetId: ChainAssetId
     private let assetQueryTypeMaker: AssetQueryTypeMaking
@@ -67,7 +67,7 @@ extension PGasTransactionSponsor: PGasTransactionSponsoring {
             in: callData,
             runtimeCodingService: runtimeCodingService
         ) { call, _ in
-            call.moduleName == Self.reviveModuleName
+            call.moduleName == RevivePallet.name
         }
 
         guard hasReviveCall == true else { return }

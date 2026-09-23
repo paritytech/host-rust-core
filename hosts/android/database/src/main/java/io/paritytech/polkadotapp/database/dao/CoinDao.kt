@@ -20,6 +20,10 @@ interface CoinDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(coins: List<CoinLocal>)
 
+    // A freshly allocated key must never land on an existing row: that row's key may already be handed off.
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertNew(coins: List<CoinLocal>)
+
     @Query("SELECT * FROM coins")
     fun subscribeAll(): Flow<List<CoinLocal>>
 
@@ -29,14 +33,14 @@ interface CoinDao {
     @Query("SELECT * FROM coins WHERE accountId IN (:accountIds)")
     fun subscribeBy(accountIds: List<ByteArray>): Flow<List<CoinLocal>>
 
-    @Query("SELECT * FROM coins WHERE derivationIndex IN (:derivationIndices)")
-    suspend fun getByDerivationIndices(derivationIndices: List<Int>): List<CoinLocal>
+    @Query("SELECT * FROM coins WHERE installationId = :installationId AND derivationIndex IN (:derivationIndices)")
+    suspend fun getByDerivationIndices(installationId: ByteArray, derivationIndices: List<Int>): List<CoinLocal>
 
     @Query("SELECT * FROM coins WHERE ageValue IS NULL")
     fun subscribeAllCoinsWithUnknownAge(): Flow<List<CoinLocal>>
 
-    @Query("SELECT MAX(derivationIndex) FROM coins")
-    suspend fun getMaxDerivationIndex(): Int?
+    @Query("SELECT MAX(derivationIndex) FROM coins WHERE installationId = :installationId")
+    suspend fun getMaxDerivationIndex(installationId: ByteArray): Int?
 
     /**
      * Presence always; the age only when the chain gave one.
@@ -60,7 +64,30 @@ interface CoinDao {
 
     @Query("SELECT * FROM coins WHERE onChain = 1 AND ageValue >= :minAge")
     suspend fun getCoinsWithKnownAgeAtLeast(minAge: Int): List<CoinLocal>
+
+    /**
+     * Kept apart from [updateCoinPresence] because the two run at completely different rates: presence is
+     * rewritten on every chain tick, while hops are filled in once, when a claimed coin's age first arrives.
+     */
+    @Query(
+        "UPDATE coins SET hops = :hops WHERE installationId = :installationId AND derivationIndex = :derivationIndex"
+    )
+    suspend fun updateCoinHops(installationId: ByteArray, derivationIndex: Int, hops: ByteArray)
+
+    @Transaction
+    suspend fun updateCoinHops(updates: List<CoinHopsUpdateLocal>) {
+        updates.forEach {
+            updateCoinHops(installationId = it.installationId, derivationIndex = it.derivationIndex, hops = it.hops)
+        }
+    }
 }
+
+class CoinHopsUpdateLocal(
+    val installationId: ByteArray,
+    val derivationIndex: Int,
+    /** SCALE-encoded `Vec<CoinHopLocal>`. */
+    val hops: ByteArray,
+)
 
 class CoinUpdateLocal(
     val accountId: AccountId,

@@ -10,7 +10,7 @@ Polkadot iOS — a production-grade iOS wallet and social app for the Polkadot b
 - **UIKit** — Primary UI framework, programmatic layout (no Storyboards)
 - **SnapKit** — Auto Layout constraints
 - **VIPER** — Architecture pattern for all feature modules
-- **Swift Package Manager** — 33 local packages under `Packages/`
+- **Swift Package Manager** — local packages under `Packages/`
 - **substrate-sdk-ios** — Substrate/Polkadot blockchain interaction
 - **CoreData** — Local persistence (SubstrateDataModel + UserDataModel)
 - **WebRTC** — Peer-to-peer voice/video calls and DIM2 game

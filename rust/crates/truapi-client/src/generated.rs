@@ -5,7 +5,7 @@
 use super::*;
 
 /// Fingerprint of the generated wire contract.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "ebd7116a965f60c9";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "87a3b34c06a7c823";
 
 /// `account_connection_status_subscribe` method marker.
 pub struct AccountConnectionStatusSubscribe;
@@ -1195,6 +1195,33 @@ impl RequestMethod for LocalStorageClear {
     const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
 }
 
+/// `local_storage_subscribe` method marker.
+pub struct LocalStorageSubscribe;
+impl LocalStorageSubscribe {
+    /// Canonical metadata and frame ids for this method.
+    pub const DESCRIPTOR: MethodDescriptor = MethodDescriptor {
+        service: "LocalStorage",
+        method: "subscribe",
+        wire_name: "local_storage_subscribe",
+        request_type: "truapi::versioned::local_storage::HostLocalStorageSubscribeRequest",
+        response_type: "truapi::versioned::local_storage::HostLocalStorageChangeItem",
+        error_type: Some("truapi::versioned::local_storage::HostLocalStorageSubscribeError"),
+        kind: MethodKind::Subscription,
+        direction: Direction::ProductToHost,
+        required_execution: None,
+        wire: MethodWire::Subscription(MethodIds {
+            trait_id: 7,
+            method_id: 3,
+        }),
+    };
+}
+impl SubscriptionMethod for LocalStorageSubscribe {
+    type Request = truapi::versioned::local_storage::HostLocalStorageSubscribeRequest;
+    type Error = truapi::versioned::local_storage::HostLocalStorageSubscribeError;
+    type Item = truapi::versioned::local_storage::HostLocalStorageChangeItem;
+    const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
+}
+
 /// `locale_subscribe` method marker.
 pub struct LocaleSubscribe;
 impl LocaleSubscribe {
@@ -1435,6 +1462,60 @@ impl RequestMethod for PermissionsRequestRemotePermission {
     type Request = truapi::versioned::permissions::RemotePermissionRequest;
     type Response = truapi::versioned::permissions::RemotePermissionResponse;
     type Error = truapi::versioned::permissions::RemotePermissionError;
+    const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
+}
+
+/// `permissions_authorize_remote_permission` method marker.
+pub struct PermissionsAuthorizeRemotePermission;
+impl PermissionsAuthorizeRemotePermission {
+    /// Canonical metadata and frame ids for this method.
+    pub const DESCRIPTOR: MethodDescriptor = MethodDescriptor {
+        service: "Permissions",
+        method: "authorize_remote_permission",
+        wire_name: "permissions_authorize_remote_permission",
+        request_type: "truapi::versioned::permissions::RemotePermissionRequest",
+        response_type: "truapi::versioned::permissions::RemotePermissionResponse",
+        error_type: Some("truapi::versioned::permissions::RemotePermissionError"),
+        kind: MethodKind::Request,
+        direction: Direction::ProductToHost,
+        required_execution: None,
+        wire: MethodWire::Request(MethodIds {
+            trait_id: 10,
+            method_id: 2,
+        }),
+    };
+}
+impl RequestMethod for PermissionsAuthorizeRemotePermission {
+    type Request = truapi::versioned::permissions::RemotePermissionRequest;
+    type Response = truapi::versioned::permissions::RemotePermissionResponse;
+    type Error = truapi::versioned::permissions::RemotePermissionError;
+    const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
+}
+
+/// `permissions_authorize_device_permission` method marker.
+pub struct PermissionsAuthorizeDevicePermission;
+impl PermissionsAuthorizeDevicePermission {
+    /// Canonical metadata and frame ids for this method.
+    pub const DESCRIPTOR: MethodDescriptor = MethodDescriptor {
+        service: "Permissions",
+        method: "authorize_device_permission",
+        wire_name: "permissions_authorize_device_permission",
+        request_type: "truapi::versioned::permissions::HostDevicePermissionRequest",
+        response_type: "truapi::versioned::permissions::HostDevicePermissionResponse",
+        error_type: Some("truapi::versioned::permissions::HostDevicePermissionError"),
+        kind: MethodKind::Request,
+        direction: Direction::ProductToHost,
+        required_execution: None,
+        wire: MethodWire::Request(MethodIds {
+            trait_id: 10,
+            method_id: 3,
+        }),
+    };
+}
+impl RequestMethod for PermissionsAuthorizeDevicePermission {
+    type Request = truapi::versioned::permissions::HostDevicePermissionRequest;
+    type Response = truapi::versioned::permissions::HostDevicePermissionResponse;
+    type Error = truapi::versioned::permissions::HostDevicePermissionError;
     const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
 }
 
@@ -2121,6 +2202,60 @@ impl SubscriptionMethod for ThemeSubscribe {
     const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
 }
 
+/// `worker_begin_operation` method marker.
+pub struct WorkerBeginOperation;
+impl WorkerBeginOperation {
+    /// Canonical metadata and frame ids for this method.
+    pub const DESCRIPTOR: MethodDescriptor = MethodDescriptor {
+        service: "Worker",
+        method: "begin_operation",
+        wire_name: "worker_begin_operation",
+        request_type: "truapi::versioned::worker::HostWorkerBeginOperationRequest",
+        response_type: "truapi::versioned::worker::HostWorkerBeginOperationResponse",
+        error_type: Some("truapi::versioned::worker::HostWorkerBeginOperationError"),
+        kind: MethodKind::Request,
+        direction: Direction::ProductToHost,
+        required_execution: Some(ExecutionKind::Worker),
+        wire: MethodWire::Request(MethodIds {
+            trait_id: 19,
+            method_id: 0,
+        }),
+    };
+}
+impl RequestMethod for WorkerBeginOperation {
+    type Request = truapi::versioned::worker::HostWorkerBeginOperationRequest;
+    type Response = truapi::versioned::worker::HostWorkerBeginOperationResponse;
+    type Error = truapi::versioned::worker::HostWorkerBeginOperationError;
+    const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
+}
+
+/// `worker_end_operation` method marker.
+pub struct WorkerEndOperation;
+impl WorkerEndOperation {
+    /// Canonical metadata and frame ids for this method.
+    pub const DESCRIPTOR: MethodDescriptor = MethodDescriptor {
+        service: "Worker",
+        method: "end_operation",
+        wire_name: "worker_end_operation",
+        request_type: "truapi::versioned::worker::HostWorkerEndOperationRequest",
+        response_type: "truapi::versioned::worker::HostWorkerEndOperationResponse",
+        error_type: Some("truapi::versioned::worker::HostWorkerEndOperationError"),
+        kind: MethodKind::Request,
+        direction: Direction::ProductToHost,
+        required_execution: Some(ExecutionKind::Worker),
+        wire: MethodWire::Request(MethodIds {
+            trait_id: 19,
+            method_id: 1,
+        }),
+    };
+}
+impl RequestMethod for WorkerEndOperation {
+    type Request = truapi::versioned::worker::HostWorkerEndOperationRequest;
+    type Response = truapi::versioned::worker::HostWorkerEndOperationResponse;
+    type Error = truapi::versioned::worker::HostWorkerEndOperationError;
+    const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
+}
+
 /// Generated `APP_METHODS` execution catalog.
 pub const APP_METHODS: &[MethodDescriptor] = &[
     AccountConnectionStatusSubscribe::DESCRIPTOR,
@@ -2162,6 +2297,7 @@ pub const APP_METHODS: &[MethodDescriptor] = &[
     LocalStorageRead::DESCRIPTOR,
     LocalStorageWrite::DESCRIPTOR,
     LocalStorageClear::DESCRIPTOR,
+    LocalStorageSubscribe::DESCRIPTOR,
     LocaleSubscribe::DESCRIPTOR,
     NotificationsSendPushNotification::DESCRIPTOR,
     NotificationsCancelPushNotification::DESCRIPTOR,
@@ -2171,6 +2307,8 @@ pub const APP_METHODS: &[MethodDescriptor] = &[
     PaymentTopUp::DESCRIPTOR,
     PermissionsRequestDevicePermission::DESCRIPTOR,
     PermissionsRequestRemotePermission::DESCRIPTOR,
+    PermissionsAuthorizeRemotePermission::DESCRIPTOR,
+    PermissionsAuthorizeDevicePermission::DESCRIPTOR,
     PreimageLookupSubscribe::DESCRIPTOR,
     PreimageSubmit::DESCRIPTOR,
     ResourceAllocationRequest::DESCRIPTOR,
@@ -2235,6 +2373,7 @@ pub const WIDGET_METHODS: &[MethodDescriptor] = &[
     LocalStorageRead::DESCRIPTOR,
     LocalStorageWrite::DESCRIPTOR,
     LocalStorageClear::DESCRIPTOR,
+    LocalStorageSubscribe::DESCRIPTOR,
     LocaleSubscribe::DESCRIPTOR,
     NotificationsSendPushNotification::DESCRIPTOR,
     NotificationsCancelPushNotification::DESCRIPTOR,
@@ -2244,6 +2383,8 @@ pub const WIDGET_METHODS: &[MethodDescriptor] = &[
     PaymentTopUp::DESCRIPTOR,
     PermissionsRequestDevicePermission::DESCRIPTOR,
     PermissionsRequestRemotePermission::DESCRIPTOR,
+    PermissionsAuthorizeRemotePermission::DESCRIPTOR,
+    PermissionsAuthorizeDevicePermission::DESCRIPTOR,
     PreimageLookupSubscribe::DESCRIPTOR,
     PreimageSubmit::DESCRIPTOR,
     ResourceAllocationRequest::DESCRIPTOR,
@@ -2313,6 +2454,7 @@ pub const WORKER_METHODS: &[MethodDescriptor] = &[
     LocalStorageRead::DESCRIPTOR,
     LocalStorageWrite::DESCRIPTOR,
     LocalStorageClear::DESCRIPTOR,
+    LocalStorageSubscribe::DESCRIPTOR,
     LocaleSubscribe::DESCRIPTOR,
     NotificationsSendPushNotification::DESCRIPTOR,
     NotificationsCancelPushNotification::DESCRIPTOR,
@@ -2322,6 +2464,8 @@ pub const WORKER_METHODS: &[MethodDescriptor] = &[
     PaymentTopUp::DESCRIPTOR,
     PermissionsRequestDevicePermission::DESCRIPTOR,
     PermissionsRequestRemotePermission::DESCRIPTOR,
+    PermissionsAuthorizeRemotePermission::DESCRIPTOR,
+    PermissionsAuthorizeDevicePermission::DESCRIPTOR,
     PocketListSubscribe::DESCRIPTOR,
     PocketRemoveCard::DESCRIPTOR,
     PreimageLookupSubscribe::DESCRIPTOR,
@@ -2347,6 +2491,8 @@ pub const WORKER_METHODS: &[MethodDescriptor] = &[
     SystemHostInfo::DESCRIPTOR,
     SystemGetProductContext::DESCRIPTOR,
     ThemeSubscribe::DESCRIPTOR,
+    WorkerBeginOperation::DESCRIPTOR,
+    WorkerEndOperation::DESCRIPTOR,
 ];
 
 /// Generated `WORKER_ONLY_METHODS` execution catalog.
@@ -2360,4 +2506,6 @@ pub const WORKER_ONLY_METHODS: &[MethodDescriptor] = &[
     PocketRemoveCard::DESCRIPTOR,
     RendererRender::DESCRIPTOR,
     RendererActionSubscribe::DESCRIPTOR,
+    WorkerBeginOperation::DESCRIPTOR,
+    WorkerEndOperation::DESCRIPTOR,
 ];
