@@ -16,7 +16,15 @@ import {
   releaseDebuggerDial,
   resolveDebuggerEnablement,
 } from "./create-worker-host-runtime.js";
-import { FakeWorker, readyRuntime } from "./worker-test-harness.js";
+import {
+  asWorker,
+  FakeWorker,
+  hostConfigFromRuntimeConfig,
+  readyRuntime,
+  runtimeConfig,
+} from "./worker-test-harness.js";
+import { makeHostCallbacks } from "../test-support.js";
+import { createWebWorkerPairingHostRuntime } from "./index.js";
 
 describe("debugger enablement reporting", () => {
   // Under `bun test` `import.meta.env.DEV` reads undefined, so the live path
@@ -171,6 +179,16 @@ describe("productionReason", () => {
   it("reports a host that asked, whatever the build carries", () => {
     expect(productionReason(URL, null)).toBe("production-build-configured");
   });
+
+  // The one cell where the two sources disagree, and the only one that can tell
+  // this apart from an OR. A host that passed `debugger: null` refused, so the
+  // build value is not consulted: reporting it as configured advises a dev-mode
+  // rebuild that `resolveDebuggerEnablement` would still resolve to
+  // `not-configured`.
+  it("stays silent for a host that refused, whatever the build carries", () => {
+    expect(productionReason(null, URL)).toBe("production-build");
+    expect(resolveDebuggerEnablement(null, URL).reason).toBe("not-configured");
+  });
 });
 
 // What a resolved dial actually does, which is the half the suites above cannot
@@ -301,10 +319,116 @@ describe("putting a dial into service", () => {
     expect(badge()).toBeNull();
   });
 
+  // A runtime created from a `<head>` script resolves its dial before there is a
+  // body to mount on. Returning alone would leave the tap live and the badge
+  // permanently absent, which is the one case it exists for.
+  it("paints once the document body arrives", () => {
+    const withBody = globalThis.document;
+    let pending: (() => void) | null = null;
+    g.document = {
+      body: null,
+      addEventListener: (name: string, fn: () => void) => {
+        if (name === "DOMContentLoaded") pending = fn;
+      },
+      getElementById: () => null,
+    };
+
+    dial(ENDPOINT);
+    expect(pending).not.toBeNull();
+
+    g.document = withBody;
+    pending!();
+    expect(badge()?.textContent).toContain(ENDPOINT);
+  });
+
   // Never a reason for a host to fail to start: `document` is absent in a worker
   // and under plain Node.
   it("is inert where there is no document", () => {
     delete g.document;
     expect(() => dial(ENDPOINT)).not.toThrow();
+  });
+});
+
+// The runtime resolves its own dial behind `import.meta.env.DEV`, which reads as
+// undefined under the test runner - so a runtime-driven badge assertion passes
+// whatever the code does. Turning the gate on is what gives these two something
+// to observe; without it both would hold against a runtime that never releases.
+describe("a runtime whose worker never loads", () => {
+  const ENDPOINT = "ws://127.0.0.1:9231";
+  const env = (import.meta as unknown as { env: Record<string, unknown> }).env;
+  const g = globalThis as unknown as { document?: unknown };
+  let hadDev = false;
+  let previousDev: unknown;
+  let hadDoc = false;
+  let previousDoc: unknown;
+
+  beforeEach(() => {
+    hadDev = "DEV" in env;
+    previousDev = env.DEV;
+    env.DEV = true;
+    hadDoc = Object.prototype.hasOwnProperty.call(g, "document");
+    previousDoc = g.document;
+    g.document = new Window().document;
+  });
+  afterEach(() => {
+    if (hadDev) env.DEV = previousDev;
+    else delete env.DEV;
+    if (hadDoc) g.document = previousDoc;
+    else delete g.document;
+  });
+
+  const badge = (): { textContent: string | null } | null =>
+    (
+      globalThis.document as unknown as {
+        getElementById(id: string): { textContent: string | null } | null;
+      }
+    ).getElementById("truapi-debugger-indicator");
+
+  const startWithDial = (worker: FakeWorker): Promise<unknown> => {
+    const started = createWebWorkerPairingHostRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()),
+        debugger: ENDPOINT,
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    return started;
+  };
+
+  // Nothing streams for a worker that never came up, so a badge naming its
+  // endpoint is the silent-tap failure read backwards: it says frames are
+  // leaving for somewhere nothing is sending.
+  it("takes its dial out of service when init reports a fatal error", async () => {
+    const worker = new FakeWorker();
+    const started = startWithDial(worker);
+    expect(badge()?.textContent).toContain(ENDPOINT);
+
+    worker.emit({ kind: "fatalError", error: "boom" });
+    await expect(started).rejects.toThrow("boom");
+    expect(badge()).toBeNull();
+  });
+
+  // The same for the path where the worker script itself fails to load, which
+  // reaches the reject through a different listener.
+  it("takes its dial out of service when the worker errors", async () => {
+    const worker = new FakeWorker();
+    const started = startWithDial(worker);
+    worker.emitError("no such script");
+    await expect(started).rejects.toThrow("no such script");
+    expect(badge()).toBeNull();
+  });
+
+  // The other half of the same decision: releasing for every `cleanupInit`
+  // caller rather than only the failing ones would take the badge down on the
+  // runtime that is about to start streaming.
+  it("keeps its dial once the worker is ready", async () => {
+    const worker = new FakeWorker();
+    const started = startWithDial(worker);
+    worker.emit({ kind: "ready" });
+    const runtime = await started;
+    expect(badge()?.textContent).toContain(ENDPOINT);
+    releaseDebuggerDial(runtime as object);
   });
 });

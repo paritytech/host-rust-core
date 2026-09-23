@@ -373,8 +373,15 @@ export function productionReason(
   fromOption: string | null | undefined,
   fromBuild: string | null,
 ): "production-build" | "production-build-configured" {
+  // Same precedence as `resolveDebuggerEnablement`, and for the same reason: an
+  // option the host passed is an answer either way, so it settles the question
+  // and the build value is not consulted. Reading the two as an OR told a host
+  // that had explicitly refused to rebuild in dev mode, which would resolve to
+  // `not-configured` and still not dial.
   const asked =
-    fromBuild !== null || (typeof fromOption === "string" && fromOption !== "");
+    fromOption === undefined
+      ? fromBuild !== null
+      : typeof fromOption === "string" && fromOption !== "";
   return asked ? "production-build-configured" : "production-build";
 }
 
@@ -1234,16 +1241,25 @@ export function createWebWorkerPairingHostRuntime(
       }
     };
 
-    const onError = (e: ErrorEvent): void => {
+    // A worker that never loads still installed its dial below, and nothing will
+    // ever stream on its account, so the badge has to come off with it. Only the
+    // `ready` path keeps the dial, which is why this is its own exit rather than
+    // something `cleanupInit` does for every caller.
+    const failInit = (error: Error): void => {
       cleanupInit();
+      releaseDebuggerDial(state);
       worker.terminate();
-      reject(new Error(`worker init failed: ${e.message}`));
+      reject(error);
+    };
+
+    const onError = (e: ErrorEvent): void => {
+      failInit(new Error(`worker init failed: ${e.message}`));
     };
 
     const onInitMessageError = (): void => {
-      cleanupInit();
-      worker.terminate();
-      reject(new Error("worker message could not be deserialized during init"));
+      failInit(
+        new Error("worker message could not be deserialized during init"),
+      );
     };
 
     const onRuntimeError = (e: ErrorEvent): void => {
@@ -1290,9 +1306,7 @@ export function createWebWorkerPairingHostRuntime(
         exposeDevGlobal(runtime);
         resolve(runtime);
       } else if (msg.kind === "fatalError") {
-        cleanupInit();
-        worker.terminate();
-        reject(new Error(`worker init reported error: ${msg.error}`));
+        failInit(new Error(`worker init reported error: ${msg.error}`));
       }
     };
 
@@ -1305,9 +1319,7 @@ export function createWebWorkerPairingHostRuntime(
 
     const timeoutMs = options.initTimeoutMs ?? 30_000;
     const initTimeout = setTimeout(() => {
-      cleanupInit();
-      worker.terminate();
-      reject(new Error(`worker init timed out after ${timeoutMs}ms`));
+      failInit(new Error(`worker init timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
     worker.addEventListener("error", onError);
@@ -1864,8 +1876,10 @@ function buildProvider(
 const DEBUGGER_INDICATOR_ID = "truapi-debugger-indicator";
 
 /**
- * The endpoint every live dial is streaming to, keyed by the runtime that owns
- * it.
+ * What the badge names: the endpoint of every live dial that asked to be shown,
+ * keyed by the runtime that owns it. A dial passing `debuggerIndicator: false`
+ * renders its own signal and is deliberately absent, so this is not an inventory
+ * of live taps.
  *
  * The badge is a single node at a fixed id, while an embedder may create one
  * worker runtime per product surface and give only some of them a dial. Keyed
@@ -1875,6 +1889,9 @@ const DEBUGGER_INDICATOR_ID = "truapi-debugger-indicator";
  * earlier.
  */
 const liveDebuggerDials = new Map<object, string>();
+
+/** Whether a paint is already waiting on `DOMContentLoaded`. */
+let indicatorRepaintQueued = false;
 
 /**
  * Put `owner`'s debugger dial into service: say once whether it will dial, show
@@ -1933,7 +1950,25 @@ export function releaseDebuggerDial(owner: object): void {
 function paintDebuggerIndicator(): void {
   try {
     const doc = globalThis.document;
-    if (doc === undefined || doc.body === null) return;
+    if (doc === undefined) return;
+    if (doc.body === null) {
+      // A runtime created from a `<head>` script has no body to mount on yet.
+      // Returning alone would leave the dial live and the badge permanently
+      // absent, which is the one thing it exists to prevent. The flag keeps
+      // repeated paints from stacking listeners.
+      if (!indicatorRepaintQueued) {
+        indicatorRepaintQueued = true;
+        doc.addEventListener(
+          "DOMContentLoaded",
+          () => {
+            indicatorRepaintQueued = false;
+            paintDebuggerIndicator();
+          },
+          { once: true },
+        );
+      }
+      return;
+    }
     const existing = doc.getElementById(DEBUGGER_INDICATOR_ID);
     const endpoints = [...new Set(liveDebuggerDials.values())];
     if (endpoints.length === 0) {
