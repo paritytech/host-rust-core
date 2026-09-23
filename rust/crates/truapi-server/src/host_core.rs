@@ -64,7 +64,7 @@ pub trait DebugSink: Send + Sync {
     /// Must not block, and must not panic: `emit` is called from inside the
     /// inbound and outbound frame paths, so a panic here would otherwise unwind
     /// into a live dispatch. The core contains a panic at both tap sites
-    /// ([`emit_debug`]) rather than trusting the contract, because the trait is
+    /// (`emit_debug`) rather than trusting the contract, because the trait is
     /// public and implementable out-of-repo, and because the profiles that can
     /// unwind are exactly the ones a developer runs: the workspace defines no
     /// `[profile.dev]`, so `dev` keeps Cargo's default `panic = "unwind"`, and an
@@ -75,7 +75,7 @@ pub trait DebugSink: Send + Sync {
     ///
     /// The two halves of that contract are NOT equally enforced, and the asymmetry
     /// is deliberate rather than an oversight. Panics are contained: both tap sites
-    /// go through [`emit_debug`], which wraps the call in `catch_unwind`. Blocking
+    /// go through `emit_debug`, which wraps the call in `catch_unwind`. Blocking
     /// is caller-enforced only - nothing here bounds how long `emit` may take.
     ///
     /// It is not enforced HERE, at the trait boundary, and that is a choice worth
@@ -571,7 +571,7 @@ pub struct SigningHostRuntime {
 impl SigningHostRuntime {
     /// Answer resource allocation as granted without performing it.
     ///
-    /// For test hosts only; see [`SigningHostRole::set_grant_allowances_unchecked`].
+    /// For test hosts only, with the `test-host` feature enabled.
     #[cfg(feature = "test-host")]
     pub fn set_grant_allowances_unchecked(&self, granted: bool) {
         self.signing_host.set_grant_allowances_unchecked(granted);

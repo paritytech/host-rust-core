@@ -1,7 +1,7 @@
 //! Native (non-wasm) [`DebugSink`]: streams tapped frames to a loopback
 //! `@parity/truapi-debugger` over a WebSocket.
 //!
-//! The native counterpart of the wasm [`crate::wasm`] `WasmDebugSink`: a dumb,
+//! The native counterpart of `WasmDebugSink`: a dumb,
 //! payload-blind byte-forwarder. Each [`DebugEvent::Frame`] is serialized to the
 //! debugger's wire envelope - `{channelId, dir, frame}`, where `frame` is the
 //! base64 of the untouched SCALE `ProtocolMessage` bytes - and sent as one WS
