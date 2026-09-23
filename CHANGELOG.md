@@ -5,7 +5,7 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
-## [0.19.1] - 2026-09-23
+## [0.20.0] - 2026-09-23
 
 ### Added
 
@@ -13,8 +13,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Fixed
 
-- reject rustdoc warnings
-- regenerate before headless install
+- repair source installs and gate rustdoc (#917)
 - stop freezing built-in prototypes (#915)
 
 ## [0.19.0] - 2026-09-22

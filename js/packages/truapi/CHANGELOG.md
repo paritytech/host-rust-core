@@ -1,10 +1,10 @@
 # @parity/truapi
 
-## 0.19.1
+## 0.20.0
 
-### Patch Changes
+### Minor Changes
 
-- abeb60a: Regenerate Rust and TypeScript sources before building the headless CLI so source installation works in fresh
+- 5f3dc71: Regenerate Rust and TypeScript sources before building the headless CLI so source installation works in fresh
   and updated checkouts. Fix invalid documentation links and reject rustdoc warnings during code generation and CI.
 - Stop freezing built-in prototypes in the container so Next.js products hydrate in the CLI and native web views.
 
