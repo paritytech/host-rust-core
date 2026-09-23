@@ -23,6 +23,7 @@ final class ProductMessageDecoder: ChatMessageCustomDecoding {
 
     func decode(data: Data, context: ChatMessageDecodingContext) -> [any HashableContentConfiguration] {
         let viewModel = viewModels[context.messageId] ?? ProductWidgetViewModel(
+            roomId: context.roomId,
             messageId: context.messageId,
             messageType: context.identifier,
             messageData: data,

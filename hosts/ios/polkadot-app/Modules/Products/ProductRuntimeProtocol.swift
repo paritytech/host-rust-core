@@ -1,5 +1,6 @@
 import Foundation
 import Products
+import TrUAPIHost
 import UIKitExt
 
 /// A product runtime: boots a JS environment for one product and owns its
@@ -13,13 +14,28 @@ protocol ProductRuntimeProtocol: AnyObject, Sendable {
     func dispose() async
 }
 
+/// One rendered widget update. The native runtime's JS renderer emits the
+/// SCALE-encoded tree as hex; the rust runtime receives typed nodes from the
+/// core, which have no Swift SCALE encoder — so the stream carries whichever
+/// form the runtime produced and the consumer resolves both to a widget node.
+enum ChatRendererOutput: Sendable {
+    case scaleEncoded(String)
+    case native(RendererNode)
+}
+
 /// Chat-environment runtime surface consumed by ProductBot.
 protocol ChatRuntimeProtocol: ProductRuntimeProtocol {
     func start(messagingSupport: ProductsNativeApi.MessagingSupport) async throws
     func onUserMessage(text: String, roomId: String?) async throws
-    func renderMessage(messageId: String, messageType: String, messageData: Data) async
-        -> AsyncThrowingStream<String, Error>
-    func dispatchEvent(roomId: String?, messageId: String, actionId: String, payload: String?) async
+    func renderMessage(roomId: String?, messageId: String, messageType: String, messageData: Data) async
+        -> AsyncThrowingStream<ChatRendererOutput, Error>
+    func dispatchEvent(
+        roomId: String?,
+        messageId: String,
+        messageType: String?,
+        actionId: String,
+        payload: String?
+    ) async
     @MainActor func attach(presentationView: ControllerBackedProtocol)
 }
 
