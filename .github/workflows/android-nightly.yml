@@ -70,6 +70,27 @@ jobs:
         with:
           persist-credentials: false
 
+      # The versionName the APK is built with. App Distribution lists a release
+      # as this plus the build id, so an announcement naming both matches what a
+      # tester sees there.
+      #
+      # Read before anything is built or uploaded, because it reads a checked-in
+      # constant and depends on nothing the build produces. Failing here costs a
+      # minute; failing after the upload leaves testers with a build and the
+      # release asset uncut.
+      - name: Read the marketing version
+        id: version
+        run: |
+          set -euo pipefail
+          name=$(sed -n 's/.*DefaultVersionName = "\([^"]*\)".*/\1/p' \
+            hosts/android/build-logic/convention/src/main/kotlin/Versions.kt \
+            | head -n1)
+          if [ -z "${name}" ]; then
+            echo "::error::No DefaultVersionName in Versions.kt"
+            exit 1
+          fi
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
       - name: Set up the Android build
         id: setup
         uses: ./.github/actions/setup-android-build
@@ -229,21 +250,6 @@ jobs:
 
           grep -v 'Download the release binary' "${out}" || true
           exit "${status}"
-
-      # The versionName the APK is built with. App Distribution lists a release
-      # as this plus the build id, so an announcement naming both matches what a
-      # tester sees there.
-      - name: Read the marketing version
-        id: version
-        run: |
-          set -euo pipefail
-          name=$(sed -n 's/.*DefaultVersionName = "\([^"]*\)".*/\1/p' \
-            hosts/android/build-logic/convention/src/main/kotlin/Versions.kt)
-          if [ -z "${name}" ]; then
-            echo "::error::No DefaultVersionName in Versions.kt"
-            exit 1
-          fi
-          echo "name=${name}" >> "$GITHUB_OUTPUT"
 
       # Tag shape mirrors ios-nightly-simulator-release.yml.
       - name: Compute release tag + name

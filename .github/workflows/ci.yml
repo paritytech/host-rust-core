@@ -1072,10 +1072,10 @@ jobs:
         run: shellcheck --version
 
       # Deliberate uses of a constant condition, which actionlint reports as
-      # if-cond: the e2e job while its smoke test is stabilised, and every iOS
-      # workflow that can reach Apple, held until the cutover. Drop this ignore
-      # only once both #686 and #764 have removed theirs, or workflow-lint goes
-      # red.
+      # if-cond: the e2e job while its smoke test is stabilised, the nightly's
+      # safetynet leg and the workflow that builds it on demand, and the failure
+      # notification, which has no room of its own to announce into. Drop this
+      # ignore once those four are gone, or workflow-lint goes red.
       #
       # The flag matches on message text across the whole tree, so it also
       # silences any accidental constant condition added elsewhere.
