@@ -86,6 +86,12 @@ jobs:
           CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
         with:
+          # The runner is a three core machine and the arm64 image renders in
+          # software, so a cold boot does not reliably finish inside the ten
+          # minutes the action allows by default. The job's own timeout still
+          # bounds the run; this only stops it giving up on a boot that is
+          # slow rather than stuck.
+          emulator-boot-timeout: 1800
           api-level: 30
           arch: arm64-v8a
           target: google_apis
