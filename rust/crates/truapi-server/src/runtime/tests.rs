@@ -666,6 +666,43 @@ fn a_withdrawn_request_already_published_is_cancelled_on_the_phone() {
     assert_eq!(withdrawn(), vec![published]);
 }
 
+/// A request whose statement never went out is not on the channel, so a
+/// `Cancel` for it would replace whatever older request is there instead.
+#[test]
+fn a_request_withdrawn_before_it_is_submitted_sends_no_cancel() {
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_responses: vec![
+            subscribe_ack_frame("truapi:1", "own-sub-unsent"),
+            subscribe_ack_frame("truapi:2", "peer-sub-unsent"),
+        ],
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session);
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("sign-raw-unsent".to_string(), cancel);
+    let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+        account: account_id("myapp.dot", 0),
+        payload: raw_payload(),
+    });
+
+    futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+    // Long enough for a spawned `Cancel` to have been submitted.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "statement_submit"),
+        0
+    );
+}
+
 /// A host that times out has not been asked to stop, so the phone keeps the
 /// request: a slow allocation it finishes stays available to the next call.
 #[test]

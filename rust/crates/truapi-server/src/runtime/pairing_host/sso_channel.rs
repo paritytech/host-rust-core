@@ -1,5 +1,8 @@
 //! SSO statement-store channel to the paired remote signing host.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::super::authority::{
     AuthorityCancelError, AuthorityError, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
@@ -261,10 +264,13 @@ impl PairingHost {
             })?;
         let submit_client = rpc_client.clone();
         let session_state = self.session_state.clone();
+        let submitting = Arc::new(AtomicBool::new(false));
+        let submit_started = submitting.clone();
         let submit = async move {
             if !session_matches_key(&session_state, key) {
                 return Err(SsoRemoteResponseError::LocalDisconnected);
             }
+            submit_started.store(true, Ordering::Release);
             statement_store_rpc::submit_sso(&submit_client, statement, "pairing-host request")
                 .await
                 .map_err(|err| {
@@ -298,8 +304,11 @@ impl PairingHost {
             Ok(_) => debug!(action, %message_id, "SSO remote response received"),
             Err(reason) => warn!(action, %message_id, %reason, "SSO remote message failed"),
         }
+        // A request whose submit never started is not on the channel, and a
+        // `Cancel` for it would replace whatever older request is.
         if let Err(SsoRemoteResponseError::Cancelled(err)) = &result
             && err.reason() == CancellationReason::Cancelled
+            && submitting.load(Ordering::Acquire)
             && session_matches_key(&self.session_state, key)
         {
             self.withdraw_request(sso, &message_id);
