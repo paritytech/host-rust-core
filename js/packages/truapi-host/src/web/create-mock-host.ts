@@ -980,13 +980,13 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     },
 
     permissions: {
-      async devicePermission(request) {
+      async devicePermission(_product, request) {
         if (faults.permissionError) throw new Error(faults.permissionError);
         return decision(
           decidePermission("device", request, request, devicePermissions),
         );
       },
-      async remotePermission(request) {
+      async remotePermission(_product, request) {
         if (faults.permissionError) throw new Error(faults.permissionError);
         return decision(
           decidePermission(

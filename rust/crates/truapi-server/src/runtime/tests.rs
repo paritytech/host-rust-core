@@ -1309,6 +1309,48 @@ fn navigate_to_hands_a_web_address_over_unchanged() {
 }
 
 #[test]
+fn permission_prompts_name_the_requesting_product_and_execution_kind() {
+    let (host_config, _) = runtime_config("camera.dot");
+    let product = ProductContext::new_with_execution(
+        "camera.dot".to_string(),
+        truapi_platform::ProductExecutionKind::Worker,
+    )
+    .expect("test product context is valid");
+    let spawner = test_spawner();
+    let platform = stub_platform();
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        spawner,
+    );
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product.clone());
+    let cx = CallContext::default();
+
+    futures::executor::block_on(host.request_device_permission(
+        &cx,
+        HostDevicePermissionRequest::V1(v01::HostDevicePermissionRequest::Camera),
+    ))
+    .expect("device prompt answers");
+    futures::executor::block_on(host.request_remote_permission(
+        &cx,
+        truapi::versioned::permissions::RemotePermissionRequest::V1(v01::RemotePermissionRequest {
+            permission: v01::RemotePermission::ChainSubmit,
+        }),
+    ))
+    .expect("remote prompt answers");
+
+    assert_eq!(
+        *platform.permission_prompt_products.lock().unwrap(),
+        [product.clone(), product],
+    );
+}
+
+#[test]
 fn navigate_to_rejects_invalid_input_without_prompting_or_calling_platform() {
     let platform = stub_platform();
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
