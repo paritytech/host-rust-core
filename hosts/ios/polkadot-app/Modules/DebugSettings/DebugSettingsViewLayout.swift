@@ -92,6 +92,20 @@ final class DebugSettingsViewLayout: UIView {
         stack.distribution = .equalSpacing
     }
 
+    let hostPlacedSwitch = UISwitch()
+
+    private let hostPlacedLabel: Label = .create { (view: Label) in
+        view.typography = .bodyMedium
+        view.textColor = .fgPrimary
+        view.text = "Host-placed products"
+    }
+
+    private let hostPlacedRow: UIStackView = .create { stack in
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.distribution = .equalSpacing
+    }
+
     let chainLabel: Label = .create { (view: Label) in
         view.typography = .bodyMedium
         view.textColor = .fgSecondary
@@ -138,6 +152,7 @@ final class DebugSettingsViewLayout: UIView {
 
         strategyDebugRow.addArrangedSubviews([strategyDebugLabel, strategyDebugSwitch])
         truApiRuntimeRow.addArrangedSubviews([truApiRuntimeLabel, truApiRuntimeSwitch])
+        hostPlacedRow.addArrangedSubviews([hostPlacedLabel, hostPlacedSwitch])
 
         var rows: [UIView] = [
             chainLabel,
@@ -157,7 +172,7 @@ final class DebugSettingsViewLayout: UIView {
             rows.append(openTrUAPIPlaygroundButton)
         #endif
 
-        rows.append(contentsOf: [strategyDebugRow, truApiRuntimeRow])
+        rows.append(contentsOf: [strategyDebugRow, truApiRuntimeRow, hostPlacedRow])
 
         stackView.addArrangedSubviews(rows)
 

@@ -1,5 +1,13 @@
 # @parity/truapi-host
 
+## 0.20.0
+
+### Patch Changes
+
+- Updated dependencies [5f3dc71]
+- Updated dependencies
+  - @parity/truapi@0.20.0
+
 ## 0.19.0
 
 ### Minor Changes
