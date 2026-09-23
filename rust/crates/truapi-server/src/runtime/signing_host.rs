@@ -531,13 +531,14 @@ impl SigningHost {
             return Ok(());
         }
         let pallet_index = self.ring_resolver.members_pallet_index(&chain_id).await?;
+        let vrf = vrf::load().await?;
         for (collection, index) in missing {
             let handle = ProductAccountId {
                 dot_ns_identifier: owner.to_string(),
                 derivation_index: DerivationIndex::Index(index),
             };
             let entropy = self.ring_vrf_entropy(session, &handle)?;
-            let public_key = member_from_entropy(&entropy)?;
+            let public_key = vrf.member(&entropy)?;
             let ring = RingLocation {
                 chain_id,
                 junctions: vec![
