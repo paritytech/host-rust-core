@@ -79,8 +79,14 @@ export interface RawCallbacks {
   pushNotification(notification: Uint8Array): Promise<Uint8Array>;
   cancelNotification(id: NotificationId): Promise<void>;
   devicePermissionStatus?(request: Uint8Array): Promise<Uint8Array>;
-  devicePermission(request: Uint8Array): Promise<Uint8Array>;
-  remotePermission(request: Uint8Array): Promise<Uint8Array>;
+  devicePermission(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  remotePermission(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
   subscribePocketCards?(
     product: Uint8Array,
     sendItem: (item?: Uint8Array) => void,
@@ -194,15 +200,17 @@ export function createWasmRawCallbacks(
             ),
         }
       : {}),
-    devicePermission: async (request) =>
+    devicePermission: async (product, request) =>
       PermissionDecision.enc(
         await callbacks.permissions.devicePermission(
+          ProductContext.dec(product),
           HostDevicePermissionRequest.dec(request),
         ),
       ),
-    remotePermission: async (request) =>
+    remotePermission: async (product, request) =>
       PermissionDecision.enc(
         await callbacks.permissions.remotePermission(
+          ProductContext.dec(product),
           RemotePermissionRequest.dec(request),
         ),
       ),

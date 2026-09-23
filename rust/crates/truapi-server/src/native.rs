@@ -2183,6 +2183,7 @@ impl truapi_platform::PermissionStatusHost for CallbackPlatform {
 impl Permissions for CallbackPlatform {
     async fn device_permission(
         &self,
+        _product: &ProductContext,
         request: v01::HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(
@@ -2199,6 +2200,7 @@ impl Permissions for CallbackPlatform {
 
     async fn remote_permission(
         &self,
+        _product: &ProductContext,
         request: v01::RemotePermissionRequest,
     ) -> Result<PermissionDecision, v01::GenericError> {
         self.callbacks.on_core_log(

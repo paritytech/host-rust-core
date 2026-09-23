@@ -1643,20 +1643,12 @@ mod tests {
     /// Persist a user refusal of `caller`'s access to `target`'s account.
     fn deny_account_access(platform: &StubPlatform, caller: &str, target: &str) {
         futures::executor::block_on(
-            crate::host_logic::permissions::PermissionsService::new(
-                platform,
+            // Bare-labelled on both sides, as `account_access_authorization`
+            // writes it in production.
+            crate::host_logic::permissions::set_account_access_status(
                 platform,
                 crate::host_logic::product_manifest::bare_product_label(caller),
-            )
-            .set_authorization_status(
-                &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
-                    // Bare-labelled on both sides, as `account_access_authorization`
-                    // writes it in production.
-                    target_product_id: crate::host_logic::product_manifest::bare_product_label(
-                        target,
-                    )
-                    .to_string(),
-                },
+                crate::host_logic::product_manifest::bare_product_label(target),
                 truapi_platform::PermissionAuthorizationStatus::Denied,
             ),
         )
@@ -2089,19 +2081,12 @@ mod tests {
         let platform = Arc::new(StubPlatform::default());
         cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
         // Written exactly as the previous release wrote it: full ids, both sides.
-        futures::executor::block_on(
-            crate::host_logic::permissions::PermissionsService::new(
-                platform.as_ref(),
-                platform.as_ref(),
-                "dim2.dot",
-            )
-            .set_authorization_status(
-                &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
-                    target_product_id: "peopl.dot".to_string(),
-                },
-                truapi_platform::PermissionAuthorizationStatus::Denied,
-            ),
-        )
+        futures::executor::block_on(crate::host_logic::permissions::set_account_access_status(
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+            truapi_platform::PermissionAuthorizationStatus::Denied,
+        ))
         .expect("stub core storage accepts the decision");
         let (services, _authority) =
             signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
