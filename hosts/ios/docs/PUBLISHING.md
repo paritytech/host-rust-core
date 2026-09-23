@@ -87,7 +87,7 @@ Required for any signed build:
 | `KEYCHAIN_PASSWORD` | Password for the temporary CI keychain | every signed build |
 | `MATCH_PASSWORD` | Passphrase that decrypts the `match` assets | every signed build |
 | `FASTLANE_RO_PAT` | Fine-grained PAT with read access to the `match` repo | every signed build |
-| `FASTLANE_RW_PAT` | The same PAT with write access | `update_signing_data.yml` only |
+| `FASTLANE_RW_PAT` | The same PAT with write access | `ios-update-signing-data.yml` only |
 | `GOOGLE_SERVICE_INFO_DEV_BASE64` | Base64 development `GoogleService-Info.plist` | PR builds and tests |
 | `GOOGLE_SERVICE_INFO_RELEASE_BASE64` | Base64 production `GoogleService-Info.plist` | release and nightly archives, nightly simulator build |
 | `GOOGLE_SERVICE_INFO_SAFETY_BASE64` | Base64 Safetynet `GoogleService-Info.plist` (separate Firebase app for `…​.safety`) | Safetynet archives |
@@ -96,24 +96,24 @@ Required only by the distribution target you actually use:
 
 | Secret | Used for | Read by |
 |--------|----------|---------|
-| `CREDENTIAL_FILE_CONTENT` | Google service-account JSON for App Distribution | `firebase_debug_distribution.yml` |
-| `FIREBASE_APP_ID` | Firebase App Distribution app ID (`1:…:ios:…`) | `firebase_debug_distribution.yml` |
+| `CREDENTIAL_FILE_CONTENT` | Google service-account JSON for App Distribution | `ios-firebase-debug-distribution.yml` |
+| `FIREBASE_APP_ID` | Firebase App Distribution app ID (`1:…:ios:…`) | `ios-firebase-debug-distribution.yml` |
 | `SENTRY_AUTH_TOKEN` | Uploading dSYMs to Sentry (the build phase skips when `sentry-cli` is unconfigured — see §9) | signed builds |
 
 Optional — these gate reporting steps only, and a fork can leave them unset:
 
 | Secret | Used for | Read by |
 |--------|----------|---------|
-| `NOTIFICATION_BOT_URL`, `NOTIFICATION_BOT_TOKEN` | Build success/failure notifications | `_build_distribute.yml`, `nightly_distribution.yml` |
-| `TESTFLIGHT_DISTRIBUTION_LINK`, `WEB_PAGE_DISTRIBUTION_LINK` | One ready-to-render markdown link entry each, e.g. `[TestFlight](https://testflight.apple.com/join/<id>)`. Kept in secrets so access hints stay out of the repo. | `release_distribution.yml`, `nightly_distribution.yml` |
-| `TESTFLIGHT_SAFETY_DISTRIBUTION_LINK`, `WEB_PAGE_SAFETY_DISTRIBUTION_LINK` | A TestFlight join link is per-group per-app, and Safetynet is its own app | `nightly_distribution.yml` |
+| `NOTIFICATION_BOT_URL`, `NOTIFICATION_BOT_TOKEN` | The relay the announcements post through | `ios-nightly-distribution.yml`, `ios-release-distribution.yml` |
+| `CI_MATRIX_ROOM_IDS` | Comma separated rooms to announce into. One message per room | `ios-nightly-distribution.yml`, `ios-release-distribution.yml` |
+| `TESTFLIGHT_DISTRIBUTION_LINK` | One ready-to-render markdown link entry, e.g. `[TestFlight](https://testflight.apple.com/join/<id>)`. Kept in a secret so the access hint stays out of this public repository | `ios-nightly-distribution.yml`, `ios-release-distribution.yml` |
 
 `SENTRY_DSN` and `MELD_BASIC_AUTH_TOKEN` from the first table are also stored as
 GitHub Actions secrets, because CI runs `generate_secrets.sh` from
 `.github/actions/configure-secrets` instead of reading `env-vars.sh`.
 
 Tester groups are a workflow variable rather than a secret: `FIREBASE_GROUPS` is
-set in `firebase_debug_distribution.yml` (default `polkadotapp-ios`) and can be
+set in `ios-firebase-debug-distribution.yml` (default `polkadotapp-ios`) and can be
 overridden per run.
 
 Backend and on-chain endpoints (identity backend, IPFS gateway, DotNS
