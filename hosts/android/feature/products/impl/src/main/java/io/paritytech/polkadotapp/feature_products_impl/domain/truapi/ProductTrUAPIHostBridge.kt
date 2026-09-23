@@ -186,13 +186,19 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
             confirmationLauncher.decide(review, requesterFallback = callingProductId.value)
 
-        override suspend fun devicePermission(request: HostDevicePermissionRequest): TrUAPIPermissionDecision =
+        override suspend fun devicePermission(
+            product: ProductExecutionConfig,
+            request: HostDevicePermissionRequest,
+        ): TrUAPIPermissionDecision =
             hostApiInteractor
                 .requestDevicePermissionDecision(callingProductId, request.toCapability())
                 .getOrElse { throw it }
                 .toNative()
 
-        override suspend fun remotePermission(request: RemotePermission): TrUAPIPermissionDecision =
+        override suspend fun remotePermission(
+            product: ProductExecutionConfig,
+            request: RemotePermission,
+        ): TrUAPIPermissionDecision =
             hostApiInteractor
                 .requestRemotePermissionDecision(callingProductId, request.toDomain())
                 .getOrElse { throw it }

@@ -1078,6 +1078,7 @@ fn decision(granted: bool) -> PermissionDecision {
 impl Permissions for MockPlatform {
     async fn device_permission(
         &self,
+        _product: &ProductContext,
         request: latest::HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, latest::GenericError> {
         if let Some(reason) = &self.config.faults.permission_error {
@@ -1094,6 +1095,7 @@ impl Permissions for MockPlatform {
 
     async fn remote_permission(
         &self,
+        _product: &ProductContext,
         request: latest::RemotePermissionRequest,
     ) -> Result<PermissionDecision, latest::GenericError> {
         if let Some(reason) = &self.config.faults.permission_error {
@@ -1524,14 +1526,20 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            block_on(p.device_permission(latest::HostDevicePermissionRequest::Notifications))
-                .unwrap(),
+            block_on(p.device_permission(
+                &mock_product(),
+                latest::HostDevicePermissionRequest::Notifications
+            ))
+            .unwrap(),
             PermissionDecision::Deny
         );
         assert_eq!(
-            block_on(p.remote_permission(latest::RemotePermissionRequest {
-                permission: latest::RemotePermission::WebRtc
-            }))
+            block_on(p.remote_permission(
+                &mock_product(),
+                latest::RemotePermissionRequest {
+                    permission: latest::RemotePermission::WebRtc
+                }
+            ))
             .unwrap(),
             PermissionDecision::Deny
         );
@@ -1545,14 +1553,20 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            block_on(p.device_permission(latest::HostDevicePermissionRequest::Notifications))
-                .unwrap(),
+            block_on(p.device_permission(
+                &mock_product(),
+                latest::HostDevicePermissionRequest::Notifications
+            ))
+            .unwrap(),
             PermissionDecision::AllowAlways
         );
         assert_eq!(
-            block_on(p.remote_permission(latest::RemotePermissionRequest {
-                permission: latest::RemotePermission::WebRtc
-            }))
+            block_on(p.remote_permission(
+                &mock_product(),
+                latest::RemotePermissionRequest {
+                    permission: latest::RemotePermission::WebRtc
+                }
+            ))
             .unwrap(),
             PermissionDecision::Deny
         );
@@ -1565,9 +1579,12 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            block_on(p.remote_permission(latest::RemotePermissionRequest {
-                permission: latest::RemotePermission::WebRtc
-            }))
+            block_on(p.remote_permission(
+                &mock_product(),
+                latest::RemotePermissionRequest {
+                    permission: latest::RemotePermission::WebRtc
+                }
+            ))
             .unwrap(),
             PermissionDecision::AllowAlways
         );
@@ -1681,7 +1698,7 @@ mod tests {
     #[test]
     fn an_operation_is_open_until_its_own_product_ends_it() {
         let p = MockPlatform::new();
-        let mine = chat_product();
+        let mine = mock_product();
         let theirs = ProductContext::new("other.dot".to_string()).expect("product id is valid");
 
         let id = block_on(p.begin_operation(&mine, "sync".into()))
@@ -1868,13 +1885,16 @@ mod tests {
     }
 
     fn device_request(p: &MockPlatform, request: latest::HostDevicePermissionRequest) -> bool {
-        block_on(p.device_permission(request)).expect("device permission answers")
+        block_on(p.device_permission(&mock_product(), request)).expect("device permission answers")
             == PermissionDecision::AllowAlways
     }
 
     fn remote_request(p: &MockPlatform, permission: latest::RemotePermission) -> bool {
-        block_on(p.remote_permission(latest::RemotePermissionRequest { permission }))
-            .expect("remote permission answers")
+        block_on(p.remote_permission(
+            &mock_product(),
+            latest::RemotePermissionRequest { permission },
+        ))
+        .expect("remote permission answers")
             == PermissionDecision::AllowAlways
     }
 
@@ -2021,13 +2041,13 @@ mod tests {
         ));
     }
 
-    fn chat_product() -> ProductContext {
+    fn mock_product() -> ProductContext {
         ProductContext::new("mock.dot".to_string()).expect("product context is valid")
     }
 
     fn create_room(p: &MockPlatform, room_id: &str) -> latest::ChatRoomRegistrationStatus {
         block_on(p.create_chat_room(
-            &chat_product(),
+            &mock_product(),
             latest::HostChatCreateRoomRequest {
                 room_id: room_id.to_string(),
                 name: format!("{room_id} room"),
@@ -2044,7 +2064,7 @@ mod tests {
         body: &str,
     ) -> Result<latest::HostChatPostMessageResponse, latest::HostChatPostMessageError> {
         block_on(p.post_chat_message(
-            &chat_product(),
+            &mock_product(),
             latest::HostChatPostMessageRequest {
                 room_id: room_id.to_string(),
                 payload: latest::ChatMessageContent::Text {
@@ -2111,7 +2131,7 @@ mod tests {
             },
             ..Default::default()
         });
-        let product = chat_product();
+        let product = mock_product();
 
         let room = block_on(p.create_chat_room(
             &product,
@@ -2177,7 +2197,7 @@ mod tests {
     fn a_room_subscriber_sees_the_current_list_and_later_replacements() {
         let p = MockPlatform::new();
         create_room(&p, "first");
-        let mut rooms = p.subscribe_chat_rooms(&chat_product());
+        let mut rooms = p.subscribe_chat_rooms(&mock_product());
 
         // Both items are already queued on an unbounded channel by the time
         // they are asserted, so take them without blocking: a subscription
@@ -2213,7 +2233,7 @@ mod tests {
         create_room(&p, "lobby");
         post_text(&p, "lobby", "hi").expect("post succeeds");
         block_on(p.register_chat_bot(
-            &chat_product(),
+            &mock_product(),
             latest::HostChatRegisterBotRequest {
                 bot_id: "helper".to_string(),
                 name: "Helper".to_string(),
@@ -2328,12 +2348,18 @@ mod tests {
             ..MockConfig::default()
         });
         assert!(
-            block_on(p.device_permission(latest::HostDevicePermissionRequest::Camera)).is_err()
+            block_on(
+                p.device_permission(&mock_product(), latest::HostDevicePermissionRequest::Camera)
+            )
+            .is_err()
         );
         assert!(
-            block_on(p.remote_permission(latest::RemotePermissionRequest {
-                permission: latest::RemotePermission::ChainSubmit,
-            }))
+            block_on(p.remote_permission(
+                &mock_product(),
+                latest::RemotePermissionRequest {
+                    permission: latest::RemotePermission::ChainSubmit,
+                }
+            ))
             .is_err()
         );
         assert!(block_on(p.supported_chains()).is_err());

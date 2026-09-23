@@ -15,8 +15,7 @@ use parity_scale_codec::{Decode, Encode};
 use tracing::{info, instrument, warn};
 use truapi::v01;
 use truapi_platform::{
-    CoreStorageKey, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
-    normalize_product_identifier,
+    CoreStorageKey, PermissionAuthorizationStatus, Platform, normalize_product_identifier,
 };
 
 use crate::chain_runtime::ChainRuntime;
@@ -25,7 +24,7 @@ use crate::host_logic::dotns_gateway::{
     decode_address, decode_string, discover_pop_controller, namehash_under, network_tld,
     protocol_component, tld_node,
 };
-use crate::host_logic::permissions::PermissionsService;
+use crate::host_logic::permissions::account_access_status;
 use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
 use crate::host_logic::sso::messages::RingVrfError;
 use crate::host_logic::statement_store::current_unix_secs;
@@ -380,11 +379,7 @@ async fn stored_account_decision(
         (caller_id.to_string(), target.to_string()),
     ];
     for (caller, target) in candidates {
-        let request = PermissionAuthorizationRequest::AccountAccess {
-            target_product_id: target,
-        };
-        let service = PermissionsService::new(platform, platform, &caller);
-        match service.authorization_status(&request).await {
+        match account_access_status(platform, &caller, &target).await {
             Ok(PermissionAuthorizationStatus::Denied) => return StoredDecision::Denied,
             Ok(
                 PermissionAuthorizationStatus::NotDetermined

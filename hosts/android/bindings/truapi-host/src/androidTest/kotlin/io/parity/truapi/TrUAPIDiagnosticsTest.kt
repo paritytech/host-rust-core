@@ -84,8 +84,14 @@ class TrUAPIDiagnosticsTest {
                 synchronized(authStates) { authStates.add(state) }
             }
             override suspend fun navigateTo(url: String) = onCoreLog("truapi.host.navigate_to", url)
-            override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
-            override suspend fun remotePermission(request: RemotePermission): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
+            override suspend fun devicePermission(
+                product: ProductExecutionConfig,
+                request: HostDevicePermissionRequest,
+            ): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
+            override suspend fun remotePermission(
+                product: ProductExecutionConfig,
+                request: RemotePermission,
+            ): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
             override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean = true
             override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean = false
             override fun chainConnect(genesisHash: ByteArray): UInt? = chainProvider.connect(genesisHash)

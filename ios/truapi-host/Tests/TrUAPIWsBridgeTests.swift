@@ -188,10 +188,16 @@ final class StubHostBridge: HostBridge, @unchecked Sendable {
     }
 
     func navigateTo(url _: String) async throws {}
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> PermissionDecision {
+    func devicePermission(
+        product _: ProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> PermissionDecision {
         nextDeviceDecision(request: request)
     }
-    func remotePermission(request _: RemotePermission) async throws -> PermissionDecision { nextRemoteDecision() }
+    func remotePermission(
+        product _: ProductExecutionConfig,
+        request _: RemotePermission
+    ) async throws -> PermissionDecision { nextRemoteDecision() }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func localStorageRead(key: String) throws -> Data? { try storage.read(key: key) }

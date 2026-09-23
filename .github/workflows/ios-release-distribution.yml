@@ -57,34 +57,53 @@ jobs:
   send-release-notification:
     name: Send Release Notification
     runs-on: ubuntu-latest
+    # The build shipped to TestFlight before this runs. A relay that is
+    # briefly unreachable should not turn that into a failed run.
+    continue-on-error: true
     needs: build
     # Dispatch only. The pull_request trigger rebuilds on every push to a release PR, and
     # those intermediate builds are not a release worth announcing.
-    # Held until the notification relay exists. The action exits non-zero when
-    # it is given neither a Matrix room nor a Telegram chat, and this repository
-    # has neither credential. Restore this with the relay.
-    #
-    # The condition this replaces:
-    # if: >-
-    # ${{ !cancelled() && github.event_name == 'workflow_dispatch' &&
-    # needs.build.outputs.succeeded == 'true' }}
-    if: false
+    if: >-
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch' &&
+      needs.build.outputs.succeeded == 'true' }}
     steps:
+      # The action prints the message it renders. It rewrites the markdown entry
+      # the secret holds into an anchor, so what reaches the log is the bare URL,
+      # a substring of the secret rather than its value, and nothing redacts it.
+      # This repository is public, so registering the URL masks it for the rest
+      # of the job.
+      - name: Mask the join link
+        env:
+          LINK: ${{ secrets.TESTFLIGHT_DISTRIBUTION_LINK }}
+        run: |
+          set -euo pipefail
+          urls="$(printf '%s' "$LINK" | grep -oE 'https?://[^)[:space:]]+' | sort -u || true)"
+          if [ -z "${urls}" ]; then
+            echo "::warning::TESTFLIGHT_DISTRIBUTION_LINK holds no URL, so the announcement will carry no download"
+            exit 0
+          fi
+          while IFS= read -r url; do
+            [ -n "${url}" ] && echo "::add-mask::${url}"
+          done <<< "${urls}"
+
       - name: Send release notification
         uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
           platform: iOS
-          pr_list: ${{ needs.build.outputs.pr_list_markdown }}
+          # The template renders the heading either way, so an empty range says
+          # so rather than showing an empty list.
+          pr_list: ${{ needs.build.outputs.pr_list_markdown != ''
+            && needs.build.outputs.pr_list_markdown
+            || '- No pull requests merged into this release.' }}
           release_info: |
             Version: ${{ needs.build.outputs.marketing_version }}
             Build number: ${{ needs.build.outputs.build_number }}
           download_links_format: inline
-          # Each secret holds one ready-to-render markdown link entry, e.g.
-          # "[TestFlight](https://testflight.apple.com/join/<id>)". The label is part
-          # of the secret so that access hints stay out of the public repo.
+          # The secret holds a ready-to-render markdown entry, label included, so
+          # that an access hint stays out of this public repo. No web page link is
+          # configured, so TestFlight is the only entry.
           download_links: |
             ${{ secrets.TESTFLIGHT_DISTRIBUTION_LINK }}
-            ${{ secrets.WEB_PAGE_DISTRIBUTION_LINK }}
           bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
           bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
           matrix_room_ids: ${{ secrets.CI_MATRIX_ROOM_IDS }}

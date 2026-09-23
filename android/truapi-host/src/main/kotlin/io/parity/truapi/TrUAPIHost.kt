@@ -106,6 +106,15 @@ enum class ProductExecutionKind {
             WIDGET -> UniFfiProductExecutionKind.WIDGET
             WORKER -> UniFfiProductExecutionKind.WORKER
         }
+
+    internal companion object {
+        fun fromNative(kind: UniFfiProductExecutionKind): ProductExecutionKind =
+            when (kind) {
+                UniFfiProductExecutionKind.APP -> APP
+                UniFfiProductExecutionKind.WIDGET -> WIDGET
+                UniFfiProductExecutionKind.WORKER -> WORKER
+            }
+    }
 }
 
 /**
@@ -192,6 +201,14 @@ data class ProductExecutionConfig(
             productId = productId,
             executionKind = executionKind.toNative(),
         )
+
+    internal companion object {
+        fun fromNative(config: UniFfiNativeProductExecutionConfig): ProductExecutionConfig =
+            ProductExecutionConfig(
+                productId = config.productId,
+                executionKind = ProductExecutionKind.fromNative(config.executionKind),
+            )
+    }
 }
 
 /**
@@ -270,11 +287,15 @@ interface HostBridge {
     fun cancelNotification(id: UInt) {}
 
     /**
-     * Prompt for a device-level permission on the main thread, suspending until
-     * the user decides. Preserve whether approval applies once or always.
+     * Prompt for a device-level permission [product] requested on the main
+     * thread, suspending until the user decides. Preserve whether approval
+     * applies once or always.
      */
     @Throws(HostRejection::class)
-    suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision
+    suspend fun devicePermission(
+        product: ProductExecutionConfig,
+        request: HostDevicePermissionRequest,
+    ): PermissionDecision
 
     /**
      * Report the OS status of a device capability without prompting. Answer from
@@ -297,11 +318,14 @@ interface HostBridge {
     ): NativeDevicePermissionStatus = NativeDevicePermissionStatus.NOT_APPLICABLE
 
     /**
-     * Prompt for a remote (product-scoped) permission bundle on the main thread,
-     * suspending until the user decides.
+     * Prompt for a remote permission bundle [product] requested on the main
+     * thread, suspending until the user decides.
      */
     @Throws(HostRejection::class)
-    suspend fun remotePermission(request: RemotePermission): PermissionDecision
+    suspend fun remotePermission(
+        product: ProductExecutionConfig,
+        request: RemotePermission,
+    ): PermissionDecision
 
     /**
      * Observe an auth state change, in transition order: render
@@ -541,15 +565,25 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun cancelNotification(id: UInt) =
         withHostRejection { bridge.cancelNotification(id) }
 
-    override suspend fun devicePermission(request: HostDevicePermissionRequest): NativePermissionDecision =
-        withHostRejection { bridge.devicePermission(request).toNative() }
+    override suspend fun devicePermission(
+        product: UniFfiNativeProductExecutionConfig,
+        request: HostDevicePermissionRequest,
+    ): NativePermissionDecision =
+        withHostRejection {
+            bridge.devicePermission(ProductExecutionConfig.fromNative(product), request).toNative()
+        }
 
     override suspend fun devicePermissionStatus(
         request: HostDevicePermissionRequest,
     ): NativeDevicePermissionStatus = withHostRejection { bridge.devicePermissionStatus(request) }
 
-    override suspend fun remotePermission(request: RemotePermission): NativePermissionDecision =
-        withHostRejection { bridge.remotePermission(request).toNative() }
+    override suspend fun remotePermission(
+        product: UniFfiNativeProductExecutionConfig,
+        request: RemotePermission,
+    ): NativePermissionDecision =
+        withHostRejection {
+            bridge.remotePermission(ProductExecutionConfig.fromNative(product), request).toNative()
+        }
 
     override fun authStateChanged(state: AuthState) {
         try {
