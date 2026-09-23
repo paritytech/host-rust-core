@@ -20,6 +20,7 @@ use truapi::versioned::account::{
 use truapi::versioned::chain::{
     RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
     RemoteChainTransactionBroadcastError, RemoteChainTransactionBroadcastRequest,
+    RemoteChainTransactionBroadcastResponse,
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
@@ -2902,6 +2903,52 @@ fn broadcast_request() -> RemoteChainTransactionBroadcastRequest {
         genesis_hash: vec![0; 32],
         transaction: vec![1, 2, 3],
     })
+}
+
+/// Only a `Cancel` frame turns the answer into `Cancelled`. A token the host
+/// fires itself still answers with the operation id, so the product is the one
+/// holding it and the broadcast must keep running.
+#[test]
+fn a_broadcast_the_host_cancels_itself_keeps_running() {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        rpc_method_responses: vec![
+            ("transaction_v1_broadcast", r#""REMOTE-OP""#.to_string()),
+            ("transaction_v1_stop", "null".to_string()),
+        ],
+        rpc_method_responses_gate: Arc::new(Mutex::new(Some(gate))),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("broadcast-timed-out".to_string(), cancel.clone());
+    let request = broadcast_request();
+    let call = std::thread::spawn(move || {
+        futures::executor::block_on(Chain::broadcast_transaction(&host, &cx, request))
+    });
+    wait_until(
+        || recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast") == 1,
+        "the broadcast was not sent",
+    );
+
+    cancel.cancel_with_reason(truapi::CancellationReason::TimedOut {
+        timeout: std::time::Duration::from_secs(1),
+    });
+    release.send(()).unwrap();
+    let RemoteChainTransactionBroadcastResponse::V1(response) =
+        call.join().expect("broadcast thread panicked").unwrap();
+
+    assert_eq!(
+        (
+            response.operation_id.is_some(),
+            recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_stop")
+        ),
+        (true, 0)
+    );
 }
 
 /// The product withdrew a broadcast that had already gone out, and the

@@ -138,9 +138,11 @@ left to finish. Per site:
   and answer the id that stops it, and dropping one mid-flight would leave an operation that nobody can name.
 - **A broadcast is not sent once withdrawn, and is stopped if it already was.** A withdrawn `broadcastTransaction`
   answers `Cancelled`, so the product never learns the operation id it would stop the broadcast with. The host stops it
-  instead, within the unwind grace. A transaction a peer has already received may still be included; stopping ends only
-  this host's rebroadcast. A `Cancel` that arrives after the handler has returned but before the dispatcher settles the
-  call is not seen by the handler, so that broadcast keeps running.
+  instead, within the unwind grace, when the node returned an id; without one there is nothing to stop it with. Only a
+  withdrawal stops it: a call the host cancels for any other reason still answers with the id. A transaction a peer has
+  already received may still be included; stopping ends only this host's rebroadcast. A `Cancel` that arrives after the
+  handler has returned but before the dispatcher settles the call is not seen by the handler, so that broadcast keeps
+  running.
 - **Bulletin submission stops.** `preimage.submit` builds, broadcasts and watches its transaction as separate steps.
   A withdrawal before the broadcast prevents it; after the broadcast it only stops the watch.
 - **Login finishes.** `account.requestLogin` does not observe the token, so a withdrawn login keeps the pairing flow

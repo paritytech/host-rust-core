@@ -26,7 +26,7 @@ use truapi::versioned::chain::{
     RemoteChainTransactionBroadcastResponse, RemoteChainTransactionStopError,
     RemoteChainTransactionStopRequest, RemoteChainTransactionStopResponse,
 };
-use truapi::{CallContext, CallError, Subscription, v01};
+use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 
 use crate::host_logic::features::{chain_info, supported_chains};
 use crate::runtime::{
@@ -270,8 +270,9 @@ impl Chain for ProductRuntimeHost {
             .await
             .map_err(runtime_failure_to_call_error)?;
         // A withdrawn call answers `Cancelled`, so the product never learns
-        // the id it would stop this broadcast with.
-        if cx.cancel().is_cancelled()
+        // the id it would stop this broadcast with. Any other cancellation
+        // still answers with the id, and stopping would strand the product.
+        if cx.cancel().reason() == Some(CancellationReason::Cancelled)
             && let Some(operation_id) = response.operation_id.clone()
         {
             self.stop_withdrawn_broadcast(genesis_hash, operation_id)
