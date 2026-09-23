@@ -59,8 +59,8 @@ use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
     AnnouncedPairing, DebugSink, PairedSsoPeer, PairingHostConfig, PairingHostRuntime,
-    PairingProposal, ResponderExit, SigningHostConfig, SigningHostRuntime,
-    StatementRenewalTarget, WsDebugSink,
+    PairingProposal, ResponderExit, SigningHostConfig, SigningHostRuntime, StatementRenewalTarget,
+    WsDebugSink,
 };
 
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
