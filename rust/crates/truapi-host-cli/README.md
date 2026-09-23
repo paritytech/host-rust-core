@@ -127,6 +127,9 @@ make headless install  # build dependencies and install truapi-host once
 truapi-host signing-host
 ```
 
+Requires stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and Bun. The target installs missing workspace
+build tools and regenerates Rust and TypeScript sources on every run, including after updating an existing checkout.
+
 ### Raw proof contexts (development only)
 
 A product can bind a ring-VRF proof to 32 bytes of its choosing instead of a
@@ -848,6 +851,36 @@ level when `RUST_LOG` is absent; otherwise it shows the exact `RUST_LOG` value.
 `/log` replaces the startup filter with the selected level. Without `RUST_LOG`,
 `--log-level` and `/log` apply to TrUAPI targets while other third-party
 dependencies remain at `warn`.
+
+## Wire debugger
+
+`--debugger <URL>` streams every product frame this host sends or receives to a
+[`@parity/truapi-debugger`](../../../js/packages/truapi-debugger) listening on a
+loopback `ws://` address. `TRUAPI_DEBUGGER_URL` sets the same value; an explicit
+flag wins over it.
+
+```bash
+# in one shell
+( cd js/packages/truapi-debugger && npm run serve )   # 127.0.0.1:9231
+
+# in another
+truapi-host dev --debugger ws://127.0.0.1:9231 -- yarn dev
+```
+
+The switch is meaningful only on the commands that serve frames: `pairing-host`,
+`dev` and `signing-host`. A URL that is not loopback fails startup rather than
+warning, since a host that runs on without the debugger it was asked for looks,
+from the debugger's side, exactly like a host nobody switched on. Starting the
+debugger after the host is fine: the sink dials lazily and reconnects.
+
+Every run says which way it went, either `Streaming wire frames to a debugger`,
+naming the endpoint and the switch clap read it from, or `Wire debugger off`.
+That report is the reason the flag needs no build gate: a stale exported
+`TRUAPI_DEBUGGER_URL` cannot tap a session quietly.
+
+Frames are forwarded whole and the debugger decodes all of them, so a tapped
+signing host puts its payloads on that socket. Point it at a debugger you are
+running yourself.
 
 ## Statement-store allowance
 

@@ -277,7 +277,7 @@ public protocol HostBridge: AnyObject, Sendable {
 /// when the host supports the Chat modality; hosts without it pass nothing.
 /// Native Chat storage and UI surface, called from the process-wide dispatch
 /// pool shared by every product execution: implementations must be safe to
-/// enter concurrently, and one that blocks stalls the others.
+/// enter concurrently.
 ///
 /// Throw ``HostRejection`` (or an error conforming to `LocalizedError`) to
 /// decline a call. A plain `Error` reaches the product as its type name alone,
@@ -286,14 +286,14 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     /// Create or resolve a native product Chat room. The core has bounded and
     /// normalized these arguments and screened the icon scheme; escaping them
     /// for the surface that renders them is still the host's job.
-    func createRoom(roomId: String, name: String, icon: String) throws
-        -> ChatRoomRegistrationStatus
+    func createRoom(roomId: String, name: String, icon: String) async throws
+        -> NativeChatRoomRegistrationStatus
 
     /// Register or resolve a native product Chat bot. The core has bounded and
     /// normalized these arguments and screened the icon scheme; escaping them
     /// for the surface that renders them is still the host's job.
-    func registerBot(botId: String, name: String, icon: String) throws
-        -> ChatBotRegistrationStatus
+    func registerBot(botId: String, name: String, icon: String) async throws
+        -> NativeChatBotRegistrationStatus
 
     /// Persist a product-authored message in native Chat storage. Throw for a
     /// content variant this host cannot render.
@@ -306,10 +306,10 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     /// must name this message for as long as the host stores it. An id
     /// arriving in a `reaction` or `reactionRemoved` is product-chosen and
     /// untrusted: it may name a message in another room, or none at all.
-    func postMessage(roomId: String, content: ChatMessageContent) throws -> String
+    func postMessage(roomId: String, content: ChatMessageContent) async throws -> String
 
     /// Return the current product-scoped native Chat rooms.
-    func listRooms() throws -> [ChatRoom]
+    func listRooms() async throws -> [ChatRoom]
 }
 
 /// Native Pocket collection surface. Implement and pass to
@@ -403,9 +403,9 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         roomId: String,
         name: String,
         icon: String
-    ) throws -> ChatRoomRegistrationStatus {
-        try withHostRejection {
-            try bridge.createRoom(roomId: roomId, name: name, icon: icon)
+    ) async throws -> NativeChatRoomRegistrationStatus {
+        try await withHostRejection {
+            try await bridge.createRoom(roomId: roomId, name: name, icon: icon)
         }
     }
 
@@ -413,25 +413,25 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         botId: String,
         name: String,
         icon: String
-    ) throws -> ChatBotRegistrationStatus {
-        try withHostRejection {
-            try bridge.registerBot(botId: botId, name: name, icon: icon)
+    ) async throws -> NativeChatBotRegistrationStatus {
+        try await withHostRejection {
+            try await bridge.registerBot(botId: botId, name: name, icon: icon)
         }
     }
 
-    func postMessage(roomId: String, content: ChatMessageContent) throws -> String {
-        try withHostRejection {
-            try bridge.postMessage(roomId: roomId, content: content)
+    func postMessage(roomId: String, content: ChatMessageContent) async throws -> String {
+        try await withHostRejection {
+            try await bridge.postMessage(roomId: roomId, content: content)
         }
     }
 
-    func listRooms() throws -> [ChatRoom] {
-        try withHostRejection { try bridge.listRooms() }
+    func listRooms() async throws -> [ChatRoom] {
+        try await withHostRejection { try await bridge.listRooms() }
     }
 
-    private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
+    private func withHostRejection<T>(_ operation: () async throws -> T) async throws -> T {
         do {
-            return try operation()
+            return try await operation()
         } catch let error as HostRejection {
             throw error
         } catch {

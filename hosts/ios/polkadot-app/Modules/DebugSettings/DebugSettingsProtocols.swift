@@ -7,6 +7,7 @@ protocol DebugSettingsViewProtocol: ControllerBackedProtocol {
     func didReceive(hasJWTToken: Bool)
     func didReceive(strategyDebugEnabled: Bool)
     func didReceive(truApiRuntimeEnabled: Bool)
+    func didReceive(hostPlacementEnabled: Bool)
 }
 
 @MainActor
@@ -22,6 +23,7 @@ protocol DebugSettingsPresenterProtocol: AnyObject {
     func showThemeSelection()
     func toggleStrategyDebug()
     func toggleTruApiRuntime()
+    func toggleHostPlacement()
     func openTrUAPIPlayground()
     func resetTips()
 }
@@ -35,6 +37,7 @@ protocol DebugSettingsInteractorInputProtocol: AnyObject {
     func replaceWithRandomEntropy()
     func toggleStrategyDebug()
     func toggleTruApiRuntime()
+    func toggleHostPlacement()
     func restartApp()
     func resetTips()
 }
@@ -46,6 +49,7 @@ protocol DebugSettingsInteractorOutputProtocol: AnyObject {
     func didReceive(hasJWTToken: Bool)
     func didReceive(strategyDebugEnabled: Bool)
     func didReceive(truApiRuntimeEnabled: Bool)
+    func didReceive(hostPlacementEnabled: Bool)
 }
 
 @MainActor

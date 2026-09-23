@@ -69,14 +69,11 @@ build: check-generated ## Build the Rust workspace and the TypeScript client.
 	cd $(TRUAPI_PKG) && npm run build
 	cd $(HOST_WASM_PKG) && npm run build
 
-headless: check-generated ## Build the truapi-host CLI and generated TypeScript client.
-	# The client build shells out to tsc, which `ensure-generated.sh` looks for at
-	# the root or in the package. Install workspace deps when neither is present so
-	# this target works on a checkout that has not run `make setup`.
-	@[ -x node_modules/.bin/tsc ] || [ -x $(TRUAPI_PKG)/node_modules/.bin/tsc ] \
+headless: ## Build the truapi-host CLI and generated TypeScript client.
+	@[ -x node_modules/.bin/tsc ] && [ -x node_modules/.bin/prettier ] \
 		|| npm ci --ignore-scripts
+	./scripts/codegen.sh
 	cargo build -p truapi-host-cli
-	cd $(TRUAPI_PKG) && npm run build
 	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
 install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `make headless install`.
@@ -175,10 +172,10 @@ uniffi: check-generated ## Generate Swift bindings from the truapi-server cdylib
 IOS_HOST ?= ../polkadot-app-ios-v2
 IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
 IOS_CONFIGURATION ?= Debug
-IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E
+IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E -DTRUAPI_RUNTIME_DEFAULT
 IOS_SIMULATOR_DEVICE ?=
 IOS_XCODE_DESTINATION ?= generic/platform=iOS Simulator
-IOS_BUNDLE ?= io.pcf.polkadotapp.develop
+IOS_BUNDLE ?= io.parity.polkadotapp.develop
 IOS_GOOGLE_SERVICE_PLIST ?= $(IOS_HOST)/polkadot-app/GoogleService/GoogleService-Info-Release.plist
 IOS_PRODUCT_HOST ?= truapi-playground.dot
 IOS_PRODUCT_URL ?= http://localhost:3100
