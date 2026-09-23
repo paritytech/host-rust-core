@@ -7,14 +7,17 @@ import Testing
 /// The faces a real product ships, decoded and drawn through the same path a
 /// live face takes.
 ///
-/// These five come from humanity-spa's `pocket:faces`, and are checked against
-/// the protocol on the product side. So they are the one fixture where a
-/// failure is unambiguous: if one of them does not decode, the defect is this
-/// host's, not the file's.
+/// Both come from humanity-spa's `pocket:faces` and are checked against the
+/// protocol on the product side, so a failure here is unambiguous: the defect
+/// is this host's, not the file's.
+///
+/// Two of the five it writes: `devicehood` is the shape the other three share
+/// node for node, and `candidate` is the large one. Keeping the identical three
+/// would add pages of fixture and no coverage.
 struct PocketFaceConformanceTests {
     private let decoder = RendererNodeJsonDecoder()
 
-    @Test(arguments: ["devicehood", "candidate", "member", "caution", "suspended"])
+    @Test(arguments: ["devicehood", "candidate"])
     func decodesAndDrawsAPublishedFace(_ name: String) throws {
         let face = try decoder.decode(faceText(name))
 
