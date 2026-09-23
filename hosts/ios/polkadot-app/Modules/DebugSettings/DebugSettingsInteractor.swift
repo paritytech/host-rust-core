@@ -34,6 +34,7 @@ extension DebugSettingsInteractor: DebugSettingsInteractorInputProtocol {
             provideJWTTokenState()
             provideStrategyDebugState()
             provideTruApiRuntimeState()
+            provideHostPlacementState()
         }
     }
 
@@ -88,6 +89,12 @@ extension DebugSettingsInteractor: DebugSettingsInteractorInputProtocol {
         provideTruApiRuntimeState()
     }
 
+    func toggleHostPlacement() {
+        let current = SettingsManager.shared.isHostPlacementEnabled
+        SettingsManager.shared.set(value: !current, for: .hostPlacementEnabled)
+        provideHostPlacementState()
+    }
+
     func restartApp() {
         Logger.shared.info("Debug settings changed — terminating for restart")
         exit(0)
@@ -138,6 +145,13 @@ private extension DebugSettingsInteractor {
         let enabled = SettingsManager.shared.isTrUAPIRuntimeEnabled
         Task { @MainActor [weak presenter] in
             presenter?.didReceive(truApiRuntimeEnabled: enabled)
+        }
+    }
+
+    func provideHostPlacementState() {
+        let enabled = SettingsManager.shared.isHostPlacementEnabled
+        Task { @MainActor [weak presenter] in
+            presenter?.didReceive(hostPlacementEnabled: enabled)
         }
     }
 }
