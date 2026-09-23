@@ -199,12 +199,10 @@ describe('shared connection permission isolation', () => {
     });
   });
 
-  // TODO: re-enable once built-in prototypes are locked again in a way that still lets
-  // subclasses shadow inherited methods, such as React's Flight client assigning `then`.
-  it.skip('locks messaging and clock APIs before products can intercept later connections', async () => {
+  it('protects later connections while unrelated built-ins remain mutable', async () => {
     const host = browser();
     expect(runInContext(`
-      const originals = { MessageChannel, MessagePort, MessageEvent, EventTarget, Date };
+      const originals = { MessageChannel, MessagePort, MessageEvent, EventTarget };
       const replaced = [
         ...Object.entries(originals).map(([name, original]) => {
           globalThis[name] = class {};
@@ -216,10 +214,21 @@ describe('shared connection permission isolation', () => {
           Reflect.defineProperty(MessagePort.prototype, name, { value() { throw new Error('port intercepted'); } })),
         Reflect.defineProperty(EventTarget.prototype, 'addEventListener', { value() { throw new Error('listener intercepted'); } }),
         Reflect.defineProperty(MessageEvent.prototype, 'data', { get() { throw new Error('message intercepted'); } }),
-        Reflect.defineProperty(Date, 'now', { value: () => 0 }),
       ];
       replaced;
-    `, host.context)).toEqual(Array(13).fill(false));
+    `, host.context)).toEqual(Array(11).fill(false));
+    runInContext(`
+      'use strict';
+      Date.now = () => 0;
+      globalThis.Date = class {};
+      Object.defineProperty(ArrayBuffer.prototype, 'byteLength', { get() { throw new Error('buffer intercepted'); } });
+      globalThis.ArrayBuffer = class {};
+      globalThis.TextEncoder = class {};
+      globalThis.TextDecoder = class {};
+      Number.prototype.toString = () => 'replaced';
+      BigInt.prototype.toString = () => 'replaced';
+      BigInt.asUintN = () => 0n;
+    `, host.context);
     const port = host.port();
     await host.connect();
     port.postMessage(frame('p:protected'));
@@ -274,9 +283,7 @@ describe('shared connection permission isolation', () => {
     }).toEqual({ samePort: true, sameClient: true, hosted: true, sockets: 1 });
   });
 
-  // TODO: re-enable once built-in prototypes are locked again in a way that still lets
-  // subclasses shadow inherited methods, such as React's Flight client assigning `then`.
-  it.skip('keeps authorization private when public methods and shared prototypes are replaced', async () => {
+  it('keeps authorization private when public methods and shared prototypes are replaced', async () => {
     const host = browser();
     const client = await host.connect();
     runInContext(`
@@ -291,13 +298,13 @@ describe('shared connection permission isolation', () => {
         () => { Promise.prototype.then = function () { exposed.push(this); }; },
         () => { Object.fromEntries = () => ({ granted: true }); },
         () => { Uint8Array.prototype.set = function () { exposed.push(this); }; },
+        () => { EventTarget.prototype.addEventListener = function () { throw new Error('listener intercepted'); }; },
       ]) { try { poison(); } catch {} }
       globalThis.WebSocket = function () { throw new Error('constructor intercepted'); };
       performance.now = () => { exposed.push('clock'); throw new Error('clock intercepted'); };
       globalThis.performance = { now() { exposed.push('clock'); throw new Error('clock replaced'); } };
       window.WebSocket.prototype.send = function () { throw new Error('send intercepted'); };
       window.WebSocket.prototype.close = function () { throw new Error('close intercepted'); };
-      EventTarget.prototype.addEventListener = function () { throw new Error('listener intercepted'); };
       Reflect.defineProperty(MessageEvent.prototype, 'data', { get() { throw new Error('data intercepted'); } });
       for (const name of ['port1', 'port2']) {
         Reflect.defineProperty(MessageChannel.prototype, name, { get() { throw new Error('channel intercepted'); } });

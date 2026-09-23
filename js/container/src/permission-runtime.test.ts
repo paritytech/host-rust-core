@@ -44,10 +44,6 @@ function browser() {
 }
 
 describe('permission runtime protection', () => {
-  // TODO: re-enable once built-in prototypes are locked again in a way that still lets
-  // subclasses shadow inherited methods, such as React's Flight client assigning `then`.
-  const unprotectedAttacks = new Set(['pending request callbacks', 'compiled private fields']);
-
   for (const [name, attack] of [
     ['pending request callbacks', `
       const original = Map.prototype.set;
@@ -89,9 +85,11 @@ describe('permission runtime protection', () => {
       };
     `],
   ]) {
-    (unprotectedAttacks.has(name!) ? it.skip : it)(`keeps a host denial intact after attempts to replace ${name}`, async () => {
+    it(`keeps a host denial intact after attempts to replace ${name}`, async () => {
       const context = browser();
-      runInContext(attack!, context);
+      runInContext(`
+        try { ${attack} } catch (error) { if (!(error instanceof TypeError)) throw error; }
+      `, context);
       expect(await runInContext('authorize()', context)).toEqual({ granted: false });
     });
   }
@@ -147,22 +145,116 @@ describe('permission runtime protection', () => {
     `, context)).toEqual({ text: '12 DOT', value: 12 });
   });
 
-  it('allows a strict-mode promise subclass to define its own then', () => {
+  it('allows React promise inheritance while preserving native then and host denial', async () => {
+    const context = browser();
+    expect(await runInContext(`
+      (async () => {
+        'use strict';
+        const nativeThen = Promise.prototype.then;
+        function ReactPromise() {}
+        ReactPromise.prototype = Object.create(Promise.prototype);
+        ReactPromise.prototype.then = function (resolve) { resolve('React is ready'); };
+        const delivered = await Promise.resolve(new ReactPromise());
+        let assignmentRejected = false;
+        try { Promise.prototype.then = () => ({ granted: true }); }
+        catch { assignmentRejected = true; }
+        return {
+          delivered,
+          hasOwnThen: Object.hasOwn(ReactPromise.prototype, 'then'),
+          unchanged: Promise.prototype.then === nativeThen,
+          frozen: Object.isFrozen(Promise.prototype),
+          assignmentRejected,
+          redefined: Reflect.defineProperty(Promise.prototype, 'then', { value: () => ({ granted: true }) }),
+        };
+      })();
+    `, context)).toEqual({
+      delivered: 'React is ready',
+      hasOwnThen: true,
+      unchanged: true,
+      frozen: true,
+      assignmentRejected: true,
+      redefined: false,
+    });
+    expect(await runInContext('authorize()', context)).toEqual({ granted: false });
+  });
+
+  it('allows Next and webpack array hooks while preserving native push and host denial', async () => {
+    const context = browser();
+    expect(runInContext(`
+      const nativePush = Array.prototype.push;
+      const delivered = [];
+      const flight = [];
+      (() => {
+        'use strict';
+        flight.push = (frame) => delivered.push(frame);
+        flight.push('server component');
+      })();
+      const chunks = [];
+      chunks.push = function (original, chunk) {
+        delivered.push(chunk);
+        return original(chunk);
+      }.bind(null, chunks.push.bind(chunks));
+      const length = chunks.push('module');
+      let assignmentRejected = false;
+      try { Array.prototype.push = () => ({ granted: true }); }
+      catch { assignmentRejected = true; }
+      ({ delivered, flight: [...flight], chunks: [...chunks], length, assignmentRejected,
+        unchanged: Array.prototype.push === nativePush,
+        frozen: Object.isFrozen(Array.prototype),
+        redefined: Reflect.defineProperty(Array.prototype, 'push', { value: () => ({ granted: true }) }) });
+    `, context)).toEqual({
+      delivered: ['server component', 'module'],
+      flight: [],
+      chunks: ['module'],
+      length: 1,
+      assignmentRejected: true,
+      unchanged: true,
+      frozen: true,
+      redefined: false,
+    });
+    expect(await runInContext('authorize()', context)).toEqual({ granted: false });
+  });
+
+  it('allows Buffer-style typed array overrides while preserving native methods and host denial', async () => {
     const context = browser();
     expect(runInContext(`
       (() => {
         'use strict';
-        function ReactPromise() {}
-        ReactPromise.prototype = Object.create(Promise.prototype);
-        ReactPromise.prototype.then = function () { return 'own then'; };
-        return new ReactPromise().then();
+        const prototype = Object.getPrototypeOf(Uint8Array.prototype);
+        const nativeToString = prototype.toString;
+        const nativeSlice = prototype.slice;
+        const nativeIterator = prototype[Symbol.iterator];
+        function ProductBuffer(...args) {
+          return Object.setPrototypeOf(new Uint8Array(...args), ProductBuffer.prototype);
+        }
+        Object.setPrototypeOf(ProductBuffer.prototype, Uint8Array.prototype);
+        Object.setPrototypeOf(ProductBuffer, Uint8Array);
+        ProductBuffer.prototype.toString = function () { return 'buffer:' + this.join(','); };
+        ProductBuffer.prototype.slice = function (start, end) {
+          return Reflect.apply(nativeSlice, this, [start, end]);
+        };
+        const buffer = new ProductBuffer([72, 105]);
+        buffer[Symbol.iterator] = function* () { yield this[1]; yield this[0]; };
+        return {
+          text: buffer.toString(), sliced: buffer.slice(1).toString(), iterated: [...buffer],
+          unchanged: prototype.toString === nativeToString && prototype.slice === nativeSlice &&
+            prototype[Symbol.iterator] === nativeIterator,
+          frozen: Object.isFrozen(prototype),
+          redefined: Reflect.defineProperty(prototype, 'slice', { value: () => ({ granted: true }) }),
+        };
       })();
-    `, context)).toBe('own then');
+    `, context)).toEqual({
+      text: 'buffer:72,105',
+      sliced: 'buffer:105',
+      iterated: [105, 72],
+      unchanged: true,
+      frozen: true,
+      redefined: false,
+    });
+    expect(await runInContext('authorize()', context)).toEqual({ granted: false });
   });
 
-  // TODO: re-enable once built-in prototypes are locked again in a way that still lets
-  // subclasses shadow inherited methods, such as React's Flight client assigning `then`.
-  it.skip('keeps the shared native call protected when functions may have their own call', async () => {
+  it('keeps the shared native call protected when functions may have their own call', async () => {
     const context = browser();
     expect(runInContext(`
       const nativeCall = Function.prototype.call;

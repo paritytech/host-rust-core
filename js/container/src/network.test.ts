@@ -729,9 +729,7 @@ describe('container fetch authorization', () => {
     expect(realm.requests).toEqual([]);
   });
 
-  // TODO: re-enable once built-in prototypes are locked again in a way that still lets
-  // subclasses shadow inherited methods, such as React's Flight client assigning `then`.
-  it.skip('keeps decisions private when product code replaces transport and codec primitives', async () => {
+  it('keeps decisions private when product code replaces transport and codec primitives', async () => {
     const authorized: string[] = [];
     const realm = browser(
       (url) => {
@@ -743,9 +741,15 @@ describe('container fetch authorization', () => {
     );
     runInContext(
       `
-      WebSocket.prototype.send = function () { throw new Error('intercepted socket'); };
-      EventTarget.prototype.addEventListener = function () { throw new Error('intercepted listener'); };
-      Reflect.defineProperty(MessageEvent.prototype, 'data', { get() { throw new Error('intercepted message'); } });
+      for (const poison of [
+        () => { WebSocket.prototype.send = function () { throw new Error('intercepted socket'); }; },
+        () => { EventTarget.prototype.addEventListener = function () { throw new Error('intercepted listener'); }; },
+        () => Reflect.defineProperty(MessageEvent.prototype, 'data', { get() { throw new Error('intercepted message'); } }),
+        () => { Uint8Array.prototype.set = function () { throw new Error('intercepted bytes'); }; },
+        () => { TextEncoder.prototype.encode = function () { throw new Error('intercepted URL'); }; },
+        () => { Map.prototype.set = function (key, value) { if (value.resolve) value.resolve(true); return this; }; },
+        () => { DataView.prototype.getUint8 = function () { return 1; }; },
+      ]) { try { poison(); } catch (error) { if (!(error instanceof TypeError)) throw error; } }
       const bytesPrototype = Object.getPrototypeOf(Uint8Array.prototype);
       for (const name of ['length', 'byteLength', 'byteOffset', 'buffer']) {
         try {
@@ -754,10 +758,6 @@ describe('container fetch authorization', () => {
           if (!(error instanceof TypeError)) throw error;
         }
       }
-      Uint8Array.prototype.set = function () { throw new Error('intercepted bytes'); };
-      TextEncoder.prototype.encode = function () { throw new Error('intercepted URL'); };
-      Map.prototype.set = function (key, value) { if (value.resolve) value.resolve(true); return this; };
-      DataView.prototype.getUint8 = function () { return 1; };
     `,
       realm.context,
     );
@@ -985,13 +985,14 @@ describe('container fetch authorization', () => {
     runInContext(
       `
       const then = Promise.prototype.then;
-      Promise.prototype.then = function (resolve) { resolve(true); };
-      const pending = window.fetch('https://denied.example/data');
+      try { Promise.prototype.then = function (resolve) { resolve(true); }; }
+      catch {}
+      const pending = window.deniedFetch = window.fetch('https://denied.example/data');
       Reflect.apply(then, pending, [() => {}, () => {}]);
     `,
       realm.context,
     );
-    await Promise.resolve();
+    await expect(realm.context.deniedFetch).rejects.toThrow('Network access is not allowed');
     expect(realm.requests).toEqual([]);
   });
 
@@ -1002,21 +1003,21 @@ describe('container fetch authorization', () => {
       const then = Promise.prototype.then;
       const NativePromise = Promise;
       let forge;
-      Promise.prototype.constructor = {
+      try { Promise.prototype.constructor = {
         [Symbol.species]: function (executor) {
           return new NativePromise((resolve, reject) => {
             executor(resolve, reject);
             forge = () => resolve(true);
           });
         },
-      };
-      const pending = window.fetch('https://denied.example/data');
+      }; } catch {}
+      const pending = window.deniedFetch = window.fetch('https://denied.example/data');
       if (forge) forge();
       Reflect.apply(then, pending, [() => {}, () => {}]);
     `,
       realm.context,
     );
-    await Promise.resolve();
+    await expect(realm.context.deniedFetch).rejects.toThrow('Network access is not allowed');
     expect(realm.requests).toEqual([]);
   });
 
