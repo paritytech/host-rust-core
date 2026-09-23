@@ -19,18 +19,9 @@ export function freezePermissionRuntime(): void {
     'MessageChannel', 'MessagePort', 'MessageEvent', 'EventTarget',
   ] as const) {
     const constructor = globalThis[name];
-    if (name !== 'Object') Object.freeze(constructor.prototype);
     Object.freeze(constructor);
     freezeValue(globalThis, name, constructor);
   }
-  for (const prototype of [
-    Object.getPrototypeOf(Uint8Array.prototype),
-    Object.getPrototypeOf(Uint8Array),
-    Object.getPrototypeOf([][Symbol.iterator]()),
-    Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())),
-    Object.getPrototypeOf(new Map()[Symbol.iterator]()),
-    Object.getPrototypeOf(new Set()[Symbol.iterator]()),
-  ]) Object.freeze(prototype);
   freezeValue(globalThis, 'Symbol', Symbol);
   freezeValue(globalThis, 'Reflect', Object.freeze(Reflect));
   freezeValue(globalThis, 'setTimeout', setTimeout);
