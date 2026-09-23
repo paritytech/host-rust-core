@@ -592,7 +592,8 @@ async fn serve_session(
     .await
 }
 
-/// Requests read ahead of the one being served before reading pauses.
+/// Queued requests at which reading pauses. A page already read is queued
+/// whole, so the queue can pass this by up to one page.
 const MAX_QUEUED_REQUESTS: usize = 64;
 
 /// Serve the requests in `pages` one at a time, reading on while each runs
@@ -616,7 +617,7 @@ where
         {
             serving.set(serve(incoming).fuse());
         }
-        // A full queue stops reading, as serving each request inline did.
+        // A full queue pauses reading, as serving each request inline did.
         if queue.len() >= MAX_QUEUED_REQUESTS {
             if let Some(exit) = serving.as_mut().await? {
                 return Ok(exit);

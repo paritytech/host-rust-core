@@ -106,8 +106,13 @@ impl SsoWithdrawals {
         if state.early.iter().any(|id| id == message_id) {
             return;
         }
-        if state.early.len() == MAX_EARLY_WITHDRAWALS {
-            state.early.pop_front();
+        if state.early.len() == MAX_EARLY_WITHDRAWALS
+            && let Some(forgotten) = state.early.pop_front()
+        {
+            tracing::warn!(
+                message_id = %forgotten,
+                "forgot an early SSO withdrawal; that request will be served in full"
+            );
         }
         state.early.push_back(message_id.to_string());
     }
