@@ -139,14 +139,13 @@ jobs:
         uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
           platform: iOS
-          # Both legs build the same commit, so either PR list is the same set.
           pr_list: ${{ needs.build_nightly.outputs.pr_list_markdown }}
           release_info: |
             Nightly: ${{ needs.build_nightly.outputs.marketing_version }} (${{ needs.build_nightly.outputs.build_number }})
           download_links_format: inline
           # The secret holds a ready-to-render markdown entry, label included, so
           # that an access hint stays out of this public repo. Safetynet ships from
-          # the app repository now, and no web page link is configured, so the
+          # the app repository, and no web page link is configured, so the
           # production TestFlight entry is the only one.
           download_links: |
             ${{ secrets.TESTFLIGHT_DISTRIBUTION_LINK }}
