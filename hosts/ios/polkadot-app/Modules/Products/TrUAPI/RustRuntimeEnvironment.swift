@@ -53,6 +53,18 @@ struct RustRuntimeEnvironment {
     ) throws -> ExecutionModel {
         try makeExecution(productId: productId, routers: routers, kind: .worker, chatMessaging: chatMessaging)
     }
+
+    /// Open a Pocket worker execution for `productId`. `pocket` is what the core
+    /// asks for the product's cards and removals through, so it is handed over
+    /// here rather than attached afterwards: the worker may list its cards as
+    /// soon as it connects.
+    func makePocketWorkerExecution(
+        productId: ProductId,
+        routers: ProductRoutersFacadeProtocol,
+        pocket: any PocketHostBridge
+    ) throws -> ExecutionModel {
+        try makeExecution(productId: productId, routers: routers, kind: .worker, pocket: pocket)
+    }
 }
 
 private extension RustRuntimeEnvironment {
@@ -60,7 +72,8 @@ private extension RustRuntimeEnvironment {
         productId: ProductId,
         routers: ProductRoutersFacadeProtocol,
         kind: ProductExecutionKind,
-        chatMessaging: (any ProductChatMessaging)? = nil
+        chatMessaging: (any ProductChatMessaging)? = nil,
+        pocket: (any PocketHostBridge)? = nil
     ) throws -> ExecutionModel {
         let chainConnections = TrUAPIChainConnectionPool(
             engineResolver: { [chainRegistry] genesisHash in
@@ -87,7 +100,8 @@ private extension RustRuntimeEnvironment {
         let execution = try runtime.openProductExecution(
             bridge: bridge,
             configuration: ProductExecutionConfig(productId: productId, executionKind: kind),
-            chat: chatBridge
+            chat: chatBridge,
+            pocket: pocket
         )
 
         bridge.attach(execution)

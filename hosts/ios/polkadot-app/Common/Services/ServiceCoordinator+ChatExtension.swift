@@ -43,6 +43,13 @@ extension ServiceCoordinator {
             )
         }
 
+        PocketWorkerFacade.shared.install(
+            runtimeProvider: truapiRuntimeProvider,
+            flowState: spaFlowState,
+            productFileProvider: productFileProvider,
+            chainRegistry: ChainRegistryFacade.sharedRegistry
+        )
+
         let botFactory = ProductBotFactory(
             productFileProvider: productFileProvider,
             chainRegistry: ChainRegistryFacade.sharedRegistry,
