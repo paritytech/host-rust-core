@@ -26,11 +26,10 @@ use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoinageWalletHost, CoreAdmin, CoreStorage,
     CoreStorageKey, Features, HopProvider, HostInfo, JsonRpcConnection, LocaleHost,
     NativeChatFileExportRequest, NativeChatFilePickRequest, NativeChatFilesHost,
-    NativeChatPickedFile, NativeCoinageRequest, NativeCoinageResponse, Navigation,
-    Notifications, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
-    PermissionDecision, Permissions, PlatformInfo, PreimageHost, ProductContext,
-    ProductExecutionKind, ProductOperations, ProductStorage, RuntimeConfigValidationError,
-    SigningHostConfig, ThemeHost, UserConfirmation,
+    NativeChatPickedFile, NativeCoinageRequest, NativeCoinageResponse, Navigation, Notifications,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision, Permissions,
+    PlatformInfo, PreimageHost, ProductContext, ProductExecutionKind, ProductOperations,
+    ProductStorage, RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 
