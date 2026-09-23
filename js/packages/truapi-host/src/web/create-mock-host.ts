@@ -22,8 +22,7 @@
 import { blake2b } from "@noble/hashes/blake2.js";
 import { err, ok } from "neverthrow";
 
-import { scale, SignedStatement } from "@parity/truapi";
-import type { SignedStatement as SignedStatementValue } from "@parity/truapi";
+import { scale } from "@parity/truapi";
 
 import type {
   ChatMessageContent,
@@ -97,7 +96,9 @@ const CORE_PRODUCT_STORAGE_KEY = /^truapi:product-storage:v\d+:\d+:[^:]+:(.+)$/;
  */
 import {
   createLoopbackStatements,
+  decodeStatement,
   encodeStatement,
+  TOPIC_FIELD_TAGS,
 } from "./loopback-statements.js";
 import type {
   LoopbackStatements,
@@ -983,19 +984,20 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
 
   /** Decode a retained statement into the shape a suite reads. */
   const asEntry = (statement: RetainedStatement): StatementEntry => {
-    let decoded: SignedStatementValue | undefined;
-    try {
-      decoded = SignedStatement.dec(scale.hexToBytes(statement.encoded));
-    } catch {
-      // An undecodable statement is still reported, with nothing claimed about
-      // its contents: a suite chasing one it injected by hand has something to
-      // see, where dropping it looks like the injection never happened.
-      decoded = undefined;
-    }
-    const proof = decoded?.proof;
+    // An undecodable statement is still reported, with nothing claimed about
+    // its contents: a suite chasing one it injected by hand has something to
+    // see, where dropping it looks like the injection never happened.
+    const fields = decodeStatement(statement.encoded) ?? [];
+    const proof = fields.find((field) => field.tag === "Proof")?.value as
+      | { tag: string; value: { signature: string; signer: string } }
+      | undefined;
     return {
-      topics: decoded?.topics.map((topic) => topic.toLowerCase()) ?? [],
-      data: decoded?.data,
+      topics: fields
+        .filter((field) => TOPIC_FIELD_TAGS.includes(field.tag))
+        .map((field) => String(field.value).toLowerCase()),
+      data: fields.find((field) => field.tag === "Data")?.value as
+        | string
+        | undefined,
       proof:
         proof && proof.tag !== "OnChain"
           ? { signature: proof.value.signature, signer: proof.value.signer }

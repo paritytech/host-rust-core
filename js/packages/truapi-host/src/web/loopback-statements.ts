@@ -7,7 +7,7 @@
 // accepted here is not registered anywhere, so a real store would refuse what
 // this one takes.
 
-import { SignedStatement } from "@parity/truapi";
+import { scale, StatementProof } from "@parity/truapi";
 
 /** A live `statement_subscribeStatement`, and what it asked for. */
 interface Subscription {
@@ -33,6 +33,53 @@ function bytes(value: string): Uint8Array {
 }
 
 /**
+ * One field of a statement, as the statement store encodes it.
+ *
+ * The store takes a SCALE vector of tagged fields, not a struct: the protocol's
+ * own `SignedStatement` is a different encoding of the same information and
+ * decoding one as the other yields nothing. Topics are separate fields rather
+ * than a list, which is why there can be at most four.
+ *
+ * Upstream: `substrate/primitives/statement-store/src/lib.rs`.
+ */
+const StatementField = scale.TaggedUnion({
+  Proof: StatementProof,
+  DecryptionKey: scale.Hex(32),
+  Expiry: scale.u64,
+  Channel: scale.Hex(32),
+  Topic1: scale.Hex(32),
+  Topic2: scale.Hex(32),
+  Topic3: scale.Hex(32),
+  Topic4: scale.Hex(32),
+  Data: scale.Hex(),
+});
+
+/** A statement on the wire: the fields it carries, in encoding order. */
+const StatementFields = scale.Vector(StatementField);
+
+/** The field tags that carry a topic, in the order they encode. */
+export const TOPIC_FIELD_TAGS: readonly string[] = [
+  "Topic1",
+  "Topic2",
+  "Topic3",
+  "Topic4",
+];
+
+/** The same tags, typed for indexing when encoding. */
+const TOPIC_TAGS = ["Topic1", "Topic2", "Topic3", "Topic4"] as const;
+
+/** Fields of a statement, or `undefined` when it will not decode. */
+export function decodeStatement(
+  encoded: string,
+): ReturnType<typeof StatementFields.dec> | undefined {
+  try {
+    return StatementFields.dec(bytes(encoded));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Topics of a submitted statement, or `undefined` when it will not decode.
  *
  * An undecodable statement is still delivered, to everything: a suite chasing
@@ -40,13 +87,11 @@ function bytes(value: string): Uint8Array {
  * product never submitted.
  */
 function topicsOf(encoded: string): string[] | undefined {
-  try {
-    return SignedStatement.dec(bytes(encoded)).topics.map((topic) =>
-      typeof topic === "string" ? topic.toLowerCase() : hex(topic),
-    );
-  } catch {
-    return undefined;
-  }
+  const fields = decodeStatement(encoded);
+  if (!fields) return undefined;
+  return fields
+    .filter((field) => (TOPIC_TAGS as readonly string[]).includes(field.tag))
+    .map((field) => String(field.value).toLowerCase());
 }
 
 /** One statement the store retained, and where it came from. */
@@ -85,14 +130,27 @@ const UNVERIFIED_PROOF = {
 
 /** Encode `input` the way a product's submission arrives. */
 export function encodeStatement(input: StatementInput): string {
+  if (input.topics.length > TOPIC_TAGS.length) {
+    // The store has four topic fields and no fifth, so a statement carrying
+    // more cannot be encoded at all. Refused here rather than silently losing
+    // the ones past the fourth, which a suite would read as a filter that
+    // failed to match.
+    throw new Error(
+      `testHost injectStatement: a statement carries at most ` +
+        `${TOPIC_TAGS.length} topics, and this one has ${input.topics.length}.`,
+    );
+  }
   return hex(
-    SignedStatement.enc({
-      proof: UNVERIFIED_PROOF,
-      topics: input.topics.map((topic) => topic as `0x${string}`),
+    StatementFields.enc([
+      { tag: "Proof", value: UNVERIFIED_PROOF },
+      ...input.topics.map((topic, index) => ({
+        tag: TOPIC_TAGS[index]!,
+        value: topic as `0x${string}`,
+      })),
       ...(input.data === undefined
-        ? {}
-        : { data: input.data as `0x${string}` }),
-    }),
+        ? []
+        : [{ tag: "Data" as const, value: input.data as `0x${string}` }]),
+    ] as Parameters<typeof StatementFields.enc>[0]),
   );
 }
 
