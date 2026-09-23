@@ -291,6 +291,25 @@ jobs:
 
   # Announced the way the iOS nightly is, through the same relay and into the
   # same room.
+
+      # A release can be created with the upload having quietly failed,
+      # leaving a tag that looks published and a consumer that gets a 404.
+      # Read the asset back rather than trusting that it uploaded.
+      - name: Confirm the published asset is present and not empty
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release-tag.outputs.tag }}
+          ASSET: app-gp-nightly.apk
+        run: |
+          set -euo pipefail
+          size="$(gh release view "$TAG" --json assets \
+            --jq "[.assets[] | select(.name == \"$ASSET\") | .size] | first // 0")"
+          if [ "$size" -le 0 ]; then
+            echo "::error::$ASSET is missing or empty on $TAG"
+            gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"' || true
+            exit 1
+          fi
+          echo "$ASSET published on $TAG, $size bytes"
   send-release-notification:
     name: Send Release Notification
     runs-on: ubuntu-latest

@@ -121,3 +121,22 @@ jobs:
             `app-nightly.apk` feeds the Android shard.
           prerelease: true
           files: ${{ steps.zip.outputs.archive }}
+
+      # A release can be created with the upload having quietly failed,
+      # leaving a tag that looks published and a consumer that gets a 404.
+      # Read the asset back rather than trusting that it uploaded.
+      - name: Confirm the published asset is present and not empty
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          ASSET: polkadot-app-simulator.app.zip
+        run: |
+          set -euo pipefail
+          size="$(gh release view "$TAG" --json assets \
+            --jq "[.assets[] | select(.name == \"$ASSET\") | .size] | first // 0")"
+          if [ "$size" -le 0 ]; then
+            echo "::error::$ASSET is missing or empty on $TAG"
+            gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"' || true
+            exit 1
+          fi
+          echo "$ASSET published on $TAG, $size bytes"
