@@ -12,6 +12,11 @@ extension View {
             .modifier(NodeBorderModifier(border: modifiers.border))
             // 4. Frame constraints (size / fill)
             .modifier(NodeFrameModifier(modifiers: modifiers))
+            // 5. Opacity, over the node and its background but under the margin.
+            // `.opacity(0)` only stops the drawing, so a node the product hid
+            // would still take the press: hit testing follows the opacity.
+            .opacity(modifiers.opacity ?? 1)
+            .allowsHitTesting((modifiers.opacity ?? 1) > 0)
             // 6. Outer margin
             .padding(modifiers.margin)
     }
