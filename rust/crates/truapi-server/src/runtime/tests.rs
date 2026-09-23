@@ -1,7 +1,7 @@
 //! Shared runtime fixtures and cross-capability integration tests.
 
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parity_scale_codec::Encode;
 use truapi::api::{
@@ -20,6 +20,7 @@ use truapi::versioned::account::{
 use truapi::versioned::chain::{
     RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
     RemoteChainTransactionBroadcastError, RemoteChainTransactionBroadcastRequest,
+    RemoteChainTransactionBroadcastResponse,
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
@@ -1290,6 +1291,31 @@ fn navigate_to_hands_a_product_destination_over_as_a_polkadot_url() {
     }
 }
 
+/// A navigation the product withdrew must not move the person anywhere.
+#[test]
+fn navigate_to_withdrawn_before_the_handoff_goes_nowhere() {
+    let platform = Arc::new(StubPlatform::default());
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("navigate-withdrawn".to_string(), cancel);
+    let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+        url: "mytestapp.dot".to_string(),
+    });
+
+    let result = futures::executor::block_on(host.navigate_to(&cx, request));
+
+    assert_eq!(
+        result,
+        Err(CallError::Domain(HostNavigateToError::V1(
+            v01::HostNavigateToError::Unknown {
+                reason: "navigation cancelled".to_string(),
+            }
+        )))
+    );
+    assert!(platform.navigations.lock().unwrap().is_empty());
+}
+
 /// A web address still arrives as `https://`, so the two stay distinguishable.
 #[test]
 fn navigate_to_hands_a_web_address_over_unchanged() {
@@ -1791,6 +1817,37 @@ fn push_notification_delegates_payload_and_returns_host_id() {
             scheduled_at: Some(1_776_144_000_000),
         }]
     );
+}
+
+/// A notification the product withdrew must not reach the person.
+#[test]
+fn push_notification_withdrawn_before_it_is_scheduled_is_never_shown() {
+    let pushed_notifications = Arc::new(Mutex::new(Vec::new()));
+    let platform = Arc::new(StubPlatform {
+        pushed_notifications: pushed_notifications.clone(),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("notification-withdrawn".to_string(), cancel);
+    let request = HostPushNotificationRequest::V1(v01::HostPushNotificationRequest {
+        text: "Hello".to_string(),
+        deeplink: None,
+        scheduled_at: None,
+    });
+
+    let result = futures::executor::block_on(host.send_push_notification(&cx, request));
+
+    assert_eq!(
+        result,
+        Err(CallError::Domain(HostPushNotificationError::V1(
+            v01::HostPushNotificationError::Unknown {
+                reason: "notification cancelled".to_string(),
+            }
+        )))
+    );
+    assert!(pushed_notifications.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -2841,6 +2898,131 @@ fn preimage_submit_requires_remote_permission_before_backend_call() {
     );
 }
 
+fn broadcast_request() -> RemoteChainTransactionBroadcastRequest {
+    RemoteChainTransactionBroadcastRequest::V1(v01::RemoteChainTransactionBroadcastRequest {
+        genesis_hash: vec![0; 32],
+        transaction: vec![1, 2, 3],
+    })
+}
+
+/// Only a `Cancel` frame turns the answer into `Cancelled`. A token the host
+/// fires itself still answers with the operation id, so the product is the one
+/// holding it and the broadcast must keep running.
+#[test]
+fn a_broadcast_the_host_cancels_itself_keeps_running() {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        rpc_method_responses: vec![
+            ("transaction_v1_broadcast", r#""REMOTE-OP""#.to_string()),
+            ("transaction_v1_stop", "null".to_string()),
+        ],
+        rpc_method_responses_gate: Arc::new(Mutex::new(Some(gate))),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("broadcast-timed-out".to_string(), cancel.clone());
+    let request = broadcast_request();
+    let call = std::thread::spawn(move || {
+        futures::executor::block_on(Chain::broadcast_transaction(&host, &cx, request))
+    });
+    wait_until(
+        || recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast") == 1,
+        "the broadcast was not sent",
+    );
+
+    cancel.cancel_with_reason(truapi::CancellationReason::TimedOut {
+        timeout: std::time::Duration::from_secs(1),
+    });
+    release.send(()).unwrap();
+    let RemoteChainTransactionBroadcastResponse::V1(response) =
+        call.join().expect("broadcast thread panicked").unwrap();
+
+    assert_eq!(
+        (
+            response.operation_id.is_some(),
+            recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_stop")
+        ),
+        (true, 0)
+    );
+}
+
+/// The product withdrew a broadcast that had already gone out, and the
+/// `Cancelled` it is answered with carries no operation id, so the host is the
+/// only one left that can stop it.
+#[test]
+fn a_broadcast_withdrawn_in_flight_is_stopped_by_the_host() {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        rpc_method_responses: vec![
+            ("transaction_v1_broadcast", r#""REMOTE-OP""#.to_string()),
+            ("transaction_v1_stop", "null".to_string()),
+        ],
+        rpc_method_responses_gate: Arc::new(Mutex::new(Some(gate))),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("broadcast-withdrawn".to_string(), cancel.clone());
+    let request = broadcast_request();
+    let call = std::thread::spawn(move || {
+        futures::executor::block_on(Chain::broadcast_transaction(&host, &cx, request))
+    });
+    wait_until(
+        || recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast") == 1,
+        "the broadcast was not sent",
+    );
+
+    cancel.cancel();
+    release.send(()).unwrap();
+    call.join().expect("broadcast thread panicked").unwrap();
+
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_stop"),
+        1
+    );
+}
+
+/// A call withdrawn before its broadcast went out must not send it.
+#[test]
+fn a_broadcast_withdrawn_before_it_is_sent_never_reaches_the_node() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("broadcast-withdrawn-early".to_string(), cancel);
+    let request = broadcast_request();
+
+    let result = Chain::broadcast_transaction(&host, &cx, request)
+        .now_or_never()
+        .expect("a withdrawn broadcast settles without waiting");
+
+    assert_eq!(
+        result,
+        Err(CallError::Domain(RemoteChainTransactionBroadcastError::V1(
+            v01::GenericError {
+                reason: "broadcast cancelled".to_string(),
+            }
+        )))
+    );
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast"),
+        0
+    );
+}
+
 #[test]
 fn chain_broadcast_requires_remote_permission_before_backend_call() {
     let platform = Arc::new(StubPlatform {
@@ -3742,6 +3924,81 @@ fn resource_allocation_respects_a_shorter_call_context_timeout() {
     wait_until(
         || recorded_rpc_method_count(&platform.sent_rpc, "statement_unsubscribeStatement") == 2,
         "timed-out resource allocation did not unsubscribe statement streams",
+    );
+}
+
+/// An allocation the person approves spends chain resources on the phone, so
+/// one the product withdrew while the prompt was open must never be sent.
+#[test]
+fn resource_allocation_withdrawn_at_the_prompt_is_never_requested() {
+    let (_release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        resource_allocation_confirmed: true,
+        resource_allocation_confirmation_gate: Mutex::new(Some(gate)),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    install_pairing_session(&host, sso_session_info());
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("alloc-withdrawn".to_string(), cancel.clone());
+    let mut call = Box::pin(ResourceAllocation::request(
+        &host,
+        &cx,
+        resource_allocation_request(),
+    ));
+    assert!(call.as_mut().now_or_never().is_none());
+    assert_eq!(
+        platform.resource_allocation_reviews.lock().unwrap().len(),
+        1
+    );
+
+    cancel.cancel();
+
+    let err = call
+        .as_mut()
+        .now_or_never()
+        .expect("a withdrawn call stops waiting on the prompt")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        CallError::Domain(HostRequestResourceAllocationError::V1(
+            v01::ResourceAllocationError::Unknown {
+                reason: "Account authority request cancelled for alloc-withdrawn".to_string(),
+            }
+        ))
+    );
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "statement_subscribeStatement"),
+        0
+    );
+}
+
+/// The unwind grace exists for a call that already started. One whose token
+/// fired before it got here must not be started just to be unwound.
+#[test]
+fn an_authority_call_withdrawn_before_it_starts_is_never_polled() {
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("withdrawn-before-start".to_string(), cancel);
+    let started = AtomicBool::new(false);
+    let call = async {
+        started.store(true, Ordering::SeqCst);
+        Ok::<(), AuthorityError>(())
+    };
+
+    let result = remote_authority_call(&cx, call)
+        .now_or_never()
+        .expect("a withdrawn call settles without waiting");
+
+    assert_eq!(
+        (result, started.load(Ordering::SeqCst)),
+        (
+            Err(AuthorityError::Cancelled(AuthorityCancelError::new(
+                "withdrawn-before-start",
+                CancellationReason::Cancelled,
+            ))),
+            false,
+        )
     );
 }
 
