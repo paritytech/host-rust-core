@@ -1,0 +1,40 @@
+# Posts one message through the notification relay, on demand.
+#
+# It reads the same three secrets the release announcements read, so it proves
+# the wiring without anyone holding the relay token: that the secrets resolve
+# inside a run, that a runner can reach the relay, and that the bot is in the
+# room it is asked to post to. Nothing else exercises that path until a nightly
+# runs.
+name: Notification smoke test
+
+# On demand only. No schedule, no push, no pull request: every run of this
+# workflow puts a message in a room people read.
+on:
+  workflow_dispatch:
+
+# One at a time, so a second click cannot produce a second message.
+concurrency:
+  group: notification-smoke-test
+  cancel-in-progress: true
+
+# The action talks to the relay and to nothing on GitHub.
+permissions: {}
+
+jobs:
+  send:
+    name: Send one test message
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send one message
+        uses: novasamatech/github-actions/send-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
+        with:
+          message: "Testing the new host-api bot, please ignore."
+          html_message: "Testing the new <b>host-api</b> bot, please ignore."
+          bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
+          bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
+          # One message per room this names. It holds one room today.
+          matrix_room_ids: ${{ secrets.CI_MATRIX_ROOM_IDS }}
+          # No retries. A delivery that succeeds but answers 5xx would otherwise
+          # be sent again, and one duplicate is worse here than one failure.
+          retry_count: "0"
