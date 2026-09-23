@@ -41,6 +41,8 @@ authorized product first lists `peopl.<network suffix>` (for example,
 `peopl.paseo`). The first listing reads People-chain metadata; later listings
 reuse the saved registrations, including after restart. Registration makes the
 handles discoverable; proof creation still checks permission and ring membership.
+The `listRingVrfKeys` example checks that both built-in keys are discoverable
+under `peopl.paseo` on Paseo.
 
 Product scripts and `truapi-host dev` use the same web API permission checks from `js/container`. Dev loads the container through a blocking script tag in your existing browser. Scripts run in Bun and retain filesystem, environment and process access.
 
