@@ -59,20 +59,7 @@ pub trait FrameSink: Send + Sync {
 /// the frame path and must not fail the operation that produced the event, so a
 /// slow, absent, or crashed debugger only loses the trace, never a session.
 pub trait DebugSink: Send + Sync {
-    /// Hand one event to the sink.
-    ///
-    /// Must not block and must not panic: `emit` runs inside the inbound and
-    /// outbound frame paths, so either one costs the caller a live dispatch.
-    /// Serialize and enqueue only.
-    ///
-    /// A sink that may be slow owns its own queue and returns immediately. The
-    /// core does not wrap sinks in one, because on wasm32 the drain needs the
-    /// same single-threaded loop a hung `emit` is already blocking, so the hop
-    /// would cost every well-behaved sink without fixing the case it targets.
-    ///
-    /// `emit_debug` contains a panic at both tap sites where the profile
-    /// allows it; see the sink contract in the wire-debugger design doc (§2)
-    /// for what that does and does not guarantee.
+    /// Hand one event to the sink. Serialize and enqueue only; never block.
     fn emit(&self, event: DebugEvent);
 }
 
