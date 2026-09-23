@@ -268,12 +268,12 @@ pub trait Account: Send + Sync {
     /// });
     /// assert(registration.isOk(), "registerRingVrfKey failed:", registration);
     ///
-    /// const result = await truapi.account.listRingVrfKeys({
+    /// const ownKeys = await truapi.account.listRingVrfKeys({
     ///   owner: productContext.value.productId,
     ///   disclosure: "PublicKey",
     /// });
-    /// assert(result.isOk(), "listRingVrfKeys failed:", result);
-    /// const entry = result.value.find(
+    /// assert(ownKeys.isOk(), "listRingVrfKeys failed:", ownKeys);
+    /// const entry = ownKeys.value.find(
     ///   (candidate) =>
     ///     candidate.handle.dotNsIdentifier === productContext.value.productId &&
     ///     candidate.handle.derivationIndex.value === index.value,
@@ -281,6 +281,21 @@ pub trait Account: Send + Sync {
     /// assert(
     ///   entry?.publicKey === registration.value,
     ///   "registered key missing from listRingVrfKeys:",
+    ///   ownKeys.value,
+    /// );
+    ///
+    /// const result = await truapi.account.listRingVrfKeys({
+    ///   owner: "peopl.paseo",
+    ///   disclosure: "Anonymized",
+    /// });
+    /// assert(result.isOk(), "listRingVrfKeys failed:", result);
+    /// assert(
+    ///   [0, 1].every((i) => result.value.some(({ handle }) =>
+    ///     handle.dotNsIdentifier === "peopl.paseo"
+    ///     && handle.derivationIndex.tag === "Index"
+    ///     && handle.derivationIndex.value === i,
+    ///   )),
+    ///   "Expected built-in full and lite personhood keys:",
     ///   result.value,
     /// );
     /// console.log("registered ring VRF keys:", result.value);
