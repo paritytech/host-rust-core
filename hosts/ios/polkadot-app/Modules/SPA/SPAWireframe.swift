@@ -42,11 +42,30 @@ final class SPAWireframe: SPAWireframeProtocol, ChatNavigating {
         view.controller.present(sheet.controller, animated: true)
     }
 
-    func minimize() {
+    func minimize(from view: ControllerBackedProtocol?) {
+        guard !dismissIfPresented(view) else { return }
+
         UIApplication.shared.mainTabBarController?.minimizeSPA()
     }
 
-    func close(tabId: UUID) {
+    func close(tabId: UUID?, from view: ControllerBackedProtocol?) {
+        guard !dismissIfPresented(view) else { return }
+        guard let tabId else { return }
+
         UIApplication.shared.mainTabBarController?.closeSPA(tabId: tabId)
+    }
+
+    /// A product opened from a Pocket card is presented in its own stack rather
+    /// than mounted in the tab container, so it is dismissed here. Everything
+    /// else belongs to the browser and is handed back to it.
+    private func dismissIfPresented(_ view: ControllerBackedProtocol?) -> Bool {
+        let controller = view?.controller
+        let presenting = controller?.navigationController?.presentingViewController
+            ?? controller?.presentingViewController
+
+        guard let presenting else { return false }
+
+        presenting.dismiss(animated: true)
+        return true
     }
 }

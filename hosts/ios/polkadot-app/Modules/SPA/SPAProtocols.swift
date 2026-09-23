@@ -58,6 +58,6 @@ protocol SPAWireframeProtocol: AlertPresentable, ErrorPresentable {
         chatId: Chat.Id
     )
 
-    func minimize()
-    func close(tabId: UUID)
+    func minimize(from view: ControllerBackedProtocol?)
+    func close(tabId: UUID?, from view: ControllerBackedProtocol?)
 }
