@@ -3269,11 +3269,8 @@ async fn import_mnemonic_session(
             )
         })?;
 
-    let signer = accounts::persist_imported_signer(
-        &profile.account_base_path,
-        session.network.id,
-        &imported,
-    )?;
+    let signer =
+        accounts::persist_imported_signer(&profile.account_base_path, session.network, &imported)?;
     let account_name = signer
         .account_name
         .as_deref()
