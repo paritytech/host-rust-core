@@ -67,6 +67,7 @@ jobs:
           # The caller already checked out, and this action's own checkout
           # cleans ignored files, which is everything the bootstrap generated.
           perform_checkout: "false"
+          build_configuration: "Nightly"
           ios_bundle_id: ${{ env.IOS_BUNDLE_ID }}
           ios_extension_bundle_id: ${{ env.IOS_EXTENSION_BUNDLE_ID }}
           provisioning_profile_specifier: ${{ env.PROVISIONING_PROFILE_SPECIFIER }}
