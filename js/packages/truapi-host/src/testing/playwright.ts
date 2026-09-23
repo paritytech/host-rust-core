@@ -197,6 +197,25 @@ export interface TestHost {
    * than the full namespaced string, which is an internal shape.
    */
   findProductStorage(key: string): Promise<Uint8Array | undefined>;
+  /**
+   * The SS58 address of a product account, at the prefix the core mandates.
+   *
+   * A product account is derived from the active session's root, so this
+   * answers `undefined` while the host is signed out and a different address
+   * after `switchAccount`. Read it here rather than out of the product's own
+   * UI: a suite funding that account, or asserting on it, should not depend on
+   * the product rendering it.
+   *
+   * Encoded at the prefix the core mandates, which is not necessarily the one
+   * the product displays: a product rendering at another prefix shows a
+   * different string for the same account. Compare against a product's own
+   * rendering by decoding both, and pass this to a faucet or a transfer as it
+   * stands.
+   */
+  getProductAccountAddress(
+    productId?: string,
+    index?: number,
+  ): Promise<string | undefined>;
   clearPreimages(): Promise<void>;
   getTheme(): Promise<string>;
   setTheme(variant: string): Promise<void>;
@@ -599,6 +618,8 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           );
           return match?.[1];
         },
+        getProductAccountAddress: (productId?: string, index?: number) =>
+          call("getProductAccountAddress", productId, index),
         getPreimages: async () => {
           const raw = await page.evaluate(() => {
             const host = window.__TRUAPI_TEST_HOST__;

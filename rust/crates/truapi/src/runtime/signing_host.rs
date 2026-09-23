@@ -359,6 +359,31 @@ impl SigningHost {
     /// The root keypair is recomputed per call (PBKDF2, 2048 rounds, via
     /// `substrate-bip39`) rather than cached: the signing host holds only the
     /// raw, zeroizable entropy, never an expanded secret key.
+    /// The product's hard-subtree public key, derived from the active session
+    /// root.
+    ///
+    /// A signing host holds the root, so it derives this rather than asking an
+    /// Account Holder for it the way a pairing host must, and answers the
+    /// `ProductAuthority` request of the same name from the same derivation.
+    /// `None` when no session is active: there is no root to derive from.
+    pub(crate) fn derive_subtree_public_key(
+        &self,
+        product_id: &str,
+    ) -> Result<Option<[u8; 32]>, AuthorityError> {
+        let Ok(entropy) = self.root_entropy() else {
+            return Ok(None);
+        };
+        let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
+        let product_id = normalize_product_identifier(product_id).map_err(|err| {
+            AuthorityError::Unavailable {
+                reason: err.to_string(),
+            }
+        })?;
+        let subtree =
+            derive_product_subtree_keypair(&root, &product_id).map_err(product_authority_error)?;
+        Ok(Some(subtree.public.to_bytes()))
+    }
+
     fn product_keypair_with_owner(
         &self,
         account: &v01::ProductAccountId,
