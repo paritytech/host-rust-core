@@ -41,9 +41,10 @@ const OWNER = "peopl.paseo";
 const GRANTED = "dim2.paseo";
 const UNTRUSTED = "stash.paseo";
 
-/// "pop:polkadot.network/people-lite", hex.
-const PEOPLE_LITE_COLLECTION_ID =
-  "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
+/// Collection ids are fixed 32-byte values: the collection name, space-padded.
+const PEOPLE_LITE_COLLECTION_ID: `0x${string}` = `0x${Buffer.from(
+  "pop:polkadot.network/people-lite".padEnd(32),
+).toString("hex")}`;
 
 const RING = {
   chainId: PASEO_NEXT_V2_INDIVIDUALITY.genesis,

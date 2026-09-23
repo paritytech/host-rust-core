@@ -1,7 +1,9 @@
 /// <reference path="../runner.ts" />
 
-const PEOPLE_COLLECTION_ID =
-  "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
+// Collection ids are fixed 32-byte values: the collection name, space-padded.
+const PEOPLE_COLLECTION_ID: `0x${string}` = `0x${Buffer.from(
+  "pop:polkadot.network/people-lite".padEnd(32),
+).toString("hex")}`;
 const peopleInfo = await truapi.chain.getChainInfo({ chain: "People" });
 if (!peopleInfo.isOk()) {
   throw new Error(`getChainInfo failed: ${JSON.stringify(peopleInfo.error)}`);
