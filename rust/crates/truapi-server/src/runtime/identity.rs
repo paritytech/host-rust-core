@@ -16,7 +16,7 @@ use web_time::Duration;
 
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::dotns_gateway::{
-    DotnsIdentity, classify_labels, discover_pop_controller, resolve_labels,
+    DotnsIdentity, DotnsTransport, classify_labels, discover_pop_controller, resolve_labels,
 };
 use crate::host_logic::session::SessionInfo;
 use crate::runtime::dotns_lookup::DotnsLookup;
@@ -172,6 +172,76 @@ async fn lookup_dotns_identity(
     .fuse();
     pin_mut!(lookup);
     lookup.await
+}
+
+/// Resolve the account's Lite identity, requiring gateway ownership as well as PoP provenance.
+pub(super) async fn lookup_local_identity(
+    chain: &ChainRuntime,
+    genesis: [u8; 32],
+    account: [u8; 32],
+) -> Result<DotnsIdentity, String> {
+    let operation = async {
+        let mut lookup = DotnsLookup::pinned_to_best_block(
+            chain,
+            genesis,
+            &format!("local-identity:{}", hex::encode(account)),
+        )
+        .await?;
+        let controller = discover_pop_controller(&mut lookup)
+            .await?
+            .ok_or("dotNS gateway is not deployed on the configured Asset Hub")?;
+        let labels = resolve_labels(&mut lookup, &controller, &account).await?;
+        let mut owned = Vec::new();
+        for label in labels {
+            if !crate::host_logic::dotns_gateway::is_dotted_lite_username(&label) {
+                continue;
+            }
+            let owner = lookup
+                .storage(crate::host_logic::dotns_gateway::lite_label_owner_key(
+                    label.as_bytes(),
+                ))
+                .await?;
+            let Some(owner) = owner else { continue };
+            let owner: [u8; 32] = owner
+                .as_slice()
+                .try_into()
+                .map_err(|_| "DotnsGateway.LiteLabelOwner is not a 32-byte account")?;
+            if owner == account {
+                owned.push(label);
+            }
+        }
+        classify_labels(&mut lookup, &controller, owned).await
+    }
+    .fuse();
+    let timeout = futures_timer::Delay::new(LOOKUP_BUDGET).fuse();
+    pin_mut!(operation, timeout);
+    futures::select! {
+        result = operation => result,
+        () = timeout => Err("dotNS identity lookup timed out".to_string()),
+    }
+}
+
+/// Read the reservation timestamp from Asset Hub rather than the browser clock.
+pub(super) async fn registration_timestamp(
+    chain: &ChainRuntime,
+    genesis: [u8; 32],
+    account: [u8; 32],
+) -> Result<u64, String> {
+    let mut lookup = DotnsLookup::pinned_to_best_block(
+        chain,
+        genesis,
+        &format!("registration:{}", hex::encode(account)),
+    )
+    .await?;
+    let value = lookup
+        .storage(crate::host_logic::dotns_gateway::timestamp_now_key())
+        .await?
+        .ok_or("Timestamp.Now is unset")?;
+    let millis: [u8; 8] = value
+        .as_slice()
+        .try_into()
+        .map_err(|_| "Timestamp.Now is not a u64")?;
+    Ok(u64::from_le_bytes(millis) / 1000)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

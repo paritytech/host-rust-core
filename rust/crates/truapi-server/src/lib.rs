@@ -71,7 +71,10 @@ pub use native_debug::{DebugSinkError, WsDebugSink};
 pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;
 pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
+// These helpers use injected host RPC on both native and browser targets.
+// Only the direct-URL RPC constructor is native-only.
 pub use runtime::statement_allowance;
+pub use runtime::{LocalIdentity, LocalIdentityContext};
 pub use runtime::{
     AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
     PairingProposal, PairingProposalMetadata, ResponderExit,

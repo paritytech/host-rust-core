@@ -16,6 +16,8 @@ rust/crates/
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
+  truapi-polkavm-host/  optional native composition pinned to
+                        paritytech/polkavm-host-runtime
   truapi-host-cli/       CLI pairing/signing hosts; Bun scripts share the container web API gates
 js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
@@ -79,6 +81,13 @@ scripts/cli-runner-package.test.ts
 .github/registry-drift-exceptions.json
                            documents intentionally unpublished npm package versions
 ```
+
+The PolkaVM runtime implementation, wire crates, browser package, and ABI
+contract live in `paritytech/polkavm-host-runtime`. The base `truapi-server`
+must remain PolkaVM-free. Native integrations use the optional
+`truapi-polkavm-host` composition crate; browser integrations consume
+`@parity/polkavm-browser-runtime` directly. Never copy or export browser assets
+from this repository.
 
 ### Crate + binding invariants
 

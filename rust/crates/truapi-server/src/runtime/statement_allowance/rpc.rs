@@ -16,10 +16,11 @@ use super::StatementAllowanceError;
 /// Timeout for an allowance registration extrinsic to reach a block.
 const SUBMIT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Error from the native JSON-RPC surface used by allowance allocation.
+/// Error from the host-backed JSON-RPC surface used by allowance allocation.
 #[derive(Debug, Error)]
 pub enum RpcError {
     /// Opening a direct RPC URL failed.
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("connect {url}: {source}")]
     Connect {
         /// RPC URL.

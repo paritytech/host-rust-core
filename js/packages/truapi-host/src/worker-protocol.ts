@@ -50,6 +50,18 @@ export type {
  */
 export type CallbackArgs = readonly unknown[];
 
+/** Chain-verified identity metadata for the wallet's network-specific UID account. */
+export interface LocalIdentity {
+  /** Canonical lowercase 0x-prefixed 32-byte account identifier. */
+  identityAccountId: string;
+  liteUsername?: string;
+}
+
+/** Observable registration stages; acceptance is not verified ownership. */
+export type LocalIdentityProgress =
+  | { stage: "checking" | "authenticating" | "submitting" | "confirming" }
+  | { stage: "retrying"; error: string };
+
 /**
  * Messages posted by the main window to the WASM worker. These either control
  * worker/core lifecycle, forward encoded TrUAPI frames into the core, or return
@@ -114,6 +126,19 @@ export type MainToWorker =
       granted: boolean;
     }
   | { kind: "resetSessionState"; requestId: number }
+  | {
+      kind: "activateLocalSessionWithIdentity";
+      requestId: number;
+      secret: Uint8Array;
+      liteUsername?: string;
+    }
+  | { kind: "refreshLocalIdentity"; requestId: number }
+  | {
+      kind: "registerLocalLiteUsername";
+      requestId: number;
+      baseUsername: string;
+      identityBackendBaseUrl: string;
+    }
   | {
       kind: "getPermissionAuthorizationStatus";
       productId: string;
@@ -210,6 +235,23 @@ export type WorkerToMain =
   | { kind: "sessionActivationResponse"; requestId: number; ok: true }
   | {
       kind: "sessionActivationResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
+      kind: "localIdentityProgress";
+      requestId: number;
+      progress: LocalIdentityProgress;
+    }
+  | {
+      kind: "localIdentityResponse";
+      requestId: number;
+      ok: true;
+      identity: LocalIdentity;
+    }
+  | {
+      kind: "localIdentityResponse";
       requestId: number;
       ok: false;
       error: string;

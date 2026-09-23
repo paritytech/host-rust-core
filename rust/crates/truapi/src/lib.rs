@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "runtime"), no_std)]
 #![allow(
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
@@ -11,21 +12,35 @@
 //! still guarantee `Send` futures. Implementations must annotate their impl
 //! blocks with `#[truapi::async_trait]`.
 
-use core::convert::Infallible;
-use core::fmt;
-use core::future::Future;
-use core::mem;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
-use core::time::Duration;
-use std::sync::Arc;
-use std::sync::Mutex;
+extern crate alloc;
 
+use alloc::string::String;
+#[cfg(feature = "runtime")]
+use alloc::{boxed::Box, format, vec::Vec};
+use core::convert::Infallible;
+#[cfg(feature = "runtime")]
+use core::fmt;
+#[cfg(feature = "runtime")]
+use core::future::Future;
+#[cfg(feature = "runtime")]
+use core::mem;
+#[cfg(feature = "runtime")]
+use core::pin::Pin;
+#[cfg(feature = "runtime")]
+use core::task::{Context, Poll, Waker};
+#[cfg(feature = "runtime")]
+use core::time::Duration;
+#[cfg(feature = "runtime")]
+use std::sync::{Arc, Mutex};
+
+#[cfg(feature = "runtime")]
 use futures::Stream;
 use parity_scale_codec::{Decode, Encode};
 
+#[cfg(feature = "runtime")]
 pub use async_trait::async_trait;
 
+#[cfg(feature = "runtime")]
 pub mod api;
 pub mod v01;
 pub mod v02;
@@ -277,17 +292,20 @@ pub type FrameworkOnlyError = CallError<Infallible>;
 /// when a runtime explicitly cancels it, or when an attached timeout elapses.
 /// Subscription runtimes can cancel this token when the peer sends `_stop` or
 /// disconnects.
+#[cfg(feature = "runtime")]
 #[derive(Clone, Default)]
 pub struct CancellationToken {
     inner: Arc<CancellationInner>,
 }
 
 #[derive(Default)]
+#[cfg(feature = "runtime")]
 struct CancellationInner {
     state: Mutex<CancellationState>,
 }
 
 #[derive(Default)]
+#[cfg(feature = "runtime")]
 struct CancellationState {
     reason: Option<CancellationReason>,
     next_id: u64,
@@ -295,6 +313,7 @@ struct CancellationState {
 }
 
 /// Cause attached to a cancelled call.
+#[cfg(feature = "runtime")]
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
 pub enum CancellationReason {
     /// The caller or runtime explicitly cancelled the call.
@@ -309,6 +328,7 @@ pub enum CancellationReason {
 }
 
 /// Render a timeout as whole seconds when possible, milliseconds otherwise.
+#[cfg(feature = "runtime")]
 fn format_timeout(timeout: &Duration) -> String {
     if timeout.subsec_millis() == 0 {
         format!("{}s", timeout.as_secs())
@@ -318,11 +338,13 @@ fn format_timeout(timeout: &Duration) -> String {
 }
 
 /// Future resolved when a [`CancellationToken`] is cancelled.
+#[cfg(feature = "runtime")]
 pub struct CancellationFuture {
     inner: Arc<CancellationInner>,
     id: Option<u64>,
 }
 
+#[cfg(feature = "runtime")]
 impl fmt::Debug for CancellationToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CancellationToken")
@@ -331,6 +353,7 @@ impl fmt::Debug for CancellationToken {
     }
 }
 
+#[cfg(feature = "runtime")]
 impl CancellationToken {
     /// Mark the token as cancelled.
     pub fn cancel(&self) {
@@ -376,6 +399,7 @@ impl CancellationToken {
     }
 }
 
+#[cfg(feature = "runtime")]
 impl Future for CancellationFuture {
     type Output = CancellationReason;
 
@@ -407,6 +431,7 @@ impl Future for CancellationFuture {
     }
 }
 
+#[cfg(feature = "runtime")]
 impl Drop for CancellationFuture {
     fn drop(&mut self) {
         let Some(id) = self.id.take() else {
@@ -421,6 +446,7 @@ impl Drop for CancellationFuture {
 }
 
 /// Ambient context passed to every trait method.
+#[cfg(feature = "runtime")]
 #[derive(Clone, Default)]
 pub struct CallContext {
     request_id: RequestId,
@@ -428,6 +454,7 @@ pub struct CallContext {
     timeout: Option<Duration>,
 }
 
+#[cfg(feature = "runtime")]
 impl CallContext {
     /// Construct a context bound to the given `request_id` with a fresh cancellation token.
     pub fn with_request_id(request_id: RequestId) -> Self {
@@ -475,10 +502,12 @@ impl CallContext {
 /// ends it: the runtime encodes that value as the `_interrupt` payload and
 /// polls no further. A stream that ends without an `Err` interrupts with
 /// `Ok(())`, which the peer reads as a normal completion.
+#[cfg(feature = "runtime")]
 pub struct Subscription<Item, Interrupt> {
     inner: Pin<Box<dyn Stream<Item = Result<Item, Interrupt>> + Send>>,
 }
 
+#[cfg(feature = "runtime")]
 impl<Item, Interrupt> Stream for Subscription<Item, Interrupt> {
     type Item = Result<Item, Interrupt>;
 
@@ -487,6 +516,7 @@ impl<Item, Interrupt> Stream for Subscription<Item, Interrupt> {
     }
 }
 
+#[cfg(feature = "runtime")]
 impl<Item, Interrupt> Subscription<Item, Interrupt> {
     /// Creates a subscription from a stream of items and at most one
     /// terminating interrupt.
@@ -512,7 +542,7 @@ impl<Item, Interrupt> Subscription<Item, Interrupt> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "runtime"))]
 mod tests {
     use super::*;
 

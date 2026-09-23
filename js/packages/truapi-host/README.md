@@ -11,7 +11,7 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | Import                               | Provides                                                                                                            |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
 | `@parity/truapi-host`                | Shared runtime types plus generated typed host callback contracts.                                                  |
-| `@parity/truapi-host/web`            | Browser pairing host: `createIframeHost` (iframe MessageChannel handshake) and `createWebWorkerPairingHostRuntime`. |
+| `@parity/truapi-host/web`            | Browser pairing and signing hosts: `createIframeHost`, `createWebWorkerPairingHostRuntime`, and `createWebWorkerSigningHostRuntime`. |
 | `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
 | `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
 | `@parity/truapi-host/testing`        | `createMockHost`: the in-memory host seam a product is tested against.                                              |
@@ -22,6 +22,9 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | `@parity/truapi-host/testing/host-page` | The browser half the fixture drives, for a suite that boots its own page.                                        |
 | `@parity/truapi-host/wasm/testing`   | The raw glue for the signing-enabled bundle the test host runs on.                                                  |
 
+The shipped WASM includes `WasmSigningHostRuntime`. Its configuration requires
+`runtimeConfig.networkSuffix`: the bare TLD (`dot`, `paseo`, or `testnet`)
+matching the People chain and the wallet's onboarding configuration.
 `scripts/build-wasm.mjs` builds two WASM bundles, both `--no-default-features`.
 `wasm/web` is the production browser host and excludes
 `WasmSigningHostRuntime`; `wasm/testing` adds the Rust `wasm-signing-host` and
@@ -41,6 +44,40 @@ from the dotNS contracts deployed there, so it is what makes a
 so every cross-product grant not already cached is refused, and the refusal is
 indistinguishable from the other product having granted nothing. A config
 omitting it is rejected.
+
+When a product requests a Statement Store allowance, the signing runtime first
+uses `confirmUserAction` for host-owned approval UI, then registers the
+product-scoped allowance account through the platform's People-chain
+connection. Registration requires the activated wallet root to belong to an
+eligible personhood ring. A randomly generated browser account can still sign,
+but it cannot spend another identity's personhood allowance; use a pairing host
+with the mobile Account Holder when that identity remains on the phone.
+
+After activating a local signing session, call `refreshLocalIdentity()` to read
+the configured Asset Hub's dotNS ownership and install verified username
+metadata. `registerLocalLiteUsername(baseUsername, identityBackendBaseUrl, onProgress?)`
+authenticates to the identity backend with native UID proofs, submits the
+registration with the real RFC-0004 X25519 identifier key and Asset Hub time,
+then monitors chain ownership until it is confirmed or the activation is
+disconnected/replaced. Backend acceptance alone is not registration success.
+Slow confirmation and transient chain-read failures do not resubmit the claim
+or require repeated manual refreshes.
+
+The optional callback receives `LocalIdentityProgress` (exported from
+`@parity/truapi-host/web`): `checking`, `authenticating`, `submitting`,
+`confirming`, or `retrying` with a chain-read `error`. Stages reflect actual
+work, not elapsed-time estimates. `confirming` means the backend accepted
+the request, not that the username is owned yet; only the resolved promise
+confirms ownership. A retry does not submit another registration. Observer
+exceptions do not interrupt the operation, and settled or disposed requests
+receive no further progress.
+
+Both methods return `LocalIdentity` (exported from `@parity/truapi-host/web`):
+the canonical lowercase `0x`-prefixed `identityAccountId` and an optional verified
+`liteUsername`. The backend must allow the worker's origin, or the host must
+provide an approved same-origin proxy. Secret material stays in the signing
+runtime. Disconnecting or replacing the local activation invalidates an
+in-flight identity operation; concurrent identity operations are rejected.
 
 ## Bundler requirements
 

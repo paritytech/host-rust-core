@@ -1,4 +1,4 @@
-//! Lite-person username registration parameters (signing host, native only).
+//! Lite-person username registration parameters for signing hosts.
 //!
 //! Builds the client-side proofs the identity backend needs to
 //! attest a lite username for an account: an sr25519 proof-of-ownership, a
@@ -67,6 +67,57 @@ pub struct LiteRegistration {
     /// sr25519 signature over the dotNS gateway reservation message. It
     /// authorizes `pallet_dotns_gateway::reserve_name` on Asset Hub.
     pub dotns_signature: [u8; 64],
+}
+
+impl LiteRegistration {
+    /// Encode the identity backend's registration body, sharing CLI and browser wire bytes.
+    pub fn request_body(
+        &self,
+        username_base: &str,
+        reserved_username: Option<&str>,
+        signed_at: u64,
+    ) -> serde_json::Value {
+        let hex0x = |bytes: &[u8]| format!("0x{}", hex::encode(bytes));
+        let mut dotns = serde_json::json!({
+            "signature": hex0x(&self.dotns_signature),
+            "signedAt": signed_at,
+        });
+        if let Some(reserved) = reserved_username {
+            dotns["reservedUsername"] = serde_json::json!(reserved);
+        }
+        serde_json::json!({
+            "username": username_base,
+            "candidateAccountId": self.candidate_account_id,
+            "candidateSignature": hex0x(&self.candidate_signature),
+            "ringVrfKey": hex0x(&self.ring_vrf_key),
+            "proofOfOwnership": hex0x(&self.proof_of_ownership),
+            "identifierKey": hex0x(&self.identifier_key),
+            "consumerRegistrationSignature": hex0x(&self.consumer_registration_signature),
+            "dotns": dotns,
+        })
+    }
+}
+
+/// Sign the backend auth challenge as the network's UID account, covering the exact body.
+pub fn sign_backend_challenge(
+    entropy: &[u8],
+    network_suffix: &str,
+    challenge: &[u8],
+    body: &[u8],
+) -> Result<([u8; 32], [u8; 64]), ProductAccountError> {
+    use sha2::{Digest as _, Sha256};
+    let keypair = derive_identity_keypair(entropy, network_suffix)?;
+    let client_id = keypair.public.to_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(challenge);
+    hasher.update(client_id);
+    hasher.update(Sha256::digest(body));
+    let message: [u8; 32] = hasher.finalize().into();
+    let proof = keypair
+        .secret
+        .sign_simple(SR25519_SIGNING_CONTEXT, &message, &keypair.public)
+        .to_bytes();
+    Ok((client_id, proof))
 }
 
 /// Error while building lite-person registration parameters.

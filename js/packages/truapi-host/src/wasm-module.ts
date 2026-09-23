@@ -4,6 +4,7 @@
 // these interfaces so the worker can name it in a statically analysable import.
 
 import type { PermissionAuthorizationRuntime } from "./worker-permission-authorization.js";
+import type { LocalIdentity } from "./worker-protocol.js";
 
 /** Cancellable handle on one live render stream inside the core. */
 export interface WorkerRendererSubscription {
@@ -43,15 +44,13 @@ export interface WorkerProductRuntime {
 /** What the host does with a product's worker after demand on it changed. */
 export type WorkerTransition = "Start" | "Stop";
 
-/** The long-lived pairing-host runtime product cores are created from. */
-export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime {
+/** Runtime operations shared by paired and browser-local signing hosts. */
+export interface WorkerHostRuntime extends PermissionAuthorizationRuntime {
   productRuntime(
     product: unknown,
     coreCallbacks: unknown,
   ): WorkerProductRuntime;
   disconnectSession(): Promise<void>;
-  cancelPairing(): void;
-  notifySessionStoreChanged(): void;
   sessionChatIdentityKey(): Uint8Array | undefined;
   deviceStatementKey(): Uint8Array | undefined;
   deviceEncryptionKey(): Promise<Uint8Array>;
@@ -59,9 +58,7 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
     productId: string,
     timeoutMs?: number,
   ): Promise<Uint8Array | undefined>;
-  activateStoredSession(): Promise<void>;
-  activateExternalSession(blob: Uint8Array): Promise<void>;
-  resetSessionState(): Promise<void>;
+  clearProductState(productId: string): Promise<void>;
   /**
    * Take one reference on the product's worker. The first one reports
    * `"Start"` through the runtime's `workerDemandChanged` callback.
@@ -74,26 +71,46 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   free(): void;
 }
 
+/** The long-lived pairing-host runtime product cores are created from. */
+export interface WorkerPairingHostRuntime extends WorkerHostRuntime {
+  cancelPairing(): void;
+  notifySessionStoreChanged(): void;
+  activateStoredSession(): Promise<void>;
+  activateExternalSession(blob: Uint8Array): Promise<void>;
+  resetSessionState(): Promise<void>;
+}
+
 /**
- * The signing-host runtime, present only in the `testing` WASM bundle.
+ * A browser-local signing host activated from caller-owned entropy.
  *
  * A signing host owns the user's keys and establishes sessions from local
- * entropy rather than by pairing with a wallet. The production `web` bundle is
- * built without it on purpose, so this is optional on the module surface.
+ * entropy rather than by pairing with a wallet. It is present only in a core
+ * built with `wasm-signing-host`; the production `web` bundle is built without
+ * it, which is why the constructor is optional on {@link WasmModuleShape}.
  */
-export interface WorkerSigningHostRuntime extends WorkerPairingHostRuntime {
+export interface WorkerSigningHostRuntime extends WorkerHostRuntime {
   activateLocalSession(secret: Uint8Array): Promise<void>;
   /**
    * Activate and give the session a display name, which is what
-   * `account.get_user_id` answers with. Optional: a core built before this
-   * entry point existed exposes only {@link activateLocalSession}.
+   * `account.get_user_id` answers with.
    */
+  activateLocalSessionWithIdentity(
+    secret: Uint8Array,
+    liteUsername?: string,
+  ): Promise<void>;
   /** Only on a core built with `wasm-signing-host`. */
   setGrantAllowancesUnchecked?(granted: boolean): void;
-  activateLocalSessionWithIdentity?(
-    secret: Uint8Array,
-    liteUsername?: string | null,
-  ): Promise<void>;
+  localIdentityContext(): { activationId: string; identityAccountId: string };
+  localIdentityAuthProof(
+    activationId: string,
+    challenge: Uint8Array,
+  ): Uint8Array;
+  localLiteRegistrationBody(
+    activationId: string,
+    usernameBase: string,
+    verifier: Uint8Array,
+  ): Promise<string>;
+  refreshLocalIdentity(activationId: string): Promise<LocalIdentity>;
 }
 
 /** Module surface the wasm-pack glue exports. */

@@ -10,13 +10,11 @@
 //! signing, v4 transaction construction (payload fields and extensions arrive
 //! pre-encoded, so no chain metadata is needed), RFC-0007 product entropy,
 //! bandersnatch ring-VRF aliases and membership proofs, and product-scoped
-//! Statement Store and Bulletin allowance keys (native only).
-
-// Allocation uses `track`; the renewal loop around it is driven by native
-// entry points only, so on wasm the rest of the module is not reached yet.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+//! Statement Store allowance keys (native and browser), and Bulletin allowance
+//! keys (native only).
 mod allowance_renewal;
 mod local_activation;
+mod local_identity;
 pub(super) mod ring_vrf;
 mod sso_replay;
 mod sso_responder;
@@ -34,6 +32,7 @@ pub use allowance_renewal::StatementRenewalTarget;
 #[cfg(not(target_arch = "wasm32"))]
 pub use allowance_renewal::TrackedStatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
+pub use local_identity::{LocalIdentity, LocalIdentityContext};
 pub use sso_responder::{
     AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
     PairingProposal, PairingProposalMetadata, ResponderExit,
@@ -752,6 +751,17 @@ impl SigningHost {
 #[async_trait::async_trait]
 impl ProductAuthority for SigningHost {
     fn current_session(&self) -> Option<AuthoritySession> {
+        self.current_local_session()
+    }
+
+    async fn refresh_session_identity(&self) -> Option<AuthoritySession> {
+        let context = self.local_identity_context().ok()?;
+        if let Err(error) = self.refresh_local_identity(&context.activation_id).await {
+            tracing::warn!(reason = %error.reason, "local dotNS identity refresh failed");
+        }
+        if self.local_identity_context().ok()?.activation_id != context.activation_id {
+            return None;
+        }
         self.current_local_session()
     }
 

@@ -32,6 +32,8 @@ import type { RawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type {
   CallbackName,
   HostRole,
+  LocalIdentity,
+  LocalIdentityProgress,
   MainToWorker,
   SubscriptionName,
   WorkerToMain,
@@ -44,6 +46,10 @@ export type WebWorkerHostConfig = Omit<
   ProductRuntimeConfig,
   "productId" | "executionKind"
 >;
+export type WebWorkerSigningHostConfig = WebWorkerHostConfig & {
+  /** Bare dotNS network suffix (`dot`, `paseo`, or `testnet`). */
+  networkSuffix: string;
+};
 
 export interface WorkerPairingHostRuntime {
   /**
@@ -133,6 +139,28 @@ export interface WorkerPairingHostRuntime {
   setLogLevel(level: LogLevel): void;
   dispose(): void;
 }
+export interface WorkerSigningHostRuntime extends Omit<
+  WorkerPairingHostRuntime,
+  | "cancelPairing"
+  | "notifySessionStoreChanged"
+  | "activateStoredSession"
+  | "activateExternalSession"
+  | "resetSessionState"
+> {
+  activateLocalSession(secret: Uint8Array): Promise<void>;
+  activateLocalSessionWithIdentity(
+    secret: Uint8Array,
+    liteUsername?: string,
+  ): Promise<void>;
+  /** Read dotNS ownership and install verified metadata into the native session. */
+  refreshLocalIdentity(): Promise<LocalIdentity>;
+  /** Complete native UID auth/proofs and wait for on-chain ownership confirmation. */
+  registerLocalLiteUsername(
+    baseUsername: string,
+    identityBackendBaseUrl: string,
+    onProgress?: (progress: LocalIdentityProgress) => void,
+  ): Promise<LocalIdentity>;
+}
 
 interface CoreState {
   coreId: number;
@@ -193,6 +221,12 @@ interface RuntimeState {
   pendingSessionActivations: Map<
     number,
     { resolve: () => void; reject: (error: Error) => void }
+  >;
+  pendingLocalIdentities: Map<
+    number,
+    PendingEntry<LocalIdentity> & {
+      onProgress?: (progress: LocalIdentityProgress) => void;
+    }
   >;
   pendingPermissionAuthorizationStatuses: Map<
     number,
@@ -265,6 +299,7 @@ let nextDeviceStatementKeyRequestId = 0;
 let nextDeviceEncryptionKeyRequestId = 0;
 let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
+let nextLocalIdentityRequestId = 0;
 let nextActionRequestId = 0;
 let nextRenderId = 0;
 
@@ -434,6 +469,12 @@ function operationIdFrom(value: unknown): number | null {
   }
 }
 
+/**
+ * Key one pending-operation hold. `OperationId` is unique per product, not per
+ * worker, so the product a `beginOperation`/`endOperation` arrived for has to be
+ * part of the key. Returns null if the encoded product will not decode, which
+ * drops the hold rather than letting it pin the worker forever.
+ */
 function operationHold(encodedProduct: unknown, id: number): string | null {
   if (!(encodedProduct instanceof Uint8Array)) return null;
   try {
@@ -784,6 +825,7 @@ function handleDeviceEncryptionKeyResponse(
 function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingDisconnects, error);
   rejectAll(state.pendingSessionActivations, error);
+  rejectAll(state.pendingLocalIdentities, error);
   rejectAll(state.pendingPermissionAuthorizationStatuses, error);
   rejectAll(state.pendingPermissionAuthorizationStatusBatches, error);
   rejectAll(state.pendingSetPermissionAuthorizationStatuses, error);
@@ -842,6 +884,26 @@ function sendSessionActivationRequest(
     undefined,
     buildMessage,
   );
+}
+
+function sendLocalIdentityRequest(
+  state: RuntimeState,
+  buildMessage: (requestId: number) => MainToWorker,
+  onProgress?: (progress: LocalIdentityProgress) => void,
+): Promise<LocalIdentity> {
+  if (state.disposed) {
+    return Promise.reject(state.closedError ?? new Error("runtime disposed"));
+  }
+  const { promise, resolve, reject } = Promise.withResolvers<LocalIdentity>();
+  const requestId = ++nextLocalIdentityRequestId;
+  state.pendingLocalIdentities.set(requestId, { resolve, reject, onProgress });
+  try {
+    state.worker.postMessage(buildMessage(requestId));
+  } catch (error) {
+    state.pendingLocalIdentities.delete(requestId);
+    reject(error);
+  }
+  return promise;
 }
 
 function closeCoreState(core: CoreState, error: Error): void {
@@ -903,9 +965,9 @@ function teardown(state: RuntimeState, error: Error, fault: boolean): void {
   }
 }
 
-export interface CreateWebWorkerPairingHostRuntimeOptions {
+interface CreateWebWorkerHostRuntimeOptions {
   logLevel?: LogLevel;
-  hostConfig: WebWorkerHostConfig;
+  hostConfig: WebWorkerHostConfig | WebWorkerSigningHostConfig;
   initTimeoutMs?: number;
   /**
    * Host role the worker constructs. Omitted means `"pairing"`.
@@ -921,6 +983,14 @@ export interface CreateWebWorkerPairingHostRuntimeOptions {
   operationGraceMs?: number;
 }
 
+export interface CreateWebWorkerPairingHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
+  hostConfig: WebWorkerHostConfig;
+}
+
+export interface CreateWebWorkerSigningHostRuntimeOptions extends CreateWebWorkerHostRuntimeOptions {
+  hostConfig: WebWorkerSigningHostConfig;
+}
+
 export type WebWorkerHostCallbacks = RequiredHostCallbacks;
 
 export function createWebWorkerPairingHostRuntime(
@@ -928,6 +998,28 @@ export function createWebWorkerPairingHostRuntime(
   host: WebWorkerHostCallbacks,
   options: CreateWebWorkerPairingHostRuntimeOptions,
 ): Promise<WorkerPairingHostRuntime> {
+  // No role default: a host that asks for none must put exactly what it put
+  // on the wire before the field existed, and the worker reads absent as
+  // "pairing".
+  return createWebWorkerHostRuntime(worker, host, options);
+}
+
+export function createWebWorkerSigningHostRuntime(
+  worker: Worker,
+  host: WebWorkerHostCallbacks,
+  options: CreateWebWorkerSigningHostRuntimeOptions,
+): Promise<WorkerSigningHostRuntime> {
+  return createWebWorkerHostRuntime(worker, host, {
+    ...options,
+    role: options.role ?? "signing",
+  });
+}
+
+function createWebWorkerHostRuntime(
+  worker: Worker,
+  host: WebWorkerHostCallbacks,
+  options: CreateWebWorkerHostRuntimeOptions,
+): Promise<WorkerPairingHostRuntime & WorkerSigningHostRuntime> {
   const callbacks = createWasmRawCallbacks(host);
 
   return new Promise((resolve, reject) => {
@@ -944,6 +1036,7 @@ export function createWebWorkerPairingHostRuntime(
       chainConnections: new Map(),
       pendingDisconnects: new Map(),
       pendingSessionActivations: new Map(),
+      pendingLocalIdentities: new Map(),
       pendingPermissionAuthorizationStatuses: new Map(),
       pendingPermissionAuthorizationStatusBatches: new Map(),
       pendingSetPermissionAuthorizationStatuses: new Map(),
@@ -962,7 +1055,8 @@ export function createWebWorkerPairingHostRuntime(
       coreWireSchemaHash: undefined,
     };
 
-    let runtime: WorkerPairingHostRuntime | null = null;
+    let runtime: (WorkerPairingHostRuntime & WorkerSigningHostRuntime) | null =
+      null;
 
     const notifyFault = (error: Error): void => {
       teardown(state, error, true);
@@ -1004,6 +1098,25 @@ export function createWebWorkerPairingHostRuntime(
           break;
         case "sessionActivationResponse":
           handleSessionActivationResponse(state, msg);
+          break;
+        case "localIdentityProgress":
+          if (state.disposed) break;
+          try {
+            state.pendingLocalIdentities
+              .get(msg.requestId)
+              ?.onProgress?.(msg.progress);
+          } catch {
+            // UI observers cannot fail or settle an identity operation.
+          }
+          break;
+        case "localIdentityResponse":
+          settlePending(
+            state.pendingLocalIdentities,
+            msg.requestId,
+            msg.ok
+              ? { ok: true, value: msg.identity }
+              : { ok: false, error: msg.error },
+          );
           break;
         case "permissionAuthorizationStatusResponse":
           handlePermissionAuthorizationStatusResponse(state, msg);
@@ -1137,13 +1250,13 @@ export function createWebWorkerPairingHostRuntime(
           kind: "init",
           logLevel: devLogLevelOverride ?? options.logLevel ?? "off",
           hostConfig: options.hostConfig,
+          role: options.role,
           capabilities: {
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
             pocket: host.pocket !== undefined,
           },
           debuggerUrl: debuggerEnablement.url,
-          role: options.role,
         } satisfies MainToWorker);
       } else if (msg.kind === "ready") {
         state.coreWireSchemaHash = msg.schema;
@@ -1236,8 +1349,10 @@ function handleFrameError(
   }
 }
 
-function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
-  const runtime: WorkerPairingHostRuntime = {
+function buildRuntime(
+  state: RuntimeState,
+): WorkerPairingHostRuntime & WorkerSigningHostRuntime {
+  const runtime: WorkerPairingHostRuntime & WorkerSigningHostRuntime = {
     coreWireSchemaHash: state.coreWireSchemaHash,
     createProvider(product): Promise<TrUApiProductProvider> {
       if (state.disposed) {
@@ -1389,6 +1504,39 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         kind: "resetSessionState",
         requestId,
       }));
+    },
+    activateLocalSessionWithIdentity(
+      secret: Uint8Array,
+      liteUsername?: string,
+    ): Promise<void> {
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "activateLocalSessionWithIdentity",
+        requestId,
+        secret,
+        liteUsername,
+      }));
+    },
+    refreshLocalIdentity(): Promise<LocalIdentity> {
+      return sendLocalIdentityRequest(state, (requestId) => ({
+        kind: "refreshLocalIdentity",
+        requestId,
+      }));
+    },
+    registerLocalLiteUsername(
+      baseUsername,
+      identityBackendBaseUrl,
+      onProgress,
+    ): Promise<LocalIdentity> {
+      return sendLocalIdentityRequest(
+        state,
+        (requestId) => ({
+          kind: "registerLocalLiteUsername",
+          requestId,
+          baseUsername,
+          identityBackendBaseUrl,
+        }),
+        onProgress,
+      );
     },
     getPermissionAuthorizationStatus(productId, request) {
       return sendWorkerRequest<PermissionAuthorizationStatus>(

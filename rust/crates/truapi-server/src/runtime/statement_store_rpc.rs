@@ -64,7 +64,7 @@ impl StatementStoreRpc {
     }
 
     /// Open a People-chain RPC client already scoped to its genesis hash, for
-    /// the native allowance paths that key the chain-context cache by it.
+    /// allowance paths that key the chain-context cache by it.
     pub(crate) async fn chain_client(
         &self,
         label: &'static str,

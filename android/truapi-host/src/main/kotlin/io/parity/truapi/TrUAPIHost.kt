@@ -83,6 +83,7 @@ import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeStatementRenewalTarget
 import uniffi.truapi_server.NativeTrackedStatementRenewalTarget
 import uniffi.truapi_server.StatementRenewalReport
+import uniffi.truapi_server.SsoRequestOutcome
 import uniffi.truapi_server.WorkerTransition
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
@@ -894,6 +895,14 @@ class TrUAPIHostRuntime private constructor(
     fun activateLocalSession(secret: ByteArray, liteUsername: String? = null) {
         inner.activateLocalSession(secret, liteUsername)
     }
+
+    /** Handle a paired session's opaque SSO request, awaiting native user consent. */
+    @Throws(HostRejection::class)
+    suspend fun handleSsoRequest(message: ByteArray): SsoRequestOutcome =
+        inner.handleSsoRequest(message)
+
+    /** Encode the disconnect notification; the caller routes it to the ending session. */
+    fun prepareDisconnectRequest(): ByteArray = inner.prepareDisconnectRequest()
 
     /** Push a JSON-RPC response from a native chain connection into the runtime. */
     fun notifyChainResponse(connectionId: UInt, json: String) {

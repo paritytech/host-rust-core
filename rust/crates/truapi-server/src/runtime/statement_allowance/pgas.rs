@@ -15,13 +15,13 @@
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
 
 use parity_scale_codec::{Decode, DecodeAll};
 use scale_decode::DecodeAsType;
 use sp_crypto_hashing::twox_128;
 use thiserror::Error;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use super::collection::PersonhoodCollection;
 use super::extension::{AS_PGAS, Metadata, MetadataError};
