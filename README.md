@@ -42,7 +42,8 @@ To build from source, run `make headless install` with stable Rust, nightly Rust
 Bun installed. The target installs missing workspace build tools and regenerates the Rust and TypeScript sources before
 compiling. CI tests this command in both a fresh checkout and one with stale generated files, then runs a product script
 through the installed CLI. Code generation and the workspace documentation check reject rustdoc warnings. These checks
-are part of the required `CI Status` gate.
+are part of the required `CI Status` gate. CLI packaging tests also build an isolated runner and verify it outside the
+source checkout.
 
 ## Usage
 
