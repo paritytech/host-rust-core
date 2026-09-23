@@ -1,5 +1,5 @@
 import type { Result } from "neverthrow";
-import { describe, expect, it, jest } from "bun:test";
+import { describe, expect, it, jest, spyOn } from "bun:test";
 
 import { createTransport, RequestTimeoutError } from "./client.js";
 import * as S from "./scale.js";
@@ -296,6 +296,29 @@ describe("generated client transport", () => {
         expectedFrame.set(expectedPayload, str.enc("p:2").length + 3);
 
         expect(toHex(fixture.sent[fixture.sent.length - 1])).toBe(toHex(expectedFrame));
+    });
+
+    it("uses the transport codec version for generated handshake calls", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+
+        expect(TRUAPI_CODEC_VERSION).toBe(3);
+        void client.system.handshake();
+
+        const expectedPayload = T.VersionedHostHandshakeRequest.enc({
+            tag: "V1",
+            value: { codecVersion: 3 },
+        });
+        const requestId = str.enc("p:1");
+        const expectedFrame = new Uint8Array(requestId.length + 3 + expectedPayload.length);
+        expectedFrame.set(requestId, 0);
+        expectedFrame[requestId.length] = 1; // system trait
+        expectedFrame[requestId.length + 1] = 0; // handshake
+        expectedFrame[requestId.length + 2] = MESSAGE_TYPE_REQUEST;
+        expectedFrame.set(expectedPayload, requestId.length + 3);
+
+        expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
     });
 
     it("resolves a request from its versioned response envelope", async () => {
@@ -636,13 +659,36 @@ describe("generated client transport", () => {
         expect(subscriptionFixture.sent).toHaveLength(2);
     });
 
+    it("logs a known pair's out-of-range message type but not a late response", () => {
+        const fixture = providerFixture();
+        createTransport(fixture.provider);
+
+        const warn = spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            fixture.receive(wireFrame("unrelated:1", W.LOCAL_STORAGE_READ, 99));
+            expect(
+                warn.mock.calls.some((args) =>
+                    String(args[0]).includes("unexpected messageType 99"),
+                ),
+            ).toBe(true);
+
+            warn.mockClear();
+            fixture.receive(wireFrame("unrelated:2", W.LOCAL_STORAGE_READ, MESSAGE_TYPE_RESPONSE));
+            expect(warn).not.toHaveBeenCalled();
+        } finally {
+            warn.mockRestore();
+        }
+
+        expect(fixture.sent).toHaveLength(0);
+    });
+
     it("auto-responds to an inbound handshake with the versioned-result shape", () => {
         const fixture = providerFixture();
         createTransport(fixture.provider);
 
         const requestPayload = T.VersionedHostHandshakeRequest.enc({
             tag: "V1",
-            value: { codecVersion: TRUAPI_CODEC_VERSION },
+            value: { codecVersion: 3 },
         });
         const requestFrame = wireFrame(
             "h:1",

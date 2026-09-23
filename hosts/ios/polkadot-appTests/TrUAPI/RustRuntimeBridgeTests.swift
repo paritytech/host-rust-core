@@ -499,7 +499,8 @@ struct RustRuntimeBridgeTests {
     @Test func currentThemeReturnsDark() throws {
         let bridge = makeBridge()
         let theme = try bridge.currentTheme()
-        #expect(theme == .dark)
+        #expect(theme.name == .default)
+        #expect(theme.variant == .dark)
     }
 
     // MARK: attach
