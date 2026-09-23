@@ -106,6 +106,11 @@ describe("createWasmRawCallbacks", () => {
     const writes: [string, number[]][] = [];
     const clears: string[] = [];
     const cancelled: number[] = [];
+    const askedBy: ProductContext[] = [];
+    const worker: ProductContext = {
+      productId: "camera.dot",
+      executionKind: "Worker",
+    };
     const raw = createWasmRawCallbacks(
       makeHostCallbacks({
         notifications: {
@@ -117,10 +122,16 @@ describe("createWasmRawCallbacks", () => {
           },
         },
         permissions: {
-          devicePermission: async (request) =>
-            request === "Camera" ? "AllowAlways" : "Deny",
-          remotePermission: async (request) =>
-            request.permission.tag === "ChainSubmit" ? "AllowOnce" : "Deny",
+          devicePermission: async (product, request) => {
+            askedBy.push(product);
+            return request === "Camera" ? "AllowAlways" : "Deny";
+          },
+          remotePermission: async (product, request) => {
+            askedBy.push(product);
+            return request.permission.tag === "ChainSubmit"
+              ? "AllowOnce"
+              : "Deny";
+          },
         },
         features: {
           featureSupported: async (request) => ({
@@ -153,18 +164,23 @@ describe("createWasmRawCallbacks", () => {
     ).toBe(5);
     expect(
       PermissionDecision.dec(
-        await raw.devicePermission!(HostDevicePermissionRequest.enc("Camera")),
+        await raw.devicePermission!(
+          ProductContext.enc(worker),
+          HostDevicePermissionRequest.enc("Camera"),
+        ),
       ),
     ).toBe("AllowAlways");
     expect(
       PermissionDecision.dec(
         await raw.remotePermission!(
+          ProductContext.enc(worker),
           RemotePermissionRequest.enc({
             permission: { tag: "ChainSubmit" },
           }),
         ),
       ),
     ).toBe("AllowOnce");
+    expect(askedBy).toEqual([worker, worker]);
     expect(
       HostFeatureSupportedResponse.dec(
         await raw.featureSupported!(

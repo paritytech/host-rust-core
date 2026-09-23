@@ -25,8 +25,9 @@ mod sso_service;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use truapi::latest::{
-    HostAccountCreateProofRequest, HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
-    HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
+    ChainIdentifier, DerivationIndex, HostAccountCreateProofRequest, HostAccountGetAliasRequest,
+    HostAccountListRingVrfKeysRequest, HostAccountRegisterRingVrfKeyRequest,
+    HostAccountRingVrfSignRequest, ProductAccountId, RingLocation, RingLocationJunction,
 };
 
 pub use allowance_renewal::StatementRenewalTarget;
@@ -52,10 +53,11 @@ use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::extrinsic::build_local_transaction;
+use crate::host_logic::features::genesis_for;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
-    derive_root_keypair_from_entropy,
+    derive_root_keypair_from_entropy, personhood_product_id,
 };
 use crate::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
@@ -460,8 +462,8 @@ impl SigningHost {
     ///
     /// Wallet-internal allowance proofs use the reserved `peopl.<suffix>` keys
     /// the mobile hosts derive on the same network. Product-facing RFC-0024
-    /// operations are unrelated: those resolve only explicitly registered
-    /// handles.
+    /// operations resolve registered handles, including the built-in keys
+    /// registered when the personhood owner is listed.
     ///
     /// Both entropies are always returned; which collections the person is
     /// actually a member of is settled on chain by looking for a ring that
@@ -483,6 +485,71 @@ impl SigningHost {
                 entropy: derive_lite_person_ring_vrf_entropy(&root, &self.network_suffix),
             },
         ])
+    }
+
+    async fn register_builtin_personhood_keys_if_needed(
+        &self,
+        session: &AuthoritySession,
+        owner: &str,
+    ) -> Result<(), RingVrfError> {
+        if owner != personhood_product_id(&self.network_suffix) {
+            return Ok(());
+        }
+        let chains =
+            self.platform
+                .supported_chains()
+                .await
+                .map_err(|error| RingVrfError::Unknown {
+                    reason: error.reason,
+                })?;
+        let chain_id =
+            genesis_for(&chains, ChainIdentifier::People).ok_or(RingVrfError::RingNotFound)?;
+        let entries = self
+            .ring_vrf_registry
+            .owner_entries(session.public_key, owner)
+            .await?;
+        let missing = [
+            (PersonhoodCollection::People, 0),
+            (PersonhoodCollection::LitePeople, 1),
+        ]
+        .into_iter()
+        .filter(|(collection, index)| {
+            !entries.iter().any(|entry| {
+                entry.handle.derivation_index == DerivationIndex::Index(*index)
+                    && entry.rings.iter().any(|ring| {
+                        ring.chain_id == chain_id
+                            && matches!(
+                                ring.junctions.as_slice(),
+                                [RingLocationJunction::PalletInstance(_), RingLocationJunction::CollectionId(identifier)]
+                                    if identifier.as_slice() == collection.identifier()
+                            )
+                    })
+            })
+        })
+        .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let pallet_index = self.ring_resolver.members_pallet_index(&chain_id).await?;
+        for (collection, index) in missing {
+            let handle = ProductAccountId {
+                dot_ns_identifier: owner.to_string(),
+                derivation_index: DerivationIndex::Index(index),
+            };
+            let entropy = self.ring_vrf_entropy(session, &handle)?;
+            let public_key = member_from_entropy(&entropy)?;
+            let ring = RingLocation {
+                chain_id,
+                junctions: vec![
+                    RingLocationJunction::PalletInstance(pallet_index),
+                    RingLocationJunction::CollectionId(collection.identifier().to_vec()),
+                ],
+            };
+            self.ring_vrf_registry
+                .register(session.public_key, handle, ring, public_key)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn registered_ring_vrf_entry(
@@ -1127,10 +1194,13 @@ impl ProductAuthority for SigningHost {
             }
         }
 
+        self.register_builtin_personhood_keys_if_needed(session, &owner)
+            .await?;
         let mut entries = self
             .ring_vrf_registry
             .owner_entries(session.public_key, &owner)
             .await?;
+        self.require_current_session(session)?;
         if request.payload.disclosure == v01::RingVrfKeyDisclosure::Anonymized {
             for entry in &mut entries {
                 entry.public_key = None;
@@ -1384,6 +1454,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RingResolver for StubRingResolver {
+        async fn members_pallet_index(&self, _chain_id: &[u8; 32]) -> Result<u8, RingVrfError> {
+            Ok(42)
+        }
+
         async fn validate(&self, _location: &v01::RingLocation) -> Result<[u8; 32], RingVrfError> {
             Ok(self.collection)
         }
@@ -1574,20 +1648,12 @@ mod tests {
     /// Persist a user refusal of `caller`'s access to `target`'s account.
     fn deny_account_access(platform: &StubPlatform, caller: &str, target: &str) {
         futures::executor::block_on(
-            crate::host_logic::permissions::PermissionsService::new(
-                platform,
+            // Bare-labelled on both sides, as `account_access_authorization`
+            // writes it in production.
+            crate::host_logic::permissions::set_account_access_status(
                 platform,
                 crate::host_logic::product_manifest::bare_product_label(caller),
-            )
-            .set_authorization_status(
-                &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
-                    // Bare-labelled on both sides, as `account_access_authorization`
-                    // writes it in production.
-                    target_product_id: crate::host_logic::product_manifest::bare_product_label(
-                        target,
-                    )
-                    .to_string(),
-                },
+                crate::host_logic::product_manifest::bare_product_label(target),
                 truapi_platform::PermissionAuthorizationStatus::Denied,
             ),
         )
@@ -2020,19 +2086,12 @@ mod tests {
         let platform = Arc::new(StubPlatform::default());
         cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
         // Written exactly as the previous release wrote it: full ids, both sides.
-        futures::executor::block_on(
-            crate::host_logic::permissions::PermissionsService::new(
-                platform.as_ref(),
-                platform.as_ref(),
-                "dim2.dot",
-            )
-            .set_authorization_status(
-                &truapi_platform::PermissionAuthorizationRequest::AccountAccess {
-                    target_product_id: "peopl.dot".to_string(),
-                },
-                truapi_platform::PermissionAuthorizationStatus::Denied,
-            ),
-        )
+        futures::executor::block_on(crate::host_logic::permissions::set_account_access_status(
+            platform.as_ref(),
+            "dim2.dot",
+            "peopl.dot",
+            truapi_platform::PermissionAuthorizationStatus::Denied,
+        ))
         .expect("stub core storage accepts the decision");
         let (services, _authority) =
             signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());

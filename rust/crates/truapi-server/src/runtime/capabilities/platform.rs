@@ -95,9 +95,8 @@ impl System for ProductRuntimeHost {
             | NavigateDecision::Localhost { canonical_url, .. }
             | NavigateDecision::Pocket { canonical_url, .. } => canonical_url,
             NavigateDecision::External { url } => {
-                let product_id = self.product_id();
                 let status = self
-                    .permissions_service(&product_id)
+                    .permissions_service()
                     .authorize_device(v01::HostDevicePermissionRequest::OpenUrl)
                     .await
                     .map_err(|error| CallError::HostFailure {
@@ -148,8 +147,7 @@ impl Permissions for ProductRuntimeHost {
         request: HostDevicePermissionRequest,
     ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>> {
         let HostDevicePermissionRequest::V1(inner) = request;
-        let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         match service.authorize_device(inner).await {
             Ok(decision) => Ok(HostDevicePermissionResponse::V1(
                 v01::HostDevicePermissionResponse {
@@ -169,8 +167,7 @@ impl Permissions for ProductRuntimeHost {
         request: RemotePermissionRequest,
     ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>> {
         let RemotePermissionRequest::V1(inner) = request;
-        let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         match service.authorize_remote(inner).await {
             Ok(decision) => Ok(RemotePermissionResponse::V1(
                 v01::RemotePermissionResponse {
@@ -190,8 +187,7 @@ impl Permissions for ProductRuntimeHost {
         request: HostDevicePermissionRequest,
     ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>> {
         let HostDevicePermissionRequest::V1(inner) = request;
-        let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         match service.check_or_prompt_device(inner).await {
             Ok(decision) => Ok(HostDevicePermissionResponse::V1(
                 v01::HostDevicePermissionResponse {
@@ -211,8 +207,7 @@ impl Permissions for ProductRuntimeHost {
         request: RemotePermissionRequest,
     ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>> {
         let RemotePermissionRequest::V1(inner) = request;
-        let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         match service.check_or_prompt_remote(inner).await {
             Ok(decision) => Ok(RemotePermissionResponse::V1(
                 v01::RemotePermissionResponse {
@@ -429,9 +424,8 @@ impl Notifications for ProductRuntimeHost {
         request: HostPushNotificationRequest,
     ) -> Result<HostPushNotificationResponse, CallError<HostPushNotificationError>> {
         let HostPushNotificationRequest::V1(inner) = request;
-        let product_id = self.product_id();
         let status = self
-            .permissions_service(&product_id)
+            .permissions_service()
             .authorize_device(v01::HostDevicePermissionRequest::Notifications)
             .await
             .map_err(|err| CallError::HostFailure {

@@ -353,13 +353,14 @@ impl ProductRuntimeHost {
     /// resolve the same two gates. Remote, identity-disclosure and
     /// account-access decisions have no OS gate and are unaffected by the
     /// status adapter.
-    fn permissions_service<'a>(
-        &'a self,
-        product_id: &'a str,
-    ) -> PermissionsService<'a, dyn Platform, dyn Platform> {
-        PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), product_id)
-            .with_status_host(self.permission_status.as_deref())
-            .with_temporary_permissions(self.temporary_permissions.clone())
+    fn permissions_service(&self) -> PermissionsService<'_, dyn Platform, dyn Platform> {
+        PermissionsService::new(
+            self.platform.as_ref(),
+            self.platform.as_ref(),
+            &self.product,
+        )
+        .with_status_host(self.permission_status.as_deref())
+        .with_temporary_permissions(self.temporary_permissions.clone())
     }
 
     /// Trusted executable kind attached to this product connection.
@@ -667,8 +668,7 @@ impl ProductRuntimeHost {
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
-        let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         service.authorization_status(&request).await
     }
 
@@ -682,8 +682,7 @@ impl ProductRuntimeHost {
         &self,
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
-        let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         service.authorization_statuses(&requests).await
     }
 
@@ -695,8 +694,7 @@ impl ProductRuntimeHost {
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
-        let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         service.set_authorization_status(&request, status).await
     }
 
@@ -705,8 +703,7 @@ impl ProductRuntimeHost {
         &self,
         permission: v01::RemotePermission,
     ) -> Result<PermissionAuthorizationStatus, String> {
-        let product_id = self.product_id();
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         service
             .authorize_remote(v01::RemotePermissionRequest { permission })
             .await
@@ -741,7 +738,7 @@ impl ProductRuntimeHost {
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
         let request = PermissionAuthorizationRequest::IdentityDisclosure;
-        let service = self.permissions_service(&product_id);
+        let service = self.permissions_service();
         let cached = service
             .authorization_status(&request)
             .await
@@ -823,12 +820,7 @@ async fn account_access_authorization(
     // the key `user_denied_account_access` reads back. A decision filed against
     // the full target would not be found when the grant is resolved for a
     // subname of it.
-    let request = PermissionAuthorizationRequest::AccountAccess {
-        target_product_id: crate::host_logic::product_manifest::bare_product_label(
-            target_product_id,
-        )
-        .to_string(),
-    };
+    let target = crate::host_logic::product_manifest::bare_product_label(target_product_id);
     // Stored per product, not per executable, because that is the granularity a
     // manifest grant uses: `dim2.dot`, `app.dim2.dot` and `worker.dim2.dot` are
     // one grantee. A decision filed under the full id could be missed by the
@@ -836,13 +828,8 @@ async fn account_access_authorization(
     // refused product keep a `context` grant by respelling itself. The prompt
     // still names the id the user saw; only the slot it is filed under is the
     // product's.
-    let service = PermissionsService::new(
-        platform,
-        platform,
-        crate::host_logic::product_manifest::bare_product_label(requesting_product_id),
-    );
-    let cached = service
-        .authorization_status(&request)
+    let caller = crate::host_logic::product_manifest::bare_product_label(requesting_product_id);
+    let cached = crate::host_logic::permissions::account_access_status(platform, caller, target)
         .await
         .map_err(AccountAccessAuthorizationError::PermissionStorage)?;
     if cached != PermissionAuthorizationStatus::NotDetermined {
@@ -861,8 +848,7 @@ async fn account_access_authorization(
         PermissionDecision::AllowAlways => PermissionAuthorizationStatus::Authorized,
         PermissionDecision::Deny => PermissionAuthorizationStatus::Denied,
     };
-    service
-        .set_authorization_status(&request, status)
+    crate::host_logic::permissions::set_account_access_status(platform, caller, target, status)
         .await
         .map_err(AccountAccessAuthorizationError::PermissionStorage)?;
     Ok(status)
