@@ -79,13 +79,17 @@ pub enum DebugEvent {
   into a live dispatch. Both in-path call sites **SHOULD** contain one
   (`catch_unwind`), which holds only where unwinding is enabled: the workspace
   release profile sets `panic = "abort"`, so in the release and xcframework
-  artifacts that carry the `ws-bridge` sink a panicking sink aborts the process
+  artifacts that carry the `debug-sink` feature a panicking sink aborts the process
   and no call-site guard can contain it. Containment is a dev-and-test
   protection; the contract on the sink is what holds in a shipped host.
 - The core **MUST** pass frame bytes through untouched, and **MUST NOT** decode,
   inspect, or redact them.
 - A sink that owns a socket **MUST** bound its backlog by both count and bytes,
   and **MUST** report the frames it dropped.
+- Whatever thread installs a sink is the thread a hung `emit` blocks, and it
+  blocks all of that thread's work. Nothing gates installation on worker scope:
+  the wasm sink is installed from a Web Worker entry point by convention, so a
+  main-thread consumer of the raw glue can install one and hang the page.
 
 ## 3. Envelope and wire identity
 

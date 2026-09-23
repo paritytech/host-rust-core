@@ -61,51 +61,18 @@ pub trait FrameSink: Send + Sync {
 pub trait DebugSink: Send + Sync {
     /// Hand one event to the sink.
     ///
-    /// Must not block, and must not panic: `emit` is called from inside the
-    /// inbound and outbound frame paths, so a panic here would otherwise unwind
-    /// into a live dispatch. The core contains a panic at both tap sites
-    /// ([`emit_debug`]) rather than trusting the contract, because the trait is
-    /// public and implementable out-of-repo, and because the profiles that can
-    /// unwind are exactly the ones a developer runs: the workspace defines no
-    /// `[profile.dev]`, so `dev` keeps Cargo's default `panic = "unwind"`, and an
-    /// out-of-repo or test sink can be installed under it. (The in-repo installers
-    /// are the wasm host, which cannot unwind at all, and `truapi-host-cli` behind
-    /// `--debugger`, which installs [`crate::WsDebugSink`]: that one does serialize
-    /// and enqueue, so it meets the contract on a target that can unwind.)
-    /// Serialize and enqueue only; never do fallible work that can `unwrap`/panic
-    /// on the caller's thread.
+    /// Must not block and must not panic: `emit` runs inside the inbound and
+    /// outbound frame paths, so either one costs the caller a live dispatch.
+    /// Serialize and enqueue only.
     ///
-    /// The two halves of that contract are NOT equally enforced, and the asymmetry
-    /// is deliberate rather than an oversight. Panics are contained: both tap sites
-    /// go through [`emit_debug`], which wraps the call in `catch_unwind`. Blocking
-    /// is caller-enforced only - nothing here bounds how long `emit` may take.
+    /// A sink that may be slow owns its own queue and returns immediately. The
+    /// core does not wrap sinks in one, because on wasm32 the drain needs the
+    /// same single-threaded loop a hung `emit` is already blocking, so the hop
+    /// would cost every well-behaved sink without fixing the case it targets.
     ///
-    /// It is not enforced HERE, at the trait boundary, and that is a choice worth
-    /// stating precisely rather than dressing up. A bounded queue drained by a
-    /// spawned task does solve the realistic case: it bounds per-frame work to a
-    /// serialize-and-push and converts an overloaded debugger into counted trace
-    /// loss. `WsDebugSink` does exactly that, and `services.spawner` is in hand
-    /// where the sink transport is built, so the core could impose it.
-    ///
-    /// What it does not solve is a sink that never yields at all - on wasm32 the
-    /// drain needs the same single-threaded event loop the tap is blocking, so a
-    /// truly hung `emit` stalls regardless. The trait therefore requires the sink to
-    /// own that queue rather than wrapping every sink in one here, which would add a
-    /// hop to the frame path for every well-behaved implementation to defend against
-    /// a case it still cannot fix.
-    ///
-    /// So the cost is stated rather than papered over. Whatever thread installs a
-    /// sink is the thread a hung one blocks, and it blocks all of that thread's
-    /// work: every channel, and the outbound path too, which taps synchronously
-    /// inside `Transport::send` while a dispatch is live. Tap ordering buys nothing
-    /// against a hang; it only decides whether a corrupt frame is still observed.
-    ///
-    /// In practice the wasm sink is installed from a Web Worker entry point, so the
-    /// blast radius is that worker rather than the page - but that is CONVENTION,
-    /// not enforcement: nothing gates sink installation on worker scope, and the
-    /// raw wasm glue is publicly exported, so a main-thread consumer can install one
-    /// and hang the page. A sink that may be slow must own its own queue and return
-    /// immediately.
+    /// [`emit_debug`] contains a panic at both tap sites where the profile
+    /// allows it; see the sink contract in the wire-debugger design doc (§2)
+    /// for what that does and does not guarantee.
     fn emit(&self, event: DebugEvent);
 }
 
