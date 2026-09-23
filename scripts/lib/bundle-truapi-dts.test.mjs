@@ -23,7 +23,9 @@ test("playground declarations expose the SDK without container or debugger inter
   const dist = "js/packages/truapi/dist/";
   const declarations = {
     "index.d.ts":
-      'export * from "./generated/index.js";\nexport * as scale from "./scale.js";\n',
+      'export * from "./generated/index.js";\nexport * from "./transport.js";\nexport * as scale from "./scale.js";\n',
+    "transport.d.ts":
+      "export interface WireProvider { postMessage(frame: Uint8Array): void; }\n",
     "scale.d.ts": "export type Codec<T> = { value: T };\n",
     "generated/index.d.ts":
       'export * from "./types.js";\nexport * from "./client.js";\n',
@@ -44,6 +46,7 @@ test("playground declarations expose the SDK without container or debugger inter
     write(dist + path, source);
   }
   write("node_modules/neverthrow/dist/index.d.ts", "export {};\n");
+  mkdirSync(join(root, "rust/crates/truapi-host-cli/js"), { recursive: true });
   write("scripts/bundle-truapi-dts.mjs", "");
   const script = join(root, "scripts/bundle-truapi-dts.mjs");
   copyFileSync(new URL("../bundle-truapi-dts.mjs", import.meta.url), script);

@@ -573,11 +573,6 @@ impl SessionCatalog {
         session_last_script(&profile.path)
     }
 
-    /// Remember the last script used in this session.
-    pub fn store_last_script(&self, profile: &SessionProfile, script: &Path) -> Result<()> {
-        store_session_last_script(&profile.path, script)
-    }
-
     fn identity_path(&self, user_id: &str) -> PathBuf {
         self.network_path.join(format!("{user_id}_signing_host"))
     }
@@ -634,7 +629,7 @@ pub fn session_last_script(session_path: &Path) -> Result<Option<PathBuf>> {
     };
     let configured = Path::new(&filename);
     if configured.is_absolute() {
-        return Ok(configured.is_file().then(|| configured.to_path_buf()));
+        return crate::script_project::remembered_script(configured);
     }
 
     let relative = configured;
@@ -1270,11 +1265,11 @@ mod tests {
 
         assert_eq!(catalog.cached_user_id(&profile)?, None);
         assert_eq!(catalog.last_script(&profile)?, None);
-        catalog.store_last_script(&profile, &script)?;
+        store_session_last_script(&profile.path, &script)?;
         catalog.store_user_id(&profile, "alice.dot")?;
         let replacement = scripts.join("replacement.ts");
         fs::write(&replacement, "console.log('replacement');")?;
-        catalog.store_last_script(&profile, &replacement)?;
+        store_session_last_script(&profile.path, &replacement)?;
 
         assert_eq!(
             catalog.cached_user_id(&profile)?.as_deref(),
@@ -1299,7 +1294,7 @@ mod tests {
         let scripts = profile.path.join("scripts");
         fs::create_dir_all(&scripts)?;
         let stale = scripts.join("missing.ts");
-        catalog.store_last_script(&profile, &stale)?;
+        store_session_last_script(&profile.path, &stale)?;
 
         assert_eq!(catalog.last_script(&profile)?, None);
         fs::write(
@@ -1318,7 +1313,7 @@ mod tests {
         let script = temporary.path().join("product-script.ts");
         fs::write(&script, "console.log('product');")?;
 
-        catalog.store_last_script(&profile, &script)?;
+        store_session_last_script(&profile.path, &script)?;
 
         assert_eq!(
             catalog.last_script(&profile)?.as_deref(),
