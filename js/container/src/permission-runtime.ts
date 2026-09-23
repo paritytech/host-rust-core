@@ -20,9 +20,9 @@ export function freezePermissionRuntime(): void {
   // Block inherited then hooks without preventing products' own toString/valueOf assignments.
   Object.preventExtensions(Object.prototype);
   for (const name of [
-    'Object', 'Function', 'Array', 'Map', 'Set', 'WeakMap', 'Promise',
+    'Object', 'Array', 'Map', 'Set', 'WeakMap', 'Promise',
     'Number', 'String', 'Uint8Array', 'DataView',
-    'MessageChannel', 'MessagePort', 'MessageEvent', 'EventTarget',
+    'MessageChannel', 'MessagePort', 'EventTarget',
   ] as const) {
     const constructor = globalThis[name];
     if (name !== 'Object' && name !== 'Number') freezePrototype(constructor.prototype);
@@ -40,8 +40,6 @@ export function freezePermissionRuntime(): void {
     Object.getPrototypeOf(new Set()[Symbol.iterator]()),
   ]) freezePrototype(prototype);
   freezeValue(globalThis, 'BigInt', BigInt);
-  freezeValue(globalThis, 'Symbol', Symbol);
-  freezeValue(globalThis, 'Reflect', Object.freeze(Reflect));
   freezeValue(globalThis, 'setTimeout', setTimeout);
   freezeValue(globalThis, 'clearTimeout', clearTimeout);
   freezeInternalResults();
