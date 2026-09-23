@@ -414,3 +414,52 @@ describe("trace key injection", () => {
     for (const t of traces) expect(t.frames).toHaveLength(1);
   });
 });
+
+describe("clearChannel", () => {
+  // One board serves several hosts at once. Clearing the noise from the host
+  // being worked on must not take the others with it, which is the whole reason
+  // this exists rather than reusing clear().
+  test("drops one channel's traces and leaves the others", () => {
+    const d = createWireDebugger();
+    d.observe({
+      channelId: "a",
+      direction: "out",
+      requestId: "p:1",
+      frameId: 1,
+      messageType: 0,
+      byteLength: 4,
+      bytes: new Uint8Array([1, 2, 3, 4]),
+    });
+    d.observe({
+      channelId: "b",
+      direction: "out",
+      requestId: "p:1",
+      frameId: 1,
+      messageType: 0,
+      byteLength: 4,
+      bytes: new Uint8Array([1, 2, 3, 4]),
+    });
+
+    expect(d.clearChannel("a")).toBe(1);
+    expect(d.tracesForChannel("a")).toHaveLength(0);
+    expect(d.tracesForChannel("b")).toHaveLength(1);
+  });
+
+  // The `current`-map cleanup that goes with this is memory hygiene, not
+  // behaviour: a stale entry resolves to undefined, which reads the same as no
+  // entry. It is deliberately untested, because nothing observable changes.
+  test("clearing an unknown channel drops nothing", () => {
+    const d = createWireDebugger();
+    d.observe({
+      channelId: "a",
+      direction: "out",
+      requestId: "p:1",
+      frameId: 1,
+      messageType: 0,
+      byteLength: 4,
+      bytes: new Uint8Array([1, 2, 3, 4]),
+    });
+    expect(d.clearChannel("nope")).toBe(0);
+    expect(d.tracesForChannel("a")).toHaveLength(1);
+  });
+});
