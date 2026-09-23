@@ -304,6 +304,12 @@ export interface WireDebugger {
   evictedTraces(): number;
   /** Drop all retained traces. */
   clear(): void;
+  /**
+   * Drop the retained traces for one channel, returning how many were dropped.
+   * {@link evictedTraces} is session-wide rather than per channel, so it is left
+   * alone: zeroing it here would under-report every other channel.
+   */
+  clearChannel(channelId: string): number;
 }
 
 function formatFrame(
@@ -586,6 +592,23 @@ export function createWireDebugger(
       traces.clear();
       current.clear();
       evictedCount = 0;
+    },
+    clearChannel: (channelId) => {
+      let dropped = 0;
+      for (const [key, trace] of [...traces]) {
+        if (trace.channelId !== channelId) continue;
+        traces.delete(key);
+        dropped += 1;
+      }
+      // Drop this channel's `current` entries too. Not for correctness - a stale
+      // entry resolves through `traces.get` to undefined, which reads the same as
+      // no entry - but `current` is otherwise only pruned on eviction, so
+      // repeated clears on a busy channel would grow it for the life of the
+      // process. The eviction path does the same thing for the same reason.
+      for (const [key, genKey] of [...current]) {
+        if (!traces.has(genKey)) current.delete(key);
+      }
+      return dropped;
     },
   };
 }
