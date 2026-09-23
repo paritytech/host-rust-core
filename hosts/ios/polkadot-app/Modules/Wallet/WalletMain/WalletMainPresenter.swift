@@ -57,6 +57,9 @@ extension WalletMainPresenter: WalletMainPresenterProtocol {
 
         let cards = await PocketCardsProvider(store: store).cards()
         view?.didReceive(pocketCards: cards)
+
+        let held = Set(cards.map(\.key))
+        PocketCardHosts.shared.keepOnly { held.contains($0) }
         prewarm(cards)
     }
 
