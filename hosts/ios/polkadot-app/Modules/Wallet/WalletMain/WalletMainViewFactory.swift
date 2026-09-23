@@ -21,7 +21,7 @@ enum WalletMainViewFactory {
         }
         let wireframe = WalletMainWireframe(
             personDataStore: context.personDataStore,
-            hostProvider: context.flowState.hostProvider
+            flowState: context.flowState
         )
 
         let networkStatusObserver = NetworkStatusObserver(

@@ -73,7 +73,7 @@ extension PocketOpenService {
                     case .open:
                         PocketCardOpening.open(
                             link: link,
-                            hostProvider: flowState.hostProvider,
+                            flowState: flowState,
                             navigator: moduleNavigator
                         )
                     }

@@ -56,4 +56,19 @@ public struct ResolvedProduct: Hashable, Sendable {
     public var appContentId: ProductId {
         executables.app?.identifier ?? id
     }
+
+    /// Name the widget's content archive resolves under. A product that
+    /// publishes no widget falls back to its app, which is what a legacy
+    /// product has.
+    public var widgetContentId: ProductId {
+        executables.widget?.identifier ?? appContentId
+    }
+
+    /// The archive `executable` is served from.
+    public func contentId(for executable: ProductExecutableSurface) -> ProductId {
+        switch executable {
+        case .app: appContentId
+        case .widget: widgetContentId
+        }
+    }
 }

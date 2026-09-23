@@ -5,20 +5,20 @@ import UIKitExt
 final class WalletMainWireframe: WalletMainWireframeProtocol {
     private let personDataStore: DetermineStatePersonDataStore
     private let moduleNavigator: ModuleNavigating
-    private let hostProvider: any ProductHostProviding
+    private let flowState: SPAFlowState
 
     init(
         personDataStore: DetermineStatePersonDataStore,
-        hostProvider: any ProductHostProviding,
+        flowState: SPAFlowState,
         moduleNavigator: ModuleNavigating = ModuleNavigator()
     ) {
         self.personDataStore = personDataStore
-        self.hostProvider = hostProvider
+        self.flowState = flowState
         self.moduleNavigator = moduleNavigator
     }
 
     func showPocketCard(_ card: PocketCardViewModel) {
-        PocketCardOpening.open(card.key, hostProvider: hostProvider, navigator: moduleNavigator)
+        PocketCardOpening.open(card.key, flowState: flowState, navigator: moduleNavigator)
     }
 
     func confirmPocketCardRemoval(_: PocketCardViewModel, onConfirm: @escaping () -> Void) {
