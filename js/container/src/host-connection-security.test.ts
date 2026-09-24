@@ -274,23 +274,44 @@ describe('shared connection permission isolation', () => {
     }
   });
 
+  for (const [name, attack] of [
+    ['MessageChannel', `
+      const NativeChannel = MessageChannel;
+      globalThis.MessageChannel = class extends NativeChannel {
+        constructor() { super(); exposed.push(this.port2); }
+      };
+      const { get } = Object.getOwnPropertyDescriptor(NativeChannel.prototype, 'port2');
+      Reflect.defineProperty(NativeChannel.prototype, 'port2', {
+        get() { const port = Reflect.apply(get, this, []); exposed.push(port); return port; },
+      });
+    `],
+    ['MessagePort', `
+      const start = MessagePort.prototype.start;
+      MessagePort.prototype.start = function () { exposed.push(this); return Reflect.apply(start, this, []); };
+    `],
+    ['EventTarget', `
+      const add = EventTarget.prototype.addEventListener;
+      EventTarget.prototype.addEventListener = function (...args) { exposed.push(this); return Reflect.apply(add, this, args); };
+    `],
+  ]) {
+    it(`keeps the lazy legacy endpoint private after ${name} replacement`, async () => {
+      const host = browser();
+      runInContext(`globalThis.exposed = []; ${attack}`, host.context);
+      const port = host.port();
+      await host.connect();
+      port.postMessage(frame('p:legacy'));
+      await until(() => host.sockets[0]!.sent.some(request => request.requestId === 'p:legacy'));
+      const result = host.fetch().then(() => 'allowed', () => 'denied');
+      await until(() => permissionRequests(host.sockets[0]!).length === 1);
+      host.sockets[0]!.reply(reply(permissionRequests(host.sockets[0]!)[0]!, false));
+      expect({ decision: await result, exposed: host.context.exposed, requests: host.requests }).toEqual({
+        decision: 'denied', exposed: [], requests: [],
+      });
+    });
+  }
+
   it('protects later connections while unrelated built-ins remain mutable', async () => {
     const host = browser();
-    expect(runInContext(`
-      const originals = { MessageChannel, MessagePort, EventTarget };
-      const replaced = [
-        ...Object.entries(originals).map(([name, original]) => {
-          globalThis[name] = class {};
-          return globalThis[name] !== original;
-        }),
-        Reflect.defineProperty(MessageChannel.prototype, 'port1', { get() { throw new Error('channel intercepted'); } }),
-        Reflect.defineProperty(MessageChannel.prototype, 'port2', { get() { throw new Error('channel intercepted'); } }),
-        ...['postMessage', 'start', 'close'].map(name =>
-          Reflect.defineProperty(MessagePort.prototype, name, { value() { throw new Error('port intercepted'); } })),
-        Reflect.defineProperty(EventTarget.prototype, 'addEventListener', { value() { throw new Error('listener intercepted'); } }),
-      ];
-      replaced;
-    `, host.context)).toEqual(Array(9).fill(false));
     runInContext(`
       'use strict';
       Date.now = () => 0;

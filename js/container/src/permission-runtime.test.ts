@@ -21,6 +21,22 @@ function browser() {
 }
 
 describe('product library compatibility', () => {
+  it('ignores shared prototype assignments without interrupting product startup', () => {
+    const context = browser();
+    expect(runInContext(`
+      'use strict';
+      const replacement = () => { throw new Error('shared method replaced'); };
+      Array.prototype.push = replacement;
+      Uint8Array.prototype.set = replacement;
+      TextEncoder.prototype.encode = replacement;
+      const values = [];
+      values.push('ready');
+      const bytes = new Uint8Array(2);
+      bytes.set(new TextEncoder().encode('Hi'));
+      ({ values, bytes: [...bytes] });
+    `, context)).toEqual({ values: ['ready'], bytes: [72, 105] });
+  });
+
   it('allows products to register the observable interoperability symbol', () => {
     const context = browser();
     expect(runInContext(`

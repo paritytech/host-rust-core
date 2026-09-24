@@ -13,6 +13,7 @@ function freezePrototype(prototype: object): void {
     Object.defineProperty(prototype, name, {
       get: () => value,
       set(ownValue: unknown) {
+        if (Object.isFrozen(this)) return;
         Object.defineProperty(this, name, { value: ownValue, writable: true, configurable: true, enumerable: true });
       },
     });
@@ -31,6 +32,7 @@ export function freezePermissionRuntime(): void {
     'Number',
     'String', // Reserve host: request IDs for private permission replies.
     'Uint8Array', 'DataView', // Prevent altered request and reply bytes.
+    'MessageChannel', 'MessagePort', 'EventTarget', // Keep lazily created legacy endpoints private.
   ] as const) {
     const constructor = globalThis[name];
     if (name !== 'Object' && name !== 'Number') freezePrototype(constructor.prototype);
