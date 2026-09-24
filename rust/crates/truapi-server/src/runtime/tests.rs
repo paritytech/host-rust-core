@@ -2199,6 +2199,51 @@ fn get_account_derives_rfc0022_product_key() {
 }
 
 #[test]
+fn get_account_answers_when_host_storage_never_returns() {
+    // A host whose storage never answers must not be able to park the request.
+    // Resolving an own-product account reads the persisted subtree first, and
+    // that read is a host callback: without a deadline the call never settles,
+    // so the product waits forever with no response and no error frame
+    // (paritytech/dotli-community#271).
+    let host = ProductRuntimeHost::new(
+        Arc::new(StubPlatform {
+            core_storage_pending: true,
+            ..Default::default()
+        }),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    host.test_session_state().set_session(sso_session_info());
+    let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+        product_account_id: account_id("myapp.dot", 0),
+    });
+    // The caller's deadline is what bounds it; a short one keeps the test fast
+    // and proves the bound is the context's rather than a fixed sleep.
+    let mut cx = CallContext::default();
+    cx.set_timeout(std::time::Duration::from_millis(200));
+
+    let outcome = futures::executor::block_on(async {
+        use futures::FutureExt;
+        use futures::pin_mut;
+        let call = host.get_account(&cx, request).fuse();
+        let guard = futures_timer::Delay::new(std::time::Duration::from_secs(10)).fuse();
+        pin_mut!(call, guard);
+        futures::select! {
+            result = call => Some(result),
+            () = guard => None,
+        }
+    });
+
+    let Some(result) = outcome else {
+        panic!("get_account never answered a host whose storage does not return");
+    };
+    assert!(
+        result.is_err(),
+        "a host that cannot answer its own storage must not resolve an account"
+    );
+}
+
+#[test]
 fn get_account_own_product_prompts_and_rejects_on_a_cold_subtree() {
     let host = ProductRuntimeHost::new(
         Arc::new(StubPlatform {
