@@ -9,9 +9,10 @@ import TrUAPIHost
 
 /// A trusted operation journal over the coordinator's native wallet, never a second inventory/allocator.
 final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
-    private struct Refusal: Error { let reason: NativeCoinageFailure }
-    private let wallet: Wallet
-    private let store: any NativeCoinageRecordStoring
+    struct Refusal: Error { let reason: NativeCoinageFailure }
+
+    let wallet: Wallet
+    let store: any NativeCoinageRecordStoring
     private let scope: @Sendable () throws -> NativeCoinageScope
     private let confirmationPresenter: TrUAPIConfirmationPresenting
     private let queue = SerialOperationQueue()
@@ -26,8 +27,12 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
         scope: @escaping @Sendable () throws -> NativeCoinageScope,
         confirmationPresenter: TrUAPIConfirmationPresenting
     ) {
-        self.init(wallet: Wallet(service: service), store: TrUAPINativeCoinageStore(storageFacade: storageFacade),
-                  scope: scope, confirmationPresenter: confirmationPresenter)
+        self.init(
+            wallet: Wallet(service: service),
+            store: TrUAPINativeCoinageStore(storageFacade: storageFacade),
+            scope: scope,
+            confirmationPresenter: confirmationPresenter
+        )
     }
 
     init(
@@ -83,7 +88,7 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
         }
     }
 
-    private func check(_ binding: NativeCoinageBinding, _ lease: NativeCoinageLease) throws {
+    func check(_ binding: NativeCoinageBinding, _ lease: NativeCoinageLease) throws {
         try Task.checkCancellation()
         guard lock.withLock({ available && generation == lease.generation }), !lease.isCancelled else {
             throw Refusal(reason: .unavailable)
@@ -146,8 +151,17 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
             try check(binding, lease)
             return .done
         case let .topUp(productId, operationId, minimumAmountRaw, secretKeys):
-            return try await topUp(product: productId, operation: operationId, minimum: minimumAmountRaw,
-                                   secrets: secretKeys, binding: binding, records: records, lease: lease)
+            return try await topUp(
+                TopUpRequest(
+                    product: productId,
+                    operation: operationId,
+                    minimum: minimumAmountRaw,
+                    secrets: secretKeys
+                ),
+                binding: binding,
+                records: records,
+                lease: lease
+            )
         }
     }
 
@@ -222,7 +236,11 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
         return try await payments(pending, product: product, lease: lease, onlyPending: true)
     }
 
-    private func outgoing(_ records: [NativeCoinageRecord], product: String, operation: Data) throws -> NativeCoinageOutgoing {
+    private func outgoing(
+        _ records: [NativeCoinageRecord],
+        product: String,
+        operation: Data
+    ) throws -> NativeCoinageOutgoing {
         guard let existing = records.first(where: { $0.operation == operation }) else {
             throw Refusal(reason: .operationNotFound)
         }
@@ -240,19 +258,9 @@ extension TrUAPINativeCoinage {
         records: [NativeCoinageRecord],
         lease: NativeCoinageLease
     ) async throws -> NativeCoinageResponse {
-        guard intent.operationId.count == 32, intent.peerIdentity.count == 32, !intent.productId.isEmpty,
-              !intent.requestId.isEmpty, intent.amountCents > 0 else { throw Refusal(reason: .invalidRequest) }
+        try Self.validate(intent)
         let immutable = NativeCoinageIntent(intent)
-        for case let .outgoing(existing) in records
-            where existing.intent.product == intent.productId && existing.intent.request == intent.requestId {
-            guard existing.intent == immutable else { throw Refusal(reason: .operationConflict) }
-        }
-        var record: NativeCoinageOutgoing?
-        if records.contains(where: { $0.operation == intent.operationId }) {
-            record = try outgoing(records, product: intent.productId, operation: intent.operationId)
-            guard record?.intent == immutable else { throw Refusal(reason: .operationConflict) }
-            if record?.approval == .rejected { throw Refusal(reason: .userRejected) }
-        }
+        let record = try existingOutgoing(for: intent, immutable: immutable, records: records)
         if let record, let memo = try await wallet.retained(record.custodyId) {
             try check(binding, lease)
             guard record.approval == .approved else { throw Refusal(reason: .operationConflict) }
@@ -266,17 +274,27 @@ extension TrUAPINativeCoinage {
         guard unit > 0, amount.bitWidth <= 128 else { throw Refusal(reason: .invalidRequest) }
         if let record, record.centsUnit != String(unit) { throw Refusal(reason: .operationConflict) }
         let preview: TransferPreview
-        do { preview = try await wallet.preview(amount) }
-        catch CoinSelectionError.insufficientFunds, CoinSelectionError.emptyWallet {
+        do {
+            preview = try await wallet.preview(amount)
+        } catch CoinSelectionError.insufficientFunds, CoinSelectionError.emptyWallet {
             throw Refusal(reason: .insufficientBalance)
         }
         try check(binding, lease)
-        guard preview.fullAmount == amount, Self.recipientAmount(preview.selectionResult, context: context) == amount else {
+        guard
+            preview.fullAmount == amount,
+            Self.recipientAmount(preview.selectionResult, context: context) == amount
+        else {
             throw Refusal(reason: .operationConflict)
         }
         var value = record ?? NativeCoinageOutgoing(
-            binding: binding, intent: immutable, timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
-            centsUnit: String(unit), approval: .reviewing, privacyApproved: false, accepted: false, delivered: false
+            binding: binding,
+            intent: immutable,
+            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
+            centsUnit: String(unit),
+            approval: .reviewing,
+            privacyApproved: false,
+            accepted: false,
+            delivered: false
         )
         let privacy = preview.scope == .withConfirmation
         if value.approval != .approved || (privacy && !value.privacyApproved) {
@@ -284,10 +302,14 @@ extension TrUAPINativeCoinage {
             try check(binding, lease)
             let approved = await confirmationPresenter.confirmNativeCoinage(
                 review: MainPurseChatPaymentReview(
-                    callingProductId: intent.productId, recipientIdentity: intent.peerIdentity,
-                    recipientUsername: intent.recipientUsername, amountCents: intent.amountCents,
-                    maxDebitCents: intent.amountCents, genesisHash: binding.genesis,
-                    coinageInstanceId: binding.instance, operationId: intent.operationId
+                    callingProductId: intent.productId,
+                    recipientIdentity: intent.peerIdentity,
+                    recipientUsername: intent.recipientUsername,
+                    amountCents: intent.amountCents,
+                    maxDebitCents: intent.amountCents,
+                    genesisHash: binding.genesis,
+                    coinageInstanceId: binding.instance,
+                    operationId: intent.operationId
                 ),
                 requiresPrivacyConfirmation: privacy
             )
@@ -304,6 +326,34 @@ extension TrUAPINativeCoinage {
         }
         try check(binding, lease)
         return try await prepared(value, memo: memo, lease: lease)
+    }
+
+    private static func validate(_ intent: NativeCoinagePaymentIntent) throws {
+        guard
+            intent.operationId.count == 32,
+            intent.peerIdentity.count == 32,
+            !intent.productId.isEmpty,
+            !intent.requestId.isEmpty,
+            intent.amountCents > 0
+        else {
+            throw Refusal(reason: .invalidRequest)
+        }
+    }
+
+    private func existingOutgoing(
+        for intent: NativeCoinagePaymentIntent,
+        immutable: NativeCoinageIntent,
+        records: [NativeCoinageRecord]
+    ) throws -> NativeCoinageOutgoing? {
+        for case let .outgoing(existing) in records
+            where existing.intent.product == intent.productId && existing.intent.request == intent.requestId {
+            guard existing.intent == immutable else { throw Refusal(reason: .operationConflict) }
+        }
+        guard records.contains(where: { $0.operation == intent.operationId }) else { return nil }
+        let record = try outgoing(records, product: intent.productId, operation: intent.operationId)
+        guard record.intent == immutable else { throw Refusal(reason: .operationConflict) }
+        guard record.approval != .rejected else { throw Refusal(reason: .userRejected) }
+        return record
     }
 
     static func recipientAmount(_ selection: CoinSelectionResult, context: DenominationBreakdownContext) -> BigUInt {
@@ -334,7 +384,13 @@ extension TrUAPINativeCoinage {
         default:
             break
         }
-        return .prepared(payment: payment, memo: NativeCoinageMemo(secretKeys: memo.entries, totalValueRaw: String(memo.totalValue)))
+        return .prepared(
+            payment: payment,
+            memo: NativeCoinageMemo(
+                secretKeys: memo.entries,
+                totalValueRaw: String(memo.totalValue)
+            )
+        )
     }
 
     private func payments(
@@ -361,7 +417,14 @@ extension TrUAPINativeCoinage {
         let memo: TransferMemo?
         if let supplied { memo = supplied } else { memo = try await wallet.retained(record.custodyId) }
         try check(record.binding, lease)
-        var state: HostNativeChatPaymentState = record.delivered ? .delivered : (record.accepted ? .delivering : .preparing)
+        var state: HostNativeChatPaymentState
+        if record.delivered {
+            state = .delivered
+        } else if record.accepted {
+            state = .delivering
+        } else {
+            state = .preparing
+        }
         if record.approval == .rejected {
             state = .failed(reason: .cancelled)
         } else if let memo {
@@ -385,57 +448,15 @@ extension TrUAPINativeCoinage {
             }
         }
         return HostNativeChatPayment(
-            operationId: record.intent.operation, requestId: record.intent.request,
-            messageId: "payment-\(record.intent.operation.toHex())", timestamp: record.timestamp,
-            peerIdentity: record.intent.peer, direction: .outgoing, amountCents: record.intent.cents, state: state
+            operationId: record.intent.operation,
+            requestId: record.intent.request,
+            messageId: "payment-\(record.intent.operation.toHex())",
+            timestamp: record.timestamp,
+            peerIdentity: record.intent.peer,
+            direction: .outgoing,
+            amountCents: record.intent.cents,
+            state: state
         )
-    }
-
-    private func topUp(
-        product: String, operation: Data, minimum: String, secrets: [Data], binding: NativeCoinageBinding,
-        records: [NativeCoinageRecord], lease: NativeCoinageLease
-    ) async throws -> NativeCoinageResponse {
-        guard !product.isEmpty, operation.count == 32, let amount = BigUInt(minimum),
-              amount.bitWidth <= 128, String(amount) == minimum else { throw Refusal(reason: .invalidRequest) }
-        guard !secrets.isEmpty, secrets.allSatisfy({ $0.count == 64 }) else { throw Refusal(reason: .invalidSource) }
-        let pairs: [(Data, Data)]
-        do {
-            pairs = try secrets.map { (try SNKeyFactory().createPublicKey(fromSecret: $0).rawData(), $0) }
-                .sorted { $0.0.lexicographicallyPrecedes($1.0) }
-        } catch { throw Refusal(reason: .invalidSource) }
-        let sources = pairs.map(\.0)
-        guard Set(sources).count == sources.count else { throw Refusal(reason: .invalidSource) }
-        let incoming = NativeCoinageIncoming(binding: binding, operation: operation, product: product,
-                                            minimum: minimum, sources: sources)
-        if let prior = records.first(where: { $0.operation == operation }) {
-            guard prior == .incoming(incoming) else { throw Refusal(reason: .operationConflict) }
-        } else {
-            for case let .incoming(prior) in records where !Set(prior.sources).isDisjoint(with: Set(sources)) {
-                throw Refusal(reason: .operationConflict)
-            }
-            // Immutable min and source identity survive IncomingPaymentService's terminal secret cleanup.
-            try await store.save(.incoming(incoming)) { [self] in try check(binding, lease) }
-            try check(binding, lease)
-        }
-        let paymentId = "truapi-native-\(binding.key)-\(operation.toHex())"
-        do {
-            try await wallet.accept(amount, pairs.map(\.1), paymentId, product)
-        } catch IncomingPaymentError.alreadyExists {
-            // Only legal after our durable immutable binding matched above.
-        } catch IncomingPaymentError.invalidAmount {
-            throw Refusal(reason: .invalidRequest)
-        } catch IncomingPaymentError.invalidSource {
-            throw Refusal(reason: .invalidSource)
-        } catch IncomingPaymentError.sourceBusy {
-            throw Refusal(reason: .operationConflict)
-        }
-        try check(binding, lease)
-        let status = try await wallet.incomingStatus(paymentId, product)
-        try check(binding, lease)
-        if case let .claimedPartially(actual) = status, actual >= amount {
-            throw Refusal(reason: .operationConflict)
-        }
-        return .topUp(outcome: Self.topUpOutcome(status))
     }
 
     static func topUpOutcome(_ status: IncomingPaymentStatus) -> NativeCoinageTopUpOutcome {
@@ -449,7 +470,7 @@ extension TrUAPINativeCoinage {
     }
 }
 
-private final class NativeCoinageLease: @unchecked Sendable {
+final class NativeCoinageLease: @unchecked Sendable {
     let generation: UInt64
     private let lock = NSLock()
     private var cancelled = false

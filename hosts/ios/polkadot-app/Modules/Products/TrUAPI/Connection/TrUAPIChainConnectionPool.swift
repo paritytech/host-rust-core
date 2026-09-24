@@ -272,15 +272,22 @@ extension TrUAPIChainConnectionPool: WebSocketEngineDelegate {
 }
 
 private extension TrUAPIChainConnectionPool {
+    private struct ClosedConnection {
+        let id: UInt32
+        let connection: Connection
+        let handler: TrUAPIChainEventHandling?
+    }
+
     static func hopURL(endpoint: String) -> URL? {
+        let authority = endpoint.dropFirst(6).prefix {
+            $0 != "/" && $0 != "?" && $0 != "#"
+        }
         guard
             endpoint.hasPrefix("wss://"),
             !endpoint.unicodeScalars.contains(where: {
                 $0 == "\\" || $0.properties.isWhitespace || $0.properties.generalCategory == .control
             }),
-            !endpoint.dropFirst(6).prefix(while: {
-                $0 != "/" && $0 != "?" && $0 != "#"
-            }).contains("@"),
+            !authority.contains("@"),
             let url = URL(string: endpoint),
             url.scheme == "wss",
             url.user == nil,
@@ -315,17 +322,21 @@ private extension TrUAPIChainConnectionPool {
     }
 
     func closeOwnedEngine(_ engine: AnyObject) {
-        let closed = state.withLock { state -> (UInt32, Connection, TrUAPIChainEventHandling?)? in
+        let closed = state.withLock { state -> ClosedConnection? in
             guard
                 let connectionId = state.ownedEngineIds[ObjectIdentifier(engine)],
                 let connection = remove(connectionId: connectionId, state: &state)
             else {
                 return nil
             }
-            return (connectionId, connection, state.eventHandler)
+            return ClosedConnection(
+                id: connectionId,
+                connection: connection,
+                handler: state.eventHandler
+            )
         }
-        guard let (connectionId, connection, handler) = closed else { return }
-        connection.close()
-        handler?.chainDidClose(connectionId: connectionId)
+        guard let closed else { return }
+        closed.connection.close()
+        closed.handler?.chainDidClose(connectionId: closed.id)
     }
 }
