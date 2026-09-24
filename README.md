@@ -160,6 +160,8 @@ outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 The container publishes the shared client and a temporary MessagePort adapter for
 older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
 CLI and iframe MessagePort transports remain supported.
+The [container permission boundary](js/container/README.md) documents the protected
+operations and the built-ins that remain mutable for product compatibility.
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
 On iOS, a wallet host that manages its own statement-store SSO session can call
