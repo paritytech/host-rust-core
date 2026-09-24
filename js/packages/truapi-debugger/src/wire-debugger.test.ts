@@ -421,24 +421,8 @@ describe("clearChannel", () => {
   // this exists rather than reusing clear().
   test("drops one channel's traces and leaves the others", () => {
     const d = createWireDebugger();
-    d.observe({
-      channelId: "a",
-      direction: "out",
-      requestId: "p:1",
-      frameId: 1,
-      messageType: 0,
-      byteLength: 4,
-      bytes: new Uint8Array([1, 2, 3, 4]),
-    });
-    d.observe({
-      channelId: "b",
-      direction: "out",
-      requestId: "p:1",
-      frameId: 1,
-      messageType: 0,
-      byteLength: 4,
-      bytes: new Uint8Array([1, 2, 3, 4]),
-    });
+    d.observe(frame("a", "p:1", 1, 1));
+    d.observe(frame("b", "p:1", 1, 1));
 
     expect(d.clearChannel("a")).toBe(1);
     expect(d.tracesForChannel("a")).toHaveLength(0);
@@ -450,15 +434,7 @@ describe("clearChannel", () => {
   // entry. It is deliberately untested, because nothing observable changes.
   test("clearing an unknown channel drops nothing", () => {
     const d = createWireDebugger();
-    d.observe({
-      channelId: "a",
-      direction: "out",
-      requestId: "p:1",
-      frameId: 1,
-      messageType: 0,
-      byteLength: 4,
-      bytes: new Uint8Array([1, 2, 3, 4]),
-    });
+    d.observe(frame("a", "p:1", 1, 1));
     expect(d.clearChannel("nope")).toBe(0);
     expect(d.tracesForChannel("a")).toHaveLength(1);
   });
