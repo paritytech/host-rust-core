@@ -2553,28 +2553,139 @@
         }
       }
     },
-    "root.init.waiting.subtitle": {
+    "root.init.failure.action": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turn off Airplane Mode or check your internet"
+            "value": "Try again"
           }
         }
       }
     },
-    "root.init.waiting.title": {
+    "root.init.failure.tld.subtitle": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Configuring application..."
+            "value": "We are working on a fix."
           }
         }
       }
     },
+    "root.init.failure.tld.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hub configuration failed"
+          }
+        }
+      }
+    },
+    "root.init.loading.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is taking longer than usual"
+          }
+        }
+      }
+    },
+    "root.init.failure.chains.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "We are working on a fix."
+          }
+        }
+      }
+    },
+    "root.init.failure.chains.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chains configuration is broken"
+          }
+        }
+      }
+    },
+    "root.init.failure.config.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "We are working on a fix."
+          }
+        }
+      }
+    },
+    "root.init.failure.config.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuration is broken"
+          }
+        }
+      }
+    },
+    "root.init.failure.connectivity.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check your connection. We'll try again automatically."
+          }
+        }
+      }
+    },
+    "root.init.failure.connectivity.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No internet connection"
+          }
+        }
+      }
+    },
+    "root.init.failure.unknown.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please try again"
+          }
+        }
+      }
+    },
+    "root.init.failure.unknown.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setup could not be completed"
+          }
+        }
+      }
+    },
+
     "searchContact.NoSuchUsername": {
       "extractionState": "manual",
       "localizations": {

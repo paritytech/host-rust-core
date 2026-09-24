@@ -56,7 +56,7 @@ extension ChatMessageEntityMapper: CoreDataMapperProtocol {
 
         let timestamp = UInt64(bitPattern: entity.timestamp)
 
-        let content = try Self.getContent(from: entity)
+        let content = try Self.getContent(from: entity).attachingTransferState(of: entity)
 
         let reactions = getReactions(from: entity, chatId: chatId)
 
