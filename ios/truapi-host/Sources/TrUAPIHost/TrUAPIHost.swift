@@ -13,6 +13,7 @@
 // `window.__truapi_localhost` for the shared container to consume.
 
 import Foundation
+import UIKit
 
 /// Package metadata.
 public enum TrUAPIHost {
@@ -728,14 +729,38 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
 public final class TrUAPIHostRuntime: @unchecked Sendable {
     private let inner: NativeTrUApiHostRuntime
     private let callbackRetainer: HostCallbacks
+    private let notificationCenter: NotificationCenter
+    private let foregroundObserver: NSObjectProtocol
 
-    public init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
+    public convenience init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
+        try self.init(bridge: bridge, runtimeConfig: runtimeConfig, notificationCenter: .default)
+    }
+
+    init(
+        bridge: HostBridge,
+        runtimeConfig: HostRuntimeConfig,
+        notificationCenter: NotificationCenter
+    ) throws {
         let adapter = HostCallbackAdapter(bridge: bridge)
         callbackRetainer = adapter
-        inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
+        let inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
             callbacks: adapter,
             runtimeConfig: runtimeConfig.native
         )
+        self.inner = inner
+        self.notificationCenter = notificationCenter
+        // iOS reclaims a suspended app's listening sockets.
+        foregroundObserver = notificationCenter.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            inner.relistenWsBridge()
+        }
+    }
+
+    deinit {
+        notificationCenter.removeObserver(foregroundObserver)
     }
 
     /// Open one executable connection with a host-assigned immutable context.
