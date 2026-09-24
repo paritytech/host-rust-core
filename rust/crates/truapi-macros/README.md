@@ -100,7 +100,9 @@ cargo +stable test -p truapi-macros --locked
   caller-owned `Db::write`.
 - `…Transactions`, holding the `#[transaction]` methods, implemented only for
   `rusqlite::Transaction`. Their bodies rely on an enclosing transaction, so a
-  bare connection cannot call them.
+  bare connection cannot call them. A body runs with `self` as that
+  transaction, so it can call any DAO in scope, including another DAO's
+  `#[transaction]` methods.
 - The `…Db` struct, with an async twin of every method that takes a connection
   from the database itself and runs in its own transaction: `#[query]` on a
   read-only reader, `#[execute]` and `#[transaction]` on the writer.
@@ -141,6 +143,11 @@ struct with `#[serde(with = "serde_bytes")]`. An `#[execute]` returns `usize`
 (rows changed), `()`, or rows from its `RETURNING` clause in the same shapes;
 an insert that needs its id asks for it with `RETURNING id`, which yields no
 row when nothing was inserted.
+
+A method cannot be named `new` or after a `rusqlite` `Connection` or
+`Transaction` method (`execute`, `commit`, …), which would shadow it inside a
+`#[transaction]` body. Lint attributes, `cfg_attr` and `deprecated` on a method
+carry over to its async twin; `cfg` carries over to everything generated for it.
 
 `…Db::QUERIES` lists every statement and whether it must only read.
 `store::prepare_all` prepares them against the migrated schema in a test, which

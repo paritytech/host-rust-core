@@ -1,0 +1,5 @@
+error: argument `memo` borrows in a way the async twin cannot own; use an owned type, `&T` or `Option<&T>`
+ --> tests/ui/dao/fail/nested_borrow_argument.rs:6:30
+  |
+6 |     fn set_memo(&self, memo: &Option<&str>) -> rusqlite::Result<usize>;
+  |                              ^

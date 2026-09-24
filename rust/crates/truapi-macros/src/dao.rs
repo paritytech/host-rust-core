@@ -13,8 +13,105 @@ use syn::{
     PathArguments, ReturnType, TraitItem, TraitItemFn, Type, Visibility, parse_macro_input,
 };
 
-/// Method names the generated `…Db` struct defines itself.
-const RESERVED_METHODS: [&str; 1] = ["new"];
+/// Method names a DAO method cannot take: `new` is the generated `…Db`
+/// constructor, and the rest are `rusqlite` 0.40 `Connection` and
+/// `Transaction` methods, which `self.name(…)` in a `#[transaction]` body would
+/// call instead of the DAO method.
+const RESERVED_METHODS: &[&str] = &[
+    "new",
+    "apply",
+    "apply_strm",
+    "authorizer",
+    "backup",
+    "blob_open",
+    "busy_handler",
+    "busy_timeout",
+    "cache_flush",
+    "changes",
+    "close",
+    "collation_needed",
+    "column_exists",
+    "column_metadata",
+    "commit",
+    "commit_hook",
+    "create_aggregate_function",
+    "create_collation",
+    "create_module",
+    "create_scalar_function",
+    "create_window_function",
+    "db_config",
+    "db_name",
+    "deserialize",
+    "deserialize_bytes",
+    "deserialize_read_exact",
+    "drop_behavior",
+    "execute",
+    "execute_batch",
+    "extension_init2",
+    "finish",
+    "flush_prepared_statement_cache",
+    "from_handle",
+    "from_handle_owned",
+    "get_interrupt_handle",
+    "handle",
+    "is_autocommit",
+    "is_busy",
+    "is_interrupted",
+    "is_readonly",
+    "last_insert_rowid",
+    "limit",
+    "load_extension",
+    "load_extension_disable",
+    "load_extension_enable",
+    "new_unchecked",
+    "one_column",
+    "open",
+    "open_in_memory",
+    "open_in_memory_with_flags",
+    "open_in_memory_with_flags_and_vfs",
+    "open_with_flags",
+    "open_with_flags_and_vfs",
+    "path",
+    "pragma",
+    "pragma_query",
+    "pragma_query_value",
+    "pragma_update",
+    "pragma_update_and_check",
+    "prepare",
+    "prepare_cached",
+    "prepare_with_flags",
+    "preupdate_hook",
+    "profile",
+    "progress_handler",
+    "query_one",
+    "query_row",
+    "query_row_and_then",
+    "release_memory",
+    "remove_collation",
+    "remove_function",
+    "restore",
+    "rollback",
+    "rollback_hook",
+    "savepoint",
+    "savepoint_with_name",
+    "serialize",
+    "set_db_config",
+    "set_drop_behavior",
+    "set_errmsg",
+    "set_limit",
+    "set_prepared_statement_cache_capacity",
+    "set_transaction_behavior",
+    "table_exists",
+    "total_changes",
+    "trace",
+    "trace_v2",
+    "transaction",
+    "transaction_state",
+    "transaction_with_behavior",
+    "unchecked_transaction",
+    "update_hook",
+    "wal_hook",
+];
 
 /// What a method does, from its marker attribute.
 enum Kind {
@@ -74,9 +171,15 @@ struct Method {
     kind: Kind,
     arguments: Vec<Argument>,
     value: Type,
-    /// `#[cfg]` and `#[cfg_attr]` attributes, repeated on everything generated
-    /// for this method.
+    /// `#[cfg]` attributes, repeated on everything generated for the method.
     cfgs: Vec<Attribute>,
+    /// Attributes that also apply to the async twin: `cfg_attr`, lint levels
+    /// and `deprecated`. Lint levels also apply to a transaction body.
+    twin_attributes: Vec<Attribute>,
+    /// Lint-level attributes, for the transaction body's implementation.
+    lints: Vec<Attribute>,
+    /// Whether the method is `#[deprecated]`, so the twin's call is allowed.
+    deprecated: bool,
 }
 
 /// Parse the macro input and emit generated code or a compiler diagnostic.
@@ -162,32 +265,52 @@ fn expand_trait(mut item: ItemTrait) -> syn::Result<TokenStream2> {
 
 /// The `#[transaction]` methods, on a trait implemented only for
 /// `rusqlite::Transaction`: they rely on the caller's transaction, so a bare
-/// connection must not be able to call them.
+/// connection must not be able to call them. The bodies go on the
+/// implementation, where `self` is a concrete `Transaction`, so they can call
+/// any DAO in scope, including other DAOs' transaction methods.
 fn transactions_trait(
     methods: &[Method],
     trait_ident: &Ident,
     transactions_ident: &Ident,
     vis: &Visibility,
 ) -> TokenStream2 {
-    let bodies: Vec<_> = methods
+    let transactions: Vec<&Method> = methods
         .iter()
         .filter(|method| matches!(method.kind, Kind::Transaction))
-        .map(|method| &method.function)
         .collect();
-    if bodies.is_empty() {
+    if transactions.is_empty() {
         return TokenStream2::new();
     }
+    let declarations = transactions.iter().map(|method| {
+        let mut declaration = method.function.clone();
+        declaration.default = None;
+        declaration.semi_token = Some(Default::default());
+        declaration
+    });
+    let bodies = transactions.iter().map(|method| {
+        let sig = &method.function.sig;
+        let body = &method.function.default;
+        let cfgs = &method.cfgs;
+        let lints = &method.lints;
+        quote! {
+            #(#cfgs)*
+            #(#lints)*
+            #sig #body
+        }
+    });
     let doc = format!(
         "The `#[transaction]` methods of [`{trait_ident}`], callable only inside \
          a transaction. Generated by `#[dao]`."
     );
     quote! {
         #[doc = #doc]
-        #vis trait #transactions_ident: ::core::ops::Deref<Target = ::rusqlite::Connection> {
-            #(#bodies)*
+        #vis trait #transactions_ident {
+            #(#declarations)*
         }
 
-        impl #transactions_ident for ::rusqlite::Transaction<'_> {}
+        impl #transactions_ident for ::rusqlite::Transaction<'_> {
+            #(#bodies)*
+        }
     }
 }
 
@@ -198,7 +321,10 @@ impl Method {
         if RESERVED_METHODS.contains(&name.as_str()) {
             return Err(Error::new(
                 function.sig.ident.span(),
-                format!("`{name}` is taken by the generated `…Db` struct; choose another name"),
+                format!(
+                    "`{name}` is taken by the generated `…Db` constructor or by a `rusqlite` \
+                     connection method; choose another name"
+                ),
             ));
         }
         reject_type_generics(&function)?;
@@ -217,12 +343,22 @@ impl Method {
                 reject_body(&function, "#[execute]")?;
                 let scan = check_parameters(&sql, &arguments)?;
                 let outcome = outcome(&value)?;
-                if matches!(outcome, Outcome::Returned(_)) && !scan.returning {
-                    return Err(Error::new(
-                        sql.span(),
-                        "an #[execute] that returns rows needs a RETURNING clause; \
-                         return `usize` for the number of rows changed",
-                    ));
+                match (&outcome, scan.returning) {
+                    (Outcome::Returned(_), false) => {
+                        return Err(Error::new(
+                            sql.span(),
+                            "an #[execute] that returns rows needs a RETURNING clause; \
+                             return `usize` for the number of rows changed",
+                        ));
+                    }
+                    (Outcome::Changed | Outcome::Nothing, true) => {
+                        return Err(Error::new(
+                            sql.span(),
+                            "a RETURNING clause returns rows; declare the row type \
+                             (`T`, `Option<T>` or `Vec<T>`) as the result",
+                        ));
+                    }
+                    _ => {}
                 }
                 Kind::Execute { outcome, sql }
             }
@@ -236,20 +372,36 @@ impl Method {
                 Kind::Transaction
             }
         };
-        let cfgs = function
-            .attrs
-            .iter()
-            .filter(|attribute| {
-                attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr")
-            })
-            .cloned()
-            .collect();
+        let named = |names: &[&str]| -> Vec<Attribute> {
+            function
+                .attrs
+                .iter()
+                .filter(|attribute| names.iter().any(|name| attribute.path().is_ident(name)))
+                .cloned()
+                .collect()
+        };
+        let lint_levels = ["allow", "warn", "deny", "forbid", "expect"];
         Ok(Self {
+            cfgs: named(&["cfg"]),
+            twin_attributes: named(&[
+                "cfg_attr",
+                "deprecated",
+                "allow",
+                "warn",
+                "deny",
+                "forbid",
+                "expect",
+            ]),
+            lints: named(&lint_levels),
+            deprecated: function.attrs.iter().any(|attribute| {
+                attribute.path().is_ident("deprecated")
+                    || (attribute.path().is_ident("cfg_attr")
+                        && quote!(#attribute).to_string().contains("deprecated"))
+            }),
             function,
             kind,
             arguments,
             value,
-            cfgs,
         })
     }
 
@@ -314,6 +466,8 @@ impl Method {
             .iter()
             .filter(|attribute| attribute.path().is_ident("doc"));
         let cfgs = &self.cfgs;
+        let twin_attributes = &self.twin_attributes;
+        let allow_deprecated = self.deprecated.then(|| quote!(#[allow(deprecated)]));
         let value = &self.value;
         let parameters = self
             .arguments
@@ -359,6 +513,7 @@ impl Method {
         };
         quote! {
             #(#cfgs)*
+            #(#twin_attributes)*
             #(#docs)*
             #vis async fn #name #generics (&self, #(#parameters),*)
                 -> ::core::result::Result<#value, crate::store::DbError>
@@ -366,8 +521,9 @@ impl Method {
                 #(#owned)*
                 self.db
                     .#access(move |__dao_connection| {
-                        #receiver::#name(__dao_connection, #(#call),*)
-                            .map_err(::core::convert::Into::into)
+                        #allow_deprecated
+                        let __dao_result = #receiver::#name(__dao_connection, #(#call),*);
+                        __dao_result.map_err(::core::convert::Into::into)
                     })
                     .await
             }
@@ -523,27 +679,43 @@ fn arguments(function: &TraitItemFn) -> syn::Result<Vec<Argument>> {
 }
 
 fn ownership(ty: &Type, name: &Ident) -> syn::Result<Ownership> {
-    if let Type::Reference(reference) = ty {
-        if reference.mutability.is_some() {
-            return Err(Error::new(ty.span(), "a #[dao] argument cannot be `&mut`"));
-        }
-        return Ok(Ownership::Reference);
-    }
-    if let Some(("Option", Type::Reference(reference))) = container(ty)
-        && reference.mutability.is_none()
-    {
-        return Ok(Ownership::OptionalReference);
-    }
-    let tokens = quote!(#ty).to_string();
-    if tokens.contains('&') || tokens.contains('\'') {
-        return Err(Error::new(
+    let borrows = |ty: &Type| {
+        let tokens = quote!(#ty).to_string();
+        tokens.contains('&') || tokens.contains('\'')
+    };
+    let unsupported = || {
+        Error::new(
             ty.span(),
             format!(
                 "argument `{}` borrows in a way the async twin cannot own; \
                  use an owned type, `&T` or `Option<&T>`",
                 name.unraw()
             ),
+        )
+    };
+    if matches!(ty, Type::ImplTrait(_)) {
+        return Err(Error::new(
+            ty.span(),
+            "a #[dao] argument takes a concrete type, not `impl Trait`",
         ));
+    }
+    if let Type::Reference(reference) = ty {
+        if reference.mutability.is_some() {
+            return Err(Error::new(ty.span(), "a #[dao] argument cannot be `&mut`"));
+        }
+        if borrows(&reference.elem) {
+            return Err(unsupported());
+        }
+        return Ok(Ownership::Reference);
+    }
+    if let Some(("Option", Type::Reference(reference))) = container(ty)
+        && reference.mutability.is_none()
+        && !borrows(&reference.elem)
+    {
+        return Ok(Ownership::OptionalReference);
+    }
+    if borrows(ty) {
+        return Err(unsupported());
     }
     Ok(Ownership::Owned)
 }
@@ -570,7 +742,9 @@ fn rusqlite_result_value(output: &ReturnType) -> syn::Result<Type> {
 fn rows(value: &Type) -> syn::Result<Rows> {
     Ok(match container(value) {
         Some(("Vec", row)) => {
-            if matches!(&row, Type::Path(path) if path.path.is_ident("u8")) {
+            if matches!(&row, Type::Path(path)
+                if path.path.segments.last().is_some_and(|last| last.ident == "u8"))
+            {
                 return Err(Error::new(
                     value.span(),
                     "`Vec<u8>` would read one byte per row; for a blob column return a row \
@@ -715,6 +889,10 @@ fn scan(sql: &str) -> Result<Scan, &'static str> {
                     }
                 }
                 if !name.is_empty() {
+                    if chars.peek() == Some(&'(') {
+                        return Err("SQLite reads `:name(…)` as one parameter; add a space \
+                                    before `(`");
+                    }
                     scan.parameters.insert(name);
                 }
             }
@@ -784,6 +962,12 @@ mod tests {
                 "f".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn rejects_a_tcl_style_parameter_suffix() {
+        // SQLite reads `:a(x)` as one parameter named `:a(x)`, not `:a`.
+        assert!(scan("SELECT * FROM t WHERE a = :a(x)").is_err());
     }
 
     #[test]

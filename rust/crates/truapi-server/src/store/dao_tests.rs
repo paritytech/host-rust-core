@@ -102,6 +102,33 @@ trait LedgerDao {
     #[query("SELECT column_that_does_not_exist FROM ledger")]
     fn compiled_out(&self) -> rusqlite::Result<i64>;
 
+    #[query("SELECT id FROM ledger WHERE id = :id")]
+    fn as_pair(&self, id: i64) -> rusqlite::Result<Option<(i64, i64)>>;
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "checks that lint attributes reach the async twin"
+    )]
+    #[query("SELECT count(*) FROM ledger WHERE amount IN (:a, :b, :c, :d, :e, :f, :g, :h)")]
+    fn among(
+        &self,
+        a: i64,
+        b: i64,
+        c: i64,
+        d: i64,
+        e: i64,
+        f: i64,
+        g: i64,
+        h: i64,
+    ) -> rusqlite::Result<i64>;
+
+    #[cfg_attr(
+        all(),
+        deprecated = "checks that deprecation reaches the async twin only"
+    )]
+    #[query("SELECT count(*) FROM ledger")]
+    fn old_count(&self) -> rusqlite::Result<i64>;
+
     /// Moves `amount` between two notes, or changes nothing.
     #[transaction]
     fn transfer(&self, from: &str, to: &str, amount: i64) -> rusqlite::Result<()> {
@@ -112,6 +139,23 @@ trait LedgerDao {
         let target = self.find(to)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         self.set_amount(to, target.amount + amount)?;
         Ok(())
+    }
+}
+
+/// A second DAO whose transaction composes the first one's.
+#[dao]
+trait AuditDao {
+    #[execute("INSERT INTO other (value) VALUES (:value)")]
+    fn record(&self, value: i64) -> rusqlite::Result<()>;
+
+    #[query("SELECT count(*) FROM other")]
+    fn recorded(&self) -> rusqlite::Result<i64>;
+
+    /// Transfers and records the amount, or does neither.
+    #[transaction]
+    fn audited_transfer(&self, from: &str, to: &str, amount: i64) -> rusqlite::Result<()> {
+        self.record(amount)?;
+        self.transfer(from, to, amount)
     }
 }
 
@@ -375,4 +419,39 @@ fn a_query_that_writes_is_reported() {
     let failure = prepare_all(migrations, WritingQueryDaoDb::QUERIES).unwrap_err();
 
     assert_eq!(failure.0, WritingQueryDaoDb::QUERIES[0].sql);
+}
+
+#[test]
+fn a_transaction_method_composes_another_daos_transaction() {
+    // `audited_transfer` records first and then calls `LedgerDao::transfer`;
+    // when the transfer fails, the record must go too.
+    let (_dir, db, dao) = open();
+    let audit = AuditDaoDb::new(db);
+    block_on(dao.insert("alice", 10, &[])).unwrap();
+    block_on(dao.insert("bob", 0, &[])).unwrap();
+
+    block_on(audit.audited_transfer("alice", "bob", 4)).unwrap();
+    let failed = block_on(audit.audited_transfer("alice", "nobody", 1));
+
+    assert!(failed.is_err());
+    assert_eq!(block_on(audit.recorded()).unwrap(), 1);
+}
+
+#[test]
+fn a_tuple_row_wider_than_the_query_is_a_decode_error() {
+    // Must surface as an ordinary error, not a panic on the connection thread.
+    let (_dir, _, dao) = open();
+    let id = block_on(dao.insert("alice", 10, &[])).unwrap();
+
+    let result = block_on(dao.as_pair(id));
+
+    assert!(
+        matches!(
+            result,
+            Err(DbError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
+                ..
+            )))
+        ),
+        "{result:?}"
+    );
 }

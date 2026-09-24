@@ -1,0 +1,5 @@
+error: a #[dao] argument takes a concrete type, not `impl Trait`
+ --> tests/ui/dao/fail/impl_trait_argument.rs:6:29
+  |
+6 |     fn count(&self, amount: impl Copy) -> rusqlite::Result<i64>;
+  |                             ^^^^

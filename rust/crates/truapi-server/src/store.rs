@@ -231,7 +231,19 @@ pub struct DaoStatement {
 /// actually has.
 #[doc(hidden)]
 pub fn dao_row<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>) -> rusqlite::Result<T> {
-    serde_rusqlite::from_row(row).map_err(|error| {
+    // serde_rusqlite indexes past the last column when a tuple is wider than
+    // the row, which panics instead of returning an error.
+    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        serde_rusqlite::from_row(row)
+    }))
+    .map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            row.as_ref().column_count(),
+            rusqlite::types::Type::Null,
+            "the row has fewer columns than the type it is read into".into(),
+        )
+    })?;
+    decoded.map_err(|error| {
         let column = match &error {
             serde_rusqlite::Error::Rusqlite(_) => None,
             serde_rusqlite::Error::Deserialization {
