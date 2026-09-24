@@ -12,11 +12,12 @@ use crate::host_logic::sso::messages::RingVrfError;
 #[cfg(not(target_arch = "wasm32"))]
 use truapi_verifiable as module;
 
-/// Ring domain size for rings of up to 2^9 members.
+/// Ring domain size 2^11, for on-chain ring exponent 9. `prove` takes the
+/// size, as `RingDomainSize::value` gives it, not the power.
 pub(in crate::runtime) const DOMAIN_2E11: u32 = 1 << 11;
-/// Ring domain size for rings of up to 2^10 members.
+/// Ring domain size 2^12, for on-chain ring exponent 10.
 pub(in crate::runtime) const DOMAIN_2E12: u32 = 1 << 12;
-/// Ring domain size for rings of up to 2^14 members.
+/// Ring domain size 2^16, for on-chain ring exponent 14.
 pub(in crate::runtime) const DOMAIN_2E16: u32 = 1 << 16;
 
 /// Ring-VRF operations, from [`load`].
@@ -193,5 +194,27 @@ export const prove = (...args) => module.prove(...args);
             .await
             .map_err(|error| format!("{error:?}"))?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::{DOMAIN_2E11, DOMAIN_2E12, DOMAIN_2E16};
+    use verifiable::ring::RingDomainSize;
+
+    #[test]
+    fn domain_sizes_are_the_ones_verifiable_accepts() {
+        assert_eq!(
+            RingDomainSize::try_from(DOMAIN_2E11),
+            Ok(RingDomainSize::Domain11)
+        );
+        assert_eq!(
+            RingDomainSize::try_from(DOMAIN_2E12),
+            Ok(RingDomainSize::Domain12)
+        );
+        assert_eq!(
+            RingDomainSize::try_from(DOMAIN_2E16),
+            Ok(RingDomainSize::Domain16)
+        );
     }
 }

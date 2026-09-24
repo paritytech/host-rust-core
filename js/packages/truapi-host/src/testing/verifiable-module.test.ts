@@ -2,15 +2,30 @@
 // `verifiable/` beside itself and checks it against the hash `make wasm`
 // compiled in. A wrong path or a stale copy still builds and loads, and fails
 // only on the first ring-VRF call, which no product call reaches here without a
-// chain. So this drives the core's own load through its test-host export.
+// chain. So this checks each bundle's layout and pin, and drives the testing
+// core's own load through its test-host export.
 import { describe, expect, it } from "bun:test";
-import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { wasmArtifact, wasmIsBuilt } from "./require-wasm.js";
 
 const suite = wasmIsBuilt(
   "testing/truapi_server.js",
   "testing/verifiable/truapi_verifiable.js",
+)
+  ? describe
+  : describe.skip;
+
+const bundles = ["web", "testing"];
+
+const layoutSuite = wasmIsBuilt(
+  ...bundles.flatMap((bundle) => [
+    `${bundle}/truapi_server_bg.wasm`,
+    `${bundle}/verifiable/truapi_verifiable_bg.wasm`,
+  ]),
 )
   ? describe
   : describe.skip;
@@ -40,4 +55,45 @@ suite("verifiable module", () => {
     expect(direct[0]).toBe(0);
     expect(await core.ringVrfMember(entropy)).toEqual(direct.subarray(1));
   });
+});
+
+layoutSuite("verifiable module in each bundle", () => {
+  for (const bundle of bundles) {
+    it(`${bundle}: the core pins the module shipped beside it`, () => {
+      const digest = createHash("sha256")
+        .update(
+          readFileSync(
+            wasmArtifact(`${bundle}/verifiable/truapi_verifiable_bg.wasm`),
+          ),
+        )
+        .digest("hex");
+      const core = readFileSync(
+        wasmArtifact(`${bundle}/truapi_server_bg.wasm`),
+      );
+      expect(core.includes(digest)).toBe(true);
+    });
+
+    it(`${bundle}: the core's loader resolves to the module`, () => {
+      const snippets = wasmArtifact(`${bundle}/snippets`);
+      const loaders = readdirSync(snippets, { recursive: true })
+        .map((entry) => join(snippets, String(entry)))
+        .filter((path) => path.endsWith(".js"))
+        .filter((path) =>
+          readFileSync(path, "utf8").includes("truapi_verifiable_bg.wasm"),
+        );
+      expect(loaders).toHaveLength(1);
+
+      const source = readFileSync(loaders[0], "utf8");
+      const targets = [
+        ...source.matchAll(/new URL\("([^"]+)", import\.meta\.url\)/g),
+      ].map(([, relative]) =>
+        fileURLToPath(new URL(relative, pathToFileURL(loaders[0]))),
+      );
+      expect(targets).toEqual([
+        wasmArtifact(`${bundle}/verifiable/truapi_verifiable_bg.wasm`),
+        wasmArtifact(`${bundle}/verifiable/truapi_verifiable.js`),
+      ]);
+      expect(targets.every((target) => existsSync(target))).toBe(true);
+    });
+  }
 });
