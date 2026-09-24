@@ -1,5 +1,13 @@
 # @parity/truapi
 
+## Unreleased
+
+### Patch Changes
+
+- Allow native consent and execution to finish within method-specific finite deadlines for permission requests,
+  identity disclosure, product signing, sponsored statement proofs, resource allocation, and preimage submission.
+  Ordinary requests retain 120 seconds; explicit timeout overrides, handshake timing, and cancellation are unchanged.
+
 ## 0.20.0
 
 ### Minor Changes

@@ -49,6 +49,30 @@ const KNOWN_WIRE_IDS = new Set<string>(
 );
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+// Native reviews have 300s, followed by 180s remote signing, 300s allocation,
+// or 360s preimage submission. Leave 60s for response delivery and cleanup.
+function defaultRequestTimeoutMs(ids: MethodIds): number {
+  switch ((ids.trait << 8) | ids.method) {
+    case (W.PERMISSIONS_REQUEST_DEVICE_PERMISSION.trait << 8) |
+      W.PERMISSIONS_REQUEST_DEVICE_PERMISSION.method:
+    case (W.PERMISSIONS_REQUEST_REMOTE_PERMISSION.trait << 8) |
+      W.PERMISSIONS_REQUEST_REMOTE_PERMISSION.method:
+      return 360_000;
+    case (W.ACCOUNT_GET_USER_ID.trait << 8) | W.ACCOUNT_GET_USER_ID.method:
+    case (W.SIGNING_CREATE_TRANSACTION.trait << 8) | W.SIGNING_CREATE_TRANSACTION.method:
+    case (W.SIGNING_SIGN_RAW.trait << 8) | W.SIGNING_SIGN_RAW.method:
+    case (W.SIGNING_SIGN_PAYLOAD.trait << 8) | W.SIGNING_SIGN_PAYLOAD.method:
+      return 540_000;
+    case (W.RESOURCE_ALLOCATION_REQUEST.trait << 8) | W.RESOURCE_ALLOCATION_REQUEST.method:
+    case (W.STATEMENT_STORE_CREATE_PROOF_AUTHORIZED.trait << 8) |
+      W.STATEMENT_STORE_CREATE_PROOF_AUTHORIZED.method:
+      return 660_000;
+    case (W.PREIMAGE_SUBMIT.trait << 8) | W.PREIMAGE_SUBMIT.method:
+      return 720_000;
+    default:
+      return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+}
 
 /** A request received no matching response before its transport deadline. */
 export class RequestTimeoutError extends Error {
@@ -91,10 +115,10 @@ export interface CreateTransportOptions {
   /**
    * Maximum time to wait for a matching response before rejecting the request.
    *
-   * Defaults to 120 seconds. This bounds dead hosts and missed transport
-   * handshakes while leaving interactive approval flows enough time to finish.
-   * The handshake keeps its own shorter deadline, since a codec mismatch means
-   * no answer is ever coming.
+   * Defaults to 120 seconds for ordinary calls. Interactive identity, permission,
+   * product signing, sponsored proof/allocation and preimage calls allow their
+   * separate review/execution budgets (6, 9, 11 or 12 minutes). An explicit value
+   * overrides these defaults. The handshake keeps its own shorter deadline.
    */
   requestTimeoutMs?: number;
 }
@@ -493,7 +517,10 @@ export function createTransport(
 
     const p = pending.get(requestId);
     if (p) {
-      if (payload.traitId !== p.ids.trait || payload.methodId !== p.ids.method) {
+      if (
+        payload.traitId !== p.ids.trait ||
+        payload.methodId !== p.ids.method
+      ) {
         // The host answered this request id on a discriminant the method does
         // not own. Dropping it unreported leaves the caller waiting forever
         // with no clue why, and a whole-trait skew is what a codec mismatch
@@ -795,7 +822,9 @@ export function createTransport(
         const isHandshake =
           ids.trait === W.SYSTEM_HANDSHAKE.trait &&
           ids.method === W.SYSTEM_HANDSHAKE.method;
-        const timeoutMs = isHandshake ? HANDSHAKE_TIMEOUT_MS : requestTimeoutMs;
+        const timeoutMs = isHandshake
+          ? HANDSHAKE_TIMEOUT_MS
+          : options.requestTimeoutMs ?? defaultRequestTimeoutMs(ids);
         const deadline = setTimeout(() => {
           const entry = takePending(requestId);
           if (!entry) return;

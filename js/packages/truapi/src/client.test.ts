@@ -4,25 +4,21 @@ import { describe, expect, it, jest } from "bun:test";
 import { createTransport, RequestTimeoutError } from "./client.js";
 import * as S from "./scale.js";
 import { str, type CallErrorValue } from "./scale.js";
-import {
-  createClient,
-  SubscriptionError,
-  TRUAPI_CODEC_VERSION,
-} from "./generated/client.js";
+import { createClient, SubscriptionError, TRUAPI_CODEC_VERSION } from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 import {
-  encodeWireMessage,
-  MESSAGE_TYPE_CANCEL,
-  MESSAGE_TYPE_INTERRUPT,
-  MESSAGE_TYPE_RECEIVE,
-  MESSAGE_TYPE_REQUEST,
-  MESSAGE_TYPE_RESPONSE,
-  MESSAGE_TYPE_START,
-  MESSAGE_TYPE_STOP,
-  PROTOCOL_ERROR_METHOD_ID,
-  PROTOCOL_ERROR_TRAIT_ID,
-  UnsupportedMessageError,
+    encodeWireMessage,
+    MESSAGE_TYPE_CANCEL,
+    MESSAGE_TYPE_INTERRUPT,
+    MESSAGE_TYPE_RECEIVE,
+    MESSAGE_TYPE_REQUEST,
+    MESSAGE_TYPE_RESPONSE,
+    MESSAGE_TYPE_START,
+    MESSAGE_TYPE_STOP,
+    PROTOCOL_ERROR_METHOD_ID,
+    PROTOCOL_ERROR_TRAIT_ID,
+    UnsupportedMessageError,
 } from "./transport.js";
 
 function toHex(u: Uint8Array): string {
@@ -131,17 +127,10 @@ function accountGetResponsePayload(
     return S.Result(
         T.VersionedHostAccountGetResponse,
         S.CallError(T.VersionedHostAccountGetError),
-    ).enc(
-        value.success
-            ? { success: true, value: { tag: "V1", value: value.value } }
-            : value,
-    );
+    ).enc(value.success ? { success: true, value: { tag: "V1", value: value.value } } : value);
 }
 
-function rendererStart(
-    requestId: string,
-    request: T.ProductRendererRenderRequest,
-): Uint8Array {
+function rendererStart(requestId: string, request: T.ProductRendererRenderRequest): Uint8Array {
     return wireFrame(
         requestId,
         W.RENDERER_RENDER,
@@ -176,9 +165,7 @@ function rendererInterrupt(requestId: string): Uint8Array {
         requestId,
         W.RENDERER_RENDER,
         MESSAGE_TYPE_INTERRUPT,
-        new Uint8Array([
-            1, 4, 44, 117, 110, 97, 118, 97, 105, 108, 97, 98, 108, 101,
-        ]),
+        new Uint8Array([1, 4, 44, 117, 110, 97, 118, 97, 105, 108, 97, 98, 108, 101]),
     );
 }
 
@@ -224,11 +211,7 @@ function protocolError(requestId: string, payload: Uint8Array): Uint8Array {
     );
 }
 
-function unsupportedMessage(
-    requestId: string,
-    traitId: number,
-    methodId: number,
-): Uint8Array {
+function unsupportedMessage(requestId: string, traitId: number, methodId: number): Uint8Array {
     // [0] version index, [0] variant index, then the unsupported pair.
     return protocolError(requestId, new Uint8Array([0, 0, traitId, methodId]));
 }
@@ -565,13 +548,7 @@ describe("generated client transport", () => {
         );
 
         expect(fixture.sent.map(toHex)).toEqual([
-            toHex(
-                unsupportedMessage(
-                    "h:known",
-                    W.RENDERER_RENDER.trait,
-                    W.RENDERER_RENDER.method,
-                ),
-            ),
+            toHex(unsupportedMessage("h:known", W.RENDERER_RENDER.trait, W.RENDERER_RENDER.method)),
         ]);
     });
 
@@ -649,11 +626,9 @@ describe("generated client transport", () => {
         }
 
         expect(fixture.sent).toHaveLength(0);
-        expect(
-            warnings.some((args) =>
-                String(args[0]).includes("unexpected messageType 99"),
-            ),
-        ).toBe(true);
+        expect(warnings.some((args) => String(args[0]).includes("unexpected messageType 99"))).toBe(
+            true,
+        );
     });
 
     it("auto-responds to an inbound handshake with the versioned-result shape", () => {
@@ -717,6 +692,192 @@ describe("generated client transport", () => {
         }
     });
 
+    it("delivers an allocation result after a slow native approval and chain allocation", async () => {
+        jest.useFakeTimers();
+        try {
+            const fixture = providerFixture();
+            const client = createClient(createTransport(fixture.provider));
+            const response = Promise.resolve(
+                client.resourceAllocation.request({
+                    resources: [{ tag: "StatementStoreAllowance" }, { tag: "AutoSigning" }],
+                }),
+            ).then(
+                (result) =>
+                    result.match(
+                        (value) => value,
+                        (error) => error,
+                    ),
+                (error: unknown) => error,
+            );
+            jest.advanceTimersByTime(610_000);
+            const codec = S.Result(
+                T.VersionedHostRequestResourceAllocationResponse,
+                S.CallError(T.VersionedHostRequestResourceAllocationError),
+            );
+            fixture.receive(
+                wireFrame(
+                    "p:1",
+                    W.RESOURCE_ALLOCATION_REQUEST,
+                    MESSAGE_TYPE_RESPONSE,
+                    codec.enc({
+                        success: true,
+                        value: { tag: "V1", value: { outcomes: ["Allocated", "Allocated"] } },
+                    }),
+                ),
+            );
+            expect(await response).toEqual({ outcomes: ["Allocated", "Allocated"] });
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it("keeps ordinary requests short while still bounding unanswered allocations", async () => {
+        jest.useFakeTimers();
+        try {
+            const fixture = providerFixture();
+            const client = createClient(createTransport(fixture.provider));
+            let allocationSettled = false;
+            const allocation = Promise.resolve(
+                client.resourceAllocation.request({
+                    resources: [{ tag: "AutoSigning" }],
+                }),
+            )
+                .catch((error: unknown) => error)
+                .then((result) => {
+                    allocationSettled = true;
+                    return result;
+                });
+            const account = Promise.resolve(
+                client.account.getAccount({
+                    productAccountId: {
+                        dotNsIdentifier: "app.paseo",
+                        derivationIndex: { tag: "Index", value: 0 },
+                    },
+                }),
+            ).catch((error: unknown) => error);
+
+            jest.advanceTimersByTime(120_001);
+            expect(await account).toBeInstanceOf(RequestTimeoutError);
+            expect(allocationSettled).toBe(false);
+            jest.advanceTimersByTime(540_000);
+            expect(await allocation).toBeInstanceOf(RequestTimeoutError);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it("honors an explicit transport deadline for resource allocation", async () => {
+        jest.useFakeTimers();
+        try {
+            const fixture = providerFixture();
+            const client = createClient(
+                createTransport(fixture.provider, {
+                    requestTimeoutMs: 25,
+                }),
+            );
+            const allocation = Promise.resolve(
+                client.resourceAllocation.request({
+                    resources: [{ tag: "AutoSigning" }],
+                }),
+            ).catch((error: unknown) => error);
+            jest.advanceTimersByTime(26);
+            expect(await allocation).toMatchObject({
+                name: "RequestTimeoutError",
+                timeoutMs: 25,
+            });
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it.each([
+        [W.PERMISSIONS_REQUEST_DEVICE_PERMISSION, 360_000],
+        [W.PERMISSIONS_REQUEST_REMOTE_PERMISSION, 360_000],
+        [W.ACCOUNT_GET_USER_ID, 540_000],
+        [W.SIGNING_CREATE_TRANSACTION, 540_000],
+        [W.SIGNING_SIGN_RAW, 540_000],
+        [W.SIGNING_SIGN_PAYLOAD, 540_000],
+        [W.STATEMENT_STORE_CREATE_PROOF_AUTHORIZED, 660_000],
+        [W.PREIMAGE_SUBMIT, 720_000],
+    ] as const)("bounds interactive wire %j at %i ms and sends cancellation", async (ids, timeoutMs) => {
+        jest.useFakeTimers();
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        try {
+            let settled = false;
+            const response = Promise.resolve(transport.request({
+                ids,
+                payload: new Uint8Array(),
+                decodeResponse: () => ({ success: true as const, value: undefined }),
+            })).catch((error: unknown) => error).then((result) => {
+                settled = true;
+                return result;
+            });
+            jest.advanceTimersByTime(timeoutMs - 1);
+            await Promise.resolve();
+            expect(settled).toBe(false);
+            expect(fixture.sent).toHaveLength(1);
+            jest.advanceTimersByTime(1);
+            expect(await response).toMatchObject({ name: "RequestTimeoutError", timeoutMs });
+            expect(toHex(fixture.sent[1]!)).toBe(toHex(wireFrame("p:1", ids, MESSAGE_TYPE_CANCEL)));
+        } finally {
+            transport.dispose();
+            jest.useRealTimers();
+        }
+    });
+
+    it.each([W.ACCOUNT_GET_USER_ID, W.STATEMENT_STORE_CREATE_PROOF_AUTHORIZED])(
+        "delivers a late interactive result without replaying wire %j",
+        async (ids) => {
+            jest.useFakeTimers();
+            const fixture = providerFixture();
+            const transport = createTransport(fixture.provider);
+            try {
+                const response = Promise.resolve(transport.request({
+                    ids,
+                    payload: new Uint8Array(),
+                    decodeResponse: () => ({ success: true as const, value: "approved" }),
+                })).then(
+                    (result) => result.match((value) => value, (error) => error),
+                    (error: unknown) => error,
+                );
+                jest.advanceTimersByTime(310_000);
+                fixture.receive(wireFrame("p:1", ids, MESSAGE_TYPE_RESPONSE));
+                expect(await response).toBe("approved");
+                expect(fixture.sent).toHaveLength(1);
+            } finally {
+                transport.dispose();
+                jest.useRealTimers();
+            }
+        },
+    );
+
+    it("preserves explicit deadlines and terminal errors for sponsored proof retries", async () => {
+        jest.useFakeTimers();
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 25 });
+        const ids = W.STATEMENT_STORE_CREATE_PROOF_AUTHORIZED;
+        const request = {
+            ids,
+            payload: new Uint8Array(),
+            decodeResponse: () => ({ success: false as const, value: { tag: "Cancelled" as const } }),
+        };
+        try {
+            const first = Promise.resolve(transport.request(request)).catch((error: unknown) => error);
+            jest.advanceTimersByTime(25);
+            expect(await first).toMatchObject({ name: "RequestTimeoutError", timeoutMs: 25 });
+            const retry = transport.request(request);
+            fixture.receive(wireFrame("p:2", ids, MESSAGE_TYPE_RESPONSE));
+            const result = await retry;
+            expect(result.isErr() && result.error).toEqual({ tag: "Cancelled" });
+            jest.advanceTimersByTime(720_000);
+            expect(fixture.sent).toHaveLength(3);
+        } finally {
+            transport.dispose();
+            jest.useRealTimers();
+        }
+    });
+
     it("sends a cancel frame when an in-flight call is aborted", async () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
@@ -735,19 +896,11 @@ describe("generated client transport", () => {
 
         expect(fixture.sent).toHaveLength(2);
         expect(toHex(fixture.sent[1]!)).toBe(
-            toHex(
-                wireFrame(
-                    "p:1",
-                    { trait: 200, method: 194 },
-                    MESSAGE_TYPE_CANCEL,
-                ),
-            ),
+            toHex(wireFrame("p:1", { trait: 200, method: 194 }, MESSAGE_TYPE_CANCEL)),
         );
 
         // The call is still pending: aborting asks, the response answers.
-        fixture.receive(
-            wireFrame("p:1", { trait: 200, method: 194 }, MESSAGE_TYPE_RESPONSE),
-        );
+        fixture.receive(wireFrame("p:1", { trait: 200, method: 194 }, MESSAGE_TYPE_RESPONSE));
         const outcome = await response;
         expect(outcome.isErr() && outcome.error).toEqual({ tag: "Cancelled" });
     });
@@ -780,12 +933,7 @@ describe("generated client transport", () => {
         );
 
         fixture.receive(
-            wireFrame(
-                "p:1",
-                W.ACCOUNT_GET_ACCOUNT,
-                MESSAGE_TYPE_RESPONSE,
-                new Uint8Array([1, 5]),
-            ),
+            wireFrame("p:1", W.ACCOUNT_GET_ACCOUNT, MESSAGE_TYPE_RESPONSE, new Uint8Array([1, 5])),
         );
 
         // Raced against a macrotask rather than awaited outright: a client
@@ -821,9 +969,7 @@ describe("generated client transport", () => {
             await expect(outcome).rejects.toBeInstanceOf(RequestTimeoutError);
 
             expect(fixture.sent).toHaveLength(2);
-            expect(fixture.sent[1]![str.enc("p:1").length + 2]).toBe(
-                MESSAGE_TYPE_CANCEL,
-            );
+            expect(fixture.sent[1]![str.enc("p:1").length + 2]).toBe(MESSAGE_TYPE_CANCEL);
         } finally {
             jest.useRealTimers();
         }
@@ -846,9 +992,9 @@ describe("generated client transport", () => {
 
     it("refuses a non-positive request deadline", () => {
         const fixture = providerFixture();
-        expect(() =>
-            createTransport(fixture.provider, { requestTimeoutMs: 0 }),
-        ).toThrow("requestTimeoutMs must be a positive finite number");
+        expect(() => createTransport(fixture.provider, { requestTimeoutMs: 0 })).toThrow(
+            "requestTimeoutMs must be a positive finite number",
+        );
     });
 
     it("rejects the handshake call when the host never answers", async () => {
@@ -863,9 +1009,7 @@ describe("generated client transport", () => {
             const client = createClient(createTransport(fixture.provider));
             const outcome = Promise.resolve(client.system.handshake());
             jest.advanceTimersByTime(10_001);
-            await expect(outcome).rejects.toThrow(
-                "TrUAPI handshake timed out after 10000ms",
-            );
+            await expect(outcome).rejects.toThrow("TrUAPI handshake timed out after 10000ms");
         } finally {
             jest.useRealTimers();
         }
@@ -1129,7 +1273,11 @@ describe("generated client transport", () => {
                 rendererStart(`h:${index}`, {
                     context: {
                         tag: "ChatMessage",
-                        value: { roomId: "room", messageId: `message-${index}`, messageType: "vote" },
+                        value: {
+                            roomId: "room",
+                            messageId: `message-${index}`,
+                            messageType: "vote",
+                        },
                     },
                     payload: "0x",
                 }),
@@ -1303,9 +1451,7 @@ describe("generated client transport", () => {
             sub.subscriptionId,
             W.PAYMENT_BALANCE_SUBSCRIBE,
             MESSAGE_TYPE_INTERRUPT,
-            S.Option(
-                S.CallError(T.VersionedHostPaymentBalanceSubscribeError),
-            ).enc(callError),
+            S.Option(S.CallError(T.VersionedHostPaymentBalanceSubscribeError)).enc(callError),
         );
         fixture.receive(frame);
 
@@ -1335,9 +1481,7 @@ describe("generated client transport", () => {
             sub.subscriptionId,
             W.COIN_PAYMENT_REBALANCE_PURSE,
             MESSAGE_TYPE_INTERRUPT,
-            S.Option(
-                S.CallError(T.VersionedHostCoinPaymentRebalancePurseError),
-            ).enc(callError),
+            S.Option(S.CallError(T.VersionedHostCoinPaymentRebalancePurseError)).enc(callError),
         );
         fixture.receive(frame);
 
