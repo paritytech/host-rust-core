@@ -14,7 +14,7 @@ enum UserStorageParams {
     ///  and implement migration policy;
     ///  - update mappings between CoreData Entities and App Models;
     ///  - switch version of UserStorageParams.modelVersion;
-    static let modelVersion: UserStorageVersion = .version49
+    static let modelVersion: UserStorageVersion = .version50
     static let modelDirectory: String = "UserDataModel.momd"
     static let databaseName = "UserDataModel_v3.sqlite"
 
@@ -26,15 +26,19 @@ enum UserStorageParams {
         sharedStorageDirectoryURL.appendingPathComponent(databaseName)
     }
 
-    /// CoreDataHistoryCleaner needs a timestamp for EVERY target before it deletes anything,
-    /// and each process writes its timestamp under its own bundle identifier.
+    /// Suffix the extension appends to the bundle root for its own identifier.
+    static let notificationServiceExtensionSuffix = ".NotificationServiceExtension"
+
+    /// Every transaction author that writes to the shared store, the same list in every process:
+    /// CoreDataHistoryCleaner needs a timestamp for EVERY target before it deletes anything, and each
+    /// process writes its timestamp under its own bundle identifier.
     /// Bundle.main is unusable here: in the NSE process it resolves to the extension.
     static var historyTrackingTargets: [String] {
         let bundleRoot = AppConfig.Brand.bundleRoot
 
         return [
             bundleRoot,
-            bundleRoot + ".NotificationServiceExtension"
+            bundleRoot + notificationServiceExtensionSuffix
         ]
     }
 }
@@ -77,7 +81,9 @@ class UserDataStorageFacade: StorageFacadeProtocol {
 
         let configuration = CoreDataServiceConfiguration(
             modelURL: modelURL!,
-            storageType: .persistent(settings: persistentSettings)
+            storageType: .persistent(settings: persistentSettings),
+            concurrencyMode: CoreDataConcurrencyPolicy.forCurrentTarget,
+            logger: Logger.shared
         )
 
         databaseService = CoreDataService(configuration: configuration)

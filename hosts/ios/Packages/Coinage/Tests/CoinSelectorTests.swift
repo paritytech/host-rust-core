@@ -15,7 +15,7 @@ struct CoinSelectorTests {
         minExponent: -6
     )
 
-    private let maxVouchers: Int = 10
+    private let limits = UnloadCallLimits(maxVouchersPerCall: 10, maxOutputsPerCall: 32)
 
     private func makeSelector() -> CoinSelector {
         CoinSelector()
@@ -59,6 +59,14 @@ struct CoinSelectorTests {
         )
     }
 
+    private func total(_ denominations: [Denomination]) -> Decimal {
+        denominations.reduce(Decimal(0)) { $0 + testContext.amount(for: $1) }
+    }
+
+    private func outputCount(_ allocation: RecyclerGroupAllocation) -> Int {
+        allocation.recipientDenominations.count + allocation.changeDenominations.count
+    }
+
     private let now = Date()
 
     private func planks(_ decimal: Decimal) -> BigUInt {
@@ -76,7 +84,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -100,7 +108,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -126,7 +134,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -149,7 +157,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -180,7 +188,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -202,7 +210,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -236,7 +244,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -277,7 +285,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -314,7 +322,7 @@ struct CoinSelectorTests {
             coins: [],
             vouchers: vouchers,
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         // Now uses unified unloadIntoCoins case (empty coins array for pure unload)
@@ -348,7 +356,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: vouchers,
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         // Now uses unified unloadIntoCoins case with coins + vouchers
@@ -387,7 +395,7 @@ struct CoinSelectorTests {
             coins: [],
             vouchers: vouchers,
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         // Now uses unified unloadIntoCoins case with change denominations
@@ -427,7 +435,7 @@ struct CoinSelectorTests {
             coins: [],
             vouchers: vouchers,
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         // Now uses unified unloadIntoCoins case
@@ -463,7 +471,7 @@ struct CoinSelectorTests {
                 coins: coins,
                 vouchers: [],
                 breakdownContext: testContext,
-                maxVouchersPerGroup: maxVouchers
+                limits: limits
             ))
             Issue.record("Expected zeroAmount error")
         } catch let error as CoinSelectionError {
@@ -479,7 +487,7 @@ struct CoinSelectorTests {
                 coins: [],
                 vouchers: [],
                 breakdownContext: testContext,
-                maxVouchersPerGroup: maxVouchers
+                limits: limits
             ))
             Issue.record("Expected emptyWallet error")
         } catch let error as CoinSelectionError {
@@ -497,7 +505,7 @@ struct CoinSelectorTests {
                 coins: coins,
                 vouchers: [],
                 breakdownContext: testContext,
-                maxVouchersPerGroup: maxVouchers
+                limits: limits
             ))
             Issue.record("Expected insufficientFunds error")
         } catch let error as CoinSelectionError {
@@ -519,7 +527,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         // Should pick exact match ($8), not split ($16)
@@ -542,7 +550,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: vouchers,
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         // Should prefer split (1 tx, 0 tokens) over unload (1 tx, 1 token)
@@ -568,7 +576,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         // Should split the $16 since $8 is spent
@@ -592,7 +600,7 @@ struct CoinSelectorTests {
             coins: coins,
             vouchers: [],
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         switch result {
@@ -621,7 +629,7 @@ struct CoinSelectorTests {
             coins: [],
             vouchers: vouchers,
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         // Should succeed with 3 vouchers (was blocked by power-of-two constraint before)
@@ -651,13 +659,105 @@ struct CoinSelectorTests {
             coins: [],
             vouchers: vouchers,
             breakdownContext: testContext,
-            maxVouchersPerGroup: maxVouchers
+            limits: limits
         ))
 
         if case let .unloadIntoCoins(_, perGroupAllocations) = result {
             #expect(perGroupAllocations.flatMap(\.vouchers).map(\.derivationIndex) == [0])
         } else {
             Issue.record("Expected unloadIntoCoins, got \(result)")
+        }
+    }
+
+    // MARK: - Pallet Call Limits
+
+    @Test("A recycler group larger than the pallet limit is unloaded by several calls")
+    func oversizedRecyclerGroupIsSplitAcrossCalls() async throws {
+        let vouchers = (0 ..< 5).map { makeVoucher(exponent: 0, derivationIndex: .harness(UInt64($0))) }
+
+        let result = try await makeSelector().selectCoins(SelectCoinsInput(
+            amount: planks(Decimal(5)),
+            coins: [],
+            vouchers: vouchers,
+            breakdownContext: testContext,
+            limits: UnloadCallLimits(maxVouchersPerCall: 2, maxOutputsPerCall: 32)
+        ))
+
+        guard case let .unloadIntoCoins(_, allocations) = result else {
+            Issue.record("Expected unloadIntoCoins, got \(result)")
+            return
+        }
+
+        #expect(allocations.map(\.vouchers.count) == [2, 2, 1])
+        #expect(allocations.allSatisfy { $0.recyclerKey == RecyclerKey(exponent: 0, index: 0) })
+        #expect(allocations.reduce(Decimal(0)) { $0 + total($1.recipientDenominations) } == Decimal(5))
+    }
+
+    @Test("A call that would mint more coins than the pallet allows is split again")
+    func oversizedOutputSetIsSplitAgain() async throws {
+        // Exponent 7 is the context maximum, so two vouchers cannot consolidate into a single coin.
+        let vouchers = [
+            makeVoucher(exponent: 7, derivationIndex: 0),
+            makeVoucher(exponent: 7, derivationIndex: 1)
+        ]
+
+        let result = try await makeSelector().selectCoins(SelectCoinsInput(
+            amount: planks(Decimal(256)),
+            coins: [],
+            vouchers: vouchers,
+            breakdownContext: testContext,
+            limits: UnloadCallLimits(maxVouchersPerCall: 2, maxOutputsPerCall: 1)
+        ))
+
+        guard case let .unloadIntoCoins(_, allocations) = result else {
+            Issue.record("Expected unloadIntoCoins, got \(result)")
+            return
+        }
+
+        #expect(allocations.map(\.vouchers.count) == [1, 1])
+        #expect(allocations.allSatisfy { outputCount($0) <= 1 })
+    }
+
+    @Test("The call carrying both recipient and change is split when its coins overflow the limit")
+    func mixedRecipientAndChangeCallIsSplit() async throws {
+        let vouchers = [
+            makeVoucher(exponent: 7, derivationIndex: 0),
+            makeVoucher(exponent: 7, derivationIndex: 1)
+        ]
+
+        // $129 recipient + $127 change out of one $256 call needs 2 + 7 coins: within the two-voucher
+        // count limit, over the eight-coin output limit.
+        let result = try await makeSelector().selectCoins(SelectCoinsInput(
+            amount: planks(Decimal(129)),
+            coins: [],
+            vouchers: vouchers,
+            breakdownContext: testContext,
+            limits: UnloadCallLimits(maxVouchersPerCall: 2, maxOutputsPerCall: 8)
+        ))
+
+        guard case let .unloadIntoCoins(_, allocations) = result else {
+            Issue.record("Expected unloadIntoCoins, got \(result)")
+            return
+        }
+
+        #expect(allocations.map(\.vouchers.count) == [1, 1])
+        #expect(allocations.allSatisfy { outputCount($0) <= 8 })
+        #expect(allocations.reduce(Decimal(0)) { $0 + total($1.recipientDenominations) } == Decimal(129))
+        #expect(allocations.reduce(Decimal(0)) { $0 + total($1.changeDenominations) } == Decimal(127))
+    }
+
+    @Test("A single voucher that cannot fit the output limit is reported rather than submitted")
+    func unfittableSingleVoucherThrows() async throws {
+        let vouchers = [makeVoucher(exponent: 7, derivationIndex: 0)]
+
+        await #expect(throws: CoinSelectionError.self) {
+            try await makeSelector().selectCoins(SelectCoinsInput(
+                amount: planks(Decimal(128)),
+                coins: [],
+                vouchers: vouchers,
+                breakdownContext: testContext,
+                limits: UnloadCallLimits(maxVouchersPerCall: 2, maxOutputsPerCall: 0)
+            ))
         }
     }
 }

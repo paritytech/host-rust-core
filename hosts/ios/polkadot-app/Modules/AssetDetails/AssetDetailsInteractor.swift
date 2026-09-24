@@ -165,13 +165,9 @@ extension AssetDetailsInteractor: AssetDetailsInteractorInputProtocol {
                 for try await summary in balanceService.summaryStream {
                     try Task.checkCancellation()
                     let balance = summary.balance
-                    // Locked is everything the strategy will not part with: pending plus any
-                    // gaining-privacy funds the strategy won't release on confirmation.
-                    let locked = balance.total - balance.available
                     await presenter?.didReceive(balance: context.decimal(fromPlanks: balance.total))
-                    await presenter?.didReceive(lockedAmount: context.decimal(fromPlanks: locked))
 
-                    // The breakdown shows the domain's own three buckets rather than
+                    // The breakdown shows the domain's own two buckets rather than
                     // re-deriving them, and the holdings that produced them arrive in the same
                     // value — so its figures and the bar below them cannot disagree.
                     await presenter?.didReceive(
@@ -180,8 +176,7 @@ extension AssetDetailsInteractor: AssetDetailsInteractorInputProtocol {
                             availableNow: context.decimal(fromPlanks: balance.availablePrivate),
                             gainingPrivacy: context.decimal(
                                 fromPlanks: balance.gainingPrivacy.amount
-                            ),
-                            pending: context.decimal(fromPlanks: balance.pending)
+                            )
                         ),
                         holdings: summary.holdings
                     )

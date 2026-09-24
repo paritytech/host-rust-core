@@ -21,6 +21,8 @@ public final class InMemoryDurableTxRepository: DurableTxRepositoryProtocol, @un
         var nextSequence: Int64 = 1
         var statusObservers: [DurableTxId: [AsyncStream<DurableTxStatus>.Continuation]] = [:]
         var groupObservers: [GroupKey: [AsyncStream<[DurableTxEntry]>.Continuation]] = [:]
+        var policies: [DurableTxId: SubmissionPolicy] = [:]
+        var pendingObservers: [AsyncStream<[ScheduledDurableTx]>.Continuation] = []
     }
 
     struct GroupKey: Hashable {
@@ -40,6 +42,21 @@ public final class InMemoryDurableTxRepository: DurableTxRepositoryProtocol, @un
     /// The entry's current status, read synchronously — for a domain store validating inside the hook.
     public func statusSnapshot(of id: DurableTxId) -> DurableTxStatus? {
         state.withLock { $0.entries[id]?.status }
+    }
+
+    /// How many waiting-submission streams are open. A collector subscribes asynchronously, so a test
+    /// that means to end its stream has to wait for it to exist first.
+    public var pendingStreamCount: Int {
+        state.withLock { $0.pendingObservers.count }
+    }
+
+    /// Test convenience: ends every open waiting-submission stream, as a subscription that fails or
+    /// completes does. The collector watching it then returns — which must not leave it unable to start.
+    public func finishPendingStreams() {
+        state.withLock { current in
+            current.pendingObservers.forEach { $0.finish() }
+            current.pendingObservers.removeAll()
+        }
     }
 
     /// Test convenience: records a prepared entry keeping its id and status, assigning the next sequence.
@@ -72,6 +89,9 @@ public final class InMemoryDurableTxRepository: DurableTxRepositoryProtocol, @un
             for registration in registrations {
                 let id = DurableTxId()
                 current.entries[id] = registration.makeEntry(id: id, sequence: current.nextSequence)
+                // A registration carries a policy too: an eagerly submitted transaction is built now and
+                // may still be built again after a failure.
+                current.policies[id] = registration.policy
                 current.nextSequence += 1
                 ids.append(id)
             }
@@ -85,6 +105,7 @@ public final class InMemoryDurableTxRepository: DurableTxRepositoryProtocol, @un
         } catch {
             state.withLock { current in
                 current.entries = snapshot.entries
+                current.policies = snapshot.policies
                 current.nextSequence = snapshot.nextSequence
             }
             throw error
@@ -94,14 +115,145 @@ public final class InMemoryDurableTxRepository: DurableTxRepositoryProtocol, @un
         return ids
     }
 
+    public func schedule(
+        _ schedules: [DurableTxSchedule],
+        in _: (any DurableTxRegistrationScope)?,
+        onRegister: @escaping DurableTxRegistrationHook
+    ) async throws -> [DurableTxId] {
+        let (snapshot, ids) = state.withLock { current -> (State, [DurableTxId]) in
+            let snapshot = current
+            var ids: [DurableTxId] = []
+            for schedule in schedules {
+                let id = DurableTxId()
+                current.entries[id] = schedule.makeEntry(id: id, sequence: current.nextSequence)
+                current.policies[id] = schedule.policy
+                current.nextSequence += 1
+                ids.append(id)
+            }
+            return (snapshot, ids)
+        }
+
+        do {
+            try onRegister(InMemoryRegistrationScope(), ids)
+        } catch {
+            state.withLock { current in
+                current.entries = snapshot.entries
+                current.policies = snapshot.policies
+                current.nextSequence = snapshot.nextSequence
+            }
+            throw error
+        }
+
+        state.withLock {
+            Self.notifyGroupObservers(&$0)
+            Self.notifyPendingObservers(&$0)
+        }
+
+        return ids
+    }
+
+    public func schedule(
+        _ schedules: [DurableTxSchedule],
+        joining _: any DurableTxRegistrationScope,
+        onRegister: DurableTxRegistrationHook
+    ) throws -> [DurableTxId] {
+        let ids = state.withLock { current -> [DurableTxId] in
+            var ids: [DurableTxId] = []
+            for schedule in schedules {
+                let id = DurableTxId()
+                current.entries[id] = schedule.makeEntry(id: id, sequence: current.nextSequence)
+                current.policies[id] = schedule.policy
+                current.nextSequence += 1
+                ids.append(id)
+            }
+            return ids
+        }
+
+        try onRegister(InMemoryRegistrationScope(), ids)
+
+        state.withLock {
+            Self.notifyGroupObservers(&$0)
+            Self.notifyPendingObservers(&$0)
+        }
+
+        return ids
+    }
+
+    public func startAttempt(id: DurableTxId, attempt: DurableTxAttempt) async throws -> Bool {
+        try state.withLock { current in
+            guard current.entries[id]?.status == .pendingSubmission else { return false }
+
+            try Self.mutate(&current, id) { $0.withAttempt(attempt) }
+            Self.notifyStatusObservers(&current, id, .pending)
+            Self.notifyPendingObservers(&current)
+
+            return true
+        }
+    }
+
+    public func abandonSubmission(id: DurableTxId) async throws -> Bool {
+        try state.withLock { current in
+            guard current.entries[id]?.status == .pendingSubmission else { return false }
+
+            try Self.mutate(&current, id) { $0.withStatus(.failure) }
+            Self.notifyStatusObservers(&current, id, .failure)
+            Self.notifyPendingObservers(&current)
+
+            return true
+        }
+    }
+
+    @discardableResult
+    public func abandonSubmissions(domain: TxDomainId, policyId: SubmissionPolicyId) async throws -> Int {
+        let doomed = state.withLock { current in
+            Self.pending(in: current)
+                .filter { $0.domainId == domain && $0.policy.id == policyId }
+                .map(\.id)
+        }
+
+        for id in doomed {
+            _ = try await abandonSubmission(id: id)
+        }
+
+        return doomed.count
+    }
+
+    public func getSubmissionPolicy(id: DurableTxId) async throws -> SubmissionPolicy? {
+        state.withLock { $0.policies[id] }
+    }
+
+    public func subscribePendingSubmissions() -> AnyAsyncSequence<[ScheduledDurableTx]> {
+        AsyncStream<[ScheduledDurableTx]> { continuation in
+            state.withLock { current in
+                continuation.yield(Self.pending(in: current))
+                current.pendingObservers.append(continuation)
+            }
+        }
+        .eraseToAnyAsyncSequence()
+    }
+
+    public func getPendingSubmissions(
+        policyId: SubmissionPolicyId,
+        groupId: DurableTxGroupId?
+    ) async throws -> [ScheduledDurableTx] {
+        state.withLock { current in
+            Self.pending(in: current).filter { $0.policy.id == policyId && $0.groupId == groupId }
+        }
+    }
+
     @discardableResult
     public func updateTxStatus(
         for id: DurableTxId,
         expectedCurrentStatus: DurableTxStatus,
+        expectedTxHash: Data,
         verdict: Verdict
     ) async throws -> Bool {
         try state.withLock { current in
-            guard let entry = current.entries[id], entry.status.isLive, entry.status == expectedCurrentStatus else {
+            guard let entry = current.entries[id],
+                  entry.status.isLive,
+                  entry.status == expectedCurrentStatus,
+                  entry.attempt?.txHash == expectedTxHash
+            else {
                 return false
             }
 
@@ -112,9 +264,8 @@ public final class InMemoryDurableTxRepository: DurableTxRepositoryProtocol, @un
                 $0.withStatus(verdict.status).withSuccessDetectedAt(verdict.successDetectedAt)
             }
             if statusChanged {
-                for observer in current.statusObservers[id] ?? [] {
-                    observer.yield(verdict.status)
-                }
+                Self.notifyStatusObservers(&current, id, verdict.status)
+                Self.notifyPendingObservers(&current)
             }
             return true
         }
@@ -125,7 +276,7 @@ public final class InMemoryDurableTxRepository: DurableTxRepositoryProtocol, @un
     }
 
     public func getAllEntries(domain: TxDomainId) async throws -> [DurableTxEntry] {
-        allEntries.filter { $0.domainId == domain }
+        allEntries.filter { $0.domainId == domain && $0.status != .pendingSubmission }
     }
 
     public func getEntry(id: DurableTxId) async throws -> DurableTxEntry? {
@@ -170,6 +321,34 @@ private extension InMemoryDurableTxRepository {
 
     static func group(_ key: GroupKey, in state: State) -> [DurableTxEntry] {
         sorted(state.entries).filter { $0.domainId == key.domain && $0.groupId == key.groupId }
+    }
+
+    static func pending(in state: State) -> [ScheduledDurableTx] {
+        sorted(state.entries)
+            .filter { $0.status == .pendingSubmission }
+            .compactMap { entry in
+                state.policies[entry.id].map {
+                    ScheduledDurableTx(
+                        id: entry.id,
+                        domainId: entry.domainId,
+                        groupId: entry.groupId,
+                        policy: $0
+                    )
+                }
+            }
+    }
+
+    static func notifyPendingObservers(_ state: inout State) {
+        let snapshot = pending(in: state)
+        for observer in state.pendingObservers {
+            observer.yield(snapshot)
+        }
+    }
+
+    static func notifyStatusObservers(_ state: inout State, _ id: DurableTxId, _ status: DurableTxStatus) {
+        for observer in state.statusObservers[id] ?? [] {
+            observer.yield(status)
+        }
     }
 
     static func notifyGroupObservers(_ state: inout State) {

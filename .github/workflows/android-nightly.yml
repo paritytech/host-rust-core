@@ -288,9 +288,41 @@ jobs:
             Same APK the Firebase release above carries.
           prerelease: true
           files: ${{ steps.release-asset.outputs.path }}
+      # A release can be created with the upload having quietly failed,
+      # leaving a tag that looks published and a consumer that gets a 404.
+      # Read the asset back rather than trusting that it uploaded.
+      - name: Confirm the published asset is present and not empty
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release-tag.outputs.tag }}
+          ASSET: app-gp-nightly.apk
+        run: |
+          set -euo pipefail
+          # jq takes the name from the environment rather than from the shell, so a
+          # name needing escaping cannot break the filter. `uploaded` is the state
+          # that matters: an asset stranded mid-upload still reports a size, which
+          # is exactly the case this step exists to catch.
+          # shellcheck disable=SC2016  # $ENV.ASSET is jq, and must not expand here
+          size="$(gh release view "$TAG" --json assets \
+            --jq '[.assets[] | select(.name == $ENV.ASSET and .state == "uploaded") | .size] | first // 0')"
+          case "$size" in
+            ''|*[!0-9]*)
+              echo "::error::Could not read a size for $ASSET on $TAG"
+              exit 1
+              ;;
+          esac
+          if [ "$size" -le 0 ]; then
+            echo "::error::$ASSET is missing, empty or unfinished on $TAG"
+            gh release view "$TAG" --json assets \
+              --jq '.assets[] | "\(.name) \(.size) \(.state)"' || true
+            exit 1
+          fi
+          echo "$ASSET published on $TAG, $size bytes"
+
 
   # Announced the way the iOS nightly is, through the same relay and into the
   # same room.
+
   send-release-notification:
     name: Send Release Notification
     runs-on: ubuntu-latest

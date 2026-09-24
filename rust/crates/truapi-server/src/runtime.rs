@@ -207,6 +207,11 @@ where
     F: Future<Output = Result<T, E>>,
     E: From<AuthorityError>,
 {
+    // A call already withdrawn never sends its request, not even within the
+    // unwind grace below.
+    if let Some(reason) = cx.cancel().reason() {
+        return Err(authority_cancellation_error(cx, reason).into());
+    }
     let call = call.fuse();
     let cancelled = cx.cancel().cancelled().fuse();
     pin_mut!(call, cancelled);
@@ -246,6 +251,25 @@ where
         () = unwind => {},
     }
     Err(error.into())
+}
+
+/// Await `wait` unless the call is cancelled first.
+///
+/// For waits a person controls, such as a local confirmation prompt: a
+/// withdrawn call stops waiting, so an answer given after the withdrawal
+/// authorizes nothing. The error is the one `remote_authority_call` answers,
+/// so each caller maps it into its method's own domain error.
+async fn until_cancelled<T>(
+    cx: &CallContext,
+    wait: impl Future<Output = T>,
+) -> Result<T, AuthorityError> {
+    let wait = wait.fuse();
+    let cancelled = cx.cancel().cancelled().fuse();
+    pin_mut!(wait, cancelled);
+    futures::select_biased! {
+        reason = cancelled => Err(authority_cancellation_error(cx, reason)),
+        output = wait => Ok(output),
+    }
 }
 
 fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) -> AuthorityError {

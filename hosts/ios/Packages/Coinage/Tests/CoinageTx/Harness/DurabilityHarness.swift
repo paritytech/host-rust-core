@@ -30,10 +30,19 @@ final class DurabilityHarness: @unchecked Sendable {
     let stateReader: FakeCoinageStateReader
     let store: MockCoinageTxRepository
     let submitter: FakeExtrinsicSubmitter
-    private let backgroundExecutor = StubBackgroundExecutor()
+
+    /// Registered once and kept across ``crash()``, the way an app re-registers its policies on launch.
+    /// Empty by default: a transaction without a policy fails for good, which is what most scenarios mean.
+    let policies = DurableSubmissionPolicyRegistry()
+
+    let backgroundExecutor = StubBackgroundExecutor()
 
     private var subsystem: Subsystem
     private var nextExtrinsicSeq: UInt64 = 0
+
+    /// The bytes behind each registered `txHash`, so a submission can present the extrinsic whose
+    /// hash the row actually carries.
+    private var extrinsicBytesByHash: [Data: Data] = [:]
     private let pendingSubmissions = OSAllocatedUnfairLock(initialState: [CoinageTxId]())
 
     init(
@@ -50,9 +59,14 @@ final class DurabilityHarness: @unchecked Sendable {
             chainFactory: chainFactory,
             stateReader: stateReader,
             submitter: submitter,
-            backgroundExecutor: backgroundExecutor
+            backgroundExecutor: backgroundExecutor,
+            policies: policies
         )
     }
+
+    /// Where a retriable failure is turned into another attempt — the same writer the pass and the
+    /// submission watch both go through.
+    var verdictWriter: DurableVerdictWriter { subsystem.verdictWriter }
 
     /// Recovery being asked for is the observable half of a submission release.
     var recoveryRequestCount: Int { subsystem.recorder.count }
@@ -80,7 +94,8 @@ final class DurabilityHarness: @unchecked Sendable {
             chainFactory: chainFactory,
             stateReader: stateReader,
             submitter: submitter,
-            backgroundExecutor: backgroundExecutor
+            backgroundExecutor: backgroundExecutor,
+            policies: policies
         )
         pendingSubmissions.withLock { $0.removeAll() }
     }
@@ -143,8 +158,13 @@ final class DurabilityHarness: @unchecked Sendable {
 
     // MARK: - Extrinsic hashes
 
-    /// A distinct extrinsic hash. Only distinctness matters — the body search looks an entry's hash up
-    /// in block bodies, so two entries sharing bytes would find each other's blocks.
+    /// A distinct extrinsic hash, and the bytes it is the hash *of*.
+    ///
+    /// The hash must really be `blake2b32` of the submitted bytes: a verdict is only written while the
+    /// row's attempt still matches the bytes being watched, so a harness that registered an unrelated
+    /// hash would have every write silently refused. Only distinctness matters otherwise — the body
+    /// search looks an entry's hash up in block bodies, so two entries sharing bytes would find each
+    /// other's blocks.
     func nextExtrinsicHash() -> Data {
         defer { nextExtrinsicSeq += 1 }
         var bytes = [UInt8](repeating: 0xEE, count: 32)
@@ -153,7 +173,16 @@ final class DurabilityHarness: @unchecked Sendable {
             bytes[offset] = UInt8(truncatingIfNeeded: seq)
             seq >>= 8
         }
-        return Data(bytes)
+
+        let extrinsic = Data(bytes)
+        // A harness fixture: a failure here means the hashing primitive changed, not a test condition.
+        guard let hash = try? extrinsic.blake2b32() else {
+            fatalError("harness could not hash its own extrinsic bytes")
+        }
+
+        extrinsicBytesByHash[hash] = extrinsic
+
+        return hash
     }
 
     // MARK: - Registration
@@ -174,7 +203,7 @@ final class DurabilityHarness: @unchecked Sendable {
         let baseline = submitter.submissionCount
         for (id, registration) in zip(ids, registrations) {
             let submission = DurableTxTracker.Submission(
-                model: harnessBuiltModel(hex: registration.txHash.toHex(includePrefix: true)),
+                model: harnessBuiltModel(hex: extrinsic(for: registration.txHash)),
                 transactionId: id,
                 chainId: harnessChainId,
                 submitter: submitter
@@ -186,6 +215,15 @@ final class DurabilityHarness: @unchecked Sendable {
         // registration order — a watcher scenario keys its status streams by submission index.
         await awaitParked(untilCount: baseline + ids.count)
         return ids
+    }
+
+    /// The bytes whose hash is `txHash`, as hex — what a submission presents for that row.
+    private func extrinsic(for txHash: Data) -> String {
+        guard let bytes = extrinsicBytesByHash[txHash] else {
+            fatalError("no extrinsic recorded for \(txHash.toHex()) — build it through nextExtrinsicHash()")
+        }
+
+        return bytes.toHex(includePrefix: true)
     }
 
     private func awaitParked(untilCount target: Int) async {
@@ -227,7 +265,7 @@ final class DurabilityHarness: @unchecked Sendable {
     func handOff(_ assets: [OwnAsset]) async -> Bool {
         do {
             let commit = try await preCommitHandoff(assets)
-            try await commit.commit()
+            try commit.commit(in: InMemoryRegistrationScope())
             return true
         } catch {
             return false
@@ -263,7 +301,8 @@ final class DurabilityHarness: @unchecked Sendable {
             chainFactory.faults.everyBlockUnreadable = true
         case .outcomes:
             let entries = await (try? store.getAllEntries()) ?? []
-            chainFactory.faults.unreadableOutcomes.formUnion(entries.map(\.txHash))
+            // Only a row with an attempt has an outcome to make unreadable.
+            chainFactory.faults.unreadableOutcomes.formUnion(entries.compactMap(\.txHash))
         case .pin:
             chainFactory.faults.pinFails = true
         }
@@ -304,6 +343,7 @@ private extension DurabilityHarness {
         let registrar: DurableTxRegistrar
         let tracker: DurableTxTracker
         let pass: DurableRecoveryPass
+        let verdictWriter: DurableVerdictWriter
         let recorder: RecoveryRecorder
 
         static func build(
@@ -311,7 +351,8 @@ private extension DurabilityHarness {
             chainFactory: FakePinnedChainViewFactory<CoinageChainState>,
             stateReader: FakeCoinageStateReader,
             submitter _: FakeExtrinsicSubmitter,
-            backgroundExecutor: StubBackgroundExecutor
+            backgroundExecutor: StubBackgroundExecutor,
+            policies: DurableSubmissionPolicyRegistry
         ) -> Subsystem {
             let owned = DurableTxOwnershipSet()
             let recorder = RecoveryRecorder()
@@ -321,21 +362,35 @@ private extension DurabilityHarness {
                 for: .coinage
             )
             let registrar = DurableTxRegistrar(store: store.durable, owned: owned, logger: nil)
+            let verdictWriter = DurableVerdictWriter(
+                store: store.durable,
+                policies: policies,
+                logger: nil
+            )
             let pass = DurableRecoveryPass(
                 store: store.durable,
                 chainFactory: chainFactory,
                 owned: owned,
                 oracles: oracles,
+                verdictWriter: verdictWriter,
                 logger: nil
             )
             let tracker = DurableTxTracker(
                 store: store.durable,
                 chainFactory: chainFactory,
                 owned: owned,
+                verdictWriter: verdictWriter,
                 backgroundExecutor: backgroundExecutor,
                 logger: nil
             )
-            return Subsystem(owned: owned, registrar: registrar, tracker: tracker, pass: pass, recorder: recorder)
+            return Subsystem(
+                owned: owned,
+                registrar: registrar,
+                tracker: tracker,
+                pass: pass,
+                verdictWriter: verdictWriter,
+                recorder: recorder
+            )
         }
     }
 }

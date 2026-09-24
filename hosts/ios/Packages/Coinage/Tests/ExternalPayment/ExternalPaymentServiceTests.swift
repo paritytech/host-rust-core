@@ -181,6 +181,54 @@ struct ExternalPaymentServiceTests {
         #expect(harness.txService.registrations == [Factory.unloadGroupId(for: payment)])
     }
 
+    @Test func aRecyclerOverTheConsolidationLimitIsOffboardedInSeveralCalls() async throws {
+        // Five vouchers of one denomination all sit in the same recycler, so without chunking they
+        // would be offboarded by a single call carrying more aliases than the pallet accepts.
+        let vouchers = (1 ... 5).map { Factory.voucher(index: .harness(UInt64($0)), exponent: 3) }
+        let payment = Factory.payment(amount: Factory.planks(3) * 5)
+        let harness = Factory.makeHarness(
+            store: InMemoryExternalPaymentStore(seed: [payment]),
+            vouchers: vouchers,
+            maxConsolidation: 2
+        )
+        harness.planner.setDefault(.success(Factory.unloadPreview(vouchers)))
+
+        harness.service.setup(with: Factory.denomination)
+
+        let completed = try await harness.store.awaitPayment(id: payment.identifier) { $0.stage == .completed }
+        #expect(completed.settledInPlanks == payment.amountInPlanks)
+
+        let entries = try await harness.txService
+            .getOperationGroupStatuses(Factory.unloadGroupId(for: payment))
+        #expect(entries.count == 3)
+        #expect(entries.allSatisfy { $0.inputs.count <= 2 })
+        #expect(entries.flatMap(\.inputs).count == 5)
+    }
+
+    @Test func surplusIsCarriedByExactlyOneCallWhenARecyclerIsSplit() async throws {
+        // All five vouchers share a recycler, so every call carries the same recycler key: the
+        // surplus has to be pinned to one call rather than to the key it was planned against.
+        let vouchers = (1 ... 5).map { Factory.voucher(index: .harness(UInt64($0)), exponent: 3) }
+        let surplus = Factory.planks(2)
+        let payment = Factory.payment(amount: Factory.planks(3) * 5 - surplus)
+        let harness = Factory.makeHarness(
+            store: InMemoryExternalPaymentStore(seed: [payment]),
+            vouchers: vouchers,
+            maxConsolidation: 2
+        )
+        harness.planner.setDefault(.success(Factory.unloadPreview(vouchers, surplus: surplus)))
+
+        harness.service.setup(with: Factory.denomination)
+
+        _ = try await harness.store.awaitPayment(id: payment.identifier) { $0.stage == .completed }
+
+        let entries = try await harness.txService
+            .getOperationGroupStatuses(Factory.unloadGroupId(for: payment))
+        #expect(entries.count == 3)
+        #expect(entries.filter { !$0.outputs.isEmpty }.count == 1)
+        #expect(entries.flatMap(\.outputs).count == 1)
+    }
+
     @Test func plannerErrorFailsWithoutRetry() async throws {
         let payment = Factory.payment()
         let harness = Factory.makeHarness(store: InMemoryExternalPaymentStore(seed: [payment]))

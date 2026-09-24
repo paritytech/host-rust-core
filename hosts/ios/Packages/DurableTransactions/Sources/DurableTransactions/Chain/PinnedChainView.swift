@@ -41,7 +41,7 @@ final class PinnedChainView: PinnedChainViewProtocol, @unchecked Sendable {
         return .present(BlockRef(number: number, hash: hash))
     }
 
-    func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<Bool> {
+    func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<DispatchOutcome> {
         await scan.outcome(of: txHash, at: block)
     }
 
@@ -94,7 +94,7 @@ public struct BlockBodyScan {
 
     /// Reads the outcome of `txHash` at `block`, resolving its index from the same block the events
     /// come from.
-    public func outcome(of txHash: Data, at block: BlockRef) async -> ReadResult<Bool> {
+    public func outcome(of txHash: Data, at block: BlockRef) async -> ReadResult<DispatchOutcome> {
         switch await outcomeReader.lookUp(txHash, at: block.hash) {
         case let .outcome(result):
             result
@@ -104,12 +104,15 @@ public struct BlockBodyScan {
         }
     }
 
-    private static func mapSearchOutcome(result: ReadResult<Bool>, block: BlockRef) -> BodySearchOutcome {
+    private static func mapSearchOutcome(
+        result: ReadResult<DispatchOutcome>,
+        block: BlockRef
+    ) -> BodySearchOutcome {
         switch result {
-        case .present(true):
+        case .present(.succeeded):
             .foundSucceeded(block)
-        case .present(false):
-            .foundFailed(block)
+        case let .present(.failed(reason)):
+            .foundFailed(block, reason: reason)
         case .absent,
              .failedRead:
             .foundOutcomeUnreadable(block)

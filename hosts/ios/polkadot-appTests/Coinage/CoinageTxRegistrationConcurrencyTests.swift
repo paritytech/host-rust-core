@@ -58,41 +58,18 @@ final class DurabilityRegistrationConcurrencyTests {
                 successDetectedAt: nil
             )
 
-            var firstError: Error?
-            var secondError: Error?
-            var firstSucceeded = false
-            var secondSucceeded = false
+            async let task1 = Task { await registrationError(of: entry1, in: store) }.value
+            async let task2 = Task { await registrationError(of: entry2, in: store) }.value
 
-            async let task1: () = Task {
-                do {
-                    try await store.register(entry1)
-                    firstSucceeded = true
-                } catch {
-                    firstError = error
-                }
-            }.value
-
-            async let task2: () = Task {
-                do {
-                    try await store.register(entry2)
-                    secondSucceeded = true
-                } catch {
-                    secondError = error
-                }
-            }.value
-
-            _ = await (task1, task2)
+            let (firstError, secondError) = await (task1, task2)
 
             // Exactly one should succeed
-            let successCount = (firstSucceeded ? 1 : 0) + (secondSucceeded ? 1 : 0)
+            let successCount = [firstError, secondError].filter { $0 == nil }.count
             #expect(successCount == 1)
 
             // The rejected one should throw inputAlreadyClaimed
-            if firstSucceeded {
-                #expect((secondError as? CoinageTxError) == .inputAlreadyClaimed(sharedInput.publicKey.toHex()))
-            } else {
-                #expect((firstError as? CoinageTxError) == .inputAlreadyClaimed(sharedInput.publicKey.toHex()))
-            }
+            let rejectedError = firstError ?? secondError
+            #expect((rejectedError as? CoinageTxError) == .inputAlreadyClaimed(sharedInput.publicKey.toHex()))
         }
     }
 
@@ -330,4 +307,15 @@ private func testKey(_ index: CoinageKeyIndex) -> PublicKey {
 
 private func keyIndex(_ item: Int) -> CoinageKeyIndex {
     CoinageKeyIndex(installation: .test, item: UInt64(item))
+}
+
+/// Runs one registration and hands its failure back as a value, so concurrent registrations
+/// report their outcome through the task result instead of mutating shared state.
+private func registrationError(of entry: CoinageTxEntry, in store: CoinageCoreDataLedger) async -> Error? {
+    do {
+        try await store.register(entry)
+        return nil
+    } catch {
+        return error
+    }
 }

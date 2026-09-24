@@ -94,7 +94,14 @@ private extension CoinageTransferMonitor {
             defer { Task { await taskRegistry.remove(forMessageId: messageId) } }
             do {
                 let context = try await coinageService.denominationContext()
-                let retryUntil = Date().addingTimeInterval(CoinageConstants.claimRetryWindow)
+                // Anchored to the message, not to now: this runs again for the same message on every
+                // launch, and a window measured from "now" would reset each time and never close. The
+                // sender's own window runs from when it sent, so anchoring here keeps the two sides
+                // trying for the same stretch. A message first seen after its window closed is still
+                // attempted once — `claim` always makes one attempt.
+                let retryUntil = Date
+                    .fromChatTimestamp(message.timestamp)
+                    .addingTimeInterval(CoinageConstants.claimRetryWindow)
 
                 logger.debug("Starting processing incoming coinage message=\(messageId)")
 

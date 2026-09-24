@@ -32,8 +32,8 @@ use crate::host_logic::sso::messages::ProductRequest;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,
-    ring_vrf_proof_error, ring_vrf_register_error, ring_vrf_sign_error, validate_vrf_transcript,
-    vrf_call_error,
+    ring_vrf_proof_error, ring_vrf_register_error, ring_vrf_sign_error, until_cancelled,
+    validate_vrf_transcript, vrf_call_error,
 };
 
 #[truapi::async_trait]
@@ -92,15 +92,18 @@ impl Account for ProductRuntimeHost {
             // Own-account resolution has no access review, so a cold subtree
             // that must reach the Account Holder is the one point a host can
             // surface and reject before the SSO call.
-            let approved = self
-                .platform
-                .confirm_user_action(UserConfirmationReview::ProductSubtree(
-                    ProductSubtreeReview {
-                        product_id: product_account_id.dot_ns_identifier.clone(),
-                    },
-                ))
-                .await
-                .map_err(|err| CallError::HostFailure { reason: err.reason })?;
+            let approved = until_cancelled(
+                cx,
+                self.platform
+                    .confirm_user_action(UserConfirmationReview::ProductSubtree(
+                        ProductSubtreeReview {
+                            product_id: product_account_id.dot_ns_identifier.clone(),
+                        },
+                    )),
+            )
+            .await
+            .map_err(account_get_authority_error)?
+            .map_err(|err| CallError::HostFailure { reason: err.reason })?;
             if !approved {
                 return Err(CallError::Domain(HostAccountGetError::V1(
                     v01::HostAccountGetError::Rejected,

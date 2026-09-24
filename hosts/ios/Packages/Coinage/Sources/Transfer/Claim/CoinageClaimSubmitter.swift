@@ -34,7 +34,8 @@ protocol CoinageClaimSubmitting: Sendable {
     func submit(
         claimable: [ClaimableCoin],
         bundleSize: Int,
-        groupId: CoinageTxGroupId
+        groupId: CoinageTxGroupId,
+        retryUntil: Date
     ) async throws
 }
 
@@ -59,7 +60,8 @@ final class CoinageClaimSubmitter: CoinageClaimSubmitting, @unchecked Sendable {
     func submit(
         claimable: [ClaimableCoin],
         bundleSize: Int,
-        groupId: CoinageTxGroupId
+        groupId: CoinageTxGroupId,
+        retryUntil: Date
     ) async throws {
         guard !claimable.isEmpty else { return }
 
@@ -69,7 +71,7 @@ final class CoinageClaimSubmitter: CoinageClaimSubmitting, @unchecked Sendable {
         for coin in claimable {
             // Every coin in the transfer shares its bundle size, including ones a later pass claims.
             try await requests.append(
-                buildClaim(coin, bundleSize: bundleSize, groupId: groupId)
+                buildClaim(coin, bundleSize: bundleSize, groupId: groupId, retryUntil: retryUntil)
             )
         }
 
@@ -86,7 +88,8 @@ private extension CoinageClaimSubmitter {
     func buildClaim(
         _ coin: ClaimableCoin,
         bundleSize: Int,
-        groupId: CoinageTxGroupId
+        groupId: CoinageTxGroupId,
+        retryUntil: Date
     ) async throws -> CoinageTxRequest {
         // Nothing in a peer's coin reveals the recycler it came out of, but the chain does give its
         // age — enough to reconstruct a conservative chain of one transfer per unit of it, with this
@@ -105,11 +108,16 @@ private extension CoinageClaimSubmitter {
 
         logger?.debug("Built claim group=\(groupId) value=\(coin.valueExponent)")
 
-        return CoinageTxRequest(
+        return try CoinageTxRequest(
             inputs: [.coin(.received(coin.publicKey))],
             outputs: [.coin(destination.derivationIndex, destination.publicKey)],
             builder: builder,
-            origin: origin
+            origin: origin,
+            // A failed claim is rebuilt into *this* destination coin: a claim retried into a fresh one
+            // would strand any payment already registered against the first.
+            policy: CoinageSubmissionParams.claimPolicy(
+                ClaimSubmissionParams(retryUntil: retryUntil, receivedKey: coinPrivateKey)
+            )
         )
     }
 }
