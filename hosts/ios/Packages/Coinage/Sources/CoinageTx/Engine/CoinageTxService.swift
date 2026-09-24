@@ -14,6 +14,20 @@ public protocol CoinageTxServicing: Sendable {
         groupId: CoinageTxGroupId?
     ) async throws -> [CoinageTxId]
 
+    /// Registers transactions that their policies build and submit afterwards, atomically under one
+    /// `groupId`. Their inputs are locked from the moment this commits, so nothing else can select them
+    /// while they wait to be built.
+    ///
+    /// `scope` joins a transaction the caller already opened — the transport writing whatever carries
+    /// the payment — so the payment's row and these commit together. Synchronous for the same reason
+    /// that caller is.
+    @discardableResult
+    func scheduleTransactions(
+        _ requests: [CoinageScheduledTxRequest],
+        groupId: CoinageTxGroupId,
+        joining scope: any DurableTxRegistrationScope
+    ) throws -> [CoinageTxId]
+
     /// A stream of a submitted entry's status: the current value, then every change. Lets a caller that
     /// must not report success until the chain has — offboarding an external payment — await a terminal
     /// outcome after a fire-and-forget submission.
@@ -88,7 +102,35 @@ public final class CoinageTxService: CoinageTxServicing {
             return try await engine.submitTransactions(
                 domain: .coinage,
                 requests: requests.map { DurableTxRequest(builder: $0.builder, origin: $0.origin) },
-                groupId: groupId
+                groupId: groupId,
+                policies: requests.map(\.policy)
+            ) { [ledger] scope, ids in
+                try ledger.registerAssets(assets, for: ids, in: scope)
+            }
+        } catch let error as DurableTxError {
+            throw CoinageTxError(durableTxError: error) ?? error
+        }
+    }
+
+    @discardableResult
+    public func scheduleTransactions(
+        _ requests: [CoinageScheduledTxRequest],
+        groupId: CoinageTxGroupId,
+        joining scope: any DurableTxRegistrationScope
+    ) throws -> [CoinageTxId] {
+        let assets = requests.map { CoinageAssetRegistration(inputs: $0.inputs, outputs: $0.outputs) }
+        guard assets.allSatisfy({ !$0.isEmpty }) else {
+            throw CoinageTxError.emptyEntry
+        }
+
+        logger?.debug("Scheduling \(requests.count) coinage request(s) groupId: \(groupId)")
+
+        do {
+            return try engine.schedule(
+                domain: .coinage,
+                groupId: groupId,
+                policies: requests.map(\.policy),
+                joining: scope
             ) { [ledger] scope, ids in
                 try ledger.registerAssets(assets, for: ids, in: scope)
             }

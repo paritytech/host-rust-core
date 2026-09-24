@@ -164,19 +164,28 @@ private extension TransferAmountInteractor {
         // One id shared by the coinage transactions (their groupId) and the chat message that
         // carries the memo, so the transfer's on-chain work and its message correlate.
         let messageId: Chat.MessageId = UUID().uuidString
+        // Mints and reserves only: nothing is built and nothing is on the wire yet, so the slow part
+        // of a payment no longer stands between the user and the memo leaving.
         let prepared = try await coinageService.executeTransfer(result: result, groupId: messageId)
         do {
-            try await transferSubmitter.sendTransfer(prepared.memo, to: recipient.accountId, messageId: messageId)
-        } catch {
-            if transferSubmitter.isFailureFatal {
-                // Fatal send failure: leave the handoff provisional so a relaunch returns the coins.
-                throw error
+            // The hook runs inside the transaction that persists the memo, so the handoff becomes
+            // final and the payment's transactions are registered exactly when the keys are durable.
+            try await transferSubmitter.sendTransfer(
+                prepared.memo,
+                to: recipient.accountId,
+                messageId: messageId
+            ) { scope in
+                try prepared.commit(in: scope)
             }
-            logger?.error("Non-fatal chat submitter failure: \(error)")
+        } catch {
+            // Every transport runs the hook inside a transaction, and only once whatever carries the
+            // keys is durable — so a throw from here means nothing was committed and nothing scheduled.
+            // Drop the reservation now rather than waiting for a relaunch, and never report a transfer
+            // the recipient has no way to claim.
+            try? await prepared.abandon()
+
+            throw error
         }
-        // The memo has left toward the recipient — make the handoff final so the coins can't be
-        // reselected on this device.
-        try await prepared.handoffCommit.commit()
         lifecycleReporter.start(with: .coinageMemo(prepared.memo))
     }
 }
@@ -225,10 +234,6 @@ private extension TransferAmountInteractor {
                         gainingPrivacy: gainingPrivacy
                     )
                     await self?.presenter?.didReceive(spendableBreakdown: breakdown)
-                    // Everything not reachable now, matching AssetDetails' locked (`total - available`).
-                    // Under max privacy this includes the withheld gaining-privacy bucket, which
-                    // `balance.pending` would omit — leaving the info sheet's total understated.
-                    await self?.presenter?.didReceive(lockedBalance: balance.total - balance.available)
                 }
             } catch {
                 self?.logger?.error("Failed to observe coinage balance: \(error)")

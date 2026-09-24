@@ -1,4 +1,5 @@
 import Foundation
+import FoundationExt
 import KeyDerivation
 import ExtrinsicService
 import StructuredConcurrency
@@ -21,9 +22,8 @@ struct SplitCoinStrategy {
     private let targetDenominations: [Denomination]
     private let changeDenominations: [Denomination]
     private let minter: any CoinMinting
-    private let coinKeyFactory: any CoinKeyDeriving
     private let txService: any CoinageTxServicing
-    private let originFactory: OriginCreating
+    private let dateProvider: any DateProviding
     private let logger: SDKLoggerProtocol?
 
     init(
@@ -32,9 +32,8 @@ struct SplitCoinStrategy {
         targetDenominations: [Denomination],
         changeDenominations: [Denomination],
         minter: any CoinMinting,
-        coinKeyFactory: any CoinKeyDeriving,
         txService: any CoinageTxServicing,
-        originFactory: OriginCreating,
+        dateProvider: any DateProviding,
         logger: SDKLoggerProtocol?
     ) {
         self.wholeCoins = wholeCoins
@@ -42,9 +41,8 @@ struct SplitCoinStrategy {
         self.targetDenominations = targetDenominations
         self.changeDenominations = changeDenominations
         self.minter = minter
-        self.coinKeyFactory = coinKeyFactory
         self.txService = txService
-        self.originFactory = originFactory
+        self.dateProvider = dateProvider
         self.logger = logger
     }
 }
@@ -52,7 +50,7 @@ struct SplitCoinStrategy {
 // MARK: - TransferStrategy
 
 extension SplitCoinStrategy: TransferStrategy {
-    func prepare(groupId: CoinageTxGroupId?) async throws -> PreparedStrategy {
+    func prepare() async throws -> PreparedStrategy {
         // Every piece of the split shares one provenance: the overflow coin's chain, plus this
         // split. Fanout counts all outputs, the recipient's and ours alike, since that is how many
         // ways the input was divided.
@@ -79,27 +77,13 @@ extension SplitCoinStrategy: TransferStrategy {
         transaction.handOff(coins: wholeCoins + recipientCoins)
         let assets = transaction.build()
 
-        let splitDestinations = try buildSplitDestinations(from: assets.outputCoins)
-
-        let call = CoinagePallet.Calls.Split(
-            splitInto: splitDestinations.sorted { $0.exponent < $1.exponent }
-        )
-        let builder: ExtrinsicBuilderClosure = {
-            try $0.adding(call: call.callAsFunction())
-        }
-        let origin = try makeOrigin()
-
-        // One fire-and-forget submit: registers (claiming the input) and broadcasts, returning once
-        // the entry is committed. The projection writes below follow, explained by that entry.
-        logger?.debug("Submitting split extrinsic for \(assets.outputCoins.count) coins")
-        try await txService.submitTransaction(
-            request: CoinageTxRequest(
-                inputs: assets.inputs,
-                outputs: assets.outputs,
-                builder: builder,
-                origin: origin
-            ),
-            groupId: groupId
+        // Declared, not built: the call and its origin are reconstructed from these same assets by
+        // `SplitRebuild` when the policy builds it, so nothing here needs an unload token or a proof.
+        // The retry window opens now, when the transaction is declared, not when the plan was made.
+        let scheduled = try await CoinageScheduledTxRequest(
+            policy: CoinageSubmissionParams.splitPolicy(.retriedTransfer(from: dateProvider.read())),
+            inputs: assets.inputs,
+            outputs: assets.outputs
         )
 
         let handoffCommit = try await txService
@@ -115,33 +99,10 @@ extension SplitCoinStrategy: TransferStrategy {
             PlannedMemoEntry(coinDerivationIndex: $0.derivationIndex, valueExponent: $0.exponent)
         }
 
-        return PreparedStrategy(memoEntries: memoEntries, handoffCommit: handoffCommit)
-    }
-}
-
-// MARK: - Private
-
-private extension SplitCoinStrategy {
-    func buildSplitDestinations(
-        from coins: [Coin]
-    ) throws -> [CoinagePallet.Calls.Split.SplitDestination] {
-        var grouped: [Int16: [Data]] = [:]
-        for coin in coins {
-            grouped[coin.exponent, default: []].append(coin.publicKey)
-        }
-
-        return grouped.map { exponent, accounts in
-            CoinagePallet.Calls.Split.SplitDestination(
-                exponent: exponent,
-                accounts: accounts
-            )
-        }
-    }
-
-    func makeOrigin() throws -> ExtrinsicOriginDefining {
-        let coinPrivateKey = try coinKeyFactory.derivePrivateKey(for: overflowCoin)
-        let coinAccount = DynamicDerivedWallet(secretKeyProvider: { coinPrivateKey })
-
-        return try originFactory.createAsCoinOrigin(for: coinAccount)
+        return PreparedStrategy(
+            memoEntries: memoEntries,
+            handoffCommit: handoffCommit,
+            transactions: [scheduled]
+        )
     }
 }

@@ -11,10 +11,17 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
 
     private var cardCreateModel: WalletCardCreateViewModel?
     private var amount: String?
-    private var lockedAmountString: String?
+    private var readyAmountString: String?
+    private var assetLogo: UIImage?
+    private var assetSymbol: String?
+    private var paymentAssetViewModel: PaymentAssetViewModelProtocol?
 
     init(viewModel: AssetDetailsViewModel) {
         self.viewModel = viewModel
+    }
+
+    deinit {
+        paymentAssetViewModel?.cancel()
     }
 
     var isSetup: Bool {
@@ -88,17 +95,34 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
         emitCardUpdate()
     }
 
-    func didReceive(lockedAmount: BalanceViewModelProtocol?) {
+    func didReceive(readyAmount: BalanceViewModelProtocol?) {
         defer {
             emitCardUpdate()
         }
 
-        guard let lockedAmount else {
-            lockedAmountString = nil
+        guard let readyAmount else {
+            readyAmountString = nil
             return
         }
 
-        lockedAmountString = String(localized: .balanceOnhold(amount: lockedAmount.amount))
+        readyAmountString = readyAmount.amount
+    }
+
+    func didReceive(paymentAsset: PaymentAssetViewModelProtocol) {
+        paymentAssetViewModel?.cancel()
+        paymentAssetViewModel = paymentAsset
+
+        paymentAsset.bind { [weak self] brand in
+            self?.apply(brand)
+        }
+    }
+
+    private func apply(_ brand: PaymentAssetBrand) {
+        assetLogo = brand.wideIcon
+        assetSymbol = brand.symbol
+
+        guard viewModel.balanceCardModel != nil else { return }
+        emitCardUpdate()
     }
 
     func didReceive(coinageBreakdown: CoinageBalanceBreakdownViewModel) {
@@ -152,7 +176,9 @@ final class AssetDetailsViewBinding: AssetDetailsViewProtocol {
     private func emitCardUpdate() {
         viewModel.balanceCardModel = .init(
             balance: amount,
-            lockedAmount: lockedAmountString
+            readyBalance: readyAmountString,
+            logo: assetLogo,
+            symbol: assetSymbol
         )
     }
 }

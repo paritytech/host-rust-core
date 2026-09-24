@@ -7,7 +7,7 @@ struct SelectCoinsInput {
     let coins: [TrackedCoin]
     let vouchers: [TrackedVoucher]
     let breakdownContext: DenominationBreakdownContext
-    let maxVouchersPerGroup: Int
+    let limits: UnloadCallLimits
 }
 
 /// Protocol defining the coin selection interface.
@@ -68,7 +68,7 @@ extension CoinSelector: CoinSelecting {
             amount: input.amount,
             coins: availableCoins,
             vouchers: availableVouchers,
-            maxVouchersPerGroup: input.maxVouchersPerGroup,
+            limits: input.limits,
             breakdownContext: input.breakdownContext
         ) {
             return unloaded
@@ -152,7 +152,7 @@ private extension CoinSelector {
         amount: BigUInt,
         coins: [Coin],
         vouchers: [Voucher],
-        maxVouchersPerGroup: Int,
+        limits: UnloadCallLimits,
         breakdownContext: DenominationBreakdownContext
     ) throws -> CoinSelectionResult? {
         guard !vouchers.isEmpty else { return nil }
@@ -195,7 +195,7 @@ private extension CoinSelector {
         let perGroupAllocations = try computePerGroupAllocations(
             vouchers: selectedVouchers,
             recipientAmount: needed,
-            maxVouchersPerGroup: maxVouchersPerGroup,
+            limits: limits,
             breakdownContext: breakdownContext
         )
 
@@ -205,77 +205,112 @@ private extension CoinSelector {
         )
     }
 
-    /// Groups vouchers by recycler and computes per-group denomination allocations.
+    /// Splits the selected vouchers into calls the pallet will accept, and allocates the recipient
+    /// amount across them.
     ///
-    /// Each recycler group's output must equal its input (pallet constraint).
-    /// We allocate the recipient amount across groups (largest first), then
-    /// each group's remaining budget becomes its change.
+    /// Each call's output must equal its input, so a call is planned as a budget: the recipient is
+    /// filled largest-denomination-first and whatever a call has left over becomes its change. Two
+    /// pallet bounds apply per call — the voucher count (`MaxConsolidation`, handled by the chunker)
+    /// and the minted coin count (`MaxSplitOutputs`). The latter cannot be predicted from the
+    /// voucher count, because a budget's coin count depends on its value and on where the
+    /// recipient/change boundary falls, so it is measured and the call re-split when it overflows.
     func computePerGroupAllocations(
         vouchers: [Voucher],
         recipientAmount: BigUInt,
-        maxVouchersPerGroup: Int,
+        limits: UnloadCallLimits,
         breakdownContext: DenominationBreakdownContext
     ) throws -> [RecyclerGroupAllocation] {
-        // Group vouchers by recycler (exponent + index)
-        let grouped = try Dictionary(grouping: vouchers) { voucher -> RecyclerKey in
-            guard let recycler = voucher.recycler else {
-                assertionFailure("Not ready vouchers should be filtered-out earlier")
-                throw CoinSelectionError.selectedVoucherIsNotReady
-            }
-            return RecyclerKey(exponent: voucher.exponent, index: recycler.index)
-        }
-
-        // Build group info with budget calculations
-        struct GroupInfo {
-            let key: RecyclerKey
-            let vouchers: [Voucher]
-            let budget: BigUInt
-        }
-
-        let groups: [GroupInfo] = try grouped.map { key, groupVouchers in
-            guard maxVouchersPerGroup > groupVouchers.count else {
-                throw CoinSelectionError.tooManyVouchersInGroup(
-                    count: groupVouchers.count,
-                    max: maxVouchersPerGroup
-                )
-            }
-
-            let budget = groupVouchers.reduce(BigUInt(0)) {
-                $0 + breakdownContext.valueInPlanks(for: $1.exponent)
-            }
-            return GroupInfo(key: key, vouchers: groupVouchers, budget: budget)
-        }
-
-        // Sort groups by exponent descending (largest budget groups first)
-        // This ensures large recipient amounts are covered by large groups
-        let sortedGroups = groups.sorted { $0.key.exponent > $1.key.exponent }
+        var pending = try byDenominationDescending(
+            RecyclerVoucherChunker.chunk(vouchers, maxPerChunk: limits.maxVouchersPerCall)
+        )
 
         var remainingRecipient = recipientAmount
         var allocations: [RecyclerGroupAllocation] = []
+        var index = 0
 
-        for group in sortedGroups {
-            // Allocate this group's budget: recipient first, then change
-            let recipientFromGroup = min(remainingRecipient, group.budget)
-            remainingRecipient -= recipientFromGroup
-            let changeFromGroup = group.budget - recipientFromGroup
+        while index < pending.count {
+            let chunk = pending[index]
+            let planned = plan(
+                chunk: chunk,
+                recipientBudget: remainingRecipient,
+                breakdownContext: breakdownContext
+            )
 
-            // Compute denominations for this group's allocations
-            let recipientDenoms = recipientFromGroup > 0
-                ? breakdownContext.breakdown(amountInPlanks: recipientFromGroup)
-                : []
-            let changeDenoms = changeFromGroup > 0
-                ? breakdownContext.breakdown(amountInPlanks: changeFromGroup)
-                : []
+            guard planned.outputCount <= limits.maxOutputsPerCall else {
+                guard chunk.vouchers.count > 1 else {
+                    throw CoinSelectionError.unloadOutputsExceedLimit(
+                        outputs: planned.outputCount,
+                        max: limits.maxOutputsPerCall
+                    )
+                }
+                pending.replaceSubrange(index ... index, with: halved(chunk))
+                continue
+            }
 
-            allocations.append(RecyclerGroupAllocation(
-                recyclerKey: group.key,
-                vouchers: group.vouchers,
-                recipientDenominations: recipientDenoms,
-                changeDenominations: changeDenoms
-            ))
+            remainingRecipient -= planned.recipientUsed
+            allocations.append(planned.allocation)
+            index += 1
         }
 
         return allocations
+    }
+
+    /// One call's planned inputs and outputs, before it is checked against the output limit.
+    struct PlannedCall {
+        let allocation: RecyclerGroupAllocation
+        let recipientUsed: BigUInt
+
+        var outputCount: Int {
+            allocation.recipientDenominations.count + allocation.changeDenominations.count
+        }
+    }
+
+    /// Gives the chunk's budget to the recipient up to `recipientBudget`; the rest is change.
+    func plan(
+        chunk: RecyclerVoucherChunk,
+        recipientBudget: BigUInt,
+        breakdownContext: DenominationBreakdownContext
+    ) -> PlannedCall {
+        let budget = chunk.vouchers.reduce(BigUInt(0)) {
+            $0 + breakdownContext.valueInPlanks(for: $1.exponent)
+        }
+
+        let recipientUsed = min(recipientBudget, budget)
+        let change = budget - recipientUsed
+
+        return PlannedCall(
+            allocation: RecyclerGroupAllocation(
+                recyclerKey: chunk.key,
+                vouchers: chunk.vouchers,
+                recipientDenominations: recipientUsed > 0
+                    ? breakdownContext.breakdown(amountInPlanks: recipientUsed)
+                    : [],
+                changeDenominations: change > 0
+                    ? breakdownContext.breakdown(amountInPlanks: change)
+                    : []
+            ),
+            recipientUsed: recipientUsed
+        )
+    }
+
+    /// Largest denominations first, so big recipient amounts are covered by big calls. Chunks of one
+    /// recycler keep the chunker's order, which keeps the planned calls reproducible.
+    func byDenominationDescending(_ chunks: [RecyclerVoucherChunk]) -> [RecyclerVoucherChunk] {
+        chunks.enumerated()
+            .sorted {
+                $0.element.key.exponent == $1.element.key.exponent
+                    ? $0.offset < $1.offset
+                    : $0.element.key.exponent > $1.element.key.exponent
+            }
+            .map(\.element)
+    }
+
+    func halved(_ chunk: RecyclerVoucherChunk) -> [RecyclerVoucherChunk] {
+        let mid = chunk.vouchers.count / 2
+        return [
+            RecyclerVoucherChunk(key: chunk.key, vouchers: Array(chunk.vouchers[..<mid])),
+            RecyclerVoucherChunk(key: chunk.key, vouchers: Array(chunk.vouchers[mid...]))
+        ]
     }
 
     func findMinimalCover(

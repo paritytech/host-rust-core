@@ -11,21 +11,29 @@ final class ChatPresenter {
     let interactor: ChatInteractorInputProtocol
     let viewModelFactory: ChatViewModelMaking
     let moduleNavigator: ModuleNavigating
+    let paymentAssetViewModelFactory: PaymentAssetViewModelMaking
 
     private var listModel: MessageListModel?
     private var metadata: MessageListMetadata?
     private var footer: (any HashableContentConfiguration)?
+    private var paymentAssetViewModel: PaymentAssetViewModelProtocol?
 
     init(
         interactor: ChatInteractorInputProtocol,
         wireframe: ChatWireframeProtocol,
         viewModelFactory: ChatViewModelMaking,
-        moduleNavigator: ModuleNavigating
+        moduleNavigator: ModuleNavigating,
+        paymentAssetViewModelFactory: PaymentAssetViewModelMaking = PaymentAssetViewModelFactory()
     ) {
         self.interactor = interactor
         self.wireframe = wireframe
         self.viewModelFactory = viewModelFactory
         self.moduleNavigator = moduleNavigator
+        self.paymentAssetViewModelFactory = paymentAssetViewModelFactory
+    }
+
+    deinit {
+        paymentAssetViewModel?.cancel()
     }
 }
 
@@ -38,6 +46,7 @@ extension ChatPresenter: ChatPresenterProtocol {
 
     func setup() {
         interactor.setup()
+        subscribeToPaymentAsset()
     }
 
     func viewWillAppear() {
@@ -148,6 +157,15 @@ extension ChatPresenter: ChatInteractorOutputProtocol {
 private extension ChatPresenter {
     var viewModelProvidedOnce: Bool {
         listModel != nil && metadata != nil
+    }
+
+    func subscribeToPaymentAsset() {
+        let viewModel = paymentAssetViewModelFactory.makeViewModel()
+        paymentAssetViewModel = viewModel
+
+        viewModel.bind { [weak self] _ in
+            self?.provideViewModel()
+        }
     }
 
     func provideViewModel() {

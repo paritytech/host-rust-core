@@ -10,6 +10,14 @@ protocol LocalMessageCreatingOperationMaking {
         messageId: Chat.MessageId
     ) -> BaseOperation<Void>
 
+    /// The same message ``createTransfer(to:memo:messageId:)`` would write, built but not persisted —
+    /// for a caller that owns the transaction the row must land in.
+    func transferMessage(
+        to chatId: Chat.Id,
+        memo: TransferMemo,
+        messageId: Chat.MessageId
+    ) -> Chat.LocalMessage
+
     func createReplyMessageOperation(
         to chatId: Chat.Id,
         text: String,
@@ -31,19 +39,27 @@ final class LocalMessageCreatingOperationFactory: LocalMessageCreatingOperationM
         memo: TransferMemo,
         messageId: Chat.MessageId
     ) -> BaseOperation<Void> {
+        messagesStorageService.insertOrUpdate(
+            [transferMessage(to: chatId, memo: memo, messageId: messageId)]
+        )
+    }
+
+    func transferMessage(
+        to chatId: Chat.Id,
+        memo: TransferMemo,
+        messageId: Chat.MessageId
+    ) -> Chat.LocalMessage {
         let content = Chat.LocalMessage.Content.Transfer(
             totalValue: memo.totalValue,
             coinKeys: memo.entries,
             status: nil
         )
 
-        let local = Chat.LocalMessage.newMessage(
+        return Chat.LocalMessage.newMessage(
             to: chatId,
             content: .coinageSend(content),
             messageId: messageId
         )
-
-        return messagesStorageService.insertOrUpdate([local])
     }
 
     func createReplyMessageOperation(

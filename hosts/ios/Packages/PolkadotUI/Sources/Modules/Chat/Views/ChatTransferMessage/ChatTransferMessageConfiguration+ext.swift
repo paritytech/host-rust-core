@@ -5,6 +5,7 @@ public extension ChatTransferMessageConfiguration {
     static func inbox(
         amount: String,
         tokenSymbol: String,
+        assetIcon: UIImage? = nil,
         originalAmount: String? = nil,
         from username: String,
         state: ChatTransferMessageConfiguration.State,
@@ -16,6 +17,7 @@ public extension ChatTransferMessageConfiguration {
             title: state.inboxTitle(username: username),
             amountText: amount,
             tokenSymbol: tokenSymbol,
+            assetIcon: assetIcon,
             originalAmountText: originalAmount,
             state: .incoming(state),
             statusConfiguration: statusConfiguration,
@@ -41,6 +43,7 @@ public extension ChatTransferMessageConfiguration {
     static func outbox(
         amount: String,
         tokenSymbol: String,
+        assetIcon: UIImage? = nil,
         originalAmount: String? = nil,
         state: ChatTransferMessageConfiguration.State,
         statusConfiguration: ChatMessageStatusViewConfiguration,
@@ -51,6 +54,7 @@ public extension ChatTransferMessageConfiguration {
             title: String(localized: .chatTransferOutbox),
             amountText: amount,
             tokenSymbol: tokenSymbol,
+            assetIcon: assetIcon,
             originalAmountText: originalAmount,
             state: .outgoing(state),
             statusConfiguration: statusConfiguration,

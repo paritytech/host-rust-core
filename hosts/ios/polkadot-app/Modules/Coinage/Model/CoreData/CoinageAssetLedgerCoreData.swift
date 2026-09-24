@@ -93,6 +93,26 @@ extension CoinageAssetLedgerCoreData {
             .asyncExecute()
     }
 
+    func assets(of ids: [CoinageTxId]) async throws -> [CoinageTxId: CoinageTxEntry] {
+        guard !ids.isEmpty else { return [:] }
+
+        let batchRepository = storageFacade.createRepository(
+            filter: NSPredicate(
+                format: "%K IN %@",
+                #keyPath(CDDurableTx.identifier),
+                ids.map(\.uuidString)
+            ),
+            sortDescriptors: [NSSortDescriptor(key: #keyPath(CDDurableTx.sequence), ascending: true)],
+            mapper: AnyCoreDataMapper(CoinageTxEntryMapper())
+        )
+
+        let entries = try await AnyDataProviderRepository(batchRepository)
+            .fetchAllOperation(with: RepositoryFetchOptions())
+            .asyncExecute()
+
+        return entries.reduce(into: [:]) { $0[$1.id] = $1 }
+    }
+
     func getOperationGroupStatuses(_ groupId: CoinageTxGroupId) async throws -> [CoinageTxEntry] {
         let groupRepository = storageFacade.createRepository(
             filter: Self.groupPredicate(groupId),
@@ -137,12 +157,24 @@ extension CoinageAssetLedgerCoreData {
         }
     }
 
-    func commitHandoffs(_ keys: [PublicKey]) async throws {
+    func releaseUncommittedHandoffs(_ keys: [PublicKey]) async throws {
         guard !keys.isEmpty else { return }
+
         try await withTransaction { context in
             for key in keys {
-                try self.commitHandoff(key: key, in: context)
+                try self.releaseUncommittedMark(key: key, in: context)
             }
+        }
+    }
+
+    func commitHandoffs(_ keys: [PublicKey], in scope: any DurableTxRegistrationScope) throws {
+        guard let scope = scope as? CoreDataRegistrationScope else {
+            throw DurableTxError.foreignRegistrationScope
+        }
+
+        // No transaction of our own: the caller's is already open on the shared serial writer.
+        for key in keys {
+            try commitHandoff(key: key, in: scope.context)
         }
     }
 
@@ -169,17 +201,10 @@ extension CoinageAssetLedgerCoreData {
 private extension CoinageAssetLedgerCoreData {
     /// A transaction of coinage's own, for the handoff writes. Never opened while the engine's
     /// registration transaction is running: `registerAssets` writes through the scope it is handed and
-    /// must not call this — nesting would deadlock on the shared serial dispatch queue.
+    /// must not call this — nesting would deadlock on the writer's serial dispatch queue.
     func withTransaction<T>(_ body: @escaping (NSManagedObjectContext) throws -> T) async throws -> T {
-        try await databaseService.perform { context in
-            do {
-                let result = try body(context)
-                try context.save()
-                return result
-            } catch {
-                context.rollback()
-                throw error
-            }
+        try await databaseService.performWrite { context in
+            try body(context)
         }
     }
 }
@@ -192,6 +217,15 @@ private extension CoinageAssetLedgerCoreData {
         // Never regress a committed mark back to provisional.
         if coin.handoffMark == CoinHandoffMark.none.rawValue {
             coin.handoffMark = CoinHandoffMark.pending.rawValue
+        }
+    }
+
+    /// Clears a provisional mark; a committed one is left alone — the keys did leave.
+    func releaseUncommittedMark(key: PublicKey, in context: NSManagedObjectContext) throws {
+        let coin: CDCoin? = try context.first(for: NSPredicate(format: "publicKey == %@", key.toHex()))
+
+        if coin?.handoffMark == CoinHandoffMark.pending.rawValue {
+            coin?.handoffMark = CoinHandoffMark.none.rawValue
         }
     }
 

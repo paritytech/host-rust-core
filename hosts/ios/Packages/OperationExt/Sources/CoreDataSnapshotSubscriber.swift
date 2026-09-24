@@ -9,6 +9,9 @@ public enum CoreDataSnapshotSubscriberError: Error {
     case fetchFailed(Error)
 }
 
+/// Delivers the full, ordered snapshot of a fetch request on every change, mapping only the rows the
+/// fetched results controller reports as changed: their cached models are invalidated and rebuilt at
+/// delivery. The cache is keyed by permanent object ID and lives on the observer context's queue.
 public final class CoreDataSnapshotSubscriber<Model: Identifiable, Entity: NSManagedObject>:
     NSObject,
     NSFetchedResultsControllerDelegate {
@@ -22,6 +25,8 @@ public final class CoreDataSnapshotSubscriber<Model: Identifiable, Entity: NSMan
     private let onError: ((Error) -> Void)?
 
     private var fetchController: NSFetchedResultsController<Entity>?
+    private var cache: [NSManagedObjectID: Model] = [:]
+    private var changedObjectIDs: Set<NSManagedObjectID> = []
 
     public init(
         service: CoreDataServiceProtocol,
@@ -45,7 +50,7 @@ public final class CoreDataSnapshotSubscriber<Model: Identifiable, Entity: NSMan
     }
 
     public func start() {
-        service.performAsync { [weak self] context, error in
+        service.performObserve { [weak self] context, error in
             guard let self else {
                 return
             }
@@ -73,6 +78,7 @@ public final class CoreDataSnapshotSubscriber<Model: Identifiable, Entity: NSMan
             do {
                 try fetchController.performFetch()
                 self.fetchController = fetchController
+                cache.removeAll()
                 deliverSnapshot()
             } catch {
                 logger?.error("fetchController performFetch error: \(error)")
@@ -83,30 +89,62 @@ public final class CoreDataSnapshotSubscriber<Model: Identifiable, Entity: NSMan
 
     // MARK: - NSFetchedResultsControllerDelegate
 
+    public func controllerWillChangeContent(_: NSFetchedResultsController<NSFetchRequestResult>) {
+        changedObjectIDs.removeAll()
+    }
+
+    public func controller(
+        _: NSFetchedResultsController<NSFetchRequestResult>,
+        didChange anObject: Any,
+        at _: IndexPath?,
+        for _: NSFetchedResultsChangeType,
+        newIndexPath _: IndexPath?
+    ) {
+        guard let entity = anObject as? Entity else {
+            return
+        }
+
+        changedObjectIDs.insert(entity.objectID)
+    }
+
     public func controllerDidChangeContent(_: NSFetchedResultsController<NSFetchRequestResult>) {
+        changedObjectIDs.forEach { cache.removeValue(forKey: $0) }
+        changedObjectIDs.removeAll()
         deliverSnapshot()
     }
 }
 
 private extension CoreDataSnapshotSubscriber {
+    /// Assembles the snapshot in the controller's order: cached models are reused, every other row is
+    /// mapped now. A row whose object ID is still temporary (reported during the save that inserts it) is
+    /// mapped but not cached, so it is looked up correctly once its permanent ID is assigned.
     func deliverSnapshot() {
         guard let objects = fetchController?.fetchedObjects else {
             return
         }
 
-        let models: [Model] = objects.compactMap { entity in
-            do {
-                return try mapper.transform(entity: entity)
-            } catch {
-                logger?.error("Map entity failed: \(error)")
-                return nil
-            }
+        let models = objects.compactMap { entity in
+            cache[entity.objectID] ?? map(entity)
         }
-
         let processedModels = transform(models)
 
         callbackQueue.async { [onUpdate] in
             onUpdate(processedModels)
+        }
+    }
+
+    func map(_ entity: Entity) -> Model? {
+        do {
+            let model = try mapper.transform(entity: entity)
+
+            if !entity.objectID.isTemporaryID {
+                cache[entity.objectID] = model
+            }
+
+            return model
+        } catch {
+            logger?.error("Map entity failed: \(error)")
+            return nil
         }
     }
 

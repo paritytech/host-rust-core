@@ -63,9 +63,13 @@ public struct CoinageTxEntry: Sendable, Equatable {
     public var id: CoinageTxId { entry.id }
     public var sequence: Int64 { entry.sequence }
     public var groupId: CoinageTxGroupId? { entry.groupId }
-    public var txHash: Data { entry.txHash }
-    public var checkpoint: BlockRef { entry.checkpoint }
-    public var mortality: UInt32 { entry.mortality }
+    /// The bytes currently in flight and the window they can land in; `nil` while the transaction
+    /// waits to be built.
+    public var attempt: DurableTxAttempt? { entry.attempt }
+
+    public var txHash: Data? { entry.txHash }
+    public var checkpoint: BlockRef? { entry.checkpoint }
+    public var mortality: UInt32? { entry.mortality }
     public var successDetectedAt: BlockRef? { entry.successDetectedAt }
     public var status: CoinageTxStatus { entry.status }
     public var createdAt: Date { entry.createdAt }
@@ -95,8 +99,11 @@ public extension CoinageTxEntry {
 
     /// True when the extrinsic can no longer be included: `finalizedNumber` is past the last block of
     /// the entry's mortality window.
+    ///
+    /// A transaction with no attempt has no window, so nothing can have closed on it — it is waiting to
+    /// be built, not running out of time.
     func isWindowClosed(atFinalized finalizedNumber: UInt32) -> Bool {
-        entry.isWindowClosed(atFinalized: finalizedNumber)
+        entry.attempt?.isWindowClosed(atFinalized: finalizedNumber) ?? false
     }
 }
 

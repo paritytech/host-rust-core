@@ -7,6 +7,7 @@ import os
 @preconcurrency import SDKLogger
 import StructuredConcurrency
 import SubstrateSdk
+import SubstrateSdkExt
 
 /// Follows one already-built extrinsic from submission to a terminal outcome.
 ///
@@ -38,11 +39,17 @@ public final class DurableTxTracker: Sendable {
             self.chainId = chainId
             self.submitter = submitter
         }
+
+        /// The hash of the bytes this watch follows — the attempt every verdict it writes is about.
+        public var txHash: Data? {
+            try? model.extrinsic.fromHex().blake2b32()
+        }
     }
 
     private let store: any DurableTxRepositoryProtocol
     private let chainFactory: any PinnedChainViewFactoryProtocol
     private let owned: DurableTxOwnershipSet
+    private let verdictWriter: DurableVerdictWriter
     private let backgroundExecutor: any BackgroundExecuting
     private let logger: SDKLoggerProtocol?
 
@@ -57,12 +64,14 @@ public final class DurableTxTracker: Sendable {
         store: any DurableTxRepositoryProtocol,
         chainFactory: any PinnedChainViewFactoryProtocol,
         owned: DurableTxOwnershipSet,
+        verdictWriter: DurableVerdictWriter,
         backgroundExecutor: any BackgroundExecuting,
         logger: SDKLoggerProtocol?
     ) {
         self.store = store
         self.chainFactory = chainFactory
         self.owned = owned
+        self.verdictWriter = verdictWriter
         self.backgroundExecutor = backgroundExecutor
         self.logger = logger
     }
@@ -73,10 +82,16 @@ public final class DurableTxTracker: Sendable {
     ///
     /// On release, `onRecovery` runs only when the transaction is still live.
     public func track(_ submission: Submission, onRecovery: @escaping @Sendable () -> Void) {
-        Task { [self] in
-            await runFollow(submission)
+        guard let txHash = submission.txHash else {
+            logger?.error("Untrackable submission for \(submission.transactionId): no extrinsic hash")
 
-            guard owned.release(submission.transactionId) else { return }
+            return
+        }
+
+        Task { [self] in
+            await runFollow(submission, attempt: txHash)
+
+            guard owned.release(submission.transactionId, txHash: txHash) else { return }
 
             if await needsRecovery(submission.transactionId) {
                 onRecovery()
@@ -95,10 +110,10 @@ private extension DurableTxTracker {
         case submissionFailed(Error)
     }
 
-    func runFollow(_ submission: Submission) async {
+    func runFollow(_ submission: Submission, attempt txHash: Data) async {
         do {
             try await backgroundExecutor.execute {
-                await self.follow(submission)
+                await self.follow(submission, attempt: txHash)
             }
         } catch {
             logger?.error("Submission watch failed for \(submission.transactionId): \(error)")
@@ -109,10 +124,12 @@ private extension DurableTxTracker {
     /// why the watch ended. Unreadable status counts as needing recovery.
     func needsRecovery(_ id: DurableTxId) async -> Bool {
         guard let status = try? await store.getStatus(id) else { return true }
-        return status.isLive
+
+        // One waiting to be built is the executor's, and no pass could decide it.
+        return status.awaitsVerdict
     }
 
-    func follow(_ submission: Submission) async {
+    func follow(_ submission: Submission, attempt txHash: Data) async {
         let id = submission.transactionId
         guard let view = try? await chainFactory.pin(chainId: submission.chainId) else {
             logger?.debug("Couldn't pin view for submission watch \(id)")
@@ -144,7 +161,7 @@ private extension DurableTxTracker {
             }
         )
 
-        await consume(events, transactionId: id, using: view)
+        await consume(events, transactionId: id, attempt: txHash, using: view)
 
         // Stop the underlying watch if it is still open — a silence timeout ended following before the
         // submitter reached a terminal. A no-op if the watch already finished.
@@ -158,6 +175,7 @@ private extension DurableTxTracker {
     func consume(
         _ events: AsyncBufferedChannel<TrackEvent>,
         transactionId id: DurableTxId,
+        attempt txHash: Data,
         using view: any PinnedChainViewProtocol
     ) async {
         let iterator = events.makeAsyncIterator()
@@ -168,7 +186,7 @@ private extension DurableTxTracker {
                 break
             }
 
-            let isComplete = await handle(event, transactionId: id, using: view)
+            let isComplete = await handle(event, transactionId: id, attempt: txHash, using: view)
             if isComplete {
                 logger?.debug("Terminal event for: \(id)")
                 break
@@ -181,15 +199,16 @@ private extension DurableTxTracker {
     func handle(
         _ event: TrackEvent,
         transactionId id: DurableTxId,
+        attempt txHash: Data,
         using view: any PinnedChainViewProtocol
     ) async -> Bool {
         logger?.debug("Handling event: \(event) transaction: \(id)")
 
         switch event {
         case let .submissionFailed(error):
-            return await handleSubmissionFailed(id, error: error)
+            return await handleSubmissionFailed(id, attempt: txHash, error: error)
         case let .status(update):
-            return await handleStatus(update, transactionId: id, using: view)
+            return await handleStatus(update, transactionId: id, attempt: txHash, using: view)
         }
     }
 
@@ -197,9 +216,9 @@ private extension DurableTxTracker {
     /// was never sent, so a terminal `failure` is justified immediately. Any other error is raised after
     /// the bytes may already have reached the node, where the extrinsic can still be included: a terminal
     /// verdict must rest on finalized evidence, so nothing is proposed and the pass decides.
-    func handleSubmissionFailed(_ id: DurableTxId, error: Error) async -> Bool {
+    func handleSubmissionFailed(_ id: DurableTxId, attempt txHash: Data, error: Error) async -> Bool {
         if error is PreSubmissionValidationFailedError {
-            await propose(id, Verdict(status: .failure, successDetectedAt: nil))
+            await propose(id, attempt: txHash, Verdict(status: .failure, successDetectedAt: nil, failure: .rejected))
         }
         return true
     }
@@ -208,6 +227,7 @@ private extension DurableTxTracker {
     func handleStatus(
         _ update: ExtrinsicStatusUpdate,
         transactionId id: DurableTxId,
+        attempt txHash: Data,
         using view: any PinnedChainViewProtocol
     ) async -> Bool {
         guard case let .onChain(remote) = update.extrinsicStatus else {
@@ -224,15 +244,15 @@ private extension DurableTxTracker {
             return false
 
         case let .inBlock(blockHash):
-            await handleInBlock(blockHash: blockHash, transactionId: id, using: view)
+            await handleInBlock(blockHash: blockHash, transactionId: id, attempt: txHash, using: view)
             return false
 
         case let .retracted(blockHash):
-            await clearRecordIfItNames(id, blockHash: blockHash)
+            await clearRecordIfItNames(id, attempt: txHash, blockHash: blockHash)
             return false
 
         case let .finalized(blockHash):
-            await handleFinalized(blockHash: blockHash, transactionId: id, using: view)
+            await handleFinalized(blockHash: blockHash, transactionId: id, attempt: txHash, using: view)
             return true
 
         case .dropped,
@@ -254,6 +274,7 @@ private extension DurableTxTracker {
     func handleInBlock(
         blockHash: String,
         transactionId id: DurableTxId,
+        attempt txHash: Data,
         using view: any PinnedChainViewProtocol
     ) async {
         guard let block = await blockOf(blockHash, using: view) else {
@@ -261,10 +282,13 @@ private extension DurableTxTracker {
         }
 
         switch await dispatchOutcome(blockHash: blockHash, transactionId: id, using: view) {
-        case .present(true):
-            await propose(id, Verdict(status: .pendingSuccess, successDetectedAt: block))
-        case .present(false),
-             .absent,
+        case .present(.succeeded):
+            await propose(id, attempt: txHash, Verdict(status: .pendingSuccess, successDetectedAt: block))
+        case let .present(.failed(reason)):
+            // Nothing is proposed — the block is not finalized — but the reason is the only place the
+            // chain ever states why, and by finality the events have long scrolled past.
+            logger?.error("Dispatch failed in block \(blockHash) for \(id): \(reason ?? "unknown error")")
+        case .absent,
              .failedRead:
             break
         }
@@ -273,14 +297,22 @@ private extension DurableTxTracker {
     func handleFinalized(
         blockHash: String,
         transactionId id: DurableTxId,
+        attempt txHash: Data,
         using view: any PinnedChainViewProtocol
     ) async {
         switch await dispatchOutcome(blockHash: blockHash, transactionId: id, using: view) {
-        case .present(true):
+        case .present(.succeeded):
             let block = await blockOf(blockHash, using: view)
-            await propose(id, Verdict(status: .finalizedSuccess, successDetectedAt: block))
-        case .present(false):
-            await propose(id, Verdict(status: .failure, successDetectedAt: nil))
+            await propose(id, attempt: txHash, Verdict(status: .finalizedSuccess, successDetectedAt: block))
+        case let .present(.failed(reason)):
+            logger?.error(
+                "Dispatch failed at finality in block \(blockHash) for \(id): \(reason ?? "unknown error")"
+            )
+            await propose(
+                id,
+                attempt: txHash,
+                Verdict(status: .failure, successDetectedAt: nil, failure: .dispatchFailed)
+            )
         case .absent,
              .failedRead:
             // Unreadable outcome: record nothing and let the pass decide from state.
@@ -291,23 +323,28 @@ private extension DurableTxTracker {
     /// The record is cleared only when it names the retracted block; the status is lowered with it,
     /// because leaving `pendingSuccess` on a block that no longer exists would keep the domain's effects
     /// trusted for a whole mortality window on nothing.
-    func clearRecordIfItNames(_ id: DurableTxId, blockHash: String) async {
-        guard let hash = try? Data(hexString: blockHash),
+    func clearRecordIfItNames(_ id: DurableTxId, attempt txHash: Data, blockHash: String) async {
+        guard let hash = try? blockHash.fromHex(),
               let entry = try? await store.getEntry(id: id),
               entry.successDetectedAt?.hash == hash
         else { return }
 
-        await propose(id, Verdict(status: .pending, successDetectedAt: nil))
+        await propose(id, attempt: txHash, Verdict(status: .pending, successDetectedAt: nil))
     }
 
     /// A terminal row is never rewritten, so a late event cannot un-fail a failed transaction; the
-    /// compare-and-set then covers a status that moved since it was read.
-    func propose(_ id: DurableTxId, _ verdict: Verdict) async {
-        guard let observed = try? await store.getStatus(id), observed.isLive else { return }
+    /// compare-and-set then covers a status that moved since it was read. A row whose attempt is no
+    /// longer the one this watch follows is not this watch's to write: those bytes were proven unable to
+    /// land and the transaction was built again.
+    func propose(_ id: DurableTxId, attempt txHash: Data, _ verdict: Verdict) async {
+        guard let observed = try? await store.getEntry(id: id),
+              observed.status.awaitsVerdict,
+              observed.attempt?.txHash == txHash
+        else { return }
 
         do {
             logger?.debug("Proposing \(verdict.status) for id: \(id)")
-            try await store.updateTxStatus(for: id, expectedCurrentStatus: observed, verdict: verdict)
+            try await verdictWriter.write(observed, verdict)
         } catch {
             logger?.error("Proposal write failed for \(id) to \(verdict.status): \(error)")
         }
@@ -317,17 +354,19 @@ private extension DurableTxTracker {
         blockHash: String,
         transactionId id: DurableTxId,
         using view: any PinnedChainViewProtocol
-    ) async -> ReadResult<Bool> {
+    ) async -> ReadResult<DispatchOutcome> {
         guard
             let entry = try? await store.getEntry(id: id),
             let block = await blockOf(blockHash, using: view)
         else { return .failedRead }
 
-        return await view.dispatchOutcome(txHash: entry.txHash, at: block)
+        guard let attempt = entry.attempt else { return .failedRead }
+
+        return await view.dispatchOutcome(txHash: attempt.txHash, at: block)
     }
 
     func blockOf(_ blockHash: String, using view: any PinnedChainViewProtocol) async -> BlockRef? {
-        guard let hash = try? Data(hexString: blockHash) else { return nil }
+        guard let hash = try? blockHash.fromHex() else { return nil }
         return await view.blockRef(forHash: hash).value
     }
 }

@@ -21,7 +21,7 @@ use crate::runtime::bulletin_rpc::BulletinSubmitError;
 use crate::runtime::{
     PERMISSION_DENIED_REASON, PREIMAGE_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, PREIMAGE_SUBMIT_TIMEOUT,
     ProductRuntimeHost, bulletin_allowance_error_reason, preimage_submit_error,
-    remote_authority_call, remote_authority_context_until,
+    remote_authority_call, remote_authority_context_until, until_cancelled,
 };
 
 #[truapi::async_trait]
@@ -107,15 +107,18 @@ impl Preimage for ProductRuntimeHost {
             }),
         )
         .await?;
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::PreimageSubmit(
-                PreimageSubmitReview {
-                    size: value.len() as u64,
-                },
-            ))
-            .await
-            .map_err(|err| preimage_submit_error(err.reason))?;
+        let confirmed = until_cancelled(
+            cx,
+            self.platform
+                .confirm_user_action(UserConfirmationReview::PreimageSubmit(
+                    PreimageSubmitReview {
+                        size: value.len() as u64,
+                    },
+                )),
+        )
+        .await
+        .map_err(|err| preimage_submit_error(err.to_string()))?
+        .map_err(|err| preimage_submit_error(err.reason))?;
         if !confirmed {
             return Err(preimage_submit_error(
                 "User rejected preimage submission".to_string(),

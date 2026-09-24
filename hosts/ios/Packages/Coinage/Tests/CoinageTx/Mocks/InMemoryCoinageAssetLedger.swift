@@ -75,6 +75,35 @@ final class InMemoryCoinageAssetLedger: CoinageAssetLedgerProtocol, @unchecked S
         return joined([entry]).first
     }
 
+    func releaseUncommittedHandoffs(_ keys: [PublicKey]) async throws {
+        let dropped = Set(keys)
+
+        state.withLock { current in
+            for asset in current.pendingMarks where dropped.contains(asset.publicKey) {
+                current.pendingMarks.remove(asset)
+            }
+        }
+    }
+
+    func commitHandoffs(_ keys: [PublicKey], in _: any DurableTxRegistrationScope) throws {
+        let keySet = Set(keys)
+
+        state.withLock { current in
+            for asset in current.pendingMarks where keySet.contains(asset.publicKey) {
+                current.pendingMarks.remove(asset)
+                current.committedMarks.insert(asset)
+            }
+        }
+    }
+
+    func assets(of ids: [CoinageTxId]) async throws -> [CoinageTxId: CoinageTxEntry] {
+        let wanted = Set(ids)
+
+        return try await getAllEntries()
+            .filter { wanted.contains($0.id) }
+            .reduce(into: [:]) { $0[$1.id] = $1 }
+    }
+
     func getOperationGroupStatuses(_ groupId: CoinageTxGroupId) async throws -> [CoinageTxEntry] {
         try await joined(durable.getGroupEntries(domain: .coinage, groupId: groupId))
     }
@@ -93,16 +122,6 @@ final class InMemoryCoinageAssetLedger: CoinageAssetLedgerProtocol, @unchecked S
         state.withLock { current in
             for asset in assets where !current.committedMarks.contains(asset) {
                 current.pendingMarks.insert(asset)
-            }
-        }
-    }
-
-    func commitHandoffs(_ keys: [PublicKey]) async throws {
-        let keySet = Set(keys)
-        state.withLock { current in
-            for asset in current.pendingMarks where keySet.contains(asset.publicKey) {
-                current.pendingMarks.remove(asset)
-                current.committedMarks.insert(asset)
             }
         }
     }
