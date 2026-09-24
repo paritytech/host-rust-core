@@ -313,6 +313,22 @@ extension ServiceCoordinator {
         )
         RootDependencyLocator.setDependency(truapiRuntimeProvider as TrUAPIHostRuntimeProviding)
 
+        let productFileProvider = CompositeProductFileProvider(
+            dotNsContentStorage: DotNsContentStorage(),
+            chatScriptStorage: FileChatScriptStorage(),
+            contentHashCache: ContentHashCache.shared
+        )
+
+        // Installed here rather than alongside chat: the Pocket is its own
+        // modality, and hanging it off chat's assembly would let any chat
+        // service failing take every live card face with it, silently.
+        PocketWorkerFacade.shared.install(
+            runtimeProvider: truapiRuntimeProvider,
+            flowState: spaFlowState,
+            productFileProvider: productFileProvider,
+            chainRegistry: ChainRegistryFacade.sharedRegistry
+        )
+
         guard
             let signInHostCoordinator = createSignInHostCoordinator(
                 factory: chatCoordinatorFactory,
@@ -371,7 +387,8 @@ extension ServiceCoordinator {
             personhoodRegistrationService: personhoodServices.registrationService,
             claimStatusStore: coinageServices.claimStatusStore,
             audioSessionManager: audioSessionManager,
-            spaFlowState: spaFlowState
+            spaFlowState: spaFlowState,
+            productFileProvider: productFileProvider
         )
         // Registered so the SPA screen, opened outside this assembly, resolves the
         // same facade.

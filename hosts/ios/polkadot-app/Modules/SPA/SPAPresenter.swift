@@ -66,13 +66,11 @@ extension SPAPresenter: SPAPresenterProtocol {
     }
 
     func didTapMinimize() {
-        wireframe.minimize()
+        wireframe.minimize(from: view)
     }
 
     func didTapClose() {
-        guard let browserTabId = configuration.browserTabId else { return }
-
-        wireframe.close(tabId: browserTabId)
+        wireframe.close(tabId: configuration.browserTabId, from: view)
     }
 
     func didTapRetry() {

@@ -18,15 +18,10 @@ extension ServiceCoordinator {
         personhoodRegistrationService: PersonhoodRegistrationServicing,
         claimStatusStore: ClaimStatusStore,
         audioSessionManager: AudioSessionManaging,
-        spaFlowState: SPAFlowState
+        spaFlowState: SPAFlowState,
+        productFileProvider: any ChatProductFileProviding
     ) -> (registry: ChatExtensionsRegistering, workerFacade: ProductWorkerFacade) {
         let productRepositoryFactory = ProductRepositoryFactory()
-
-        let productFileProvider = CompositeProductFileProvider(
-            dotNsContentStorage: DotNsContentStorage(),
-            chatScriptStorage: FileChatScriptStorage(),
-            contentHashCache: ContentHashCache.shared
-        )
 
         // The builder gets the operations service (the worker's own JS uses it),
         // which lets the facade wire the factory into the manager in `init`.

@@ -102,6 +102,7 @@ private final class StubSPAControllerPool: SPAControllerPooling {
 private final class StubSPAView: SPAViewProtocol {
     private(set) var navigatedPages: [ProductPage] = []
     let controller = UIViewController()
+    let pageScrollView = UIScrollView()
     var isSetup: Bool { true }
 
     func navigate(to _: URL) {}

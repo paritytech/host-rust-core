@@ -31,6 +31,7 @@ struct ExecutableManifestDTO: Decodable {
     let appVersion: SemVerDTO?
     let entrypoint: String?
     let includes: IncludesDTO?
+    let pocket: PocketDTO?
     let description: String?
     let dimensions: DimensionsDTO?
 
@@ -40,6 +41,7 @@ struct ExecutableManifestDTO: Decodable {
         case appVersion
         case entrypoint
         case includes
+        case pocket
         case description
         case dimensions
     }
@@ -48,6 +50,16 @@ struct ExecutableManifestDTO: Decodable {
 struct IncludesDTO: Decodable {
     let chat: Bool?
     let pocket: Bool?
+}
+
+struct PocketDTO: Decodable {
+    let cards: [PocketCardDTO]?
+}
+
+struct PocketCardDTO: Decodable {
+    let id: String?
+    let title: String?
+    let preview: String?
 }
 
 struct DimensionsDTO: Decodable {
