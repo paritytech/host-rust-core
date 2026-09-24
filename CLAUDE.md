@@ -125,11 +125,14 @@ scripts/cli-runner-package.test.ts
 - The browser core does not link `verifiable`, whose ring prover compiles in
   4.5 MiB of powers of tau. `truapi-verifiable` holds the four ring-VRF
   operations truapi-server uses (member, sign, alias, prove). Native builds link
-  it; the browser core loads it as a separate WASM module, from the
-  `verifiable/` directory of its own bundle (`dist/wasm/web/` or
-  `dist/wasm/testing/`), in the background once a pairing session connects or
-  when one of them first runs, through `truapi-server/src/runtime/vrf.rs`. `make wasm` builds the module first and
-  compiles its SHA-256 into both cores, which load no other.
+  it; the browser core loads it as a separate WASM module,
+  `truapi_verifiable.js` and `truapi_verifiable_bg.wasm` beside the core's own
+  files in each bundle (`dist/wasm/web/` or `dist/wasm/testing/`), in the
+  background once a pairing session connects or when one of them first runs,
+  through `truapi-server/src/runtime/vrf.rs`. Its loader names both files as
+  literal `new URL(…, import.meta.url)` specifiers, so bundlers such as Vite
+  emit them. `make wasm` builds the module first and compiles its SHA-256 into
+  both cores, which load no other.
 - `truapi-server` WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever

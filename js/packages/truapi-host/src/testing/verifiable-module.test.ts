@@ -1,5 +1,5 @@
 // The browser core does not link `verifiable`: it fetches the module from
-// `verifiable/` beside itself and checks it against the hash `make wasm`
+// `truapi_verifiable_bg.wasm` beside its own files and checks it against the hash `make wasm`
 // compiled in. A wrong path or a stale copy still builds and loads, and fails
 // only on the first ring-VRF call, which no product call reaches here without a
 // chain. So this checks each bundle's layout and pin, and drives the testing
@@ -14,7 +14,7 @@ import { wasmArtifact, wasmIsBuilt } from "./require-wasm.js";
 
 const suite = wasmIsBuilt(
   "testing/truapi_server.js",
-  "testing/verifiable/truapi_verifiable.js",
+  "testing/truapi_verifiable.js",
 )
   ? describe
   : describe.skip;
@@ -24,7 +24,7 @@ const bundles = ["web", "testing"];
 const layoutSuite = wasmIsBuilt(
   ...bundles.flatMap((bundle) => [
     `${bundle}/truapi_server_bg.wasm`,
-    `${bundle}/verifiable/truapi_verifiable_bg.wasm`,
+    `${bundle}/truapi_verifiable_bg.wasm`,
   ]),
 )
   ? describe
@@ -46,7 +46,7 @@ suite("verifiable module", () => {
       ringVrfMember(entropy: Uint8Array): Promise<Uint8Array>;
     }>("testing/truapi_server.js");
     const verifiable = await glue<{ member(entropy: Uint8Array): Uint8Array }>(
-      "testing/verifiable/truapi_verifiable.js",
+      "testing/truapi_verifiable.js",
     );
     const entropy = new Uint8Array(32).fill(4);
 
@@ -62,9 +62,7 @@ layoutSuite("verifiable module in each bundle", () => {
     it(`${bundle}: the core pins the module shipped beside it`, () => {
       const digest = createHash("sha256")
         .update(
-          readFileSync(
-            wasmArtifact(`${bundle}/verifiable/truapi_verifiable_bg.wasm`),
-          ),
+          readFileSync(wasmArtifact(`${bundle}/truapi_verifiable_bg.wasm`)),
         )
         .digest("hex");
       const core = readFileSync(
@@ -90,8 +88,8 @@ layoutSuite("verifiable module in each bundle", () => {
         fileURLToPath(new URL(relative, pathToFileURL(loaders[0]))),
       );
       expect(targets).toEqual([
-        wasmArtifact(`${bundle}/verifiable/truapi_verifiable_bg.wasm`),
-        wasmArtifact(`${bundle}/verifiable/truapi_verifiable.js`),
+        wasmArtifact(`${bundle}/truapi_verifiable_bg.wasm`),
+        wasmArtifact(`${bundle}/truapi_verifiable.js`),
       ]);
       expect(targets.every((target) => existsSync(target))).toBe(true);
     });

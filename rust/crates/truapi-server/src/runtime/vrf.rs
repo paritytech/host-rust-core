@@ -1,7 +1,7 @@
 //! Bandersnatch ring-VRF operations, from `truapi-verifiable`.
 //!
 //! Native builds link it. The browser core loads it as a WASM module of its
-//! own, published beside the core's, once a pairing session connects or when
+//! own, published in the same directory as the core's, once a pairing session connects or when
 //! a call first needs a ring-VRF key, whichever comes first: it carries
 //! `verifiable`, whose ring prover compiles in 4.5 MiB of powers of tau.
 
@@ -113,18 +113,20 @@ mod module {
 
     use crate::host_logic::sso::messages::RingVrfError;
 
-    // `make wasm` publishes the module under `verifiable/` in the core's own
-    // output directory, two levels above this snippet.
+    // wasm-bindgen writes this snippet to `snippets/<crate>-<hash>/`, two levels
+    // below the core's glue, beside which `make wasm` publishes
+    // `truapi-verifiable`. The URLs are literals relative to this file so
+    // bundlers that follow `new URL(…, import.meta.url)` emit the module.
     #[wasm_bindgen(inline_js = r#"
 let module;
 export async function read() {
-  const url = new URL("../../verifiable/truapi_verifiable_bg.wasm", import.meta.url);
+  const url = new URL("../../truapi_verifiable_bg.wasm", import.meta.url);
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${url}: ${response.status} ${response.statusText}`);
   return new Uint8Array(await response.arrayBuffer());
 }
 export async function start(wasm) {
-  const glue = await import(new URL("../../verifiable/truapi_verifiable.js", import.meta.url).href);
+  const glue = await import(/* @vite-ignore */ new URL("../../truapi_verifiable.js", import.meta.url).href);
   await glue.default({ module_or_path: wasm });
   module = glue;
 }

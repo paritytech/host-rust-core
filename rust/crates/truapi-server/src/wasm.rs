@@ -1337,7 +1337,7 @@ pub fn product_account_address(public_key: Vec<u8>) -> Result<String, JsValue> {
 /// The ring-VRF member for `entropy`, derived through the module this core
 /// loads on demand.
 ///
-/// For test hosts: it shows the core finds `verifiable/` beside it and accepts
+/// For test hosts: it shows the core finds `truapi_verifiable` beside it and accepts
 /// the build it pins, which no product call reaches without a chain.
 #[cfg(feature = "test-host")]
 #[wasm_bindgen(js_name = ringVrfMember)]

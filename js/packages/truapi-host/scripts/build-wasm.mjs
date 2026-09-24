@@ -14,9 +14,9 @@
 //             `./testing` subpath so a product bundling `./web` never pulls it
 //             in.
 //
-// Each carries its own copy of `verifiable/`, the ring-VRF module the core
-// loads on first use. It is built first, and both cores are built against its
-// hash.
+// Each carries its own copy of `truapi_verifiable`, the ring-VRF module the
+// core loads on first use, beside the core's own files. It is built first, and
+// both cores are built against its hash.
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -212,11 +212,14 @@ async function build(crate, target, subdir, features = [], env = {}) {
   return wasmPath;
 }
 
-// The cores are built against this hash and load no other module.
+// The cores are built against this hash and load no other module. It is staged
+// apart, since each wasm-pack build writes its own `package.json`, and only
+// the module's glue and payload are copied into each bundle.
+const verifiableStage = resolve(pkgRoot, "dist/wasm/.verifiable");
 const verifiableWasm = await build(
   "truapi-verifiable",
   "web",
-  "web/verifiable",
+  ".verifiable",
 );
 const env = {
   TRUAPI_VERIFIABLE_SHA256: createHash("sha256")
@@ -231,8 +234,20 @@ await build(
   ["wasm-signing-host", "test-host"],
   env,
 );
-await cp(
-  resolve(pkgRoot, "dist/wasm/web/verifiable"),
-  resolve(pkgRoot, "dist/wasm/testing/verifiable"),
-  { recursive: true },
-);
+// The compressed sidecars exist only in a release build.
+const verifiableFiles = [
+  "truapi_verifiable.js",
+  "truapi_verifiable_bg.wasm",
+  ...(wasmProfile === "release"
+    ? ["truapi_verifiable_bg.wasm.br", "truapi_verifiable_bg.wasm.gz"]
+    : []),
+];
+for (const bundle of ["web", "testing"]) {
+  for (const file of verifiableFiles) {
+    await cp(
+      resolve(verifiableStage, file),
+      resolve(pkgRoot, "dist/wasm", bundle, file),
+    );
+  }
+}
+await rm(verifiableStage, { recursive: true, force: true });
