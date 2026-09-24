@@ -348,83 +348,55 @@ describe("putting a dial into service", () => {
   });
 });
 
-// `import.meta.env.DEV` reads undefined under the runner, so a runtime-driven
-// badge assertion passes whatever the code does. Setting it is what gives these
-// something to observe.
+// The gate reads `import.meta.env.DEV`, which is `process.env`, and bun stores
+// only strings there - so `=== true` never holds and no dial can resolve under
+// the runner. That makes the release-on-failure wiring unobservable from here;
+// what it releases is covered at the `installDebuggerDial` seam above.
 describe("a runtime whose worker never loads", () => {
-  const ENDPOINT = "ws://127.0.0.1:9231";
-  const env = (import.meta as unknown as { env: Record<string, unknown> }).env;
-  const g = globalThis as unknown as { document?: unknown };
-  let hadDev = false;
-  let previousDev: unknown;
-  let hadDoc = false;
-  let previousDoc: unknown;
-
-  beforeEach(() => {
-    hadDev = "DEV" in env;
-    previousDev = env.DEV;
-    env.DEV = true;
-    hadDoc = Object.prototype.hasOwnProperty.call(g, "document");
-    previousDoc = g.document;
-    g.document = new Window().document;
-  });
-  afterEach(() => {
-    if (hadDev) env.DEV = previousDev;
-    else delete env.DEV;
-    if (hadDoc) g.document = previousDoc;
-    else delete g.document;
-  });
-
-  const badge = (): { textContent: string | null } | null =>
-    (
-      globalThis.document as unknown as {
-        getElementById(id: string): { textContent: string | null } | null;
-      }
-    ).getElementById("truapi-debugger-indicator");
-
-  const startWithDial = (worker: FakeWorker): Promise<unknown> => {
+  const start = (worker: FakeWorker): Promise<unknown> => {
     const started = createWebWorkerPairingHostRuntime(
       asWorker(worker),
       makeHostCallbacks(),
-      {
-        hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()),
-        debugger: ENDPOINT,
-      },
+      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
     );
     worker.emit({ kind: "loaded" });
     return started;
   };
 
-  // Nothing streams for a worker that never came up, so a badge naming its
-  // endpoint says frames are leaving for somewhere nothing is sending.
-  it("takes its dial out of service when init reports a fatal error", async () => {
+  // All four init failures share one exit, so each has to reject and take the
+  // worker down with it. A path that grew its own exit would skip the release
+  // that exit carries.
+  it("rejects and terminates when init reports a fatal error", async () => {
     const worker = new FakeWorker();
-    const started = startWithDial(worker);
-    expect(badge()?.textContent).toContain(ENDPOINT);
-
+    const started = start(worker);
     worker.emit({ kind: "fatalError", error: "boom" });
     await expect(started).rejects.toThrow("boom");
-    expect(badge()).toBeNull();
+    expect(worker.terminated).toBe(true);
   });
 
-  // The same for the path where the worker script itself fails to load, which
-  // reaches the reject through a different listener.
-  it("takes its dial out of service when the worker errors", async () => {
+  it("rejects and terminates when the worker errors", async () => {
     const worker = new FakeWorker();
-    const started = startWithDial(worker);
+    const started = start(worker);
     worker.emitError("no such script");
     await expect(started).rejects.toThrow("no such script");
-    expect(badge()).toBeNull();
+    expect(worker.terminated).toBe(true);
   });
 
-  // The other half: releasing for every `cleanupInit` caller would take the badge
-  // down on the runtime about to start streaming.
-  it("keeps its dial once the worker is ready", async () => {
+  it("rejects and terminates when a message cannot be deserialized", async () => {
     const worker = new FakeWorker();
-    const started = startWithDial(worker);
+    const started = start(worker);
+    worker.emitMessageError();
+    await expect(started).rejects.toThrow("could not be deserialized");
+    expect(worker.terminated).toBe(true);
+  });
+
+  // The counterpart: `ready` shares `cleanupInit` with the failing paths, so it
+  // must not be taken down by it.
+  it("leaves the worker alive once ready", async () => {
+    const worker = new FakeWorker();
+    const started = start(worker);
     worker.emit({ kind: "ready" });
-    const runtime = await started;
-    expect(badge()?.textContent).toContain(ENDPOINT);
-    releaseDebuggerDial(runtime as object);
+    await started;
+    expect(worker.terminated).toBe(false);
   });
 });
