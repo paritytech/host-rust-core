@@ -1,0 +1,275 @@
+name: Backport a host tree
+
+# The trees under hosts/ are snapshots of the repositories they came from, and
+# those repositories keep moving. This watches for drift and opens the work as
+# a pull request carrying one file: BACKPORT-<host>.md, which says what is
+# behind and what has to be done to finish it.
+#
+# The pull request is deliberately empty of the work itself. A pull request
+# opened with the workflow token raises no pull_request event, so nothing this
+# repository gates on would run against it. With nothing to test that costs
+# nothing, and the push that carries the real refresh comes from whoever picks
+# the work up, which does start the full suite.
+#
+# Completing one means running scripts/refresh-host-import.sh, resolving any
+# conflict, and deleting the markdown file. The instructions are in the file so
+# they travel with the work.
+
+on:
+  schedule:
+    # Every other day at 06:00 UTC, each tree on the days the other one is not,
+    # so two of these never arrive on the same morning. A month with 31 days
+    # runs android on the last and the first, which is the one seam in this and
+    # not worth a calendar to close.
+    - cron: "0 6 1-31/2 * *" # android
+    - cron: "0 6 2-30/2 * *" # ios
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "Which vendored tree to check"
+        required: false
+        type: choice
+        options:
+          - android
+          - ios
+        default: android
+
+# Per tree, so a dispatch of one never queues behind the other's schedule, and a
+# dispatch of the same tree its schedule is already checking waits rather than
+# racing it to the same branch.
+concurrency:
+  group: >-
+    backport-host-${{ inputs.host
+    || (github.event.schedule == '0 6 1-31/2 * *' && 'android' || 'ios') }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open_work_order:
+    name: Open the backport work order
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # A dispatch names the tree. A scheduled run is identified by the cron
+      # that started it, and an unmapped one stops here rather than falling
+      # back to a default and reporting on something nobody asked about.
+      - name: Choose the tree
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          REQUESTED: ${{ inputs.host }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED}" ]; then
+            host="${REQUESTED}"
+          else
+            case "${SCHEDULE}" in
+              "0 6 1-31/2 * *") host=android ;;
+              "0 6 2-30/2 * *") host=ios ;;
+              *) echo "::error::No tree is mapped to the schedule '${SCHEDULE}'"; exit 1 ;;
+            esac
+          fi
+          echo "HOST=${host}" >> "$GITHUB_ENV"
+          echo "::notice::Checking hosts/${host}"
+
+      # The whole history, because the range below is walked over commits
+      # fetched from the source repository.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # An open work order is someone's job in progress. A second one for the
+      # same tree would describe a range that overlaps it.
+      - name: Stop if a work order is already open
+        id: open_pr
+        run: |
+          set -euo pipefail
+          branch="hosts/backport-${HOST}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          existing="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // ""')"
+          if [ -n "$existing" ]; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Skipped"
+              echo
+              echo "[#${existing}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${existing}) is still open for \`hosts/${HOST}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::#${existing} is still open for hosts/${HOST}."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Reads the manifest and the source's tip. No tree is touched: the work
+      # order describes the range, and whoever takes it produces the change.
+      - name: Measure the drift
+        id: drift
+        if: steps.open_pr.outputs.already == 'false'
+        run: |
+          set -euo pipefail
+          source="$(python3 -c 'import json,sys;print(json.load(open("hosts/imports.json"))[sys.argv[1]]["source"])' "$HOST")"
+          branch="$(python3 -c 'import json,sys;print(json.load(open("hosts/imports.json"))[sys.argv[1]]["branch"])' "$HOST")"
+          from="$(python3 -c 'import json,sys;print(json.load(open("hosts/imports.json"))[sys.argv[1]]["ref"])' "$HOST")"
+
+          tip="$(git ls-remote "$source" "refs/heads/${branch}" | cut -f1)"
+          if [ -z "$tip" ]; then
+            echo "::error::Cannot resolve ${branch} on ${source}"
+            exit 1
+          fi
+
+          if [ "$tip" = "$from" ]; then
+            echo "behind=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::hosts/${HOST} is at the tip of ${branch}."
+            echo "### hosts/${HOST} is up to date" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git fetch --quiet --no-tags "$source" "$from" 2>/dev/null || git fetch --quiet --no-tags "$source"
+          git fetch --quiet --no-tags "$source" "$tip" 2>/dev/null || git fetch --quiet --no-tags "$source"
+          count="$(git rev-list --count "${from}..${tip}")"
+          {
+            echo "behind=${count}"
+            echo "from=${from}"
+            echo "to=${tip}"
+            echo "source=${source}"
+            echo "source_branch=${branch}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::hosts/${HOST} is ${count} commits behind ${branch}."
+
+      # The pull request numbers come from the commit subjects rather than from
+      # the source's API, so this stays one fetch rather than one call per
+      # commit. A commit that carries no number is still listed below.
+      - name: Write the work order
+        id: order
+        if: steps.drift.outputs.behind != '0' && steps.drift.outputs.behind != ''
+        env:
+          FROM: ${{ steps.drift.outputs.from }}
+          TO: ${{ steps.drift.outputs.to }}
+          COUNT: ${{ steps.drift.outputs.behind }}
+          SOURCE: ${{ steps.drift.outputs.source }}
+          SOURCE_BRANCH: ${{ steps.drift.outputs.source_branch }}
+        run: |
+          set -euo pipefail
+          repo_url="${SOURCE%.git}"
+          file="BACKPORT-${HOST}.md"
+          log="$(git log --reverse --format='%H%x09%s' "${FROM}..${TO}")"
+
+          {
+            echo "# Backport hosts/${HOST}"
+            echo
+            echo "Work order. Everything below describes what is missing from this repository; nothing here has been applied yet."
+            echo
+            echo "Changes move one way, from \`${repo_url}\` into \`hosts/${HOST}\`. Nothing in this repository is sent back the other way."
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| source | ${repo_url} (\`${SOURCE_BRANCH}\`) |"
+            echo "| from | \`${FROM}\` |"
+            echo "| to | \`${TO}\` |"
+            echo "| commits | ${COUNT} |"
+            echo
+            echo "## Pull requests in the range"
+            echo
+            echo "Taken from the commit subjects, so a commit that landed without a number is not listed here. The full list is below it."
+            echo
+            printf '%s\n' "$log" \
+              | grep -oE '#[0-9]+' \
+              | sort -u -t'#' -k2 -n \
+              | sed "s|#\\([0-9]*\\)|- [#\\1](${repo_url}/pull/\\1)|" \
+              || echo "- none carried a pull request number"
+            echo
+            echo "<details>"
+            echo "<summary>All ${COUNT} commits</summary>"
+            echo
+            echo '```'
+            printf '%s\n' "$log" | cut -c1-9,41-
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "## How to finish this"
+            echo
+            echo "You are completing this pull request. Work on its branch and push to it."
+            echo
+            echo "1. Run the refresh. Do not merge the trees by hand:"
+            echo
+            echo '   ```bash'
+            echo "   scripts/refresh-host-import.sh refresh ${HOST}"
+            echo '   ```'
+            echo
+            echo "   It replaces \`hosts/${HOST}\` with the source's tree, re-applies this repository's adaptations as a three-way patch, and compares every path against the source by blob hash in both directions. That comparison is the point: it is what catches upstream work silently dropped and adaptations that no longer apply. A hand-merge produces a plausible tree and none of those checks."
+            echo
+            echo "2. Read what it reports before committing."
+            echo
+            echo "   - A conflict is left unmerged on purpose, so git refuses to commit it. Resolve each one, keeping this repository's adaptation unless the source has clearly superseded it."
+            echo "   - \`adaptation left no difference\` means either the source adopted that change or it did not apply. Check which, and say so in the pull request."
+            echo "   - If the script refuses the result outright, do not force it. Recover with \`git reset --hard HEAD\` and say what happened."
+            echo
+            echo "3. Build what the change touches. An upstream change that adds a requirement to a protocol will not show up as a conflict, because the comparison reads content and not types; it shows up as a conformer in this repository that no longer compiles."
+            echo
+            echo "4. Delete this file. It is the work order, not part of the tree:"
+            echo
+            echo '   ```bash'
+            echo "   git rm ${file}"
+            echo '   ```'
+            echo
+            echo "5. Commit the refreshed tree, \`hosts/imports.json\` with its new ref, and the deletion together, then push. That push is what starts CI on this pull request."
+          } > "$file"
+
+          echo "file=${file}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Work order for hosts/${HOST}"
+            echo
+            echo "${COUNT} commits, \`${FROM}\` to \`${TO}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open the pull request
+        if: steps.order.outputs.file != ''
+        env:
+          BRANCH: ${{ steps.open_pr.outputs.branch }}
+          FILE: ${{ steps.order.outputs.file }}
+          COUNT: ${{ steps.drift.outputs.behind }}
+          FROM: ${{ steps.drift.outputs.from }}
+          TO: ${{ steps.drift.outputs.to }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Forced because this branch belongs to this workflow and is only ever
+          # pushed when no pull request is open on it, so there is no work in
+          # progress to overwrite.
+          git checkout -b "$BRANCH"
+          git add "$FILE"
+          git commit --no-gpg-sign -q -m "chore(hosts): open a backport work order for ${HOST}" \
+            -m "hosts/${HOST} is ${COUNT} commits behind its source, ${FROM} to ${TO}. ${FILE} carries the range and what has to be done; it is deleted by whoever completes this."
+          git push --force origin "$BRANCH"
+
+          # The path labeller matches the host trees, and this change touches
+          # neither, so the labels are set here.
+          case "$HOST" in
+            android) host_label=host-android ;;
+            ios) host_label=host-ios ;;
+          esac
+          # A file rather than an inline string: the body carries blank lines,
+          # which cannot survive inside a run block's quoting.
+          {
+            echo "\`hosts/${HOST}\` is ${COUNT} commits behind its source. [\`${FILE}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${BRANCH}/${FILE}) carries the range, the pull requests in it, and what has to be done to finish this."
+            echo
+            echo "This pull request is empty on purpose. Complete it on this branch: run the refresh, resolve what it reports, delete the file, and push. That push is what starts CI."
+          } > "${RUNNER_TEMP}/pr-body.md"
+
+          url="$(gh pr create \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$BRANCH" \
+            --title "chore(hosts): backport ${COUNT} commits into hosts/${HOST}" \
+            --label backport-host \
+            --label "$host_label" \
+            --body-file "${RUNNER_TEMP}/pr-body.md")"
+          echo "::notice::${url}"
+          {
+            echo
+            echo "${url}"
+          } >> "$GITHUB_STEP_SUMMARY"
