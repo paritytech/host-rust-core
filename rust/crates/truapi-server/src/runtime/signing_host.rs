@@ -67,6 +67,7 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
+use crate::runtime::sso_service::SsoWithdrawals;
 use crate::runtime::statement_allowance::CollectionCandidate;
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
@@ -144,6 +145,8 @@ pub(crate) struct SigningHost {
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
     /// Serializes replay-ledger updates within each wallet and peer scope.
     sso_replay_locks: SsoReplayLocks,
+    /// Paired-host requests the pairing host can still withdraw.
+    sso_withdrawals: SsoWithdrawals,
     renewal: allowance_renewal::RenewalState,
 }
 
@@ -166,6 +169,7 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
+            sso_withdrawals: Default::default(),
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -231,6 +235,7 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
+            sso_withdrawals: Default::default(),
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -271,6 +276,10 @@ impl SigningHost {
 
     fn sso_replay_locks(&self) -> &SsoReplayLocks {
         &self.sso_replay_locks
+    }
+
+    fn sso_withdrawals(&self) -> &SsoWithdrawals {
+        &self.sso_withdrawals
     }
 
     fn grant_auto_signing(
@@ -829,7 +838,7 @@ impl ProductAuthority for SigningHost {
 
     async fn sign_vrf(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         session: &AuthoritySession,
         calling_product_id: String,
         request: v01::HostAccountSignVrfRequest,
@@ -843,16 +852,18 @@ impl ProductAuthority for SigningHost {
             &calling_product_id,
             &request.account.dot_ns_identifier,
         ) {
-            let confirmed = self
-                .platform
-                .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
-                    calling_product_id,
-                    request: request.clone(),
-                }))
-                .await
-                .map_err(|err| AuthorityError::Unknown {
-                    reason: format!("VRF signing confirmation failed: {err:?}"),
-                })?;
+            let confirmed = super::until_cancelled(
+                cx,
+                self.platform
+                    .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                        calling_product_id,
+                        request: request.clone(),
+                    })),
+            )
+            .await?
+            .map_err(|err| AuthorityError::Unknown {
+                reason: format!("VRF signing confirmation failed: {err:?}"),
+            })?;
             if !confirmed {
                 return Err(AuthorityError::Rejected);
             }
@@ -1225,7 +1236,7 @@ impl ProductAuthority for SigningHost {
 
     async fn allocate_resources(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
         request: v01::HostRequestResourceAllocationRequest,
@@ -1245,6 +1256,9 @@ impl ProductAuthority for SigningHost {
         }
         let mut outcomes = Vec::with_capacity(request.resources.len());
         for resource in request.resources {
+            if let Some(reason) = cx.cancel().reason() {
+                return Err(super::authority_cancellation_error(cx, reason));
+            }
             let outcome = match resource {
                 v01::AllocatableResource::StatementStoreAllowance => {
                     sso_responder::allocate_statement_store_allowance(
@@ -3844,6 +3858,39 @@ mod tests {
                 panic!("a PGAS claim should be waiting on Asset Hub, got {outcome:?}")
             }
         }
+    }
+
+    /// Each allocation spends on chain, so a withdrawn call must not start the
+    /// next one.
+    #[test]
+    fn a_withdrawn_allocation_starts_no_further_resource() {
+        let (_services, authority) =
+            signing_runtime_with_platform(Arc::new(StubPlatform::default()));
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let session = authority.current_session().expect("connected");
+        let cancel = truapi::CancellationToken::default();
+        cancel.cancel();
+        let cx = CallContext::with_parts("allocation-withdrawn".to_string(), cancel);
+
+        let result = futures::executor::block_on(authority.allocate_resources(
+            &cx,
+            &session,
+            "myapp.dot".to_string(),
+            v01::HostRequestResourceAllocationRequest {
+                resources: vec![v01::AllocatableResource::AutoSigning],
+            },
+        ));
+
+        assert_eq!(
+            result,
+            Err(AuthorityError::Cancelled(
+                crate::runtime::authority::AuthorityCancelError::new(
+                    "allocation-withdrawn",
+                    truapi::CancellationReason::Cancelled,
+                )
+            ))
+        );
     }
 
     #[test]

@@ -270,9 +270,7 @@ extension MainTabBarViewController {
     func handleSelection(index: Int, isReselection: Bool) {
         chromeController.setPanel(nil, animated: true)
 
-        guard tabs.indices.contains(index) else {
-            return
-        }
+        guard tabs.indices.contains(index) else { return }
 
         guard !isReselection || container.selection.isSPA else {
             handleReselection()
@@ -310,9 +308,8 @@ extension MainTabBarViewController: MainTabBarViewProtocol {
     func select(tab: TabBarItem) {
         chromeController.setPanel(nil, animated: true)
 
-        guard let index = tabs.firstIndex(of: tab) else {
-            return
-        }
+        guard let index = tabs.firstIndex(of: tab) else { return }
+
         chromeController.setSelectedIndex(index)
         container.select(index: index)
         reconcileChromeWithSelectedTab()
@@ -344,11 +341,26 @@ extension MainTabBarViewController: MainTabBarViewProtocol {
     }
 
     func showScanPanel() {
-        let controller = viewFactory.makeScanController { [weak self] in
-            self?.chromeController.setPanel(nil, animated: true)
-            self?.presenter.didRequestContactSearch()
-        }
+        let controller = viewFactory.makeScanController()
         chromeController.setContentController(controller, for: .scan)
+
+        #if FEATURE_INPUT
+            // Opening the chat selects its tab, and tab selection closes the panel. A second close
+            // here would cancel that animation in place and leave the backdrop and panel frozen
+            // mid-way.
+            controller?.onChatFound = { [weak self] model in
+                self?.presenter.didFindChat(model)
+            }
+
+            controller?.onContentHeightChanged = { [weak self] in
+                self?.chromeController.resizeContentPanel()
+            }
+        #else
+            controller?.onSearchTap = { [weak self] in
+                self?.chromeController.setPanel(nil, animated: true)
+                self?.presenter.didRequestContactSearch()
+            }
+        #endif
     }
 
     func showChainStatus(_ models: [ChainConnectionStatusViewModel]) {

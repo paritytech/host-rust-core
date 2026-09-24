@@ -164,7 +164,8 @@ native-only adapter types are limited to lifecycle and callback behavior.
 On iOS, a wallet host that manages its own statement-store SSO session can call
 `handleSsoRequest` (routes one decrypted remote message through the core,
 returning a typed outcome: response bytes to post back, a disconnect marker, or
-ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
+ignored; a `Cancel` returns at once, so the wallet passes it on without queueing
+it behind the request it withdraws) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
 for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
 session-record cleanup remain on the wallet side.
 See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
@@ -211,6 +212,28 @@ parachain syncs through. The provider owns when a blob is read and written; the
 host owns where the bytes live. The crate stores nothing itself: a host implements
 `StorageClient` over storage it already owns, on web and native alike, so it keeps
 control of quota and of whether the bytes are backed up or encrypted.
+
+### Wire debugger
+
+[`@parity/truapi-debugger`](js/packages/truapi-debugger) is the consumer for the
+payload-blind frame tap in `truapi-server`. The core streams raw SCALE frames out
+of two choke points; the debugger correlates them into per-operation traces,
+decodes envelopes and values behind a `TRUAPI_WIRE_SCHEMA_HASH` match, and renders
+them through one of two mounts:
+
+- `startDebugServer(...)` is a standalone Bun WS+HTTP server on `127.0.0.1:9231`
+  that hosts dial into, so frames from any host reach one inspector.
+- `createInAppDebugger(...)` mounts the same engine inside the host page, with no
+  server and no dial.
+
+All decoding lives in this package; `@parity/truapi` has no debug seam. Its
+[README](js/packages/truapi-debugger/README.md) carries the endpoint list and the
+per-host enablement recipe.
+
+`make debugger` brings up the inspector on `:9231` alongside a dot.li host and the
+playground. It builds the host with `NODE_ENV=development` on purpose: the dial
+sits behind `import.meta.env.DEV`, which a production bundle replaces with `false`,
+so `make dev` leaves the board empty with no error.
 
 ## How it works
 

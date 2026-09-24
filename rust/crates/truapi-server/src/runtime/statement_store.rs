@@ -102,7 +102,7 @@ impl StatementStore for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "statement_store.submit"))]
     async fn submit(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         request: RemoteStatementStoreSubmitRequest,
     ) -> Result<RemoteStatementStoreSubmitResponse, CallError<RemoteStatementStoreSubmitError>>
     {
@@ -114,6 +114,13 @@ impl StatementStore for ProductRuntimeHost {
             }),
         )
         .await?;
+        if let Some(reason) = cx.cancel().reason() {
+            return Err(CallError::Domain(RemoteStatementStoreSubmitError::V1(
+                latest::GenericError {
+                    reason: format!("statement submit {reason}"),
+                },
+            )));
+        }
         let encoded = signed_statement_to_scale(statement.clone()).map_err(|reason| {
             CallError::Domain(RemoteStatementStoreSubmitError::V1(latest::GenericError {
                 reason,
@@ -680,6 +687,39 @@ mod tests {
                 .cached_statements(TopicFilterKind::MatchAll, &[[7; 32]]),
             vec![signed_statement([7; 32])]
         );
+    }
+
+    /// The permission prompt ends on its own terms, but a call withdrawn while
+    /// it was up must not go on to publish the statement.
+    #[test]
+    fn statement_store_submit_withdrawn_before_it_is_sent_publishes_nothing() {
+        let platform = Arc::new(StubPlatform {
+            rpc_responses: vec![
+                r#"{"jsonrpc":"2.0","id":"truapi:1","result":{"status":"new"}}"#.to_string(),
+            ],
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        let cancel = truapi::CancellationToken::default();
+        cancel.cancel();
+        let cx = CallContext::with_parts("submit-withdrawn".to_string(), cancel);
+        let request = RemoteStatementStoreSubmitRequest::V1(signed_statement([7; 32]));
+
+        let result = futures::executor::block_on(StatementStore::submit(&host, &cx, request));
+
+        assert_eq!(
+            result,
+            Err(CallError::Domain(RemoteStatementStoreSubmitError::V1(
+                latest::GenericError {
+                    reason: "statement submit cancelled".to_string(),
+                }
+            )))
+        );
+        assert!(platform.sent_rpc.lock().unwrap().is_empty());
     }
 
     #[test]

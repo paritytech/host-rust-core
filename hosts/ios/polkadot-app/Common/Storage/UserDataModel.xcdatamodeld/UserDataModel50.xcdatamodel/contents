@@ -235,19 +235,6 @@
         <attribute name="identifier" attributeType="String"/>
         <attribute name="name" attributeType="String"/>
     </entity>
-    <entity name="CDPocketCard" representedClassName="CDPocketCard" syncable="YES" codeGenerationType="class">
-        <attribute name="addedAt" attributeType="Date" usesScalarValueType="NO"/>
-        <attribute name="cardId" attributeType="String"/>
-        <attribute name="identifier" attributeType="String"/>
-        <attribute name="productId" attributeType="String"/>
-        <attribute name="title" attributeType="String"/>
-    </entity>
-    <entity name="CDPocketCardFace" representedClassName="CDPocketCardFace" syncable="YES" codeGenerationType="class">
-        <attribute name="cardId" attributeType="String"/>
-        <attribute name="faceJson" attributeType="String"/>
-        <attribute name="identifier" attributeType="String"/>
-        <attribute name="productId" attributeType="String"/>
-    </entity>
     <entity name="CDProductPermissionGrant" representedClassName="CDProductPermissionGrant" syncable="YES" codeGenerationType="class">
         <attribute name="granted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
         <attribute name="grantedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
@@ -330,6 +317,8 @@
         <attribute name="mortality" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="sequence" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="status" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="submissionPolicyId" optional="YES" attributeType="String"/>
+        <attribute name="submissionPolicyParams" optional="YES" attributeType="Binary"/>
         <attribute name="successHash" optional="YES" attributeType="String"/>
         <attribute name="successNumber" optional="YES" attributeType="Integer 64" usesScalarValueType="NO"/>
         <attribute name="txHash" optional="YES" attributeType="String"/>

@@ -79,6 +79,12 @@ extension FirebaseFacade: RemoteConfigManaging {
     }
 }
 
+extension FirebaseFacade: RemoteConfigObserving {
+    func remoteConfigStream() -> AnyAsyncSequence<RemoteAppConfig> {
+        remoteConfigSubject.compacted().eraseToAnyAsyncSequence()
+    }
+}
+
 extension FirebaseFacade: RemoteConfigDelegate {
     func remoteConfig(didFinishLoading result: Result<Void, Error>) {
         switch result {

@@ -4,6 +4,7 @@
 // state that needs DOM access (localStorage, prompts) while the core dispatcher
 // runs here off the page main thread.
 
+import { isLoopbackWsUrl } from "./worker-protocol.js";
 import type {
   MainToWorker,
   SubscriptionName,
@@ -210,53 +211,6 @@ function toBase64(bytes: Uint8Array): string {
  * dep, to avoid truapi-host depending on the debugger package).
  */
 const WIRE_ENVELOPE_VERSION = 1;
-
-/**
- * Is `url` a `ws://` URL on a loopback host? The debug tap forwards every frame
- * verbatim, including payloads carrying key material: there is no denylist and
- * nothing is redacted anywhere in this pipeline, so the loopback requirement is
- * the whole confinement story - refuse to stream them off the local machine.
- * `ws://` only, matching the native sink (`native_debug.rs`), also ws-only.
- *
- * Cleartext is the right call *because* the target is loopback-only. TLS defends
- * against a party on the path, and a loopback socket has no path: the frames
- * never reach an interface. `wss://` would instead require the debugger to
- * present a certificate — unobtainable for `localhost` from a real CA, and
- * self-signed on iOS costs the developer a CA install plus a manual enable under
- * Settings → General → About → Certificate Trust Settings before a single frame
- * arrives. So `wss://` buys no confidentiality here and costs setup, while adding
- * a second protocol path and a trust surface to the gate.
- *
- * Confidentiality for the trace stream comes from the loopback check, not from
- * the scheme: the frames never cross a network, so there is nothing on a network
- * to encrypt. That is the whole of it - a *remote* debugger would put plaintext
- * SCALE payloads on a network, and nothing in this codebase mitigates that, which
- * is why this gate refuses non-loopback targets outright rather than negotiating a
- * scheme for them.
- *
- * Unlike `WsDebugSink::connect`, which resolves the host and requires every
- * resolved address to be loopback, this matches the hostname the URL parser
- * normalized. There is no resolver in a Web Worker, and none is needed: the same
- * `url` string is passed to `new WebSocket(url)` below, so the browser resolves
- * exactly what was validated. The Rust "validate one string, dial another" gap
- * cannot open here because there is only ever one string.
- */
-export function isLoopbackWsUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    if (u.protocol !== "ws:") return false;
-    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "::1" ||
-      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
-      // IPv4-mapped loopback: WHATWG serializes ::ffff:127.x.y.z as ::ffff:7fxx:yyyy.
-      /^::ffff:7f[0-9a-f]{2}:/.test(host)
-    );
-  } catch {
-    return false;
-  }
-}
 
 /**
  * The wire-contract fingerprint of the core that *encodes* the frames, or
@@ -624,8 +578,10 @@ function buildCoreCallbacks(coreId: number) {
     },
   };
   if (!debuggerLink) return callbacks;
-  // Adding `debugEmit` is what makes the Rust host install its debug sink; when
-  // no debugger is configured it is absent and the tap stays inert.
+  // Adding `debugEmit` is what makes the Rust host install its debug sink. The
+  // link is created once, from `init`, and never replaced, so a core either has
+  // a tap for its whole life or never has one - there is no window in which this
+  // decision and the link disagree.
   return {
     ...callbacks,
     debugEmit(channelId: string, dir: string, frame: Uint8Array): void {

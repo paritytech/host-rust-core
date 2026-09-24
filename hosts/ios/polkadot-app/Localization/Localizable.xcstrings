@@ -12,6 +12,28 @@
         }
       }
     },
+    "action.send.cash": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send"
+          }
+        }
+      }
+    },
+    "action.withdraw": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Withdraw"
+          }
+        }
+      }
+    },
     "Chat.contactAddedYou": {
       "extractionState": "manual",
       "localizations": {
@@ -382,17 +404,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Backup"
-          }
-        }
-      }
-    },
-    "balance.onhold": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$(amount)@ on hold"
           }
         }
       }
@@ -1346,7 +1357,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reloading"
+            "value": "Clearing"
           }
         }
       }
@@ -1368,7 +1379,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Spendable"
+            "value": "Ready"
           }
         }
       }
@@ -1379,29 +1390,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Coinage Balance"
-          }
-        }
-      }
-    },
-    "coinageTotalBalance": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Total balance"
-          }
-        }
-      }
-    },
-    "coinageUnavailable": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Unavailable"
+            "value": "Balance"
           }
         }
       }
@@ -2751,6 +2740,17 @@
         }
       }
     },
+    "searchContact.noRecentSearches": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No recent searches"
+          }
+        }
+      }
+    },
     "searchContact.recent.chats": {
       "extractionState": "manual",
       "localizations": {
@@ -2938,6 +2938,17 @@
         }
       }
     },
+    "settings.cell.legal.support": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legal & Support"
+          }
+        }
+      }
+    },
     "settings.cell.linked.devices": {
       "extractionState": "manual",
       "localizations": {
@@ -3099,6 +3110,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Legal"
+          }
+        }
+      }
+    },
+    "settings.section.legal.support": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legal & Support"
           }
         }
       }
@@ -3356,17 +3378,6 @@
         }
       }
     },
-    "token.name": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "CASH"
-          }
-        }
-      }
-    },
     "transaction.details.title": {
       "extractionState": "manual",
       "localizations": {
@@ -3472,7 +3483,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Available now"
+            "value": "Ready to send"
           }
         }
       }

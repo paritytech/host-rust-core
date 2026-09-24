@@ -110,7 +110,8 @@ final class FirebaseApplicationService: RemoteConfigManaging {
             coinageInstanceId: coinageInstanceId(),
             fundingUrl: fundingConfigValue(.onrampUrl),
             offrampUrl: fundingConfigValue(.offrampUrl),
-            accountDataStoreContract: accountDataStoreContractAddress()
+            accountDataStoreContract: accountDataStoreContractAddress(),
+            paymentAsset: paymentAssetConfig()
         )
     }
 
@@ -190,6 +191,11 @@ private extension FirebaseApplicationService {
             return nil
         }
         return address
+    }
+
+    func paymentAssetConfig() -> PaymentAssetConfig? {
+        guard let json = remoteConfig[.paymentAssetConfig].jsonValue as? [String: String] else { return nil }
+        return PaymentAssetConfig(json: json)
     }
 
     func dotNsConfigEntry(_ field: String, treatingEmptyAsMissing: Bool = false) -> String? {
@@ -284,6 +290,7 @@ private extension String {
     static let offrampUrl = "offrampUrl"
     static let accountDataStoreConfig = "account_data_store_config"
     static let contractAddress = "contractAddress"
+    static let paymentAssetConfig = "payment_asset_config"
     static let issueProxyUrl = "issue_proxy_url"
     static let issueProxyApiKey = "issue_proxy_api_key"
 }
