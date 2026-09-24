@@ -1,0 +1,5 @@
+error: an #[execute] method returns `usize` (rows changed), `i64` (last insert rowid) or `()`
+ --> tests/ui/dao/fail/execute_returning_rows.rs:6:41
+  |
+6 |     fn clear(&self) -> rusqlite::Result<Vec<String>>;
+  |                                         ^^^

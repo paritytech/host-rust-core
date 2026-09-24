@@ -1,0 +1,5 @@
+error: a #[dao] method returns `rusqlite::Result<…>`
+ --> tests/ui/dao/fail/not_a_rusqlite_result.rs:6:22
+  |
+6 |     fn all(&self) -> Vec<String>;
+  |                      ^^^

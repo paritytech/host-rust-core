@@ -12,6 +12,7 @@ the thin public entry points, which Rust requires at the proc-macro crate root.
 | [`wire`](src/wire.rs) | TrUAPI method | Wire IDs and flags for codegen |
 | [`versioned_type!`](src/versioned_type.rs) | Versioned envelope declarations | SCALE enums and version conversion traits |
 | [`sso_service`](src/sso_service.rs) | Dedicated inherent impl of SSO handlers | Request/response conversions, exhaustive dispatch, and message naming/correlation helpers |
+| [`dao`](src/dao.rs) | Trait of SQL-annotated methods (`truapi-server` only) | The trait implemented for `rusqlite::Connection`, plus an async `…Db` struct that takes its connection from the core database |
 
 ## Handler contract
 
@@ -89,3 +90,44 @@ errors with different wording. Run them with an up-to-date stable toolchain:
 rustup update stable
 cargo +stable test -p truapi-macros --locked
 ```
+
+## Data-access objects
+
+`#[dao]` turns a trait whose methods carry SQL into two surfaces. The trait is
+implemented for `rusqlite::Connection`, so several calls, or several DAOs,
+compose inside one caller-owned `Db::write`. The generated `…Db` struct has an
+async twin of every method that takes a connection from the database itself and
+runs in its own transaction: `#[query]` on a reader, `#[execute]` and
+`#[transaction]` on the writer.
+
+```rust
+#[dao]
+pub(crate) trait LedgerDao {
+    #[query("SELECT id, note, amount FROM ledger WHERE note = :note")]
+    fn find(&self, note: &str) -> rusqlite::Result<Option<Entry>>;
+
+    #[execute("UPDATE ledger SET amount = :amount WHERE note = :note")]
+    fn set_amount(&self, note: &str, amount: i64) -> rusqlite::Result<usize>;
+
+    #[transaction]
+    fn transfer(&self, from: &str, to: &str, amount: i64) -> rusqlite::Result<()> {
+        // several statements, one write
+    }
+}
+
+let dao = LedgerDaoDb::new(db);
+let entry = dao.find("alice").await?;
+```
+
+Parameters are `:name`, bound from the method's arguments by name; an unbound
+parameter, an unused argument or a positional `?` is a compile error. Rows are
+deserialized with `serde_rusqlite`, so row structs derive `serde::Deserialize`.
+The return type picks the shape: `Vec<T>`, `Option<T>` or exactly one `T` for a
+query; `usize` (rows changed), `i64` (last insert rowid) or `()` for an execute.
+`LedgerDaoDb::QUERIES` lists every statement; `store::prepare_all` prepares them
+against the migrated schema in a test, which catches a wrong table or column
+before it ships.
+
+There is no transaction that spans `.await`s: it would hold the single writer
+across network I/O. Atomic work goes in a `#[transaction]` method or one
+`Db::write` closure.

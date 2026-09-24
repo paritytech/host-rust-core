@@ -123,13 +123,7 @@ impl Db {
                 conn.pragma_update(None, "foreign_keys", true)?;
                 conn.pragma_update(None, "temp_store", "MEMORY")?;
                 conn.busy_timeout(BUSY_TIMEOUT)?;
-                match migrations().to_latest(conn) {
-                    Ok(())
-                    | Err(rusqlite_migration::Error::MigrationDefinition(
-                        rusqlite_migration::MigrationDefinitionError::NoMigrationsDefined,
-                    )) => Ok(()),
-                    Err(error) => Err(DbError::Migration(error.to_string())),
-                }
+                apply_migrations(conn, migrations)
             })
             .await?;
 
@@ -207,6 +201,53 @@ impl Db {
     }
 }
 
+/// Brings `conn` to the latest schema. An empty migration list is a schema
+/// with no tables yet, not an error.
+fn apply_migrations(
+    conn: &mut rusqlite::Connection,
+    migrations: fn() -> Migrations<'static>,
+) -> Result<(), DbError> {
+    match migrations().to_latest(conn) {
+        Ok(())
+        | Err(rusqlite_migration::Error::MigrationDefinition(
+            rusqlite_migration::MigrationDefinitionError::NoMigrationsDefined,
+        )) => Ok(()),
+        Err(error) => Err(DbError::Migration(error.to_string())),
+    }
+}
+
+/// Maps a row that `serde_rusqlite` could not deserialize onto a
+/// `rusqlite::Error`, which is what `#[dao]` methods return. Called only from
+/// code that `#[dao]` generates.
+#[doc(hidden)]
+pub fn dao_decode_error(error: serde_rusqlite::Error) -> rusqlite::Error {
+    match error {
+        serde_rusqlite::Error::Rusqlite(error) => error,
+        other => rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Null,
+            Box::new(other),
+        ),
+    }
+}
+
+/// Prepares every statement against an in-memory database migrated to the
+/// latest schema. Returns the first statement that fails, with the reason.
+#[cfg(test)]
+pub(crate) fn prepare_all(
+    migrations: fn() -> Migrations<'static>,
+    statements: &[&str],
+) -> Result<(), (String, String)> {
+    let mut conn = rusqlite::Connection::open_in_memory()
+        .map_err(|error| (String::new(), error.to_string()))?;
+    apply_migrations(&mut conn, migrations).map_err(|error| (String::new(), error.to_string()))?;
+    for statement in statements {
+        conn.prepare(statement)
+            .map_err(|error| ((*statement).to_owned(), error.to_string()))?;
+    }
+    Ok(())
+}
+
 const BUSY_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(5);
 
 /// Opens a [`Db`] on first use and hands out the same handle afterwards.
@@ -236,6 +277,9 @@ impl LazyDb {
         Ok(db)
     }
 }
+
+#[cfg(test)]
+mod dao_tests;
 
 #[cfg(test)]
 mod tests {

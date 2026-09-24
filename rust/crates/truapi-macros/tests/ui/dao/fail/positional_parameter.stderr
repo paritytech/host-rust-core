@@ -1,0 +1,5 @@
+error: use `:name` parameters, bound from the method's arguments
+ --> tests/ui/dao/fail/positional_parameter.rs:5:13
+  |
+5 |     #[query("SELECT note FROM ledger WHERE amount >= ?1")]
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
