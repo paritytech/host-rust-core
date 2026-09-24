@@ -595,18 +595,12 @@ export function createWireDebugger(
     },
     clearChannel: (channelId) => {
       let dropped = 0;
-      for (const [key, trace] of [...traces]) {
+      for (const [key, trace] of traces) {
         if (trace.channelId !== channelId) continue;
         traces.delete(key);
         dropped += 1;
-      }
-      // Drop this channel's `current` entries too. Not for correctness - a stale
-      // entry resolves through `traces.get` to undefined, which reads the same as
-      // no entry - but `current` is otherwise only pruned on eviction, so
-      // repeated clears on a busy channel would grow it for the life of the
-      // process. The eviction path does the same thing for the same reason.
-      for (const [key, genKey] of [...current]) {
-        if (!traces.has(genKey)) current.delete(key);
+        const idKey = keyOf(trace.channelId, trace.requestId);
+        if (current.get(idKey) === key) current.delete(idKey);
       }
       return dropped;
     },

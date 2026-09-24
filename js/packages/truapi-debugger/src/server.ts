@@ -894,11 +894,7 @@ export function startDebugServer(
       if (srv.upgrade(req)) return undefined;
     }
     if (url.pathname === "/clear") {
-      // The one route that mutates. The read endpoints are safe to reach from
-      // anywhere on loopback, but a cross-origin page could POST here and wipe a
-      // board the developer is reading, so this takes the same Origin gate as the
-      // WebSocket upgrade. A non-browser client (curl) sends no Origin and is
-      // allowed, matching that gate's posture.
+      // The only mutating route, so a cross-origin page must not reach it.
       if (req.method !== "POST") {
         return new Response("method not allowed", { status: 405 });
       }
@@ -1437,9 +1433,7 @@ ${INSPECTOR_LAYOUT_CSS}
     poll();
   });
 
-  // Clear is per channel, so it is only offered once one is picked: on "all"
-  // there is no single host to clear, and wiping every channel is not what the
-  // button says it does.
+  // Clear acts on one channel, so it stays disabled on "all".
   var clearEl = document.getElementById("clear");
   function syncClear() {
     clearEl.disabled = channel === null;
@@ -1450,14 +1444,9 @@ ${INSPECTOR_LAYOUT_CSS}
   clearEl.addEventListener("click", function () {
     if (channel === null) return;
     fetch("/clear?channel=" + encodeURIComponent(channel), { method: "POST" })
-      .then(function (r) {
-        // fetch only rejects on a network failure, so a refused clear (405,
-        // 403, 400) arrives here like a success. Committing on one would drop
-        // the filter and blank the detail for operations the board still holds.
-        if (!r.ok) return;
-        // The channel is gone from the board, so filtering by it would leave the
-        // view pinned to something that no longer exists and the button enabled
-        // for a channel with nothing to clear. Fall back to all.
+      .then(function (response) {
+        // fetch resolves on a refusal too; only a real clear may reset the view.
+        if (!response.ok) return;
         channel = null;
         selectedId = null; selectedChannel = null;
         detailEl.innerHTML = "";
