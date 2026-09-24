@@ -41,6 +41,10 @@ import type {
 import { bytesToHex } from "@parity/truapi/scale";
 import { startRawSubscription } from "../generated/worker-callbacks.js";
 import { errorMessage, toError } from "../error.js";
+import {
+  validateAllowanceProductIds,
+  type WalletAllowanceSnapshot,
+} from "../wallet-allowances.js";
 
 export type WebWorkerHostConfig = Omit<
   ProductRuntimeConfig,
@@ -88,7 +92,10 @@ export interface WorkerPairingHostRuntime {
    * Signing hosts only. A pairing host has no local secret and rejects this:
    * it waits for a wallet to answer over the statement-store channel instead.
    */
-  activateLocalSession(secret: Uint8Array, liteUsername?: string): Promise<void>;
+  activateLocalSession(
+    secret: Uint8Array,
+    liteUsername?: string,
+  ): Promise<void>;
   setGrantAllowancesUnchecked(granted: boolean): Promise<void>;
   /**
    * Drop the active paired session without notifying the peer. Rejects on a
@@ -154,6 +161,10 @@ export interface WorkerSigningHostRuntime extends Omit<
   ): Promise<void>;
   /** Read dotNS ownership and install verified metadata into the native session. */
   refreshLocalIdentity(): Promise<LocalIdentity>;
+  /** Read-only wallet-wide inspection bound to the native local activation. */
+  getWalletAllowanceSnapshot(
+    productIds: string[],
+  ): Promise<WalletAllowanceSnapshot>;
   /** Complete native UID auth/proofs and wait for on-chain ownership confirmation. */
   registerLocalLiteUsername(
     baseUsername: string,
@@ -184,6 +195,11 @@ interface RenderEntry {
 
 interface RuntimeState {
   worker: Worker;
+  role: HostRole;
+  networkSuffix: string | undefined;
+  identityAccountId: string | null;
+  identityGeneration: number;
+  pendingAllowanceSnapshots: Map<number, PendingEntry<WalletAllowanceSnapshot>>;
   rawCallbacks: RawCallbacks;
   cores: Map<number, CoreState>;
   pendingCores: Map<
@@ -300,6 +316,7 @@ let nextDeviceEncryptionKeyRequestId = 0;
 let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
 let nextLocalIdentityRequestId = 0;
+let nextAllowanceSnapshotRequestId = 0;
 let nextActionRequestId = 0;
 let nextRenderId = 0;
 
@@ -826,6 +843,7 @@ function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingDisconnects, error);
   rejectAll(state.pendingSessionActivations, error);
   rejectAll(state.pendingLocalIdentities, error);
+  rejectAll(state.pendingAllowanceSnapshots, error);
   rejectAll(state.pendingPermissionAuthorizationStatuses, error);
   rejectAll(state.pendingPermissionAuthorizationStatusBatches, error);
   rejectAll(state.pendingSetPermissionAuthorizationStatuses, error);
@@ -873,10 +891,12 @@ function sendWorkerRequest<T>(
 function sendSessionActivationRequest(
   state: RuntimeState,
   buildMessage: (requestId: number) => MainToWorker,
+  changesIdentity = true,
 ): Promise<void> {
   if (state.disposed) {
     return Promise.reject(state.closedError ?? new Error("runtime disposed"));
   }
+  if (changesIdentity) invalidateAllowanceIdentity(state);
   return sendWorkerRequest<void>(
     state,
     state.pendingSessionActivations,
@@ -894,14 +914,99 @@ function sendLocalIdentityRequest(
   if (state.disposed) {
     return Promise.reject(state.closedError ?? new Error("runtime disposed"));
   }
+  const generation = state.identityGeneration;
   const { promise, resolve, reject } = Promise.withResolvers<LocalIdentity>();
   const requestId = ++nextLocalIdentityRequestId;
-  state.pendingLocalIdentities.set(requestId, { resolve, reject, onProgress });
+  state.pendingLocalIdentities.set(requestId, {
+    resolve(identity) {
+      if (generation !== state.identityGeneration || state.disposePending) {
+        reject(new Error("local identity activation changed"));
+        return;
+      }
+      state.identityAccountId = identity.identityAccountId;
+      resolve(identity);
+    },
+    reject,
+    onProgress,
+  });
   try {
     state.worker.postMessage(buildMessage(requestId));
   } catch (error) {
     state.pendingLocalIdentities.delete(requestId);
     reject(error);
+  }
+  return promise;
+}
+
+function invalidateAllowanceIdentity(state: RuntimeState): void {
+  state.identityGeneration++;
+  state.identityAccountId = null;
+  rejectAll(
+    state.pendingAllowanceSnapshots,
+    new Error("local identity activation changed"),
+  );
+}
+
+async function getWalletAllowanceSnapshot(
+  state: RuntimeState,
+  input: string[],
+): Promise<WalletAllowanceSnapshot> {
+  if (state.disposed || state.disposePending) {
+    throw state.closedError ?? new Error("runtime disposed");
+  }
+  if (
+    state.role !== "signing" ||
+    state.pendingSessionActivations.size > 0 ||
+    state.pendingDisconnects.size > 0
+  ) {
+    throw new Error(
+      "allowance inspection requires a current local signing identity",
+    );
+  }
+  const productIds = validateAllowanceProductIds(input);
+  const accountId = state.identityAccountId;
+  const generation = state.identityGeneration;
+  const requestId = ++nextAllowanceSnapshotRequestId;
+  const { promise, resolve, reject } =
+    Promise.withResolvers<WalletAllowanceSnapshot>();
+  const timeout = setTimeout(() => {
+    state.pendingAllowanceSnapshots.delete(requestId);
+    reject(new Error("wallet allowance inspection timed out after 30000ms"));
+  }, 30_000);
+  state.pendingAllowanceSnapshots.set(requestId, {
+    resolve(snapshot) {
+      clearTimeout(timeout);
+      if (
+        generation !== state.identityGeneration ||
+        snapshot?.schemaVersion !== 1 ||
+        (accountId !== null && snapshot.identityAccountId !== accountId) ||
+        snapshot.networkSuffix !== state.networkSuffix
+      ) {
+        reject(
+          new Error(
+            "wallet allowance snapshot does not match the current identity",
+          ),
+        );
+        return;
+      }
+      resolve(snapshot);
+    },
+    reject(error) {
+      clearTimeout(timeout);
+      reject(error);
+    },
+  });
+  try {
+    state.worker.postMessage({
+      kind: "getWalletAllowanceSnapshot",
+      requestId,
+      productIds,
+    } satisfies MainToWorker);
+  } catch (error) {
+    settlePending(state.pendingAllowanceSnapshots, requestId, {
+      ok: false,
+      error: errorMessage(error),
+    });
   }
   return promise;
 }
@@ -1025,6 +1130,14 @@ function createWebWorkerHostRuntime(
   return new Promise((resolve, reject) => {
     const state: RuntimeState = {
       worker,
+      role: options.role ?? "pairing",
+      networkSuffix:
+        "networkSuffix" in options.hostConfig
+          ? options.hostConfig.networkSuffix
+          : undefined,
+      identityAccountId: null,
+      identityGeneration: 0,
+      pendingAllowanceSnapshots: new Map(),
       rawCallbacks: callbacks,
       cores: new Map(),
       pendingCores: new Map(),
@@ -1115,6 +1228,15 @@ function createWebWorkerHostRuntime(
             msg.requestId,
             msg.ok
               ? { ok: true, value: msg.identity }
+              : { ok: false, error: msg.error },
+          );
+          break;
+        case "walletAllowanceSnapshotResponse":
+          settlePending(
+            state.pendingAllowanceSnapshots,
+            msg.requestId,
+            msg.ok
+              ? { ok: true, value: msg.snapshot }
               : { ok: false, error: msg.error },
           );
           break;
@@ -1380,6 +1502,7 @@ function buildRuntime(
       });
     },
     disconnectSession(): Promise<void> {
+      invalidateAllowanceIdentity(state);
       return sendWorkerRequest<void>(
         state,
         state.pendingDisconnects,
@@ -1493,11 +1616,15 @@ function buildRuntime(
       }));
     },
     setGrantAllowancesUnchecked(granted: boolean): Promise<void> {
-      return sendSessionActivationRequest(state, (requestId) => ({
-        kind: "setGrantAllowancesUnchecked",
-        requestId,
-        granted,
-      }));
+      return sendSessionActivationRequest(
+        state,
+        (requestId) => ({
+          kind: "setGrantAllowancesUnchecked",
+          requestId,
+          granted,
+        }),
+        false,
+      );
     },
     resetSessionState(): Promise<void> {
       return sendSessionActivationRequest(state, (requestId) => ({
@@ -1521,6 +1648,9 @@ function buildRuntime(
         kind: "refreshLocalIdentity",
         requestId,
       }));
+    },
+    getWalletAllowanceSnapshot(productIds): Promise<WalletAllowanceSnapshot> {
+      return getWalletAllowanceSnapshot(state, productIds);
     },
     registerLocalLiteUsername(
       baseUsername,
@@ -1590,6 +1720,7 @@ function buildRuntime(
       } satisfies MainToWorker);
     },
     dispose(): void {
+      invalidateAllowanceIdentity(state);
       devGlobalTargets.delete(runtime);
       // Let a background task (e.g. a funding transaction) finish; the last
       // endOperation runs the teardown. Fault teardown is never deferred.

@@ -244,6 +244,11 @@ impl BulletinRpc {
         }
     }
 
+    /// The chain used by the allowance reader and submission service.
+    pub(crate) fn genesis_hash(&self) -> [u8; 32] {
+        self.genesis_hash
+    }
+
     /// Open a raw RPC client over the configured Bulletin chain.
     pub(crate) async fn client(
         &self,

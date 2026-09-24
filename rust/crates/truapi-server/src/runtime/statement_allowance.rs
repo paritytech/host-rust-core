@@ -13,6 +13,7 @@
 pub mod collection;
 pub mod extension;
 pub mod extrinsic;
+pub mod inspection;
 pub mod pgas;
 pub mod proof;
 pub mod renewal;

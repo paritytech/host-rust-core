@@ -2,7 +2,7 @@
 
 use parity_scale_codec::{Decode, DecodeAll, Encode};
 use scale_info::{TypeDef, TypeDefPrimitive};
-use serde_json::{Value, json};
+use serde_json::Value;
 use thiserror::Error;
 
 use super::StatementAllowanceError;
@@ -94,6 +94,7 @@ async fn read_u32(
     metadata: &Metadata,
     pallet: &'static str,
     function: &'static str,
+    at: Option<&str>,
 ) -> Result<u32, StatementAllowanceError> {
     let definition = metadata
         .view_function(pallet, function)
@@ -106,11 +107,13 @@ async fn read_u32(
         }));
     }
     let id = definition.id;
-    if let Some(value) = metadata.cached_view_u32(&id) {
-        return Ok(value);
+    if at.is_none() {
+        if let Some(value) = metadata.cached_view_u32(&id) {
+            return Ok(value);
+        }
     }
 
-    let output = execute_no_args(rpc, pallet, function, id).await?;
+    let output = execute_no_args(rpc, pallet, function, id, at).await?;
     let primitive = metadata
         .registry()
         .resolve(definition.output_type)
@@ -149,7 +152,9 @@ async fn read_u32(
             type_id: definition.output_type,
         })),
     }?;
-    metadata.cache_view_u32(id, value);
+    if at.is_none() {
+        metadata.cache_view_u32(id, value);
+    }
     Ok(value)
 }
 
@@ -158,7 +163,17 @@ pub(super) async fn read_resource_u32(
     metadata: &Metadata,
     function: &'static str,
 ) -> Result<u32, StatementAllowanceError> {
-    read_u32(rpc, metadata, "Resources", function).await
+    read_u32(rpc, metadata, "Resources", function, None).await
+}
+
+/// Resolve a runtime policy against the same block as an inspection's state.
+pub(super) async fn read_resource_u32_at(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    function: &'static str,
+    at: &str,
+) -> Result<u32, StatementAllowanceError> {
+    read_u32(rpc, metadata, "Resources", function, Some(at)).await
 }
 
 pub(super) fn supports_resource_u32(metadata: &Metadata, function: &'static str) -> bool {
@@ -182,18 +197,18 @@ async fn execute_no_args(
     pallet: &'static str,
     function: &'static str,
     id: [u8; 32],
+    at: Option<&str>,
 ) -> Result<Vec<u8>, StatementAllowanceError> {
     let mut arguments = id.to_vec();
     Vec::<u8>::new().encode_to(&mut arguments);
-    let response = rpc
-        .call(
-            "state_call",
-            json!([
-                EXECUTE_VIEW_FUNCTION,
-                format!("0x{}", hex::encode(arguments))
-            ]),
-        )
-        .await?;
+    let mut params = vec![
+        Value::String(EXECUTE_VIEW_FUNCTION.to_string()),
+        Value::String(format!("0x{}", hex::encode(arguments))),
+    ];
+    if let Some(at) = at {
+        params.push(Value::String(at.to_string()));
+    }
+    let response = rpc.call("state_call", Value::Array(params)).await?;
     decode_response(pallet, function, response)
 }
 
@@ -268,6 +283,7 @@ mod tests {
             "Resources",
             "get_lite_stmt_store_slots_per_period",
             id,
+            None,
         ))
         .unwrap();
 
@@ -316,6 +332,7 @@ mod tests {
             &metadata,
             "Resources",
             "get_stmt_store_slots_per_period",
+            None,
         ))
         .unwrap();
         let second = futures::executor::block_on(read_u32(
@@ -323,6 +340,7 @@ mod tests {
             &metadata,
             "Resources",
             "get_stmt_store_slots_per_period",
+            None,
         ))
         .unwrap();
 
@@ -352,6 +370,7 @@ mod tests {
                 &metadata,
                 "Resources",
                 "get_stmt_store_replacement_cooldown",
+                None,
             ))
             .is_err()
         );
@@ -360,6 +379,7 @@ mod tests {
             &metadata,
             "Resources",
             "get_stmt_store_replacement_cooldown",
+            None,
         ))
         .unwrap();
 

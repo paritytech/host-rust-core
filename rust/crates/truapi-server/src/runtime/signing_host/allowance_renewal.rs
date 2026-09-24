@@ -31,18 +31,18 @@ use super::SigningHost;
 #[cfg(not(target_arch = "wasm32"))]
 use super::sso_responder::current_unix_secs;
 use crate::host_logic::product_account::derive_root_keypair_from_entropy;
-#[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::host_logic::product_account::{derive_identity_keypair, derive_sr25519_hard_path};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::RuntimeServices;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::authority::ProductAuthority;
+use crate::runtime::statement_allowance::renewal::ResolvedRenewalTarget;
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use crate::runtime::statement_allowance::renewal::StatementRenewalReport;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::renewal::{
     RenewalChainContext, next_tick_delay, renew_targets,
 };
-#[cfg(any(test, not(target_arch = "wasm32")))]
-use crate::runtime::statement_allowance::renewal::{ResolvedRenewalTarget, StatementRenewalReport};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::{
     self, fetch_chain_state, fetch_metadata, find_including_rings,
@@ -290,7 +290,6 @@ fn decode_entries(blob: &[u8]) -> Result<Vec<LedgerEntry>, String> {
 /// Resolve a ledger entry into a concrete account for this session's entropy.
 /// The label a target reports under, derivable without an active session so a
 /// pruned entry reads the same as a renewed one.
-#[cfg(any(test, not(target_arch = "wasm32")))]
 fn target_label(target: &StatementRenewalTarget) -> String {
     match target {
         StatementRenewalTarget::ProductStatementAllowance { product_id } => {
@@ -301,7 +300,6 @@ fn target_label(target: &StatementRenewalTarget) -> String {
     }
 }
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
 fn resolve_target(
     entropy: &[u8],
     network_suffix: &str,
@@ -333,6 +331,38 @@ fn resolve_target(
             account_id: *account_id,
         }),
     }
+}
+
+/// Resolve attribution without refreshing, pruning, or rewriting the ledger.
+pub(super) async fn inspection_labels(
+    signing_host: &SigningHost,
+    entropy: &[u8],
+    owner: [u8; 32],
+) -> Result<crate::runtime::statement_allowance::inspection::AccountLabels, String> {
+    let _guard = signing_host.renewal.ledger_lock().lock().await;
+    let bytes = signing_host
+        .platform
+        .read_core_storage(CoreStorageKey::StatementRenewalTargets)
+        .await
+        .map_err(|err| format!("renewal ledger read failed: {}", err.reason))?;
+    let entries = bytes
+        .as_deref()
+        .map(decode_entries)
+        .transpose()?
+        .unwrap_or_default();
+    let mut labels = crate::runtime::statement_allowance::inspection::AccountLabels::new();
+    for entry in entries {
+        if entry.owner.is_some_and(|recorded| recorded != owner) {
+            continue;
+        }
+        let resolved = resolve_target(entropy, &signing_host.network_suffix, &entry.target)?;
+        let product = match entry.target {
+            StatementRenewalTarget::ProductStatementAllowance { product_id } => Some(product_id),
+            _ => None,
+        };
+        labels.insert(resolved.account_id, (product, resolved.label));
+    }
+    Ok(labels)
 }
 
 /// Record `targets` in the ledger under the active identity.
