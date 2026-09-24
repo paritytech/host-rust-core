@@ -358,6 +358,10 @@ jobs:
         uses: ./.github/actions/collect-prs-since-last-build
         with:
           github_token: ${{ github.token }}
+          # This job runs on the schedule alone, so a dispatched run announces
+          # nothing. Anchoring on one would drop everything merged before it
+          # from the next night's list, and nothing would ever report it.
+          event: schedule
 
       - name: Send nightly release notification
         uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5

@@ -93,6 +93,12 @@ jobs:
   prepare_build_metadata:
     name: Prepare Build Metadata
     runs-on: macos-26
+    # actions: read is what lets the pull request lookup below find the run
+    # this one follows. check_build_result declares it for the same call.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     outputs:
       build_number: ${{ steps.build_version.outputs.build_number }}
       marketing_version: ${{ steps.build_version.outputs.marketing_version }}
@@ -218,7 +224,7 @@ jobs:
       # so the diff between the two is the list.
       - name: Collect merged PRs from the release branch
         id: collect_prs_markdown
-        if: inputs.release_branch != env.MAIN_BRANCH
+        if: inputs.release_branch != env.MAIN_BRANCH || inputs.build_configuration != 'Nightly'
         uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
         with:
           github_token: ${{ github.token }}
@@ -228,10 +234,12 @@ jobs:
 
       # A nightly builds main itself, where that diff compares the branch with
       # itself and is empty by construction. The range is the one since the last
-      # successful run of this pipeline instead.
+      # successful run of this pipeline instead. Narrowed to the nightly: a
+      # Release built straight from main reaches here too, and it carries its
+      # own notes rather than a range since the last nightly.
       - name: Collect merged PRs since the last successful build
         id: collect_prs_since_last_build
-        if: inputs.release_branch == env.MAIN_BRANCH
+        if: inputs.release_branch == env.MAIN_BRANCH && inputs.build_configuration == 'Nightly'
         uses: ./.github/actions/collect-prs-since-last-build
         with:
           github_token: ${{ github.token }}
