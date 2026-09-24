@@ -1,5 +1,8 @@
 //! SSO statement-store channel to the paired remote signing host.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::super::authority::{
     AuthorityCancelError, AuthorityError, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
@@ -17,7 +20,7 @@ use crate::host_logic::sso::messages::{
     CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, ProductRequest,
     ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
     RingVrfError, SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource,
-    SsoAllocationOutcome, SsoSessionStatement, build_outgoing_request_statement,
+    SsoAllocationOutcome, SsoSessionStatement, Withdrawal, build_outgoing_request_statement,
     decode_sso_session_statement, v1,
 };
 use crate::host_logic::sso::wire::SsoRequest;
@@ -26,7 +29,7 @@ use crate::host_logic::statement_store::parse_new_statements_result;
 use futures::FutureExt;
 use futures::future::{AbortHandle, Abortable};
 use tracing::{debug, instrument, warn};
-use truapi::{CallContext, latest};
+use truapi::{CallContext, CancellationReason, latest};
 
 /// Active peer-disconnect watcher for one SSO session; aborts on drop.
 pub(super) struct SsoDisconnectMonitor {
@@ -106,6 +109,10 @@ impl PairingHost {
             self.session_disconnects
                 .notify(sso, SSO_LOCAL_DISCONNECT_REASON);
         }
+        *self
+            .newest_request
+            .lock()
+            .expect("newest request mutex poisoned") = None;
         self.clear_statement_store_allowance_keys(session);
         self.clear_bulletin_allowance_keys(session);
         self.stop_disconnect_monitor();
@@ -127,17 +134,84 @@ impl PairingHost {
             message_id: message_id.clone(),
             data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
         };
-        let statement = build_outgoing_request_statement(
-            sso,
-            message_id,
-            vec![message],
-            fresh_statement_expiry(),
-        )?;
+        let statement = self.build_request_channel_statement(sso, message_id, message, None)?;
         self.statement_store
             .submit_fire_and_forget(statement, "SSO statement-store")
             .await
             .map_err(|err| format!("SSO statement submit failed: {err}"))?;
         Ok(())
+    }
+
+    /// Build a statement on the session's request channel, recording
+    /// `newest` as the request the channel now carries.
+    ///
+    /// The store keeps one statement per channel and the later build wins, so
+    /// the record and the build share one lock.
+    fn build_request_channel_statement(
+        &self,
+        sso: &SsoSessionInfo,
+        statement_request_id: String,
+        message: RemoteMessage,
+        newest: Option<String>,
+    ) -> Result<Vec<u8>, String> {
+        let mut newest_request = self
+            .newest_request
+            .lock()
+            .expect("newest request mutex poisoned");
+        let statement = build_outgoing_request_statement(
+            sso,
+            statement_request_id,
+            vec![message],
+            fresh_statement_expiry(),
+        )?;
+        *newest_request = newest;
+        Ok(statement)
+    }
+
+    /// Withdraw the request sent as `message_id` from the paired host.
+    ///
+    /// A `Cancel` replaces the newest statement on the request channel, so it
+    /// is sent only while that is the request it names; otherwise it would
+    /// replace another request instead. Sent in the background, so it neither
+    /// holds up the withdrawn call's answer nor dies with its unwind grace.
+    fn withdraw_request(&self, sso: &SsoSessionInfo, message_id: &str) {
+        let withdrawal = {
+            let mut newest_request = self
+                .newest_request
+                .lock()
+                .expect("newest request mutex poisoned");
+            if newest_request.as_deref() != Some(message_id) {
+                return;
+            }
+            let cancel_id = sso_message_id();
+            let message = RemoteMessage {
+                message_id: cancel_id.clone(),
+                data: RemoteMessageData::V1(v1::RemoteMessage::Cancel(Withdrawal {
+                    message_id: message_id.to_string(),
+                })),
+            };
+            *newest_request = None;
+            build_outgoing_request_statement(
+                sso,
+                cancel_id,
+                vec![message],
+                fresh_statement_expiry(),
+            )
+        };
+        let statement_store = self.statement_store.clone();
+        let message_id = message_id.to_string();
+        (self.spawner)(Box::pin(async move {
+            let submitted = match withdrawal {
+                Ok(statement) => statement_store
+                    .submit_fire_and_forget(statement, "SSO statement-store")
+                    .await
+                    .map_err(|err| err.to_string()),
+                Err(reason) => Err(reason),
+            };
+            if let Err(reason) = submitted {
+                warn!(%message_id, %reason, "could not withdraw the SSO request");
+            }
+        }));
     }
 
     /// Send `request` to the paired signing host and await its typed answer.
@@ -161,13 +235,14 @@ impl PairingHost {
             return Err(SsoRemoteResponseError::LocalDisconnected);
         }
         let message_id = sso_message_id();
-        let statement = build_outgoing_request_statement(
-            sso,
-            message_id.clone(),
-            vec![RemoteMessage::request(message_id.clone(), request)],
-            fresh_statement_expiry(),
-        )
-        .map_err(SsoRemoteResponseError::Failure)?;
+        let statement = self
+            .build_request_channel_statement(
+                sso,
+                message_id.clone(),
+                RemoteMessage::request(message_id.clone(), request),
+                Some(message_id.clone()),
+            )
+            .map_err(SsoRemoteResponseError::Failure)?;
         let rpc_client = self
             .statement_store
             .client("SSO statement-store")
@@ -189,10 +264,13 @@ impl PairingHost {
             })?;
         let submit_client = rpc_client.clone();
         let session_state = self.session_state.clone();
+        let submitting = Arc::new(AtomicBool::new(false));
+        let submit_started = submitting.clone();
         let submit = async move {
             if !session_matches_key(&session_state, key) {
                 return Err(SsoRemoteResponseError::LocalDisconnected);
             }
+            submit_started.store(true, Ordering::Release);
             statement_store_rpc::submit_sso(&submit_client, statement, "pairing-host request")
                 .await
                 .map_err(|err| {
@@ -225,6 +303,15 @@ impl PairingHost {
         match &result {
             Ok(_) => debug!(action, %message_id, "SSO remote response received"),
             Err(reason) => warn!(action, %message_id, %reason, "SSO remote message failed"),
+        }
+        // A request whose submit never started is not on the channel, and a
+        // `Cancel` for it would replace whatever older request is.
+        if let Err(SsoRemoteResponseError::Cancelled(err)) = &result
+            && err.reason() == CancellationReason::Cancelled
+            && submitting.load(Ordering::Acquire)
+            && session_matches_key(&self.session_state, key)
+        {
+            self.withdraw_request(sso, &message_id);
         }
         if matches!(&result, Err(SsoRemoteResponseError::PeerDisconnected)) {
             self.handle_signing_host_disconnected(key).await;

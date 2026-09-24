@@ -38,6 +38,9 @@ pub(in crate::runtime) struct ResolvedRing {
 
 #[async_trait]
 pub(in crate::runtime) trait RingResolver: Send + Sync {
+    /// Members pallet instance used in fully qualified ring locations.
+    async fn members_pallet_index(&self, chain_id: &[u8; 32]) -> Result<u8, RingVrfError>;
+
     /// Validate the chain and Members pallet, returning the requested collection.
     async fn validate(&self, location: &RingLocation) -> Result<[u8; 32], RingVrfError>;
 
@@ -86,6 +89,20 @@ impl ChainRingResolver {
 
 #[async_trait]
 impl RingResolver for ChainRingResolver {
+    async fn members_pallet_index(&self, chain_id: &[u8; 32]) -> Result<u8, RingVrfError> {
+        let at_block = self
+            .at_ring(&RingLocation {
+                chain_id: *chain_id,
+                junctions: vec![],
+            })
+            .await?;
+        at_block
+            .metadata_ref()
+            .pallet_by_name(MEMBERS_PALLET)
+            .map(|pallet| pallet.call_index())
+            .ok_or(RingVrfError::RingNotFound)
+    }
+
     async fn validate(&self, location: &RingLocation) -> Result<[u8; 32], RingVrfError> {
         self.at_ring(location).await?;
         collection_id(location)

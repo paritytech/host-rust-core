@@ -146,15 +146,18 @@ private extension ClaimCoinsService {
             settled = try await awaitKnownOperationsSettled(
                 groupId: groupId, coins: coins, context: context, report: report
             )
-            let unclaimed = coins.subtracting(settled.finalizedSuccess().receivedPublicKeys())
-            if unclaimed.isEmpty {
-                logger?.debug("All coins claimed group=\(groupId)")
+            // Each coin is registered once: rebuilding a claim that failed is its submission policy's
+            // job, into the coin that claim recorded. A second claim here would mint into a coin
+            // nothing would ever wait on.
+            let unregistered = coins.subtracting(settled.receivedPublicKeys())
+            if unregistered.isEmpty {
+                logger?.debug("Every coin has a claim group=\(groupId)")
                 break
             }
 
-            logger?.debug("Unclaimed \(unclaimed.count) coins for group=\(groupId)")
+            logger?.debug("Unregistered \(unregistered.count) coins for group=\(groupId)")
 
-            let claimable = await awaitOnChainWithTimeout(onChain, unclaimed: unclaimed)
+            let claimable = await awaitOnChainWithTimeout(onChain, unclaimed: unregistered)
 
             logger?.debug("Claimable \(claimable.count) coins for group=\(groupId)")
 
@@ -165,12 +168,13 @@ private extension ClaimCoinsService {
                     claimable: claimable,
                     keypairs: keypairs,
                     bundleSize: coins.count,
-                    groupId: groupId
+                    groupId: groupId,
+                    retryUntil: retryUntil
                 )
 
                 logger?.debug("Claiming complete for group=\(groupId)")
             } else if Date() >= retryUntil {
-                logger?.debug("Claim window closed group=\(groupId) unclaimed=\(unclaimed.count)")
+                logger?.debug("Claim window closed group=\(groupId) unregistered=\(unregistered.count)")
                 break
             }
         }
@@ -206,7 +210,8 @@ private extension ClaimCoinsService {
         claimable: [PublicKey: ClaimableCoinInfo],
         keypairs: [PublicKey: Data],
         bundleSize: Int,
-        groupId: CoinageTxGroupId
+        groupId: CoinageTxGroupId,
+        retryUntil: Date
     ) async {
         let items = claimable.compactMap { key, info -> ClaimableCoin? in
             guard let privateKey = keypairs[key] else { return nil }
@@ -221,7 +226,8 @@ private extension ClaimCoinsService {
             try await claimSubmitter.submit(
                 claimable: items,
                 bundleSize: bundleSize,
-                groupId: groupId
+                groupId: groupId,
+                retryUntil: retryUntil
             )
         } catch {
             logger?.error("Claim submission failed group=\(groupId): \(error)")
@@ -278,6 +284,8 @@ private extension ClaimCoinsService {
             return try await .claimed(amount: valueMinted(by: arrived, context: context), finalized: finalized)
         }
 
+        // One waiting to be built again has not failed — announcing a shortfall there would call a
+        // rebuild that may still land a loss.
         let failed = states.filter { $0.status == .failure }.receivedPublicKeys()
         if !arrived.isEmpty, outstanding.contains(where: { failed.contains($0) }) {
             return try await .claimingRest(claimed: valueMinted(by: arrived, context: context))

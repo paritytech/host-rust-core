@@ -59,7 +59,7 @@ final class ServiceCoordinator {
     let attachmentUploadService: AttachmentUploadingServicing
     let attachmentDownloadService: AttachmentDownloadingServicing
     let coinageTransferMonitor: CoinageTransferMonitoring
-    let durableTransactionEngine: any DurableTxServicing
+    let durableTransactionEngine: DurableTxServices
     let w3sPaymentTracking: W3sPaymentTracking
     let audioSessionManager: AudioSessionManaging
     let determineStateSyncService: DetermineStateSyncServicing
@@ -101,7 +101,7 @@ final class ServiceCoordinator {
         attachmentUploadService: AttachmentUploadingServicing,
         attachmentDownloadService: AttachmentDownloadingServicing,
         coinageTransferMonitor: CoinageTransferMonitoring,
-        durableTransactionEngine: any DurableTxServicing,
+        durableTransactionEngine: DurableTxServices,
         w3sPaymentTracking: W3sPaymentTracking,
         audioSessionManager: AudioSessionManaging,
         determineStateSyncService: DetermineStateSyncServicing,
@@ -203,7 +203,7 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
                 return
             }
             // After coinage setup, which releases uncommitted handoffs the first pass must not see.
-            durableTransactionEngine.start()
+            durableTransactionEngine.txService.start()
             // Recovering backup 1st
             await coinageTransferMonitor.setup()
             await w3sPaymentTracking.setup()
@@ -226,7 +226,7 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
         allowanceRenewalService.throttle()
 
         messageExpansionService.stop()
-        durableTransactionEngine.stop()
+        durableTransactionEngine.txService.stop()
 
         Task {
             await deviceSyncService.throttle()

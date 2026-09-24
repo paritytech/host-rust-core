@@ -1,5 +1,7 @@
 import DurableTransactions
+import ExtrinsicService
 import Foundation
+import SubstrateSdk
 
 public extension TxDomainId {
     /// A domain for tests that need one and do not care which.
@@ -54,6 +56,31 @@ public extension DurableTxEntry {
             mortality: mortality,
             successDetectedAt: successDetectedAt,
             status: status
+        )
+    }
+}
+
+public extension ExtrinsicBuiltModel {
+    /// A mortal built extrinsic anchored at `checkpoint` with a `mortalityBlocks` window, so
+    /// ``DurableTxAttempt/init(from:)`` can read an attempt off it. `payload` varies the bytes, and with
+    /// them the hash: two models with different payloads are two different attempts.
+    static func fixture(
+        payload: String,
+        checkpoint: BlockRef = .fixture(100),
+        mortalityBlocks: UInt64 = 60
+    ) -> ExtrinsicBuiltModel {
+        ExtrinsicBuiltModel(
+            extrinsic: Data(payload.utf8).toHex(includePrefix: true),
+            sender: .none,
+            mortality: .mortal(
+                MortalExtrinsic(
+                    era: .mortal(period: mortalityBlocks, phase: 0),
+                    anchorBlock: BlockNumberWithHash(
+                        blockNumber: checkpoint.number,
+                        blockHash: checkpoint.hash
+                    )
+                )
+            )
         )
     }
 }

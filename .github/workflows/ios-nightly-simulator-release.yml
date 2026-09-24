@@ -85,14 +85,37 @@ jobs:
           cd build_simulator
           # `.app` is a directory bundle; zip preserves the structure so
           # consumers can unzip and `xcrun simctl install` the result.
-          APP_DIR=$(ls -d ./*.app | head -1)
-          if [ -z "$APP_DIR" ]; then
+          shopt -s nullglob
+          candidates=(./*.app)
+          shopt -u nullglob
+          if [ ${#candidates[@]} -eq 0 ]; then
             echo "::error::No .app directory found under build_simulator/"
             exit 1
           fi
+          APP_DIR="${candidates[0]}"
           ARCHIVE="polkadot-app-simulator.app.zip"
           zip -ry "$ARCHIVE" "$APP_DIR"
-          ls -la "$ARCHIVE"
+
+          # A bundle that unpacks without its executable installs and then does
+          # nothing, which reads downstream as the application being broken rather
+          # than as the archive being wrong. The listing is materialised first: a
+          # grep that exits on its first match would send zip's reader SIGPIPE, and
+          # pipefail would turn that into a failure on a perfectly good archive.
+          if [ ! -s "$ARCHIVE" ]; then
+            echo "::error::$ARCHIVE is empty"
+            exit 1
+          fi
+          BUNDLE="$(basename "$APP_DIR")"
+          listing="$(unzip -Z1 "$ARCHIVE")"
+          for required in "$BUNDLE/Info.plist" "$BUNDLE/$(basename "$BUNDLE" .app)"; do
+            if ! grep -qxF "$required" <<<"$listing"; then
+              echo "::error::$ARCHIVE does not contain $required"
+              printf '%s\n' "$listing" | head -20 || true
+              exit 1
+            fi
+          done
+          echo "archive carries $BUNDLE with an Info.plist and an executable"
+
           echo "archive=hosts/ios/build_simulator/$ARCHIVE" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
@@ -121,3 +144,34 @@ jobs:
             `app-nightly.apk` feeds the Android shard.
           prerelease: true
           files: ${{ steps.zip.outputs.archive }}
+
+      # A release can be created with the upload having quietly failed,
+      # leaving a tag that looks published and a consumer that gets a 404.
+      # Read the asset back rather than trusting that it uploaded.
+      - name: Confirm the published asset is present and not empty
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          ASSET: polkadot-app-simulator.app.zip
+        run: |
+          set -euo pipefail
+          # jq takes the name from the environment rather than from the shell, so a
+          # name needing escaping cannot break the filter. `uploaded` is the state
+          # that matters: an asset stranded mid-upload still reports a size, which is
+          # exactly the case this step exists to catch.
+          # shellcheck disable=SC2016  # $ENV.ASSET is jq, and must not expand here
+          size="$(gh release view "$TAG" --json assets \
+            --jq '[.assets[] | select(.name == $ENV.ASSET and .state == "uploaded") | .size] | first // 0')"
+          case "$size" in
+            ''|*[!0-9]*)
+              echo "::error::Could not read a size for $ASSET on $TAG"
+              exit 1
+              ;;
+          esac
+          if [ "$size" -le 0 ]; then
+            echo "::error::$ASSET is missing, empty or unfinished on $TAG"
+            gh release view "$TAG" --json assets \
+              --jq '.assets[] | "\(.name) \(.size) \(.state)"' || true
+            exit 1
+          fi
+          echo "$ASSET published on $TAG, $size bytes"

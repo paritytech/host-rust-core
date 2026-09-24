@@ -7,6 +7,7 @@ public struct ChatTransferMessageConfiguration: HashableContentConfiguration {
     let title: String
     let amountText: String
     let tokenSymbol: String
+    let assetIcon: UIImage?
     let originalAmountText: String?
     let state: ChatTransferMessageConfiguration.DirectionalState
     let statusConfiguration: ChatMessageStatusViewConfiguration
@@ -46,48 +47,53 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
 
     private let titleLabel: Label = create {
         $0.lineBreakMode = .byTruncatingMiddle
-        $0.typography = .paragraphLarge
+        $0.typography = .bodyMedium
         $0.numberOfLines = 1
         $0.textAlignment = .left
     }
 
-    private let amountContainerView: GenericBackgroundView<GenericPairValueView<TopBottomLabelView, Label>> =
+    private let amountContainerView: GenericBackgroundView<GenericPairValueView<UIImageView, TopBottomLabelView>> =
         create { container in
-            container.insets = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+            container.insets = UIEdgeInsets(
+                top: DSSpacings.mediumIncreased,
+                left: DSSpacings.mediumIncreased,
+                bottom: DSSpacings.mediumIncreased,
+                right: DSSpacings.mediumIncreased
+            )
 
-            let pair = container.wrappedView
-            pair.setVerticalAndSpacing(0)
-            pair.stackView.alignment = .center
+            let amountRow = container.wrappedView
+            amountRow.makeHorizontal()
+            amountRow.spacing = Constants.assetIconSpacing
+            amountRow.stackView.alignment = .center
 
-            let amounts = pair.fView
+            let icon = amountRow.fView
+            icon.contentMode = .scaleAspectFit
+            icon.snp.makeConstraints { $0.size.equalTo(Constants.assetIconSize) }
+
+            let amounts = amountRow.sView
             amounts.stackView.spacing = 0
+            amounts.stackView.alignment = .fill
 
             amounts.topLabel.typography = .bodyMedium
             amounts.topLabel.numberOfLines = 1
-            amounts.topLabel.textAlignment = .center
+            amounts.topLabel.textAlignment = .left
             amounts.topLabel.isHidden = true
 
             amounts.bottomLabel.typography = .headlineLarge
             amounts.bottomLabel.numberOfLines = 1
-            amounts.bottomLabel.textAlignment = .center
-
-            let symbol = pair.sView
-            symbol.typography = .bodyMedium
-            symbol.textColor = .fgSecondary
-            symbol.numberOfLines = 1
-            symbol.textAlignment = .center
+            amounts.bottomLabel.textAlignment = .left
         }
 
     private var receivedAmountLabel: Label {
-        amountContainerView.wrappedView.fView.bottomLabel
+        amountContainerView.wrappedView.sView.bottomLabel
     }
 
     private var originalAmountLabel: Label {
-        amountContainerView.wrappedView.fView.topLabel
+        amountContainerView.wrappedView.sView.topLabel
     }
 
-    private var tokenSymbolLabel: Label {
-        amountContainerView.wrappedView.sView
+    var assetIconView: UIImageView {
+        amountContainerView.wrappedView.fView
     }
 
     private let subtitleIconView: UIImageView = create {
@@ -95,7 +101,7 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
     }
 
     private let subtitleLabel: Label = create {
-        $0.typography = .bodySmallEmphasized
+        $0.typography = .bodyMedium
         $0.numberOfLines = 2
         $0.textAlignment = .left
         $0.setContentCompressionResistancePriority(.fittingSizeLevel, for: .horizontal)
@@ -155,33 +161,33 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
         }
 
         titleLabel.snp.makeConstraints {
-            $0.leading.equalToSuperview().offset(14)
-            $0.trailing.lessThanOrEqualToSuperview().inset(14)
-            $0.top.equalToSuperview().offset(12)
+            $0.leading.equalToSuperview().offset(Constants.bubbleLeadingInset)
+            $0.trailing.lessThanOrEqualToSuperview().inset(Constants.bubbleTrailingInset)
+            $0.top.equalToSuperview().offset(DSSpacings.extraMedium)
         }
 
         amountContainerView.snp.makeConstraints {
             $0.width.greaterThanOrEqualTo(150).priority(.medium)
-            $0.leading.equalToSuperview().offset(14)
-            $0.trailing.equalToSuperview().inset(14)
-            $0.top.equalTo(titleLabel.snp.bottom).offset(8)
+            $0.leading.equalToSuperview().offset(Constants.bubbleLeadingInset)
+            $0.trailing.equalToSuperview().inset(Constants.bubbleTrailingInset)
+            $0.top.equalTo(titleLabel.snp.bottom).offset(Constants.rowSpacing)
         }
 
         subtitleIconView.snp.makeConstraints {
-            $0.size.equalTo(12)
+            $0.size.equalTo(Constants.statusIconSize)
         }
 
         subtitleStackView.snp.makeConstraints {
-            $0.leading.equalToSuperview().offset(14)
-            $0.trailing.lessThanOrEqualToSuperview().inset(14)
-            $0.top.equalTo(amountContainerView.snp.bottom).offset(4)
+            $0.leading.equalToSuperview().offset(Constants.bubbleLeadingInset)
+            $0.trailing.lessThanOrEqualToSuperview().inset(Constants.bubbleTrailingInset)
+            $0.top.equalTo(amountContainerView.snp.bottom).offset(Constants.rowSpacing)
         }
 
         statusView.snp.makeConstraints {
-            $0.leading.greaterThanOrEqualToSuperview().offset(14)
-            $0.trailing.equalToSuperview().inset(8)
-            $0.top.equalTo(subtitleStackView.snp.bottom).offset(4)
-            $0.bottom.equalToSuperview().inset(8)
+            $0.leading.greaterThanOrEqualToSuperview().offset(Constants.bubbleLeadingInset)
+            $0.trailing.equalToSuperview().inset(Constants.bubbleTrailingInset)
+            $0.top.equalTo(subtitleStackView.snp.bottom).offset(Constants.rowSpacing)
+            $0.bottom.equalToSuperview().inset(DSSpacings.small)
         }
     }
 
@@ -191,7 +197,8 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
 
         titleLabel.text = configuration.title
         receivedAmountLabel.text = configuration.amountText
-        tokenSymbolLabel.text = configuration.tokenSymbol
+        assetIconView.image = configuration.assetIcon ?? UIImage.cashLogo.withRenderingMode(.alwaysTemplate)
+        assetIconView.tintColor = configuration.amountTextColor
 
         originalAmountLabel.textColor = configuration.originalAmountTextColor
         if let originalAmount = configuration.originalAmountText {
@@ -330,6 +337,17 @@ extension ChatTransferMessageView: AccessibilityBound {
             .init(bubbleView, AccessibilityID.Chat.transferMessageBubble),
             .init(subtitleLabel, AccessibilityID.Chat.transferStatusLabel)
         ]
+    }
+}
+
+private extension ChatTransferMessageView {
+    enum Constants {
+        static let assetIconSize = CGSize(width: 20, height: 22)
+        static let assetIconSpacing = DSSpacings.small
+        static let bubbleLeadingInset = DSSpacings.medium
+        static let bubbleTrailingInset = DSSpacings.small
+        static let rowSpacing = DSSpacings.small
+        static let statusIconSize: CGFloat = 14
     }
 }
 

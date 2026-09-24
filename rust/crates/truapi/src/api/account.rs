@@ -242,14 +242,20 @@ pub trait Account: Send + Sync {
     /// List registered ring-VRF keys owned by a product.
     ///
     /// ```ts
-    /// const productContext = await truapi.system.getProductContext();
-    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
-    ///
     /// const result = await truapi.account.listRingVrfKeys({
-    ///   owner: productContext.value.productId,
-    ///   disclosure: "PublicKey",
+    ///   owner: "peopl.paseo",
+    ///   disclosure: "Anonymized",
     /// });
     /// assert(result.isOk(), "listRingVrfKeys failed:", result);
+    /// assert(
+    ///   [0, 1].every((index) => result.value.some(({ handle }) =>
+    ///     handle.dotNsIdentifier === "peopl.paseo"
+    ///     && handle.derivationIndex.tag === "Index"
+    ///     && handle.derivationIndex.value === index,
+    ///   )),
+    ///   "Expected built-in full and lite personhood keys:",
+    ///   result.value,
+    /// );
     /// console.log("registered ring VRF keys:", result.value);
     /// ```
     #[wire(id = 9)]

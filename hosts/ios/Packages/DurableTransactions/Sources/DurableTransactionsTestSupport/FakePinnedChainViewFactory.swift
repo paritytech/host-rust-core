@@ -121,7 +121,7 @@ private final class FakePinnedChainView<State: FakeChainState>: PinnedChainViewP
         return .present(BlockRef(number: block.number, hash: block.hash))
     }
 
-    func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<Bool> {
+    func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<DispatchOutcome> {
         switch lookUp(txHash, atBlockHash: block.hash) {
         case let .outcome(result): result
         case .notInBlock,
@@ -169,13 +169,13 @@ private extension FakePinnedChainView {
         guard block.body.contains(txHash) else { return .notInBlock }
 
         guard let success = block.state.outcomes[txHash] else { return .outcome(.failedRead) }
-        return .outcome(.present(success))
+        return .outcome(.present(success ? .succeeded : .failed(reason: "Fake.DispatchFailed")))
     }
 
-    static func mapSearchOutcome(result: ReadResult<Bool>, block: BlockRef) -> BodySearchOutcome {
+    static func mapSearchOutcome(result: ReadResult<DispatchOutcome>, block: BlockRef) -> BodySearchOutcome {
         switch result {
-        case .present(true): .foundSucceeded(block)
-        case .present(false): .foundFailed(block)
+        case .present(.succeeded): .foundSucceeded(block)
+        case let .present(.failed(reason)): .foundFailed(block, reason: reason)
         case .absent,
              .failedRead: .foundOutcomeUnreadable(block)
         }

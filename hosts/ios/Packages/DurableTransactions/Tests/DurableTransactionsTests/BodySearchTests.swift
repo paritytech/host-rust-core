@@ -16,7 +16,7 @@ struct BodySearchTests {
 
     struct OutcomeCase: CustomStringConvertible {
         let lookup: BlockLookup
-        let expected: Bool?
+        let expected: DispatchOutcome?
         let name: String
 
         var description: String { name }
@@ -28,8 +28,8 @@ struct BodySearchTests {
 
         let stub = StubBlockDataReader(
             lookups: [
-                Data([101]): .outcome(.present(false)),
-                Data([102]): .outcome(.present(true))
+                Data([101]): .outcome(.present(.failed(reason: "Test.Failed"))),
+                Data([102]): .outcome(.present(.succeeded))
             ]
         )
         let blockInfo = StubBlockInfoProvider(
@@ -177,7 +177,7 @@ struct BodySearchTests {
         let stub = StubBlockDataReader(
             lookups: [
                 Data([100]): .notInBlock,
-                Data([101]): .outcome(.present(true)),
+                Data([101]): .outcome(.present(.succeeded)),
                 Data([102]): .notInBlock
             ]
         )
@@ -206,13 +206,13 @@ struct BodySearchTests {
 
     @Test("Hit with outcome", arguments: [
         HitOutcomeCase(
-            lookup: .outcome(.present(true)),
+            lookup: .outcome(.present(.succeeded)),
             expected: .foundSucceeded(BlockRef(number: 100, hash: Data([100]))),
             name: "success"
         ),
         HitOutcomeCase(
-            lookup: .outcome(.present(false)),
-            expected: .foundFailed(BlockRef(number: 100, hash: Data([100]))),
+            lookup: .outcome(.present(.failed(reason: "Test.Failed"))),
+            expected: .foundFailed(BlockRef(number: 100, hash: Data([100])), reason: "Test.Failed"),
             name: "failure"
         ),
         HitOutcomeCase(
@@ -252,14 +252,14 @@ struct BodySearchTests {
 
     @Test("outcome(of:at:)", arguments: [
         OutcomeCase(
-            lookup: .outcome(.present(true)),
-            expected: true,
-            name: "present(true)"
+            lookup: .outcome(.present(.succeeded)),
+            expected: .succeeded,
+            name: "succeeded"
         ),
         OutcomeCase(
-            lookup: .outcome(.present(false)),
-            expected: false,
-            name: "present(false)"
+            lookup: .outcome(.present(.failed(reason: "Test.Failed"))),
+            expected: .failed(reason: "Test.Failed"),
+            name: "failed carries its reason"
         ),
         OutcomeCase(
             lookup: .outcome(.failedRead),

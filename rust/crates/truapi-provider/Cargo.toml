@@ -42,6 +42,7 @@ smoldot = [
     "dep:futures-timer",
     "dep:log",
     "dep:getrandom",
+    "dep:libsecp256k1",
     "dep:js-sys",
     "dep:pin-project",
     "dep:rand",
@@ -104,6 +105,9 @@ uniffi = { workspace = true, optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-timer = { version = "3", features = ["wasm-bindgen"], optional = true }
 getrandom = { version = "0.2", features = ["js"], optional = true }
+# Not used directly: smoldot's secp256k1 multiplication tables are built on
+# first use instead of compiling in 1 MiB of incompressible precomputed points.
+libsecp256k1 = { version = "0.7", default-features = false, features = ["lazy-static-context"], optional = true }
 js-sys = { version = "0.3", optional = true }
 pin-project = { version = "1", optional = true }
 send_wrapper = { version = "0.6", optional = true }

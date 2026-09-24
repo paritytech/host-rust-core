@@ -36,6 +36,14 @@ curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scri
 
 Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. `/script` opens a persistent TypeScript project with the Product SDK quickstart, pinned published dependencies, and editor types. Use `/script --run` to rerun it or `/script --edit` to edit without running. Projects survive session cleanup. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup and existing project scripts. Release checks install and typecheck the default SDK template against the public registry.
 
+The signing host registers its built-in full and lite personhood keys when an
+authorized product first lists `peopl.<network suffix>` (for example,
+`peopl.paseo`). The first listing reads People-chain metadata; later listings
+reuse the saved registrations, including after restart. Registration makes the
+handles discoverable; proof creation still checks permission and ring membership.
+The `listRingVrfKeys` example checks that both built-in keys are discoverable
+under `peopl.paseo` on Paseo.
+
 Product scripts and `truapi-host dev` use the same web API permission checks from `js/container`. Dev loads the container through a blocking script tag in your existing browser. Scripts run in Bun and retain filesystem, environment and process access.
 
 To build from source, run `make headless install` with stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and
@@ -156,7 +164,8 @@ native-only adapter types are limited to lifecycle and callback behavior.
 On iOS, a wallet host that manages its own statement-store SSO session can call
 `handleSsoRequest` (routes one decrypted remote message through the core,
 returning a typed outcome: response bytes to post back, a disconnect marker, or
-ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
+ignored; a `Cancel` returns at once, so the wallet passes it on without queueing
+it behind the request it withdraws) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
 for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
 session-record cleanup remain on the wallet side.
 See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
@@ -476,12 +485,36 @@ Secrets: `GOOGLE_SERVICES_JSON_BASE64`, `CI_GITHUB_KEYSTORE_KEY_FILE`,
 Variables: `APPLICATION_ID`, `APPLICATION_NAME`, `CURRENCY_SYMBOL`,
 `LOG_COLLECTION_EMAIL`, `PRIVACY_POLICY_URL`, `TERMS_OF_USE_URL`,
 `SENTRY_ORG`, `SENTRY_PROJECT`, `GAME_RESULTS_FALLBACK_URL`,
-`REFERRAL_WEB_HOST`, `ANDROID_FIREBASE_GROUP`, `ANDROID_FIREBASE_DEBUG_GROUP`.
+`REFERRAL_WEB_HOST`, `CONTACT_EMAIL`, `ANDROID_FIREBASE_GROUP`,
+`ANDROID_FIREBASE_DEBUG_GROUP`.
 
 `GOOGLE_PROJECT_ID` carries an `L` suffix. It is interpolated into a Java
 `long` literal, and a twelve digit project number overflows an `int` without
 one. Everything the app needs at runtime beyond these comes from Firebase
 Remote Config, keyed on an `environment` signal the build sets.
+
+### Instrumented tests
+
+`android-instrumented-tests.yml` boots an emulator and runs the app module's
+connected tests. It starts from the `android-instrumented-tests` label rather
+than from every commit, because the runner is macOS and a cold emulator costs
+minutes before the first assertion. `workflow_dispatch` runs it without a pull
+request to carry the label.
+
+It is not part of the required set, so a red run reports rather than blocks.
+
+### Credentials, checked before a release needs them
+
+Certificates, provisioning profiles and store keys expire, and a release is the
+most expensive place to discover it. `validate-signing-credentials.yml` runs on
+weekday mornings, authenticates each platform, and proves the credential is
+live without building or publishing: Android reuses the delivery check the
+nightly runs before it builds, and iOS reads one page of applications through
+the store key then fetches the signing material read only.
+
+Each job removes what it materialised, and the last verdict is carried into the
+pull request summary, so it is visible before someone starts a release rather
+than after. A workflow that has never run reports as never run, not as healthy.
 
 ### Building the standalone iOS host app
 

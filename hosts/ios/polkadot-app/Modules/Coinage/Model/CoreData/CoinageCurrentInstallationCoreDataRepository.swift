@@ -17,7 +17,7 @@ final class CoinageCurrentInstallationCoreDataRepository: CoinageCurrentInstalla
     func getOrCreateCurrent(
         newInstallation: @escaping @Sendable () throws -> CoinageInstallationId
     ) async throws -> CoinageInstallationId {
-        try await databaseService.perform { context in
+        try await databaseService.performWrite { context in
             let request = NSFetchRequest<CDCurrentInstallation>(entityName: Self.entityName)
             request.fetchLimit = 1
 
@@ -28,7 +28,6 @@ final class CoinageCurrentInstallationCoreDataRepository: CoinageCurrentInstalla
             let created = try newInstallation()
             let row = try context.insertNew(CDCurrentInstallation.self)
             row.identifier = created.hex
-            try context.save()
             return created
         }
     }

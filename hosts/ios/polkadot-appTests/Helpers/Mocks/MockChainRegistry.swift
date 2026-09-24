@@ -5,10 +5,30 @@ import ChainRegistry
 
 @testable import polkadot_app
 
-final class MockChainRegistry: ChainRegistryProtocol {
-    var chainsByGenesis: [String: ChainModel] = [:]
-    var runtimeProviders: [String: RuntimeProviderProtocol] = [:]
-    var connectionsByChainId: [ChainModel.Id: ChainConnection] = [:]
+/// `ChainRegistryProtocol` is `Sendable`, and the registry is read from the background tasks the
+/// subjects spawn while a test configures it from the test thread, so every access to the stubbed
+/// state goes through `mutex`.
+final class MockChainRegistry: ChainRegistryProtocol, @unchecked Sendable {
+    private let mutex = NSLock()
+
+    private var storedChainsByGenesis: [String: ChainModel] = [:]
+    private var storedRuntimeProviders: [String: RuntimeProviderProtocol] = [:]
+    private var storedConnectionsByChainId: [ChainModel.Id: ChainConnection] = [:]
+
+    var chainsByGenesis: [String: ChainModel] {
+        get { mutex.withLock { storedChainsByGenesis } }
+        set { mutex.withLock { storedChainsByGenesis = newValue } }
+    }
+
+    var runtimeProviders: [String: RuntimeProviderProtocol] {
+        get { mutex.withLock { storedRuntimeProviders } }
+        set { mutex.withLock { storedRuntimeProviders = newValue } }
+    }
+
+    var connectionsByChainId: [ChainModel.Id: ChainConnection] {
+        get { mutex.withLock { storedConnectionsByChainId } }
+        set { mutex.withLock { storedConnectionsByChainId = newValue } }
+    }
 
     var availableChainIds: Set<ChainModel.Id>? { nil }
     var allAvailableChains: [ChainModel] { Array(chainsByGenesis.values) }

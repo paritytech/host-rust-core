@@ -13,6 +13,7 @@ protocol APNSClientServicing {
 final class APNSClientService {
     private let pushIdFactory: ChatPushIdMaking
     private let messageCoder: ChatPushMessageCoding
+    private let payloadBuilder: ChatNotificationPayloadBuilding
     private let tokenProvider: JWTTokenProviding
     private let workQueue: DispatchQueue
     private let operationQueue: OperationQueue
@@ -21,6 +22,7 @@ final class APNSClientService {
     init(
         pushIdFactory: ChatPushIdMaking,
         messageCoder: ChatPushMessageCoding,
+        payloadBuilder: ChatNotificationPayloadBuilding,
         tokenProvider: JWTTokenProviding,
         workQueue: DispatchQueue,
         operationQueue: OperationQueue = OperationManagerFacade.sharedDefaultQueue,
@@ -28,6 +30,7 @@ final class APNSClientService {
     ) {
         self.pushIdFactory = pushIdFactory
         self.messageCoder = messageCoder
+        self.payloadBuilder = payloadBuilder
         self.tokenProvider = tokenProvider
         self.workQueue = workQueue
         self.operationQueue = operationQueue
@@ -107,12 +110,14 @@ private extension APNSClientService {
                 throw NotifyError.missingBundleId
             }
 
+            let payload = try payloadBuilder.makePayload(for: message)
+
             return try NotifyRequestParameters(
                 deviceToken: tokenString,
                 pushId: pushId.ownString,
                 bundlerId: bundleId,
                 platform: platform.rawValue,
-                message: messageCoder.encodeMessage(message, for: contact),
+                message: messageCoder.encodeMessage(payload, for: contact),
                 voip: isVoIP
             )
         }

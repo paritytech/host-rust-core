@@ -98,7 +98,7 @@ File-by-file code review. For each rule violated, note severity (blocking/major/
 
 ## Types & SDK Usage
 
-- [ ] `Data.toHex()` / `Data(hexString:)` wrappers for hex conversion (not the underlying `NSData` variants from NovaCrypto)
+- [ ] `Data.toHex()` / `String.fromHex()` for hex conversion (not `Data(hexString:)` directly, nor the underlying `NSData` variants from NovaCrypto)
 - [ ] `Data.randomOrError` for test data
 - [ ] Decodable conformance (not manual JSON parsing)
 - [ ] Generic models where type variations exist

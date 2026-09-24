@@ -97,6 +97,10 @@ public struct ProductExecutionConfig: Sendable, Equatable {
         self.executionKind = executionKind
     }
 
+    fileprivate init(native: NativeProductExecutionConfig) {
+        self.init(productId: native.productId, executionKind: native.executionKind)
+    }
+
     fileprivate var native: NativeProductExecutionConfig {
         NativeProductExecutionConfig(
             productId: productId,
@@ -135,9 +139,9 @@ public protocol HostCoreStorageBackend: AnyObject, Sendable {
 /// native shell owns. The permission split mirrors the Rust `Permissions`
 /// trait:
 ///
-///   * ``devicePermission(request:)`` handles OS-scoped grants (camera,
-///     mic, location).
-///   * ``remotePermission(request:)`` handles per-product capability
+///   * ``devicePermission(product:request:)`` handles OS-scoped grants
+///     (camera, mic, location).
+///   * ``remotePermission(product:request:)`` handles per-product capability
 ///     bundles.
 ///
 /// The Rust core invokes callbacks on its shared background bridge executor.
@@ -158,9 +162,12 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Cancel a previously scheduled notification id.
     func cancelNotification(id: UInt32) throws
 
-    /// Prompt for a device-level permission on the main actor, suspending until
-    /// the user decides. Preserve the approval lifetime.
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> PermissionDecision
+    /// Prompt for a device-level permission `product` requested on the main
+    /// actor, suspending until the user decides. Preserve the approval lifetime.
+    func devicePermission(
+        product: ProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> PermissionDecision
 
     /// Report the OS status of a device capability without prompting. Answer
     /// from the platform's authorization APIs, for example
@@ -175,9 +182,12 @@ public protocol HostBridge: AnyObject, Sendable {
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus
 
-    /// Prompt for a remote (product-scoped) permission bundle on the main actor,
-    /// suspending until the user decides.
-    func remotePermission(request: RemotePermission) async throws -> PermissionDecision
+    /// Prompt for a remote permission bundle `product` requested on the main
+    /// actor, suspending until the user decides.
+    func remotePermission(
+        product: ProductExecutionConfig,
+        request: RemotePermission
+    ) async throws -> PermissionDecision
 
     /// Observe an auth state change, in transition order: render `.pairing` as
     /// the pairing QR UI, `.connected`/`.disconnected` as the account badge,
@@ -518,9 +528,15 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> NativePermissionDecision {
+    func devicePermission(
+        product: NativeProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> NativePermissionDecision {
         try await withHostRejection {
-            try await bridge.devicePermission(request: request).native
+            try await bridge.devicePermission(
+                product: ProductExecutionConfig(native: product),
+                request: request
+            ).native
         }
     }
 
@@ -532,9 +548,15 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func remotePermission(request: RemotePermission) async throws -> NativePermissionDecision {
+    func remotePermission(
+        product: NativeProductExecutionConfig,
+        request: RemotePermission
+    ) async throws -> NativePermissionDecision {
         try await withHostRejection {
-            try await bridge.remotePermission(request: request).native
+            try await bridge.remotePermission(
+                product: ProductExecutionConfig(native: product),
+                request: request
+            ).native
         }
     }
 
