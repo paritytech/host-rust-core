@@ -5,6 +5,7 @@ import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.childScope
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.BindableProductsBotApi
+import io.paritytech.polkadotapp.feature_products_impl.domain.bot.ProductChatMessaging
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.FixedProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.HostApiInteractor
 import kotlinx.coroutines.CoroutineScope
@@ -30,6 +31,8 @@ import javax.inject.Singleton
  */
 interface ProductWorkerRefCounter {
     suspend fun acquire(productId: ProductId, label: String): ProductWorkerReference
+
+    fun chatMessaging(productId: ProductId): ProductChatMessaging
 }
 
 interface ProductWorkerReference {
@@ -67,8 +70,12 @@ class RealProductWorkerRefCounter @Inject constructor(
     private val handles = ConcurrentHashMap<ProductId, ProductWorkerHandle>()
 
     override suspend fun acquire(productId: ProductId, label: String): ProductWorkerReference {
-        return handles.computeIfAbsent(productId) { ProductWorkerHandle(it) }.acquire(label)
+        return handle(productId).acquire(label)
     }
+
+    override fun chatMessaging(productId: ProductId): ProductChatMessaging = handle(productId).botApi
+
+    private fun handle(productId: ProductId) = handles.computeIfAbsent(productId) { ProductWorkerHandle(it) }
 
     private sealed interface WorkerState {
         data object NotBooted : WorkerState
@@ -82,7 +89,7 @@ class RealProductWorkerRefCounter @Inject constructor(
     private inner class ProductWorkerHandle(private val productId: ProductId) {
         private val refCount = MutableStateFlow(0)
         private val workerState = MutableStateFlow<WorkerState>(WorkerState.NotBooted)
-        private val botApi = BindableProductsBotApi(hostApiInteractor, FixedProductId(productId))
+        internal val botApi = BindableProductsBotApi(hostApiInteractor, FixedProductId(productId))
 
         private var bootScope: CoroutineScope? = null
 
@@ -111,7 +118,7 @@ class RealProductWorkerRefCounter @Inject constructor(
             val scope = this@RealProductWorkerRefCounter.childScope(supervised = true)
             bootScope = scope
 
-            val worker = runCatching { bootFactory.get().boot(productId, botApi, scope) }
+            val worker = runCatching { bootFactory.get().boot(productId, botApi, botApi, scope) }
                 .onFailure { Timber.e(it, "Worker boot failed for product $productId") }
                 .getOrNull()
 

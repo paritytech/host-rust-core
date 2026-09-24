@@ -2,25 +2,9 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.bot.model
 
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatExtensionId
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatId
-import io.paritytech.polkadotapp.feature_chats_api.domain.model.extensionOrFailure
 
 @JvmInline
 value class ProductChatIdParameter(val value: String)
 
-fun ProductChatIdParameter.toChatId(extensionId: ChatExtensionId): ChatId {
-    return ChatId.forExtensionRoom(extensionId, value)
-}
-
-fun ChatId.extractProductChatIdParameter(extensionId: ChatExtensionId): Result<ProductChatIdParameter> {
-    return extensionOrFailure().mapCatching {
-        require(extensionId == it.extensionId) {
-            "ChatId $value is not a product chat id"
-        }
-
-        val subRoomId = requireNotNull(it.subRoomId) {
-            "ChatId $value is not a product chat id"
-        }
-
-        ProductChatIdParameter(subRoomId)
-    }
-}
+fun ProductChatIdParameter.toChatId(extensionId: ChatExtensionId): ChatId =
+    if (value.isEmpty()) ChatId.forExtension(extensionId) else ChatId.forExtensionRoom(extensionId, value)

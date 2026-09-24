@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.tools_remoteconfig_impl.data.sources
 
+import com.google.android.gms.tasks.Task
 import com.google.firebase.Firebase
 import com.google.firebase.remoteconfig.ConfigUpdate
 import com.google.firebase.remoteconfig.ConfigUpdateListener
@@ -45,15 +46,20 @@ class FirebaseRemoteConfigDataSource @Inject constructor(
         awaitClose { registration.remove() }
     }.shareIn(scope, SharingStarted.WhileSubscribed(), replay = 0)
 
+    @Volatile
+    private var defaultsApplied: Task<Void>? = null
+
     override fun init() {
         val configSettings = remoteConfigSettings {
             minimumFetchIntervalInSeconds = 0
         }
         remoteConfig.setConfigSettingsAsync(configSettings)
-        remoteConfig.setDefaultsAsync(R.xml.remote_config_defaults)
+        defaultsApplied = remoteConfig.setDefaultsAsync(R.xml.remote_config_defaults)
     }
 
     override suspend fun sync(): Result<Unit> {
+        defaultsApplied?.executeSuspend()?.onFailure { Timber.w(it, "Failed to apply remote config defaults") }
+
         return setEnvironmentSignal()
             .flatMap { remoteConfig.fetchAndActivate().executeSuspend() }
             .coerceToUnit()

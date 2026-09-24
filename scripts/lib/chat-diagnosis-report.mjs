@@ -16,22 +16,60 @@ export function decodeTextMessage(hex) {
 /** Title line the Chat diagnosis worker renders its report under. */
 export const CHAT_DIAGNOSIS_HEADING = "## Truapi Chat Diagnosis";
 
-/** Validate a successful Chat report and attach the native host label. */
-export function labelChatDiagnosisReport(report, host) {
+// This host's bridge refuses registerBot; every other ❌ row fails the run.
+export const REGISTER_BOT_GAP = [
+  { method: "Chat/register_bot", details: /no bot registry|not supported/ },
+];
+
+export function diagnosisFailures(report) {
+  const failures = [];
+  for (const line of report.split("\n")) {
+    const match = line.match(
+      /^\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*$/,
+    );
+    if (match && match[2].includes("\u274c")) {
+      failures.push({ method: match[1], details: match[3] });
+    }
+  }
+  return failures;
+}
+
+/** Validate a Chat report and label it; a ❌ row must match `acceptedFailures`. */
+export function labelChatDiagnosisReport(
+  report,
+  host,
+  { acceptedFailures = [] } = {},
+) {
   const counts = report.match(/\*\*(\d+) success · (\d+) failed\*\*/);
+  const failures = diagnosisFailures(report);
+  const unexpected = failures.filter(
+    (failure) =>
+      !acceptedFailures.some(
+        (accepted) =>
+          accepted.method === failure.method &&
+          accepted.details.test(failure.details),
+      ),
+  );
   if (
     !report.startsWith(CHAT_DIAGNOSIS_HEADING) ||
     !counts ||
     counts[1] === "0" ||
-    counts[2] !== "0" ||
-    report.includes("❌")
+    Number(counts[2]) !== failures.length ||
+    unexpected.length > 0
   ) {
     throw new Error(`Chat diagnosis reported a failure:\n${report}`);
   }
-  return report.replace(
+  const labelled = report.replace(
     CHAT_DIAGNOSIS_HEADING,
     `## Truapi ${host} Chat Diagnosis`,
   );
+  if (failures.length === 0) {
+    return labelled;
+  }
+  const accepted = failures
+    .map((failure) => `${failure.method} — ${failure.details}`)
+    .join("; ");
+  return `${labelled}\n\n_Accepted host gaps: ${accepted}_`;
 }
 
 function decodeScaleCompact(encoded, offset) {

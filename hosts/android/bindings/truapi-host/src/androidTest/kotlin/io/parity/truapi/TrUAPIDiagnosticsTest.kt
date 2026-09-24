@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import uniffi.truapi_platform.AuthState
+import uniffi.truapi_platform.PermissionDecision
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
@@ -79,8 +80,10 @@ class TrUAPIDiagnosticsTest {
                 synchronized(authStates) { authStates.add(state) }
             }
             override suspend fun navigateTo(url: String) = onCoreLog("truapi.host.navigate_to", url)
-            override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean = true
-            override suspend fun remotePermission(request: RemotePermission): Boolean = true
+            override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision =
+                PermissionDecision.ALLOW_ALWAYS
+            override suspend fun remotePermission(request: RemotePermission): PermissionDecision =
+                PermissionDecision.ALLOW_ALWAYS
             override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean = true
             override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean = false
             override fun chainConnect(genesisHash: ByteArray): UInt? = chainProvider.connect(genesisHash)
@@ -93,6 +96,7 @@ class TrUAPIDiagnosticsTest {
             hostIcon = "https://dot.li/dotli.png",
             peopleChainGenesisHash = ByteArray(32),
             bulletinChainGenesisHash = ByteArray(32),
+            assetHubChainGenesisHash = ByteArray(32),
             networkSuffix = "paseo",
             // 32 bytes of BIP-39 entropy → a deterministic local signing session
             // (no SSO pairing, fully offline).
@@ -120,8 +124,7 @@ class TrUAPIDiagnosticsTest {
         }
         assertTrue("expected a Connected auth state from the local session", sawConnected)
 
-        // Diagnostics never negotiate WebRTC, so the policy the bootstrap bakes in is a plain no.
-        val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token, webRtcAllowed = false)
+        val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token)
         val url = args.getString("truapi.playgroundUrl") ?: "http://localhost:3000/"
 
         // The playground is a static export; a `?e2e` query param does not

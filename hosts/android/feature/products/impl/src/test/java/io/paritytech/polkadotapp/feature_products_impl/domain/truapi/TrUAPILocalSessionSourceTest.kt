@@ -17,6 +17,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito.mock
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.test.runTest
 
 class TrUAPILocalSessionSourceTest {
     private val accountRepository: AccountRepository = mock()
@@ -96,5 +100,20 @@ class TrUAPILocalSessionSourceTest {
         whenever(accountSecretsStorage.getMetaAccountPassphrase(metaId)).thenReturn(null)
 
         assertTrue(source.resolve().isFailure)
+    }
+
+    @Test
+    fun `a username lookup that never answers still yields a session`() = runTest {
+        val neverAnswering = object : UsernameOfAccountUseCase {
+            override fun invoke(): Flow<StoredUsername?> = emptyFlow()
+            override fun initiallyClaimedLightUsername(): Flow<Username?> = emptyFlow()
+            override suspend fun getUsername(): Result<StoredUsername?> = awaitCancellation()
+        }
+        val source = TrUAPILocalSessionSource(accountRepository, accountSecretsStorage, neverAnswering)
+
+        val session = source.resolve().getOrThrow()
+
+        assertNull(session.liteUsername)
+        assertTrue(session.secret.isNotEmpty())
     }
 }

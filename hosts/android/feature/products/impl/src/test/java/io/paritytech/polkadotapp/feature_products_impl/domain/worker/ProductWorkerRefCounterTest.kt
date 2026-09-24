@@ -7,6 +7,7 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageId
 import io.paritytech.polkadotapp.feature_products_api.model.JsUiEvent
 import io.paritytech.polkadotapp.feature_products_api.model.JsWidget
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
+import io.paritytech.polkadotapp.feature_products_impl.domain.bot.ProductChatMessaging
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.ProductsBotApi
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.HostApiInteractor
 import kotlinx.coroutines.CompletableDeferred
@@ -21,6 +22,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 import org.mockito.Mockito.mock
 import java.util.concurrent.atomic.AtomicInteger
@@ -30,8 +32,8 @@ class ProductWorkerRefCounterTest {
     private val hostApiInteractor: HostApiInteractor = mock()
 
     private class FakeWorker : ProductWorker {
-        override suspend fun onUserMessage(text: String): Result<Unit> = Result.success(Unit)
-        override fun renderMessage(messageId: ChatMessageId, messageType: String, messageData: DataByteArray): Flow<Result<JsWidget>> = emptyFlow()
+        override suspend fun onUserMessage(roomId: String?, text: String): Result<Unit> = Result.success(Unit)
+        override fun renderMessage(roomId: String?, messageId: ChatMessageId, messageType: String, messageData: DataByteArray): Flow<Result<JsWidget>> = emptyFlow()
         override fun dispatchEvent(event: JsUiEvent) = Unit
     }
 
@@ -41,7 +43,12 @@ class ProductWorkerRefCounterTest {
         val bootEntered = CompletableDeferred<Unit>()
         var hasWorker = true
 
-        override suspend fun boot(productId: ProductId, botApi: ProductsBotApi, scope: CoroutineScope): ProductWorker? {
+        override suspend fun boot(
+            productId: ProductId,
+            botApi: ProductsBotApi,
+            chatMessaging: ProductChatMessaging,
+            scope: CoroutineScope,
+        ): ProductWorker? {
             bootEntered.complete(Unit)
             gate?.await()
             if (!hasWorker) return null
@@ -161,5 +168,27 @@ class ProductWorkerRefCounterTest {
         reference.release()
         advanceUntilIdle()
         assertEquals(1, factory.disposed.get())
+    }
+
+    @Test
+    fun `the bot api for a product is the same instance across calls`() = runTest {
+        val factory = FakeBootFactory()
+        val counter = counter(factory)
+
+        val first = counter.chatMessaging(productId)
+        val second = counter.chatMessaging(productId)
+
+        assertSame(first, second)
+    }
+
+    @Test
+    fun `asking for a bot api does not boot a worker`() = runTest {
+        val factory = FakeBootFactory()
+        val counter = counter(factory)
+
+        counter.chatMessaging(productId)
+        advanceUntilIdle()
+
+        assertEquals(0, factory.started.get())
     }
 }

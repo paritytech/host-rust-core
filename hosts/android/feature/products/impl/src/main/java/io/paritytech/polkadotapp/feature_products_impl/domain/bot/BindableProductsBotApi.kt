@@ -21,7 +21,7 @@ private const val MESSAGING_NOT_SUPPORTED_CODE = "messaging_not_supported"
 class BindableProductsBotApi(
     hostApiInteractor: HostApiInteractor,
     callingProductIdProvider: CallingProductIdProvider,
-) : BaseProductsBotApi(hostApiInteractor, callingProductIdProvider) {
+) : BaseProductsBotApi(hostApiInteractor, callingProductIdProvider), ProductChatMessaging {
     val chatSlot: ModalityApiSlot<ProductChatMessaging> = WeakModalityApiSlot()
 
     override suspend fun createRoom(request: CreateProductRoomRequest): Result<CreateProductRoomResult> {
