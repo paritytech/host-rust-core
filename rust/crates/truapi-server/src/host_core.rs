@@ -616,6 +616,25 @@ impl SigningHostRuntime {
         self.services.install_device_pairing_observer(observer)
     }
 
+    /// Install the core-owned database that durable consumers share.
+    ///
+    /// Set-once, so durable state cannot move to another file under a running
+    /// consumer. Returns whether this call installed it. The file itself opens
+    /// on first use.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_core_db"))]
+    pub fn set_core_db(&self, db: crate::store::LazyDb) -> bool {
+        self.services.install_core_db(db)
+    }
+
+    /// Opens the core database if needed and reports its state.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn core_database_status(
+        &self,
+    ) -> Result<crate::store::DbStatus, crate::store::DbError> {
+        self.services.core_db().await?.status().await
+    }
+
     /// Build a product-facing runtime from this signing host.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.product_runtime"))]
     pub fn product_runtime(
@@ -3323,6 +3342,52 @@ mod tests {
 
         assert!(runtime.set_device_pairing_observer(Arc::new(Inert)));
         assert!(!runtime.set_device_pairing_observer(Arc::new(Inert)));
+    }
+
+    /// Every durable consumer shares one core database: a second installer
+    /// must not swap it, and a host that configured none gets a clear error
+    /// rather than a silently missing store.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_core_database_is_installed_once_and_reports_when_missing() {
+        use crate::store::{DbConfig, DbError, DbLocation, LazyDb};
+        use futures::executor::block_on;
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        let config = SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+            [0xcc; 32],
+            "paseo".to_string(),
+        )
+        .expect("signing host config is valid");
+        let runtime =
+            SigningHostRuntime::new(Arc::new(StubPlatform::default()), config, test_spawner());
+        let db_config = DbConfig {
+            location: DbLocation::Memory,
+            migrations: || rusqlite_migration::Migrations::new(Vec::new()),
+            readers: 1,
+        };
+
+        assert!(matches!(
+            block_on(runtime.services.core_db()),
+            Err(DbError::NotConfigured)
+        ));
+        assert!(runtime.set_core_db(LazyDb::new(db_config.clone())));
+        assert!(!runtime.set_core_db(LazyDb::new(db_config)));
+
+        let db = block_on(runtime.services.core_db()).expect("installed database opens");
+        let answer: i64 =
+            block_on(db.write(|tx| Ok(tx.query_row("SELECT 42", [], |row| row.get(0))?)))
+                .expect("installed database serves writes");
+        assert_eq!(answer, 42);
     }
 
     #[test]

@@ -12,6 +12,7 @@
 //! from the handshake answer through serving and ending the session.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -218,6 +219,11 @@ pub struct NativeHostRuntimeConfig {
     /// positional over the FFI and the checksum does not cover their order, so
     /// an insert shifts every field below it.
     pub asset_hub_chain_genesis_hash: Vec<u8>,
+    /// Existing, writable directory for core-owned databases, kept out of
+    /// device backups. `None` runs the host without the core database.
+    ///
+    /// Appended for the same reason as the field above.
+    pub database_directory: Option<String>,
 }
 
 /// Trusted identity attached by a native host to one executable connection.
@@ -234,6 +240,7 @@ struct NativeResolvedHostRuntimeConfig {
     signing: SigningHostConfig,
     local_session_secret: Option<Vec<u8>>,
     local_session_lite_username: Option<String>,
+    database_directory: Option<PathBuf>,
 }
 
 /// Native runtime config validation error.
@@ -315,6 +322,41 @@ pub enum NativeRuntimeConfigError {
         /// Normalized length, in bytes.
         actual: u64,
     },
+    /// The database directory does not exist or cannot be written.
+    ///
+    /// Appended for the same reason as the variants above.
+    #[error("database_directory {path:?} is not a writable directory: {reason}")]
+    InvalidDatabaseDirectory {
+        /// Configured directory.
+        path: String,
+        /// Why it was rejected.
+        reason: String,
+    },
+}
+
+/// Why the core database status could not be read.
+#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
+pub enum NativeCoreDatabaseError {
+    /// The host configured no `database_directory`.
+    #[error("no database directory configured")]
+    NotConfigured,
+    /// The database could not be opened or read.
+    #[error("core database unavailable: {reason}")]
+    Unavailable {
+        /// What failed.
+        reason: String,
+    },
+}
+
+impl From<crate::store::DbError> for NativeCoreDatabaseError {
+    fn from(error: crate::store::DbError) -> Self {
+        match error {
+            crate::store::DbError::NotConfigured => Self::NotConfigured,
+            other => Self::Unavailable {
+                reason: other.to_string(),
+            },
+        }
+    }
 }
 
 impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
@@ -355,12 +397,34 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             asset_hub_chain_genesis_hash,
             config.network_suffix,
         )?;
+        let database_directory = config
+            .database_directory
+            .map(|directory| writable_directory(&directory))
+            .transpose()?;
         Ok(Self {
             signing,
             local_session_secret: config.local_session_secret,
             local_session_lite_username: config.local_session_lite_username,
+            database_directory,
         })
     }
+}
+
+/// Checks that `directory` exists and accepts new files, by creating and
+/// removing a probe file.
+fn writable_directory(directory: &str) -> Result<PathBuf, NativeRuntimeConfigError> {
+    let invalid = |reason: String| NativeRuntimeConfigError::InvalidDatabaseDirectory {
+        path: directory.to_owned(),
+        reason,
+    };
+    let path = PathBuf::from(directory);
+    if !path.is_dir() {
+        return Err(invalid("not an existing directory".to_owned()));
+    }
+    let probe = path.join(".truapi-write-probe");
+    std::fs::write(&probe, []).map_err(|err| invalid(err.to_string()))?;
+    std::fs::remove_file(&probe).map_err(|err| invalid(err.to_string()))?;
+    Ok(path)
 }
 
 impl From<&ProductContext> for NativeProductExecutionConfig {
@@ -889,6 +953,14 @@ impl NativeTrUApiHostRuntime {
             runtime.set_device_pairing_observer(platform),
             "a freshly built runtime installs its device pairing observer once"
         );
+        if let Some(directory) = runtime_config.database_directory {
+            assert!(
+                runtime.set_core_db(crate::store::LazyDb::new(crate::store::core_db_config(
+                    &directory
+                ))),
+                "a freshly built runtime installs its core database once"
+            );
+        }
         if let Some(secret) = runtime_config.local_session_secret {
             futures::executor::block_on(runtime.activate_local_session_with_identity(
                 secret,
@@ -1158,6 +1230,13 @@ impl NativeTrUApiHostRuntime {
             "truapi.native.host_runtime.boot",
             "host runtime ready",
         )
+    }
+
+    /// Opens the core database if needed and reports its SQLite version,
+    /// schema version and file path. Blocks the calling thread while the file
+    /// opens, so call it off the main thread.
+    pub fn core_database_status(&self) -> Result<crate::store::DbStatus, NativeCoreDatabaseError> {
+        futures::executor::block_on(self.runtime.core_database_status()).map_err(Into::into)
     }
 
     /// Open a connection-scoped execution with immutable trusted context.
@@ -3485,6 +3564,7 @@ mod tests {
             network_suffix: "paseo".to_string(),
             local_session_secret: Some(vec![7; 32]),
             local_session_lite_username: Some("alice".to_string()),
+            database_directory: None,
         }
     }
 
@@ -4745,6 +4825,105 @@ mod tests {
         execution.notify_chain_closed(41);
         assert_eq!(futures::executor::block_on(shared_responses.next()), None);
         assert_eq!(futures::executor::block_on(scoped_responses.next()), None);
+    }
+
+    #[test]
+    fn a_missing_database_directory_fails_runtime_creation() {
+        // Hosts pick the directory; a typo must surface at startup rather than
+        // as a durable operation failing much later.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+
+        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            database_directory: Some(missing.to_string_lossy().into_owned()),
+            ..native_host_runtime_config()
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            NativeRuntimeConfigError::InvalidDatabaseDirectory { .. }
+        ));
+    }
+
+    #[test]
+    fn a_configured_database_directory_installs_the_core_database_lazily() {
+        // The file opens on first use, so a host that never needs durable
+        // state pays nothing at startup.
+        let dir = tempfile::tempdir().unwrap();
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            NativeHostRuntimeConfig {
+                database_directory: Some(dir.path().to_string_lossy().into_owned()),
+                ..native_host_runtime_config()
+            },
+        )
+        .expect("host runtime config should be valid");
+
+        let second = crate::store::LazyDb::new(crate::store::core_db_config(dir.path()));
+        assert_eq!(
+            (
+                host.runtime.set_core_db(second),
+                dir.path().join(crate::store::CORE_DB_FILE).exists()
+            ),
+            (false, false),
+        );
+    }
+
+    #[test]
+    fn the_core_database_status_opens_the_configured_file() {
+        // The status call is how an app checks, on a real device, that the
+        // core database works end to end.
+        let dir = tempfile::tempdir().unwrap();
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            NativeHostRuntimeConfig {
+                database_directory: Some(dir.path().to_string_lossy().into_owned()),
+                ..native_host_runtime_config()
+            },
+        )
+        .expect("host runtime config should be valid");
+
+        let status = host
+            .core_database_status()
+            .expect("the core database opens");
+
+        let file = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(crate::store::CORE_DB_FILE);
+        assert_eq!(
+            (status.path, status.schema_version, file.exists()),
+            (Some(file.to_string_lossy().into_owned()), 0, true),
+        );
+    }
+
+    #[test]
+    fn the_core_database_status_reports_a_host_without_a_directory() {
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+
+        assert!(matches!(
+            host.core_database_status(),
+            Err(NativeCoreDatabaseError::NotConfigured)
+        ));
+    }
+
+    #[test]
+    fn without_a_database_directory_no_core_database_is_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+
+        let late = crate::store::LazyDb::new(crate::store::core_db_config(dir.path()));
+        assert!(host.runtime.set_core_db(late));
     }
 
     #[test]

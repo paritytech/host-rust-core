@@ -58,9 +58,11 @@ import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.PermissionDecision
 import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi_server.DbStatus
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatBotRegistrationStatus
 import uniffi.truapi_server.NativeChatCallbacks
+import uniffi.truapi_server.NativeCoreDatabaseException
 import uniffi.truapi_server.NativeChatRoomRegistrationStatus
 import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativePocketRemoval
@@ -129,6 +131,8 @@ enum class ProductExecutionKind {
  * the network's dotNS TLD without the leading dot (`dot`, `paseo`, `testnet`);
  * the core derives the wallet's reserved identities under it (`uid.<suffix>`,
  * `peopl.<suffix>`), the same person the app's own onboarding derives there.
+ * [databaseDirectory] is an existing, writable directory, kept out of backups,
+ * where the core keeps its own database; `null` runs without it.
  */
 data class HostRuntimeConfig(
     val hostName: String,
@@ -142,6 +146,7 @@ data class HostRuntimeConfig(
     val networkSuffix: String,
     val localSessionSecret: ByteArray? = null,
     val localSessionLiteUsername: String? = null,
+    val databaseDirectory: String? = null,
 ) {
     internal fun toNative(): UniFfiNativeHostRuntimeConfig =
         UniFfiNativeHostRuntimeConfig(
@@ -157,6 +162,7 @@ data class HostRuntimeConfig(
             networkSuffix = networkSuffix,
             localSessionSecret = localSessionSecret,
             localSessionLiteUsername = localSessionLiteUsername,
+            databaseDirectory = databaseDirectory,
         )
 
     override fun equals(other: Any?): Boolean {
@@ -172,7 +178,8 @@ data class HostRuntimeConfig(
             assetHubChainGenesisHash.contentEquals(other.assetHubChainGenesisHash) &&
             networkSuffix == other.networkSuffix &&
             localSessionSecret.contentEquals(other.localSessionSecret) &&
-            localSessionLiteUsername == other.localSessionLiteUsername
+            localSessionLiteUsername == other.localSessionLiteUsername &&
+            databaseDirectory == other.databaseDirectory
     }
 
     override fun hashCode(): Int {
@@ -187,6 +194,7 @@ data class HostRuntimeConfig(
         result = 31 * result + networkSuffix.hashCode()
         result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
         result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
+        result = 31 * result + (databaseDirectory?.hashCode() ?: 0)
         return result
     }
 }
@@ -888,6 +896,14 @@ class TrUAPIHostRuntime private constructor(
     fun disconnect() {
         inner.disconnect()
     }
+
+    /**
+     * Open the core database if needed and report its SQLite version, schema
+     * version and file path. Blocks while the file opens; call it off the main
+     * thread.
+     */
+    @Throws(NativeCoreDatabaseException::class)
+    fun coreDatabaseStatus(): DbStatus = inner.coreDatabaseStatus()
 
     /** Activate or replace the process-wide local signing session. */
     @Throws(HostRejection::class)

@@ -42,6 +42,9 @@ public struct HostRuntimeConfig: Sendable, Equatable {
     public let networkSuffix: String
     public let localSessionSecret: Data?
     public let localSessionLiteUsername: String?
+    /// Existing, writable directory, excluded from backup, where the core
+    /// keeps its own database. `nil` runs without it.
+    public let databaseDirectory: String?
 
     public init(
         hostName: String,
@@ -54,7 +57,8 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         assetHubChainGenesisHash: Data,
         networkSuffix: String,
         localSessionSecret: Data? = nil,
-        localSessionLiteUsername: String? = nil
+        localSessionLiteUsername: String? = nil,
+        databaseDirectory: String? = nil
     ) {
         self.hostName = hostName
         self.hostIcon = hostIcon
@@ -67,6 +71,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         self.networkSuffix = networkSuffix
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
+        self.databaseDirectory = databaseDirectory
     }
 
     fileprivate var native: NativeHostRuntimeConfig {
@@ -82,7 +87,8 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             networkSuffix: networkSuffix,
             localSessionSecret: localSessionSecret,
             localSessionLiteUsername: localSessionLiteUsername,
-            assetHubChainGenesisHash: assetHubChainGenesisHash
+            assetHubChainGenesisHash: assetHubChainGenesisHash,
+            databaseDirectory: databaseDirectory
         )
     }
 }
@@ -853,6 +859,13 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// running.
     public func disconnectPairedHost(peer: PairedSsoPeer) async throws {
         try await inner.disconnectPairedHost(peer: peer)
+    }
+
+    /// Opens the core database if needed and reports its SQLite version,
+    /// schema version and file path. Blocks while the file opens, so call it
+    /// off the main thread.
+    public func coreDatabaseStatus() throws -> DbStatus {
+        try inner.coreDatabaseStatus()
     }
 
     public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
