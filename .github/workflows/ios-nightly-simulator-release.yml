@@ -15,7 +15,7 @@ name: Nightly Simulator Release
 # `simulator-YYYYMMDD-HHMM-<sha>` tag and release.
 
 concurrency:
-  group: ios-nightly-simulator-${{ github.ref }}
+  group: ios-nightly-simulator-${{ github.run_id }}
   cancel-in-progress: true
 
 on:
@@ -163,6 +163,10 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
+          # Without this the tag is created at the default branch, so a build of
+          # any other ref produces a tag naming one commit and pointing at
+          # another, and generated notes computed from the wrong base.
+          target_commitish: ${{ steps.tag.outputs.sha }}
           name: ${{ steps.tag.outputs.name }}
           # GitHub auto-generates a "What's Changed" PR list between this tag
           # and the previous one. softprops/action-gh-release prepends the
