@@ -48,7 +48,7 @@ struct ClaimRebuildTests {
             outputs: [.coin(7, destination.publicKey)]
         )]
 
-        let claim = try #require(await rebuild.resolve([transaction], assets: assets)[transaction.id])
+        let claim = try #require(try await rebuild.resolve([transaction], assets: assets)[transaction.id])
 
         #expect(claim.destination == destination.publicKey)
         #expect(claim.receivedKey == secret)
@@ -64,7 +64,7 @@ struct ClaimRebuildTests {
             outputs: [.coin(7, RebuildFixtures.key(7))]
         )]
 
-        let claim = try #require(await rebuild.resolve([transaction], assets: assets)[transaction.id])
+        let claim = try #require(try await rebuild.resolve([transaction], assets: assets)[transaction.id])
 
         let expected = try SNKeyFactory().createPublicKey(fromSecret: secret).rawData()
         #expect(claim.source == expected)
@@ -81,7 +81,7 @@ struct ClaimRebuildTests {
             outputs: []
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -91,7 +91,7 @@ struct ClaimRebuildTests {
         let rebuild = makeRebuild()
         let transaction = try scheduled()
 
-        let resolved = await rebuild.resolve([transaction], assets: [:])
+        let resolved = try await rebuild.resolve([transaction], assets: [:])
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -113,7 +113,7 @@ struct ClaimRebuildTests {
             outputs: [.coin(7, RebuildFixtures.key(7))]
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -122,7 +122,7 @@ struct ClaimRebuildTests {
 private extension ClaimRebuildTests {
     func makeRebuild() -> ClaimRebuild {
         ClaimRebuild(
-            coinQuery: StubCoinQuery(),
+            coinQuery: StubCoinOnChainQuery(),
             builder: ClaimExtrinsicBuilder(
                 originFactory: StubOriginFactory(),
                 factory: StubTxFactory(),
