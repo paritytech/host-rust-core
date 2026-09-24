@@ -15,8 +15,8 @@ use syn::{
 
 /// Method names a DAO method cannot take: `new` is the generated `…Db`
 /// constructor, and the rest are `rusqlite` 0.40 `Connection` and
-/// `Transaction` methods, which `self.name(…)` in a `#[transaction]` body would
-/// call instead of the DAO method.
+/// `Transaction` methods or prelude trait methods, which `self.name(…)` in a
+/// `#[transaction]` body would call instead of the DAO method.
 const RESERVED_METHODS: &[&str] = &[
     "new",
     "apply",
@@ -111,6 +111,13 @@ const RESERVED_METHODS: &[&str] = &[
     "unchecked_transaction",
     "update_hook",
     "wal_hook",
+    // Prelude traits implemented for `&Transaction`, found before a DAO method.
+    "clone",
+    "clone_from",
+    "clone_into",
+    "into",
+    "to_owned",
+    "try_into",
 ];
 
 /// What a method does, from its marker attribute.
@@ -173,13 +180,43 @@ struct Method {
     value: Type,
     /// `#[cfg]` attributes, repeated on everything generated for the method.
     cfgs: Vec<Attribute>,
-    /// Attributes that also apply to the async twin: `cfg_attr`, lint levels
-    /// and `deprecated`. Lint levels also apply to a transaction body.
+    /// Attributes for the async twin: `cfg_attr`, lint levels and
+    /// `deprecated`.
     twin_attributes: Vec<Attribute>,
-    /// Lint-level attributes, for the transaction body's implementation.
-    lints: Vec<Attribute>,
+    /// Attributes for the implementation holding the method's body: lint
+    /// levels, code-generation hints and, for a transaction, `cfg_attr`.
+    body_attributes: Vec<Attribute>,
     /// Whether the method is `#[deprecated]`, so the twin's call is allowed.
     deprecated: bool,
+}
+
+/// Lint-level attributes. Copies of `expect` become `allow`: a lint fires on
+/// only one of the items generated from a method, and an `expect` on the
+/// others would be unfulfilled.
+const LINT_LEVELS: [&str; 5] = ["allow", "warn", "deny", "forbid", "expect"];
+
+/// Code-generation hints that belong on a function with a body.
+const BODY_HINTS: [&str; 3] = ["inline", "cold", "track_caller"];
+
+fn is_named(attribute: &Attribute, names: &[&str]) -> bool {
+    names.iter().any(|name| attribute.path().is_ident(name))
+}
+
+/// `attribute` with an `expect(…)` lint level turned into `allow(…)`.
+fn relaxed(attribute: &Attribute) -> Attribute {
+    let mut attribute = attribute.clone();
+    if attribute.path().is_ident("expect")
+        && let syn::Meta::List(list) = &mut attribute.meta
+    {
+        list.path = syn::parse_quote!(allow);
+    }
+    attribute
+}
+
+/// Whether a `cfg_attr` wraps an attribute that only fits a declaration.
+fn wraps_declaration_only(attribute: &Attribute) -> bool {
+    let tokens = quote!(#attribute).to_string();
+    tokens.contains("deprecated") || tokens.contains("must_use")
 }
 
 /// Parse the macro input and emit generated code or a compiler diagnostic.
@@ -291,10 +328,10 @@ fn transactions_trait(
         let sig = &method.function.sig;
         let body = &method.function.default;
         let cfgs = &method.cfgs;
-        let lints = &method.lints;
+        let body_attributes = &method.body_attributes;
         quote! {
             #(#cfgs)*
-            #(#lints)*
+            #(#body_attributes)*
             #sig #body
         }
     });
@@ -372,32 +409,53 @@ impl Method {
                 Kind::Transaction
             }
         };
-        let named = |names: &[&str]| -> Vec<Attribute> {
-            function
-                .attrs
-                .iter()
-                .filter(|attribute| names.iter().any(|name| attribute.path().is_ident(name)))
-                .cloned()
-                .collect()
+        let transaction = matches!(kind, Kind::Transaction);
+        let body_cfg_attr = |attribute: &Attribute| {
+            transaction
+                && attribute.path().is_ident("cfg_attr")
+                && !wraps_declaration_only(attribute)
         };
-        let lint_levels = ["allow", "warn", "deny", "forbid", "expect"];
+        let attributes = &function.attrs;
+        let cfgs = attributes
+            .iter()
+            .filter(|attribute| attribute.path().is_ident("cfg"))
+            .cloned()
+            .collect();
+        let twin_attributes = attributes
+            .iter()
+            .filter(|attribute| {
+                is_named(attribute, &LINT_LEVELS)
+                    || is_named(attribute, &["cfg_attr", "deprecated"])
+            })
+            .map(relaxed)
+            .collect();
+        let body_attributes = attributes
+            .iter()
+            .filter(|attribute| {
+                is_named(attribute, &LINT_LEVELS)
+                    || is_named(attribute, &BODY_HINTS)
+                    || body_cfg_attr(attribute)
+            })
+            .map(relaxed)
+            .collect();
+        let deprecated = attributes.iter().any(|attribute| {
+            attribute.path().is_ident("deprecated")
+                || (attribute.path().is_ident("cfg_attr") && wraps_declaration_only(attribute))
+        });
+        // The declaration keeps docs, `cfg`, `deprecated`, `must_use` and lint
+        // levels (as `allow`); body hints and a transaction's `cfg_attr` move
+        // to the implementation.
+        function.attrs = function
+            .attrs
+            .iter()
+            .filter(|attribute| !is_named(attribute, &BODY_HINTS) && !body_cfg_attr(attribute))
+            .map(relaxed)
+            .collect();
         Ok(Self {
-            cfgs: named(&["cfg"]),
-            twin_attributes: named(&[
-                "cfg_attr",
-                "deprecated",
-                "allow",
-                "warn",
-                "deny",
-                "forbid",
-                "expect",
-            ]),
-            lints: named(&lint_levels),
-            deprecated: function.attrs.iter().any(|attribute| {
-                attribute.path().is_ident("deprecated")
-                    || (attribute.path().is_ident("cfg_attr")
-                        && quote!(#attribute).to_string().contains("deprecated"))
-            }),
+            cfgs,
+            twin_attributes,
+            body_attributes,
+            deprecated,
             function,
             kind,
             arguments,
@@ -406,15 +464,19 @@ impl Method {
     }
 
     fn statement(&self) -> Option<TokenStream2> {
-        let (sql, read_only) = match &self.kind {
-            Kind::Query { sql, .. } => (sql, true),
-            Kind::Execute { sql, .. } => (sql, false),
+        let (sql, read_only, returns_rows) = match &self.kind {
+            Kind::Query { sql, .. } => (sql, true, true),
+            Kind::Execute { sql, outcome } => (sql, false, matches!(outcome, Outcome::Returned(_))),
             Kind::Transaction => return None,
         };
         let cfgs = &self.cfgs;
         Some(quote! {
             #(#cfgs)*
-            crate::store::DaoStatement { sql: #sql, read_only: #read_only }
+            crate::store::DaoStatement {
+                sql: #sql,
+                read_only: #read_only,
+                returns_rows: #returns_rows,
+            }
         })
     }
 
@@ -437,12 +499,14 @@ impl Method {
         };
         let sig = &self.function.sig;
         let cfgs = &self.cfgs;
+        let body_attributes = &self.body_attributes;
         let keys = self.arguments.iter().map(|argument| {
             LitStr::new(&format!(":{}", argument.sql_name()), argument.name.span())
         });
         let names = self.arguments.iter().map(|argument| &argument.name);
         Some(quote! {
             #(#cfgs)*
+            #(#body_attributes)*
             #sig {
                 let mut __dao_statement = self.prepare_cached(#sql)?;
                 let __dao_params = ::rusqlite::named_params! { #(#keys: #names),* };
@@ -705,6 +769,13 @@ fn ownership(ty: &Type, name: &Ident) -> syn::Result<Ownership> {
         }
         if borrows(&reference.elem) {
             return Err(unsupported());
+        }
+        if matches!(reference.elem.as_ref(), Type::TraitObject(_)) {
+            return Err(Error::new(
+                ty.span(),
+                "a #[dao] argument cannot be `&dyn Trait`; the async twin must own a copy of \
+                 it, so use a concrete type",
+            ));
         }
         return Ok(Ownership::Reference);
     }

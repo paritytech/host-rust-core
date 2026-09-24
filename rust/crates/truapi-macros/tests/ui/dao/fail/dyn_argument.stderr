@@ -1,0 +1,5 @@
+error: a #[dao] argument cannot be `&dyn Trait`; the async twin must own a copy of it, so use a concrete type
+ --> tests/ui/dao/fail/dyn_argument.rs:6:29
+  |
+6 |     fn count(&self, amount: &dyn rusqlite::ToSql) -> rusqlite::Result<i64>;
+  |                             ^

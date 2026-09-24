@@ -146,8 +146,12 @@ row when nothing was inserted.
 
 A method cannot be named `new` or after a `rusqlite` `Connection` or
 `Transaction` method (`execute`, `commit`, …), which would shadow it inside a
-`#[transaction]` body. Lint attributes, `cfg_attr` and `deprecated` on a method
-carry over to its async twin; `cfg` carries over to everything generated for it.
+`#[transaction]` body. `cfg` on a method carries over to everything generated for
+it. Lint levels carry over to the async twin and to the item holding the body,
+as `allow`: a lint fires on only one of them, so `expect` acts as `allow` on a
+DAO method. `cfg_attr` and `deprecated` also reach the twin, and a
+transaction's `cfg_attr` its body; `inline`, `cold` and `track_caller` move to
+the body.
 
 `…Db::QUERIES` lists every statement and whether it must only read.
 `store::prepare_all` prepares them against the migrated schema in a test, which

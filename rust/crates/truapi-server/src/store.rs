@@ -224,6 +224,9 @@ pub struct DaoStatement {
     /// Whether it comes from a `#[query]`, which runs on a read-only
     /// connection and so must not write.
     pub read_only: bool,
+    /// Whether the method reads rows from it. An `#[execute]` without
+    /// `RETURNING` runs it with `execute`, which fails if it yields rows.
+    pub returns_rows: bool,
 }
 
 /// Deserializes one row for code that `#[dao]` generates. A value that does
@@ -231,18 +234,17 @@ pub struct DaoStatement {
 /// actually has.
 #[doc(hidden)]
 pub fn dao_row<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>) -> rusqlite::Result<T> {
-    // serde_rusqlite indexes past the last column when a tuple is wider than
-    // the row, which panics instead of returning an error.
-    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        serde_rusqlite::from_row(row)
-    }))
-    .map_err(|_| {
-        rusqlite::Error::FromSqlConversionFailure(
-            row.as_ref().column_count(),
+    let columns = row.as_ref().column_count();
+    if let Some(width) = tuple_width::<T>()
+        && width > columns
+    {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            columns,
             rusqlite::types::Type::Null,
-            "the row has fewer columns than the type it is read into".into(),
-        )
-    })?;
+            format!("the row has {columns} columns but is read into {width}").into(),
+        ));
+    }
+    let decoded = serde_rusqlite::from_row(row);
     decoded.map_err(|error| {
         let column = match &error {
             serde_rusqlite::Error::Rusqlite(_) => None,
@@ -265,6 +267,54 @@ pub fn dao_row<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>) -> rusql
     })
 }
 
+/// How many columns `T` reads if it deserializes as a tuple or fixed-size
+/// array, the shapes `serde_rusqlite` reads without checking the row's width.
+/// Found by letting `T` ask a deserializer that only answers that question.
+fn tuple_width<T: serde::de::DeserializeOwned>() -> Option<usize> {
+    #[derive(Debug)]
+    struct Width(Option<usize>);
+
+    impl core::fmt::Display for Width {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(formatter, "width probe: {:?}", self.0)
+        }
+    }
+
+    impl std::error::Error for Width {}
+
+    impl serde::de::Error for Width {
+        fn custom<M: core::fmt::Display>(_: M) -> Self {
+            Self(None)
+        }
+    }
+
+    struct Probe;
+
+    impl<'de> serde::Deserializer<'de> for Probe {
+        type Error = Width;
+
+        fn deserialize_any<V: serde::de::Visitor<'de>>(self, _: V) -> Result<V::Value, Width> {
+            Err(Width(None))
+        }
+
+        fn deserialize_tuple<V: serde::de::Visitor<'de>>(
+            self,
+            len: usize,
+            _: V,
+        ) -> Result<V::Value, Width> {
+            Err(Width(Some(len)))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes
+            byte_buf option unit unit_struct newtype_struct seq tuple_struct map struct
+            enum identifier ignored_any
+        }
+    }
+
+    T::deserialize(Probe).err().and_then(|Width(width)| width)
+}
+
 /// Prepares every statement against an in-memory database migrated to the
 /// latest schema, and checks that each `#[query]` statement only reads.
 /// Returns the first statement that fails, with the reason.
@@ -285,6 +335,13 @@ pub(crate) fn prepare_all(
             return Err(failure(
                 "a #[query] runs on a read-only connection but this statement writes; use \
                  #[execute]"
+                    .to_owned(),
+            ));
+        }
+        if !statement.returns_rows && prepared.column_count() > 0 {
+            return Err(failure(
+                "this statement yields rows, which an #[execute] without a row type cannot \
+                 run; declare the row type"
                     .to_owned(),
             ));
         }
