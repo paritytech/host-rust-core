@@ -5599,6 +5599,7 @@ dependencies = [
  "truapi",
  "truapi-macros",
  "truapi-platform",
+ "truapi-verifiable",
  "unicode-normalization",
  "uniffi",
  "url",
@@ -5610,6 +5611,16 @@ dependencies = [
  "web-time",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "truapi-verifiable"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "parity-scale-codec",
+ "verifiable",
+ "wasm-bindgen",
 ]
 
 [[package]]

@@ -104,7 +104,7 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     let at = people_rpc.finalized_head().await?;
     let full_entropy =
         derive_full_person_ring_vrf_entropy(&config.entropy, config.network.network_suffix);
-    let member = proof::member_key(full_entropy);
+    let member = proof::member_key(full_entropy).await?;
     let ring_index = ring::read_member_ring_index_at(
         &people_rpc,
         &people_metadata,
@@ -186,7 +186,8 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
         &members,
         &DOTNS_GATEWAY_CONTEXT,
         &proof_message,
-    )?;
+    )
+    .await?;
 
     // Asset Hub only verifies proofs against root revisions it has imported
     // from People; wait for this one before submitting.
