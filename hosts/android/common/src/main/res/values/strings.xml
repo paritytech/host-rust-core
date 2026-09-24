@@ -96,6 +96,7 @@
     <string name="home_citizenship_registering_person">Registering as a person</string>
 
     <string name="common_send">Send</string>
+    <string name="common_withdraw">Withdraw</string>
     <string name="common_edit">Edit</string>
     <string name="common_reply">Reply</string>
 
@@ -644,7 +645,16 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="product_bot_management_edit_title">Edit product</string>
     <string name="product_bot_management_add_title">Add product</string>
     <string name="product_bot_management_empty">No products added</string>
+    <string name="debug_menu_pocket_face_preview">Pocket face preview</string>
+    <string name="pocket_face_preview_title">Pocket face preview</string>
+    <string name="pocket_face_preview_url_hint">Face JSON URL</string>
+    <string name="pocket_face_preview_draw">Draw</string>
+    <string name="pocket_face_preview_empty">Serve a renderer tree over HTTP and enter its URL to see it drawn at card size.</string>
+    <string name="pocket_face_preview_failed">The face could not be drawn.</string>
     <string name="product_bot_management_url_hint">Script URL</string>
+    <string name="product_bot_management_card_id_hint">Pocket card id (optional)</string>
+    <string name="product_bot_management_card_title_hint">Pocket card title</string>
+    <string name="product_bot_management_preview_url_hint">Pocket card face URL</string>
     <string name="product_bot_management_app_url_hint">App URL</string>
     <string name="product_bot_management_name_hint">product%1$s</string>
     <string name="product_bot_management_confirm">Save</string>
@@ -729,14 +739,13 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="pocket_id_share_subtitle">Show this QR to someone who wants to add you as a contact or send you %1$s</string>
     <string name="pocket_id_share_scan_title">Scan with a camera</string>
 
-    <string name="send_payment_toolbar_title">Send payment</string>
+    <string name="send_payment_toolbar_title">Send Payment</string>
     <string name="send_payment_search_placeholder">Type username or wallet address</string>
     <string name="send_payment_to">To:</string>
     <string name="send_payment_open_chat_message">You need to first establish a chat before sending a payment</string>
 
-    <string name="send_enter_amount_title">Enter amount</string>
     <string name="send_enter_amount_placeholder">Enter Amount</string>
-    <string name="send_enter_amount_max_balance_prefix">Max:</string>
+    <string name="send_enter_amount_ready_to_send">Ready to send</string>
     <string name="send_enter_amount_privacy_cost_hint">Extra %1$s is spendable, but at the risk of reducing your privacy</string>
     <string name="send_enter_amount_not_enough_funds_error">You don’t have enough funds</string>
     <string name="send_enter_amount_cash_title">%1$s</string>
@@ -1503,7 +1512,6 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
 
     <string name="pocket_digital_dollar_title">Balance Card</string>
     <string name="pocket_digital_dollar_card_title">%1$s</string>
-    <string name="pocket_digital_dollar_send_button">Send %1$s</string>
     <string name="pocket_digital_dollar_faucet_top_up">Faucet Top Up</string>
     <string name="pocket_collectibles_open_button">View collectibles</string>
     <string name="pocket_collectibles_title">Collectibles</string>
@@ -1527,6 +1535,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="pocket_coinage_balance_title">Balance</string>
     <string name="pocket_coinage_ready">Ready</string>
     <string name="pocket_coinage_clearing">Clearing</string>
+    <string name="pocket_coinage_total_balance">Total Balance</string>
     <string name="pocket_coinage_share_logs">Share Coinage Logs</string>
     <string name="pocket_debug_features_title">Debug features</string>
     <string name="pocket_debug_features_subtitle">Not visible in production</string>
