@@ -55,7 +55,9 @@ A product with **no published worker**, driven by hand.
    one worker reference, which boots the worker, and releases it when the card
    leaves the screen. Presses and text edits go straight back to the worker from
    the collection. Pressing the card opens its product at
-   `https://<product>?card=<id>`.
+   `https://<product>?card=<id>`, on a screen the card heads: card and product
+   share one scroll, so scrolling past the card leaves the product the whole
+   screen.
 
 ## What fails where
 

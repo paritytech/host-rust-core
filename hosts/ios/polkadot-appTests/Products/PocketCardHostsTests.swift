@@ -81,6 +81,7 @@ private final class CountingFactory {
 @MainActor
 private final class StubSPAView: SPAViewProtocol {
     let controller = UIViewController()
+    let pageScrollView = UIScrollView()
     var isSetup: Bool { true }
 
     func navigate(to _: URL) {}

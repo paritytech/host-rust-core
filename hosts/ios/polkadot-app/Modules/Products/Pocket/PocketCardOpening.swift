@@ -2,7 +2,8 @@ import Foundation
 import Products
 import UIKit
 
-/// Opens the card's product, at the page the card names.
+/// Opens the card's product, at the page the card names, on a screen the card
+/// itself heads.
 ///
 /// The protocol names the widget as what an expanded card runs, so that is the
 /// executable served here. The origin stays the product's base domain, so the
@@ -10,17 +11,20 @@ import UIKit
 @MainActor
 enum PocketCardOpening {
     static func open(
-        _ key: PocketCardKey,
+        _ card: PocketCardViewModel,
         flowState: SPAFlowState,
         navigator: ModuleNavigating
     ) {
-        guard let url = key.launchUrl, let page = flowState.hostProvider.page(url: url) else { return }
+        guard
+            let url = card.key.launchUrl,
+            let page = flowState.hostProvider.page(url: url)
+        else { return }
 
-        let view = PocketCardHosts.shared.view(for: key) {
+        let product = PocketCardHosts.shared.view(for: card.key) {
             let configuration = SPAConfiguration(
-                title: nil,
+                title: card.title,
                 isRootScreen: false,
-                showMoreButton: true,
+                showMoreButton: false,
                 page: page,
                 executable: .widget
             )
@@ -28,9 +32,9 @@ enum PocketCardOpening {
             return SPAViewFactory.createView(configuration: configuration, flowState: flowState)
         }
 
-        guard let view else { return }
+        guard let product else { return }
 
-        navigator.presentFullScreen(view.controller)
+        navigator.presentFullScreen(PocketCardScreenViewController(card: card, product: product))
     }
 
     /// A link may name a card the Pocket does not hold, which is the one case
@@ -49,12 +53,15 @@ enum PocketCardOpening {
         let key = PocketCardKey(productId: link.productHost, cardId: cardId)
 
         Task { @MainActor in
-            guard let store = await pocket.store(), await store.cards().contains(where: { $0.key == key }) else {
+            guard
+                let store = await pocket.store(),
+                let card = await PocketCardsProvider(store: store).card(for: key)
+            else {
                 PocketRefusalPresenter.show(String(localized: .pocketDeeplinkUnknownCard))
                 return
             }
 
-            open(key, flowState: flowState, navigator: navigator)
+            open(card, flowState: flowState, navigator: navigator)
         }
     }
 }

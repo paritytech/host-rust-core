@@ -30,16 +30,27 @@ struct PocketCardsProvider {
     func cards() async -> [PocketCardViewModel] {
         var drawn: [PocketCardViewModel] = []
         for card in await store.cards() {
-            let face = await store.face(for: card.key)
-            drawn.append(
-                PocketCardViewModel(
-                    key: card.key,
-                    title: card.title,
-                    privileged: card.privileged,
-                    face: face?.toWidgetNode(resolver: resolver)
-                )
-            )
+            await drawn.append(viewModel(for: card))
         }
         return drawn
+    }
+
+    /// The one card `key` names, for a link that arrives naming a single card
+    /// rather than the whole collection.
+    func card(for key: PocketCardKey) async -> PocketCardViewModel? {
+        guard let card = await store.cards().first(where: { $0.key == key }) else { return nil }
+
+        return await viewModel(for: card)
+    }
+
+    private func viewModel(for card: PocketCardEntry) async -> PocketCardViewModel {
+        let face = await store.face(for: card.key)
+
+        return PocketCardViewModel(
+            key: card.key,
+            title: card.title,
+            privileged: card.privileged,
+            face: face?.toWidgetNode(resolver: resolver)
+        )
     }
 }
