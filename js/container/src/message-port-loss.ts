@@ -16,11 +16,12 @@ interface ProbedWindow {
 /**
  * Reload the page once WebKit has disentangled its MessagePorts.
  *
- * Losing WebKit's networking process closes every existing MessagePort. The host
- * connection recovers on its own, but frameworks that schedule work through a
- * MessageChannel created at load, such as React, stop rendering for good. A
- * canary channel created with the container tells that loss apart from a plain
- * socket loss, which keeps the page.
+ * WebKit brokers every MessagePort through its networking process. Losing that
+ * process closes every existing port without an error or an event, while ports
+ * created afterwards work. The host connection recovers on its own, but a
+ * channel created before the loss never delivers again. A canary channel
+ * created with the container tells that loss apart from a plain socket loss,
+ * which keeps the page.
  */
 export function reloadAfterMessagePortLoss(
   win: ProbedWindow,

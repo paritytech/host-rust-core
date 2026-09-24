@@ -326,8 +326,7 @@ call or return to a visible page tries again.
 On iOS the host rebinds its localhost listener on the same port each time the app
 returns to the foreground, since the system reclaims a suspended app's listening socket.
 When WebKit loses its networking process, every MessagePort a page already holds stops
-delivering, which stalls frameworks such as React; the container detects this after a
-disconnect and reloads the page.
+delivering; the container detects this after a disconnect and reloads the page.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission

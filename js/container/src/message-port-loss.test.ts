@@ -51,8 +51,8 @@ function page(visibility: 'visible' | 'hidden') {
 
 describe('reloadAfterMessagePortLoss', () => {
   // WebKit disentangles every existing MessagePort when its networking process
-  // dies. Frameworks such as React schedule rendering through a MessageChannel
-  // created at load, so the page stops rendering and only a reload restores it.
+  // dies, and a channel created before the loss never delivers again; only a
+  // reload replaces it.
   it('reloads a page whose MessagePorts died with the host connection', async () => {
     const host = page('visible');
     const canary = new MessageChannel();
@@ -66,7 +66,7 @@ describe('reloadAfterMessagePortLoss', () => {
   });
 
   // A lost socket alone leaves every port working; the transport reconnects and
-  // the product keeps its state.
+  // the page keeps its state.
   it('keeps a page whose MessagePorts survive a disconnect', async () => {
     const host = page('visible');
     const canary = new MessageChannel();
