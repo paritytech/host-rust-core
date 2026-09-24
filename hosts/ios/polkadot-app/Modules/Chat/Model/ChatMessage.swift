@@ -730,37 +730,26 @@ extension Chat.LocalMessage.Content {
     }
 
     struct Transfer: Equatable {
-        enum Status: Int, Equatable {
-            case processing = 0
-            case finished = 1
-            case error = 2
-            case sent = 3
-            case claiming = 4
-            case partiallyClaimed = 5
+        /// Read from the state row related to the message; never encoded, `nil` until the monitor writes.
+        enum State: Equatable {
+            case incoming(IncomingTransferState)
+            case outgoing(OutgoingTransferState)
         }
 
         let totalValue: Balance
         let coinKeys: [Data]
-        let status: Status?
-        let originalTotalValue: Balance?
+        let state: State?
 
         init(_ remote: Chat.RemoteMessageContentV1.MessageContent.SendContent.Coinage) {
             totalValue = remote.totalValue
             coinKeys = remote.coinKeys
-            status = nil
-            originalTotalValue = nil
+            state = nil
         }
 
-        init(
-            totalValue: Balance,
-            coinKeys: [Data],
-            status: Status?,
-            originalTotalValue: Balance? = nil
-        ) {
+        init(totalValue: Balance, coinKeys: [Data], state: State? = nil) {
             self.totalValue = totalValue
             self.coinKeys = coinKeys
-            self.status = status
-            self.originalTotalValue = originalTotalValue
+            self.state = state
         }
     }
 }

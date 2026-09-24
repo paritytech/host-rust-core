@@ -86,7 +86,8 @@ observer. Raw-context code goes through the async `performWrite` / `performRead`
 or deleted (mapped models are cached by object ID), so mapper cost is per change, not per subscriber × rows.
 A row whose *related* objects change without the row itself changing is not re-mapped; derived-state
 subscribers (coin and voucher state from `CDDurableTx`) get their refresh because the durable-tx repository
-touches the parent rows (`CoinageTxRowObserver`). Do the same for any new relationship-derived mapper.
+touches the parent rows (`CoinageTxRowObserver`); `TransferStateCoreDataStore` does the same for the
+chat message when its transfer state row changes. Do the same for any new relationship-derived mapper.
 
 ### Migration
 

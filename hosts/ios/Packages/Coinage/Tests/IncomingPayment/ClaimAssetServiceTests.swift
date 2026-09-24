@@ -150,7 +150,7 @@ struct ClaimAssetServiceTests {
         // the wait that ends exactly at the deadline still loads: t = 0, 50, ..., 300 ms. Stepping to
         // each load keeps the clock from running ahead of the service and dropping that last attempt.
         for expected in 1 ... 7 {
-            try await rig.time.advance(until: { rig.loader.loads().count >= expected })
+            try await rig.time.advance(until: { rig.loader.loads().count >= expected || run.isFinished })
         }
         try await rig.time.advance(until: { run.isFinished })
 
@@ -170,7 +170,7 @@ struct ClaimAssetServiceTests {
         // run to completion can spend five steps while the service is descheduled and lose that last
         // attempt. Stopping at each load keeps the drift at one step.
         for expected in 1 ... 7 {
-            try await rig.time.advance(until: { rig.loader.loads().count >= expected })
+            try await rig.time.advance(until: { rig.loader.loads().count >= expected || run.isFinished })
         }
         try await rig.time.advance(until: { run.isFinished })
 
