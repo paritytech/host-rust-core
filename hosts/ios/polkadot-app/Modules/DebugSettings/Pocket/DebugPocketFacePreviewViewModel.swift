@@ -41,7 +41,10 @@
 
             do {
                 let data = try await fetch(address, PocketPreviewLoader.maxBytes)
-                face = try decoder.decode(String(decoding: data, as: UTF8.self)).toWidgetNode(resolver: resolver)
+                guard let json = String(bytes: data, encoding: .utf8) else {
+                    throw RendererNodeJsonError.notUtf8
+                }
+                face = try decoder.decode(json).toWidgetNode(resolver: resolver)
                 refusal = nil
             } catch {
                 show(refusal: "\(error)")

@@ -12,6 +12,7 @@ enum RendererNodeJsonError: Error, CustomStringConvertible {
     case treeTooDeep(Int)
     case sizeOutOfRange(String)
     case opacityOutOfRange(String)
+    case notUtf8
 
     var description: String {
         switch self {
@@ -25,6 +26,7 @@ enum RendererNodeJsonError: Error, CustomStringConvertible {
         case let .treeTooDeep(limit): "renderer tree deeper than \(limit) levels"
         case let .sizeOutOfRange(value): "renderer size out of range: \(value)"
         case let .opacityOutOfRange(value): "renderer opacity out of range: \(value)"
+        case .notUtf8: "renderer node is not UTF-8"
         }
     }
 }
@@ -55,6 +57,7 @@ struct RendererNodeJsonDecoder {
 // MARK: - Nodes
 
 private extension RendererNodeJsonDecoder {
+    // swiftlint:disable:next cyclomatic_complexity
     func node(from element: Any, depth: Int) throws -> RendererNode {
         guard depth <= Limit.depth else { throw RendererNodeJsonError.treeTooDeep(Limit.depth) }
         let object = try jsonObject(element)
@@ -145,6 +148,7 @@ private extension [String: Any] {
         try array("modifiers").map { try Self.modifier(from: $0) }
     }
 
+    // swiftlint:disable:next cyclomatic_complexity
     static func modifier(from element: Any) throws -> Modifier {
         let object = try jsonObject(element)
         let value = object["value"]

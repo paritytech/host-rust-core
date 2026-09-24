@@ -70,6 +70,7 @@ struct PocketPreviewLoader {
 /// the host holds: the body is taken as it arrives and dropped as soon as it
 /// passes the bound, rather than buffered whole and measured afterwards.
 enum PocketPreviewFetch {
+    @Sendable
     static func bounded(_ url: URL, maxBytes: Int) async throws -> Data {
         let (bytes, _) = try await URLSession.shared.bytes(from: url)
 

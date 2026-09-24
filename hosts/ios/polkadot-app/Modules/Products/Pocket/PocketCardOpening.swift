@@ -12,12 +12,11 @@ enum PocketCardOpening {
     static func open(
         _ key: PocketCardKey,
         flowState: SPAFlowState,
-        navigator: ModuleNavigating,
-        hosts: PocketCardHosts = .shared
+        navigator: ModuleNavigating
     ) {
         guard let url = key.launchUrl, let page = flowState.hostProvider.page(url: url) else { return }
 
-        let view = hosts.view(for: key) {
+        let view = PocketCardHosts.shared.view(for: key) {
             let configuration = SPAConfiguration(
                 title: nil,
                 isRootScreen: false,

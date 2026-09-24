@@ -12,13 +12,17 @@ struct RendererNodeJsonEncoder {
             withJSONObject: object(node),
             options: [.fragmentsAllowed, .sortedKeys]
         )
-        return String(decoding: data, as: UTF8.self)
+        guard let json = String(bytes: data, encoding: .utf8) else {
+            throw RendererNodeJsonError.notUtf8
+        }
+        return json
     }
 }
 
 // MARK: - Nodes
 
 private extension RendererNodeJsonEncoder {
+    // swiftlint:disable:next cyclomatic_complexity
     func object(_ node: RendererNode) -> [String: Any] {
         switch node {
         case .nil:
@@ -104,6 +108,16 @@ private extension RendererNodeJsonEncoder {
         ["tag": tag, "value": value]
     }
 
+    /// A tag whose value is an enum spelling. `RendererWire` is spelled out by
+    /// hand, so a case added to the bindings has no name here until someone
+    /// adds it; leaving the value out makes the decoder refuse that face, which
+    /// costs the card its kept face rather than writing a modifier it would
+    /// read back as something else.
+    func spelled(_ tag: String, _ value: String?) -> [String: Any] {
+        let fields: [String: Any?] = ["tag": tag, "value": value]
+        return fields.compactMapValues { $0 }
+    }
+
     func container(
         _ tag: String,
         _ modifiers: [Modifier],
@@ -121,6 +135,7 @@ private extension RendererNodeJsonEncoder {
 // MARK: - Modifiers
 
 private extension RendererNodeJsonEncoder {
+    // swiftlint:disable:next cyclomatic_complexity
     func modifier(_ modifier: Modifier) -> [String: Any] {
         switch modifier {
         case let .margin(dimensions): tagged("Margin", self.dimensions(dimensions))
@@ -134,17 +149,18 @@ private extension RendererNodeJsonEncoder {
         case let .fillWidth(fills): ["tag": "FillWidth", "value": fills]
         case let .fillHeight(fills): ["tag": "FillHeight", "value": fills]
         case let .opacity(opacity): ["tag": "Opacity", "value": opacity]
-        case let .blendingMode(mode): ["tag": "BlendingMode", "value": name(mode)]
+        case let .blendingMode(mode): spelled("BlendingMode", name(mode))
         }
     }
 
     func dimensions(_ dimensions: Dimensions) -> [String: Any] {
-        [
+        let values: [String: Any?] = [
             "top": readable(dimensions.top),
             "end": readable(dimensions.end),
             "bottom": dimensions.bottom.map(readable),
             "start": dimensions.start.map(readable)
-        ].compactMapValues { $0 }
+        ]
+        return values.compactMapValues { $0 }
     }
 
     /// A size no larger than the decoder will read back. The renderer clamps
@@ -167,7 +183,8 @@ private extension RendererNodeJsonEncoder {
             case .square: ["tag": "Square"]
             }
 
-        return ["color": name(background.color), "shape": shape].compactMapValues { $0 }
+        let values: [String: Any?] = ["color": name(background.color), "shape": shape]
+        return values.compactMapValues { $0 }
     }
 
     func borderStyle(_ style: BorderStyle) -> [String: Any] {
@@ -179,8 +196,12 @@ private extension RendererNodeJsonEncoder {
             case .square: ["tag": "Square"]
             }
 
-        return ["width": readable(style.width), "color": name(style.color), "shape": shape]
-            .compactMapValues { $0 }
+        let values: [String: Any?] = [
+            "width": readable(style.width),
+            "color": name(style.color),
+            "shape": shape
+        ]
+        return values.compactMapValues { $0 }
     }
 
     func source(_ source: ImageSource) -> [String: Any] {

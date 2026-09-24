@@ -1,6 +1,6 @@
 import Foundation
 import PolkadotUI
-import Products
+@preconcurrency import Products
 
 /// Turns an image source inside a face into an address the image loader can
 /// fetch: a file in the product's own archive, or a bulletin gateway address.

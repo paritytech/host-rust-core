@@ -1,7 +1,7 @@
 #if DEBUG
 
     import Foundation
-    import Keystore_iOS
+    @preconcurrency import Keystore_iOS
     import Products
 
     /// A Pocket card supplied by hand, for a product that publishes no worker

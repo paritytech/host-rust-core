@@ -51,12 +51,24 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
 
     private var held: [ProductId: Held] = [:]
     private var following: Task<Void, Never>?
+    private var isShutDown = false
     private let executionSubject = AsyncCurrentValueSubject<[ProductId: TrUAPIProductExecutionProtocol]>([:])
 
     init(builder: any PocketWorkerBuilding, pocket: PocketFacade = .shared, logger: LoggerProtocol = Logger.shared) {
         self.builder = builder
         self.pocket = pocket
         self.logger = logger
+
+        Task { await self.beginFollowing() }
+    }
+
+    /// Started from a task rather than in `init`, because the follow task
+    /// captures the supervisor and an actor's initializer cannot reach its own
+    /// storage once it has escaped. A shutdown can therefore land first, and
+    /// must not be followed by a worker-refresh loop nothing holds a way back
+    /// to.
+    private func beginFollowing() {
+        guard !isShutDown else { return }
 
         following = Task { await self.followCollection() }
     }
@@ -65,6 +77,7 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
     /// a supervisor dropped without this leaves a headless web view and its
     /// chain connections running for the rest of the process.
     func shutdown() async {
+        isShutDown = true
         following?.cancel()
         following = nil
 

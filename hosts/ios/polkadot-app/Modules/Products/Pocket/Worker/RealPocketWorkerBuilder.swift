@@ -1,5 +1,5 @@
 import Foundation
-import Products
+@preconcurrency import Products
 import TrUAPIHost
 
 enum PocketWorkerError: Error, CustomStringConvertible {

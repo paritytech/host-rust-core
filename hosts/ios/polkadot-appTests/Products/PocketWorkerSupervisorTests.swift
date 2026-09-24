@@ -171,6 +171,28 @@ struct PocketWorkerSupervisorTests {
         #expect(supervisor.currentExecution(of: "game.paseo") == nil)
         #expect(builder.execution?.closeCallCount == 1)
     }
+
+    /// The supervisor follows the collection for the whole life of the process,
+    /// and a worker already running is only told about a card added later
+    /// because of that. Without it a product's own list silently goes stale the
+    /// moment its worker is up.
+    @Test
+    func tellsARunningWorkerAboutACardAddedLater() async throws {
+        let builder = StubBuilder()
+        let repository = InMemoryPocketCardRepository([loyalty])
+        let pocket = PocketFacade(tld: { "paseo" }, repository: repository)
+        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocket)
+
+        supervisor.demandChanged(productId: "game.paseo", transition: .start)
+        try await settle()
+        #expect(try builder.bridge?.listCards().map(\.cardId) == ["loyalty"])
+
+        await repository.insert(streak, face: .nil)
+        pocket.collectionChanged()
+        try await settle()
+
+        #expect(try builder.bridge?.listCards().map(\.cardId).sorted() == ["loyalty", "streak"])
+    }
 }
 
 // MARK: - Fixtures
@@ -178,6 +200,12 @@ struct PocketWorkerSupervisorTests {
 private let loyalty = PocketCardEntry(
     key: PocketCardKey(productId: "game.paseo", cardId: PocketCardId(value: "loyalty")),
     title: "Loyalty",
+    privileged: false
+)
+
+private let streak = PocketCardEntry(
+    key: PocketCardKey(productId: "game.paseo", cardId: PocketCardId(value: "streak")),
+    title: "Streak",
     privileged: false
 )
 
@@ -210,6 +238,9 @@ private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
     /// What the bridge would have answered the moment the worker's engine came
     /// up, which is when its script subscribes to the card list.
     private(set) var cardsWhenTheEngineBooted: [PocketCard] = []
+    /// The bridge of the worker built last, so a test can read the slice the
+    /// core is being served after the collection moves.
+    private(set) var bridge: ProductPocketHostBridge?
 
     var cannotBuild: Bool
     var engineFails: Bool
@@ -224,6 +255,8 @@ private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
     func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> PocketWorkerRuntime {
         if cannotBuild { throw PocketWorkerError.noPocketWorker(productId) }
         if buildDelay > .zero { try await Task.sleep(for: buildDelay) }
+
+        bridge = pocket
 
         built.append(productId)
         let execution = MockProductExecution()
