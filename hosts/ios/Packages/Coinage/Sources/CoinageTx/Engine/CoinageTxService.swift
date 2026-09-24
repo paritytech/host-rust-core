@@ -162,6 +162,11 @@ public final class CoinageTxService: CoinageTxServicing {
             if let key = claimed.first {
                 throw CoinageTxError.handoffOfClaimedAsset(key.toHex())
             }
+
+            let handedOff = try context.filterHandedOff(keys)
+            if let key = handedOff.first {
+                throw CoinageTxError.handoffOfHandedOffAsset(key.toHex())
+            }
         }
         return StoreHandoffCommit(assets: assets, ledger: ledger)
     }

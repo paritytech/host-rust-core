@@ -114,13 +114,22 @@ final class InMemoryCoinageAssetLedger: CoinageAssetLedgerProtocol, @unchecked S
             .eraseToAnyAsyncSequence()
     }
 
+    /// Mirrors the CoreData ledger: a coin already carrying a mark is refused rather than skipped.
+    /// Tolerating the re-mark let the suite pass on ``CoinageTxService``'s own `filterHandedOff`
+    /// check alone, leaving the ledger's guard — the one inside the write transaction, where it
+    /// actually has to hold — uncovered.
     func precommitHandOff(
         _ assets: [OwnAsset],
         validation: @escaping (any CoinageTxValidationContextProtocol) throws -> Void
     ) async throws {
         try validation(validationContext())
-        state.withLock { current in
-            for asset in assets where !current.committedMarks.contains(asset) {
+        try state.withLock { current in
+            for asset in assets where current.pendingMarks.contains(asset)
+                || current.committedMarks.contains(asset) {
+                throw CoinageTxError.handoffOfHandedOffAsset(asset.publicKey.toHex())
+            }
+
+            for asset in assets {
                 current.pendingMarks.insert(asset)
             }
         }

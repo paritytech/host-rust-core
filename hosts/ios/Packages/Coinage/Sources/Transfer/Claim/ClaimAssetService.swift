@@ -151,15 +151,22 @@ private extension ClaimAssetService {
     ) async throws -> [CoinageTxEntry] {
         var settled: [CoinageTxEntry] = []
         var lastSeen: Balance = 0
+        // Whether this run has taken a look at all. Tracked rather than inferred from `lastSeen`,
+        // which stays 0 when nothing has arrived and so cannot tell "not looked yet" from "looked
+        // and saw nothing" — the very distinction the window check depends on.
+        var hasLooked = false
 
         while !Task.isCancelled {
             settled = try await awaitKnownOperationsSettled(run)
 
             let claimed = try await valueClaimed(settled.finalizedSuccess(), context: run.context)
-            guard let remaining = remainder(after: claimed, run: run) else { break }
+            guard let remaining = remainder(after: claimed, run: run, hasLooked: hasLooked) else { break }
 
             lastSeen = await awaitBalance(looks, lastSeen: lastSeen, target: remaining)
-            let loadable = Swift.min(lastSeen, remaining)
+            hasLooked = true
+            // Deliberate rounding: a claim takes what the denominations can express and leaves the
+            // dust, which no later look can make loadable either.
+            let loadable = run.context.roundedDown(amountInPlanks: Swift.min(lastSeen, remaining))
 
             guard loadable > 0 else { continue }
 
@@ -173,21 +180,26 @@ private extension ClaimAssetService {
 
     /// What is still owed, or `nil` once nothing further will be attempted: the amount is covered, the
     /// remainder is below the smallest denomination (nothing can ever load it, however much more
-    /// arrives), or the window closed. The window is checked before attempting: the funds are the
-    /// caller's own and nothing else will spend them, so a closed window is the end of it.
-    func remainder(after claimed: Balance, run: ClaimRun) -> Balance? {
+    /// arrives), or the window closed *after* this run has looked.
+    ///
+    /// The window used to be checked before looking, on the reasoning that the funds are the caller's
+    /// own and nothing else will spend them. That holds only while the key survives — and `settle`
+    /// retires the source secret on a `notClaimed` verdict, which for a `.coins` source *is* the money.
+    /// So a resume arriving past the window still takes one look and one attempt, the same guarantee
+    /// ``ClaimCoinsService`` documents and makes.
+    func remainder(after claimed: Balance, run: ClaimRun, hasLooked: Bool) -> Balance? {
         let remaining = run.amount > claimed ? run.amount - claimed : 0
 
         logger?.debug("Claimed \(claimed) of \(run.amount), remaining \(remaining) for group=\(run.groupId)")
 
         if remaining == 0 { return nil }
 
-        if run.context.breakdown(amountInPlanks: remaining).isEmpty {
+        if run.context.roundedDown(amountInPlanks: remaining) == 0 {
             logger?.debug("Claim asset: remainder \(remaining) is unloadable group=\(run.groupId)")
             return nil
         }
 
-        if timing.now() >= run.retryUntil {
+        if hasLooked, timing.now() >= run.retryUntil {
             logger?.debug("Claim asset: window closed group=\(run.groupId) claimed=\(claimed)")
             return nil
         }
