@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::product_account::derivation_index_bytes;
 use crate::host_logic::sso::messages::RingVrfError;
-use crate::runtime::vrf::Vrf;
+use crate::runtime::vrf::{self, Vrf};
 use async_trait::async_trait;
 use subxt::dynamic;
 use subxt::ext::scale_decode::DecodeAsType;
@@ -342,9 +342,9 @@ enum RingExponent {
 impl RingExponent {
     fn domain_size(self) -> u32 {
         match self {
-            Self::R2e9 => 1 << 11,
-            Self::R2e10 => 1 << 12,
-            Self::R2e14 => 1 << 16,
+            Self::R2e9 => vrf::DOMAIN_2E11,
+            Self::R2e10 => vrf::DOMAIN_2E12,
+            Self::R2e14 => vrf::DOMAIN_2E16,
         }
     }
 }

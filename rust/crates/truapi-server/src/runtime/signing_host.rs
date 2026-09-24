@@ -575,6 +575,7 @@ impl SigningHost {
 
     async fn resolve_ring_vrf_key_for_ring(
         &self,
+        vrf: &Vrf,
         session: &AuthoritySession,
         handle: &v01::ProductAccountId,
         ring: &v01::RingLocation,
@@ -587,12 +588,13 @@ impl SigningHost {
             return Err(RingVrfError::KeyNotInRing);
         }
         let entropy = self.ring_vrf_entropy(session, handle)?;
-        Self::require_matching_registered_public_key(&vrf::load().await?, &entry, &entropy)?;
+        Self::require_matching_registered_public_key(vrf, &entry, &entropy)?;
         Ok(entropy)
     }
 
     async fn resolve_registered_ring_vrf_key(
         &self,
+        vrf: &Vrf,
         session: &AuthoritySession,
         handle: &v01::ProductAccountId,
     ) -> Result<Zeroizing<[u8; 32]>, RingVrfError> {
@@ -601,7 +603,7 @@ impl SigningHost {
             .await?
             .ok_or(RingVrfError::KeyNotRegistered)?;
         let entropy = self.ring_vrf_entropy(session, handle)?;
-        Self::require_matching_registered_public_key(&vrf::load().await?, &entry, &entropy)?;
+        Self::require_matching_registered_public_key(vrf, &entry, &entropy)?;
         Ok(entropy)
     }
 
@@ -1083,13 +1085,18 @@ impl ProductAuthority for SigningHost {
                 }
             }
         };
+        let vrf = vrf::load().await?;
         let entropy = self
-            .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
+            .resolve_ring_vrf_key_for_ring(
+                &vrf,
+                session,
+                &key_handle,
+                &request.payload.ring_location,
+            )
             .await?;
         self.ring_resolver
             .validate(&request.payload.ring_location)
             .await?;
-        let vrf = vrf::load().await?;
         let context = development_context_bytes(&request.payload.context);
         let alias = vrf.alias(&entropy, &context)?;
         Ok(v01::ContextualAlias {
@@ -1118,10 +1125,15 @@ impl ProductAuthority for SigningHost {
         // The owner's own calls are unaffected; a cross-product caller is held to
         // its own context or the granting product's.
         crate::runtime::product_manifest::require_own_context(&access, &request.payload.context)?;
-        let entropy = self
-            .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
-            .await?;
         let vrf = vrf::load().await?;
+        let entropy = self
+            .resolve_ring_vrf_key_for_ring(
+                &vrf,
+                session,
+                &key_handle,
+                &request.payload.ring_location,
+            )
+            .await?;
         let candidate = self.ring_vrf_member_candidate(&vrf, &entropy)?;
         let resolved = self
             .ring_resolver
@@ -1239,10 +1251,11 @@ impl ProductAuthority for SigningHost {
         let (key_handle, _access) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
+        let vrf = vrf::load().await?;
         let entropy = self
-            .resolve_registered_ring_vrf_key(session, &key_handle)
+            .resolve_registered_ring_vrf_key(&vrf, session, &key_handle)
             .await?;
-        vrf::load().await?.sign(&entropy, &request.payload.message)
+        vrf.sign(&entropy, &request.payload.message)
     }
 
     async fn allocate_resources(
@@ -1640,7 +1653,7 @@ mod tests {
                 },
                 ring_index: 7,
                 ring_revision: 11,
-                domain_size: 1 << 11,
+                domain_size: crate::runtime::vrf::DOMAIN_2E11,
                 members: vec![full_member],
             },
         })

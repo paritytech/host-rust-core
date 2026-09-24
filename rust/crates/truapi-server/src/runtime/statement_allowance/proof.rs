@@ -41,9 +41,9 @@ pub enum ProofError {
 /// (power = exponent + 2).
 pub fn domain_for_ring_exponent(exponent: u8) -> Result<u32, StatementAllowanceError> {
     match exponent {
-        9 => Ok(1 << 11),
-        10 => Ok(1 << 12),
-        14 => Ok(1 << 16),
+        9 => Ok(vrf::DOMAIN_2E11),
+        10 => Ok(vrf::DOMAIN_2E12),
+        14 => Ok(vrf::DOMAIN_2E16),
         other => Err(ProofError::UnsupportedRingExponent { exponent: other }.into()),
     }
 }
@@ -52,6 +52,12 @@ pub fn domain_for_ring_exponent(exponent: u8) -> Result<u32, StatementAllowanceE
 pub async fn member_key(entropy: [u8; 32]) -> Result<[u8; 32], StatementAllowanceError> {
     let vrf = vrf::load().await.map_err(vrf_error)?;
     Ok(vrf.member(&entropy).map_err(vrf_error)?)
+}
+
+/// [`member_key`], blocking on the load.
+#[cfg(test)]
+pub(super) fn member_key_now(entropy: [u8; 32]) -> [u8; 32] {
+    futures::executor::block_on(member_key(entropy)).expect("the ring member derives")
 }
 
 /// Produce the 785-byte ring-VRF membership proof over `members` (already
@@ -81,7 +87,8 @@ pub async fn ring_vrf_proof(
     Ok(bytes)
 }
 
-fn vrf_error(error: RingVrfError) -> ProofError {
+/// A failed ring-VRF operation, or a module that did not load.
+pub(super) fn vrf_error(error: RingVrfError) -> ProofError {
     ProofError::Vrf(error.to_string())
 }
 
@@ -92,19 +99,19 @@ mod tests {
 
     #[test]
     fn exponent_maps_to_domain() {
-        assert_eq!(domain_for_ring_exponent(9).unwrap(), 1 << 11);
-        assert_eq!(domain_for_ring_exponent(10).unwrap(), 1 << 12);
-        assert_eq!(domain_for_ring_exponent(14).unwrap(), 1 << 16);
+        assert_eq!(domain_for_ring_exponent(9).unwrap(), vrf::DOMAIN_2E11);
+        assert_eq!(domain_for_ring_exponent(10).unwrap(), vrf::DOMAIN_2E12);
+        assert_eq!(domain_for_ring_exponent(14).unwrap(), vrf::DOMAIN_2E16);
         assert!(domain_for_ring_exponent(11).is_err());
     }
 
     #[test]
     fn proof_is_785_bytes_for_a_single_member_ring() {
         let entropy = [0x11u8; 32];
-        let member = block_on(member_key(entropy)).unwrap();
+        let member = member_key_now(entropy);
         let members = vec![member];
         let proof = block_on(ring_vrf_proof(
-            1 << 11,
+            vrf::DOMAIN_2E11,
             entropy,
             &members,
             &[0x33; 32],
@@ -117,9 +124,9 @@ mod tests {
     #[test]
     fn open_fails_when_member_absent_from_ring() {
         let entropy = [0x11u8; 32];
-        let other = block_on(member_key([0x22u8; 32])).unwrap();
+        let other = member_key_now([0x22u8; 32]);
         let err = block_on(ring_vrf_proof(
-            1 << 11,
+            vrf::DOMAIN_2E11,
             entropy,
             &[other],
             &[0x33; 32],

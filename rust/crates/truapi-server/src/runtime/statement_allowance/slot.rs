@@ -13,6 +13,7 @@ use thiserror::Error;
 use super::StatementAllowanceError;
 use super::collection::PersonhoodCollection;
 use super::extension::Metadata;
+use super::proof::vrf_error;
 use super::ring::blake2_128_concat;
 use super::rpc::RpcClient;
 use super::view;
@@ -212,16 +213,7 @@ pub async fn slot_alias(
     seq: u32,
 ) -> Result<[u8; 32], StatementAllowanceError> {
     let context = derive_slot_context(network_suffix, period, seq);
-    crate::runtime::vrf::load()
-        .await
-        .and_then(|vrf| vrf.alias(&entropy, &context))
-        .map_err(|err| {
-            SlotError::AliasInContext {
-                context: "statement-store slot",
-                error: err.to_string(),
-            }
-            .into()
-        })
+    alias_in_context(entropy, &context, "statement-store slot").await
 }
 
 /// The PGAS claim alias for our `entropy` at `(day, slot_index)`.
@@ -232,16 +224,7 @@ pub async fn pgas_alias(
     slot_index: u32,
 ) -> Result<[u8; 32], StatementAllowanceError> {
     let context = derive_pgas_context(network_suffix, day, slot_index);
-    crate::runtime::vrf::load()
-        .await
-        .and_then(|vrf| vrf.alias(&entropy, &context))
-        .map_err(|err| {
-            SlotError::AliasInContext {
-                context: "PGAS claim slot",
-                error: err.to_string(),
-            }
-            .into()
-        })
+    alias_in_context(entropy, &context, "PGAS claim slot").await
 }
 
 /// The long-term-storage slot alias for our `entropy` at `(period, counter)`.
@@ -252,16 +235,23 @@ pub async fn long_term_storage_alias(
     counter: u8,
 ) -> Result<[u8; 32], StatementAllowanceError> {
     let context = derive_long_term_storage_context(network_suffix, period, counter);
-    crate::runtime::vrf::load()
-        .await
-        .and_then(|vrf| vrf.alias(&entropy, &context))
-        .map_err(|err| {
-            SlotError::AliasInContext {
-                context: "long-term-storage slot",
-                error: err.to_string(),
-            }
-            .into()
-        })
+    alias_in_context(entropy, &context, "long-term-storage slot").await
+}
+
+/// The alias of the key for `entropy` in `context`, named `name` in errors.
+async fn alias_in_context(
+    entropy: [u8; 32],
+    context: &[u8],
+    name: &'static str,
+) -> Result<[u8; 32], StatementAllowanceError> {
+    let vrf = crate::runtime::vrf::load().await.map_err(vrf_error)?;
+    vrf.alias(&entropy, context).map_err(|err| {
+        SlotError::AliasInContext {
+            context: name,
+            error: err.to_string(),
+        }
+        .into()
+    })
 }
 
 /// `Resources.StatementStoreAllowances[period][alias]` storage key.

@@ -1653,7 +1653,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),
@@ -1696,7 +1696,7 @@ mod tests {
                 entropy,
                 ring: RingParams {
                     collection,
-                    members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
+                    members: vec![proof::member_key_now(entropy)],
                     exponent: 9,
                     ring_index: 0,
                     block_hash: "0xfinal".to_string(),
@@ -2094,7 +2094,7 @@ mod tests {
         let lite_entropy = candidates[1].entropy;
         let page = format!(
             r#""0x04{}""#,
-            hex::encode(futures::executor::block_on(proof::member_key(lite_entropy)).unwrap())
+            hex::encode(proof::member_key_now(lite_entropy))
         );
 
         let responses = [
@@ -2291,7 +2291,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),
@@ -2351,7 +2351,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),
@@ -2409,7 +2409,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),
@@ -2460,7 +2460,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![futures::executor::block_on(proof::member_key(entropy)).unwrap()],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),

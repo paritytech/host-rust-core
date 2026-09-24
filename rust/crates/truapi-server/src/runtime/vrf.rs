@@ -12,6 +12,13 @@ use crate::host_logic::sso::messages::RingVrfError;
 #[cfg(not(target_arch = "wasm32"))]
 use truapi_verifiable as module;
 
+/// Ring domain size for rings of up to 2^9 members.
+pub(in crate::runtime) const DOMAIN_2E11: u32 = 1 << 11;
+/// Ring domain size for rings of up to 2^10 members.
+pub(in crate::runtime) const DOMAIN_2E12: u32 = 1 << 12;
+/// Ring domain size for rings of up to 2^14 members.
+pub(in crate::runtime) const DOMAIN_2E16: u32 = 1 << 16;
+
 /// Ring-VRF operations, from [`load`].
 pub(in crate::runtime) struct Vrf(());
 
@@ -27,6 +34,12 @@ pub(in crate::runtime) fn prefetch(_spawner: &crate::subscription::Spawner) {}
 
 #[cfg(target_arch = "wasm32")]
 pub(in crate::runtime) use module::{load, prefetch};
+
+/// The ring member for `entropy`, loading the operations first.
+#[cfg(all(target_arch = "wasm32", feature = "test-host"))]
+pub(crate) async fn ring_vrf_member(entropy: &[u8; 32]) -> Result<[u8; 32], RingVrfError> {
+    load().await?.member(entropy)
+}
 
 impl Vrf {
     /// The ring member, a 32-byte public key, for `entropy`.
