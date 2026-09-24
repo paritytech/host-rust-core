@@ -57,6 +57,11 @@ const MAX_WS_MESSAGE_BYTES: usize = 8 << 20;
 // Stalled handshakes must eventually release their sockets.
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+// A listener that keeps failing, for example with no descriptors left, must not
+// rebind in a tight loop; a successful accept resets the pause.
+const RELISTEN_PAUSE_MIN: std::time::Duration = std::time::Duration::from_millis(50);
+const RELISTEN_PAUSE_MAX: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Per-session descriptor returned to the host: product uses `port + token`
 /// to build its WebSocket URL (e.g. `ws://127.0.0.1:<port>/?t=<token>`).
 #[derive(Clone, Debug, uniffi::Record)]
@@ -393,6 +398,7 @@ impl Listener {
         registry: Arc<WsBridgeRegistry>,
         logger: BridgeLogger,
     ) -> io::Result<Self> {
+        let port = socket.local_addr()?.port();
         // Register with the shared runtime's I/O driver before returning so a
         // successful start always yields a ready endpoint.
         let listener = {
@@ -402,7 +408,7 @@ impl Listener {
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();
         let (stopped_tx, stopped) = std::sync::mpsc::channel::<()>();
         let accept_task = handle.spawn(async move {
-            accept_loop(listener, registry, logger, shutdown_rx).await;
+            accept_loop(listener, port, registry, logger, shutdown_rx).await;
             let _ = stopped_tx.send(());
         });
         Ok(Self {
@@ -548,14 +554,30 @@ fn join_aborted_connections(handles: Vec<tokio::task::JoinHandle<()>>) {
     let _ = done_rx.recv();
 }
 
+// These fail one pending connection; any other error means the listener itself
+// is unusable.
+fn is_connection_error(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::Interrupted
+            | io::ErrorKind::WouldBlock
+    )
+}
+
 async fn accept_loop(
     listener: TcpListener,
+    port: u16,
     registry: Arc<WsBridgeRegistry>,
     logger: BridgeLogger,
     mut shutdown: oneshot::Receiver<()>,
 ) {
     // Independent setup tasks keep a stalled handshake from blocking acceptance.
     let mut setup_tasks: VecDeque<tokio::task::JoinHandle<()>> = VecDeque::new();
+    // Absent while a lost listener waits to be bound again on the same port.
+    let mut listener = Some(listener);
+    let mut relisten_pause = RELISTEN_PAUSE_MIN;
     loop {
         tokio::select! {
             _ = &mut shutdown => {
@@ -568,14 +590,23 @@ async fn accept_loop(
                 }
                 break;
             }
-            accepted = listener.accept() => {
+            accepted = async { listener.as_ref().expect("branch requires a listener").accept().await },
+                if listener.is_some() =>
+            {
                 let (stream, peer) = match accepted {
                     Ok(pair) => pair,
-                    Err(err) => {
+                    Err(err) if is_connection_error(&err) => {
                         logger("truapi.ws_bridge.accept_error", &err.to_string());
                         continue;
                     }
+                    Err(err) => {
+                        // Dropping the socket frees its port for the rebind.
+                        logger("truapi.ws_bridge.listener_lost", &err.to_string());
+                        listener = None;
+                        continue;
+                    }
                 };
+                relisten_pause = RELISTEN_PAUSE_MIN;
                 setup_tasks.retain(|task| !task.is_finished());
                 // Evict the oldest pending handshake so stalled peers cannot
                 // reserve the entire backlog until their timeouts expire.
@@ -590,6 +621,16 @@ async fn accept_loop(
                 setup_tasks.push_back(tokio::spawn(async move {
                     connection_setup(stream, peer, registry, logger).await;
                 }));
+            }
+            _ = tokio::time::sleep(relisten_pause), if listener.is_none() => {
+                match bind_loopback(port).and_then(TcpListener::from_std) {
+                    Ok(rebound) => {
+                        logger("truapi.ws_bridge.relistened", &format!("port={port}"));
+                        listener = Some(rebound);
+                    }
+                    Err(err) => logger("truapi.ws_bridge.relisten_failed", &err.to_string()),
+                }
+                relisten_pause = (relisten_pause * 2).min(RELISTEN_PAUSE_MAX);
             }
         }
     }
@@ -1626,6 +1667,57 @@ mod tests {
             (old.request_id, new.request_id),
             ("p:old".to_string(), "p:new".to_string())
         );
+    }
+
+    /// A listener the kernel tears down, as Android does when a socket is
+    /// destroyed under the app, fails every accept. The loop has to rebind the
+    /// port once instead of spinning, so products that hold the endpoint can
+    /// reconnect.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_listener_torn_down_by_the_kernel_is_rebound_on_its_port() {
+        let (logger, markers) = recording_logger();
+        let socket = bind_loopback(0).expect("bind");
+        let port = socket.local_addr().expect("local addr").port();
+        let teardown = socket.try_clone().expect("second handle on the listener");
+        let registry = Arc::new(WsBridgeRegistry::default());
+        let token = "a".repeat(64);
+        registry.insert(token.clone(), test_runtime_factory(), no_log());
+        let (executor, _) = shared_native_executor().expect("shared native executor");
+        let listener =
+            Listener::serve(socket, &executor.handle(), registry, logger).expect("serve");
+
+        socket2::SockRef::from(&teardown)
+            .shutdown(std::net::Shutdown::Read)
+            .expect("shut the listener down");
+        drop(teardown);
+        crate::test_support::wait_until(
+            || {
+                markers
+                    .lock()
+                    .expect("markers mutex poisoned")
+                    .iter()
+                    .any(|marker| marker == "truapi.ws_bridge.relistened")
+            },
+            "the torn-down listener was not rebound",
+        );
+
+        connect(port, &token);
+        let lifecycle: Vec<String> = markers
+            .lock()
+            .expect("markers mutex poisoned")
+            .iter()
+            .filter(|marker| marker.contains("listener_lost") || marker.contains("relisten"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            lifecycle,
+            [
+                "truapi.ws_bridge.listener_lost",
+                "truapi.ws_bridge.relistened"
+            ]
+        );
+        listener.stop(true);
     }
 
     /// A rebind can lose the port to another socket; the next return to the

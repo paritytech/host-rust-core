@@ -111,5 +111,8 @@ wasm-bindgen-test = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dev-dependencies]
+socket2 = "0.6"
+
 [lints]
 workspace = true
