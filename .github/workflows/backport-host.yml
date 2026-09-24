@@ -17,12 +17,10 @@ name: Backport a host tree
 
 on:
   schedule:
-    # Every other day at 06:00 UTC, each tree on the days the other one is not,
-    # so two of these never arrive on the same morning. A month with 31 days
-    # runs android on the last and the first, which is the one seam in this and
-    # not worth a calendar to close.
-    - cron: "0 6 1-31/2 * *" # android
-    - cron: "0 6 2-30/2 * *" # ios
+    # Daily, both trees. A run that finds nothing costs a shallow clone and a
+    # handful of API calls, and a tree that is already carrying an open work
+    # order is left alone, so checking often is cheap and quiet.
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       host:
@@ -30,18 +28,10 @@ on:
         required: false
         type: choice
         options:
+          - both
           - android
           - ios
-        default: android
-
-# Per tree, so a dispatch of one never queues behind the other's schedule, and a
-# dispatch of the same tree its schedule is already checking waits rather than
-# racing it to the same branch.
-concurrency:
-  group: >-
-    backport-host-${{ inputs.host
-    || (github.event.schedule == '0 6 1-31/2 * *' && 'android' || 'ios') }}
-  cancel-in-progress: false
+        default: both
 
 permissions:
   contents: write
@@ -49,37 +39,28 @@ permissions:
 
 jobs:
   open_work_order:
-    name: Open the backport work order
+    name: Backport work order (${{ matrix.host }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      # One tree's source being unreachable says nothing about the other's.
+      fail-fast: false
+      matrix:
+        host: ${{ (inputs.host == '' || inputs.host == 'both')
+          && fromJSON('["android","ios"]')
+          || fromJSON(format('["{0}"]', inputs.host)) }}
+    # Per tree, so a dispatch never races the schedule to the same branch, and
+    # the two trees never wait on each other. Not cancel-in-progress: a run that
+    # has already pushed a branch should finish opening its pull request.
+    concurrency:
+      group: backport-host-${{ matrix.host }}
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
+      HOST: ${{ matrix.host }}
+      # The labels are named for the trees, so this needs no mapping.
+      HOST_LABEL: host-${{ matrix.host }}
     steps:
-      # A dispatch names the tree. A scheduled run is identified by the cron
-      # that started it, and an unmapped one stops here rather than falling
-      # back to a default and reporting on something nobody asked about.
-      - name: Choose the tree
-        env:
-          SCHEDULE: ${{ github.event.schedule }}
-          REQUESTED: ${{ inputs.host }}
-        run: |
-          set -euo pipefail
-          if [ -n "${REQUESTED}" ]; then
-            host="${REQUESTED}"
-          else
-            case "${SCHEDULE}" in
-              "0 6 1-31/2 * *") host=android ;;
-              "0 6 2-30/2 * *") host=ios ;;
-              *) echo "::error::No tree is mapped to the schedule '${SCHEDULE}'"; exit 1 ;;
-            esac
-          fi
-          case "${host}" in
-            android) echo "HOST_LABEL=host-android" >> "$GITHUB_ENV" ;;
-            ios) echo "HOST_LABEL=host-ios" >> "$GITHUB_ENV" ;;
-          esac
-          echo "HOST=${host}" >> "$GITHUB_ENV"
-          echo "::notice::Checking hosts/${host}"
-
       # Depth 1. The range below is walked over commits fetched from the source
       # repository, which this repository's own history plays no part in, and
       # the only commit this job makes sits directly on the checked-out one.
