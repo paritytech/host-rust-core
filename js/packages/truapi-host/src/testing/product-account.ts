@@ -5,6 +5,8 @@
 // fund it once, in a `globalSetup`, rather than per test: funding is a property
 // of the account, not of the run.
 
+import { readFile } from "node:fs/promises";
+
 import { DerivationIndex } from "@parity/truapi";
 
 import { resolveAccount, type DevAccount, type DevAccountName } from "./dev-accounts.js";
@@ -22,7 +24,7 @@ export interface ProductAccountQuery {
 
 /** The core's pure derivation helpers, as the node bundle exports them. */
 interface Derivation {
-  default: (input?: unknown) => Promise<unknown>;
+  default: (init: { module_or_path: Uint8Array }) => Promise<unknown>;
   deriveProductSubtreePublicKey(
     rootEntropy: Uint8Array,
     productId: string,
@@ -42,7 +44,12 @@ async function derivation(): Promise<Derivation> {
     const glue = (await import(
       /* @vite-ignore */ wasmArtifact("testing/truapi_server.js")
     )) as Derivation;
-    await glue.default();
+    // The bytes are handed over rather than left to the glue's own loader,
+    // which fetches a URL: node has none to fetch, and a suite reaches this
+    // from a Playwright global setup, which node runs.
+    await glue.default({
+      module_or_path: await readFile(wasmArtifact("testing/truapi_server_bg.wasm")),
+    });
     return glue;
   })();
   return loaded;
