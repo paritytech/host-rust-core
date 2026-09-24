@@ -73,14 +73,17 @@ jobs:
               *) echo "::error::No tree is mapped to the schedule '${SCHEDULE}'"; exit 1 ;;
             esac
           fi
+          case "${host}" in
+            android) echo "HOST_LABEL=host-android" >> "$GITHUB_ENV" ;;
+            ios) echo "HOST_LABEL=host-ios" >> "$GITHUB_ENV" ;;
+          esac
           echo "HOST=${host}" >> "$GITHUB_ENV"
           echo "::notice::Checking hosts/${host}"
 
-      # The whole history, because the range below is walked over commits
-      # fetched from the source repository.
+      # Depth 1. The range below is walked over commits fetched from the source
+      # repository, which this repository's own history plays no part in, and
+      # the only commit this job makes sits directly on the checked-out one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
 
       # An open work order is someone's job in progress. A second one for the
       # same tree would describe a range that overlaps it.
@@ -88,9 +91,8 @@ jobs:
         id: open_pr
         run: |
           set -euo pipefail
-          branch="hosts/backport-${HOST}"
-          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
-          existing="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // ""')"
+          existing="$(gh pr list --state open --label backport-host --label "$HOST_LABEL" \
+            --json number --jq '.[0].number // ""')"
           if [ -n "$existing" ]; then
             echo "already=true" >> "$GITHUB_OUTPUT"
             {
@@ -114,9 +116,15 @@ jobs:
           branch="$(python3 -c 'import json,sys;print(json.load(open("hosts/imports.json"))[sys.argv[1]]["branch"])' "$HOST")"
           from="$(python3 -c 'import json,sys;print(json.load(open("hosts/imports.json"))[sys.argv[1]]["ref"])' "$HOST")"
 
-          tip="$(git ls-remote "$source" "refs/heads/${branch}" | cut -f1)"
+          # Not inline in the assignment: a failing ls-remote would abort the
+          # step under errexit and the message below would never print.
+          if ! remote="$(git ls-remote "$source" "refs/heads/${branch}")"; then
+            echo "::error::Cannot reach ${source}"
+            exit 1
+          fi
+          tip="$(cut -f1 <<<"$remote")"
           if [ -z "$tip" ]; then
-            echo "::error::Cannot resolve ${branch} on ${source}"
+            echo "::error::${source} has no branch ${branch}"
             exit 1
           fi
 
@@ -127,9 +135,24 @@ jobs:
             exit 0
           fi
 
-          git fetch --quiet --no-tags "$source" "$from" 2>/dev/null || git fetch --quiet --no-tags "$source"
-          git fetch --quiet --no-tags "$source" "$tip" 2>/dev/null || git fetch --quiet --no-tags "$source"
+          # The branch refspec, not a bare fetch: a bare one takes the source's
+          # HEAD branch, which is not necessarily the branch being tracked, and
+          # the range below would then fail on an unknown revision.
+          git fetch --quiet --no-tags "$source" "+refs/heads/${branch}:refs/remotes/source/${branch}"
+          git fetch --quiet --no-tags "$source" "$from" 2>/dev/null \
+            || echo "::warning::${from} is no longer reachable by sha; relying on the branch fetch"
+
+          if ! git cat-file -e "${from}^{commit}" 2>/dev/null; then
+            echo "::error::The recorded ref ${from} is not in ${branch}. The source branch was rewritten; the manifest has to be corrected by hand."
+            exit 1
+          fi
+
           count="$(git rev-list --count "${from}..${tip}")"
+          if [ "$count" -eq 0 ]; then
+            echo "behind=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::${branch} has moved to ${tip} but carries nothing the recorded ref does not, so it was rewound rather than advanced. Nothing to backport, and the manifest is now behind a commit that is no longer the tip."
+            exit 0
+          fi
           {
             echo "behind=${count}"
             echo "from=${from}"
@@ -176,9 +199,10 @@ jobs:
             echo "Taken from the commit subjects, so a commit that landed without a number is not listed here. The full list is below it."
             echo
             printf '%s\n' "$log" \
-              | grep -oE '#[0-9]+' \
-              | sort -u -t'#' -k2 -n \
-              | sed "s|#\\([0-9]*\\)|- [#\\1](${repo_url}/pull/\\1)|" \
+              | sed -nE 's/^[0-9a-f]+\t.*\(#([0-9]+)\)$/\1/p; s/^[0-9a-f]+\tMerge pull request #([0-9]+) .*/\1/p' \
+              | sort -un \
+              | sed "s|^\\([0-9]*\\)$|- [#\\1](${repo_url}/pull/\\1)|" \
+              | grep . \
               || echo "- none carried a pull request number"
             echo
             echo "<details>"
@@ -219,7 +243,12 @@ jobs:
             echo "5. Commit the refreshed tree, \`hosts/imports.json\` with its new ref, and the deletion together, then push. That push is what starts CI on this pull request."
           } > "$file"
 
-          echo "file=${file}" >> "$GITHUB_OUTPUT"
+          {
+            echo "file=${file}"
+            # The target commit is in the name, so each work order gets its own
+            # branch and nothing this job does can overwrite another one.
+            echo "branch=hosts/backport-${HOST}-${TO:0:9}"
+          } >> "$GITHUB_OUTPUT"
           {
             echo "### Work order for hosts/${HOST}"
             echo
@@ -229,7 +258,7 @@ jobs:
       - name: Open the pull request
         if: steps.order.outputs.file != ''
         env:
-          BRANCH: ${{ steps.open_pr.outputs.branch }}
+          BRANCH: ${{ steps.order.outputs.branch }}
           FILE: ${{ steps.order.outputs.file }}
           COUNT: ${{ steps.drift.outputs.behind }}
           FROM: ${{ steps.drift.outputs.from }}
@@ -238,21 +267,15 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Forced because this branch belongs to this workflow and is only ever
-          # pushed when no pull request is open on it, so there is no work in
-          # progress to overwrite.
           git checkout -b "$BRANCH"
           git add "$FILE"
           git commit --no-gpg-sign -q -m "chore(hosts): open a backport work order for ${HOST}" \
             -m "hosts/${HOST} is ${COUNT} commits behind its source, ${FROM} to ${TO}. ${FILE} carries the range and what has to be done; it is deleted by whoever completes this."
-          git push --force origin "$BRANCH"
+          # Not forced. The branch names the commit it targets, so a branch that
+          # already exists holds a work order for this same range, and whatever
+          # is on it is someone's work rather than a stale copy of this one.
+          git push origin "$BRANCH"
 
-          # The path labeller matches the host trees, and this change touches
-          # neither, so the labels are set here.
-          case "$HOST" in
-            android) host_label=host-android ;;
-            ios) host_label=host-ios ;;
-          esac
           # A file rather than an inline string: the body carries blank lines,
           # which cannot survive inside a run block's quoting.
           {
@@ -266,7 +289,7 @@ jobs:
             --head "$BRANCH" \
             --title "chore(hosts): backport ${COUNT} commits into hosts/${HOST}" \
             --label backport-host \
-            --label "$host_label" \
+            --label "$HOST_LABEL" \
             --body-file "${RUNNER_TEMP}/pr-body.md")"
           echo "::notice::${url}"
           {
