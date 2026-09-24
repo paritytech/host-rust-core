@@ -715,7 +715,7 @@ async fn run_pgas_check(
         println!(
             "{} member=0x{}",
             candidate.collection,
-            hex::encode(alloc::proof::member_key(candidate.entropy))
+            hex::encode(alloc::proof::member_key(candidate.entropy).await?)
         );
     }
     let memberships =
@@ -872,7 +872,7 @@ async fn run_alloc_check(
         println!(
             "{} member=0x{} current_ring_index={}",
             candidate.collection,
-            hex::encode(alloc::proof::member_key(candidate.entropy)),
+            hex::encode(alloc::proof::member_key(candidate.entropy).await?),
             alloc::ring::read_current_ring_index(&rpc, candidate.collection)
                 .await
                 .map_err(anyhow::Error::msg)?,

@@ -119,6 +119,9 @@
                 <data
                     android:host="*.test"
                     android:scheme="polkadotapp" />
+                <data
+                    android:host="*.testnet"
+                    android:scheme="polkadotapp" />
             </intent-filter>
 
             <intent-filter android:autoVerify="true">

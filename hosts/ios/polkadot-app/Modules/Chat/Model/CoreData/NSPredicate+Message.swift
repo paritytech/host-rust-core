@@ -55,7 +55,8 @@ extension NSPredicate {
         return NSCompoundPredicate(andPredicateWithSubpredicates: [
             statusPredicate,
             chatTypePredicate,
-            contentTypePredicate
+            contentTypePredicate,
+            withoutTerminalTransferState(#keyPath(CDChatMessage.incomingTransferState))
         ])
     }
 
@@ -77,7 +78,8 @@ extension NSPredicate {
             statusPredicate,
             chatTypePredicate,
             contentTypePredicate,
-            creationSourcePredicate
+            creationSourcePredicate,
+            withoutTerminalTransferState(#keyPath(CDChatMessage.outgoingTransferState))
         ])
     }
 
@@ -183,6 +185,16 @@ extension NSPredicate {
             format: "%K == %d",
             #keyPath(CDChatMessage.chat.chatType),
             chatType.rawValue
+        )
+    }
+
+    /// A claimed or failed transfer never re-enters the monitor.
+    static func withoutTerminalTransferState(_ relationship: String) -> NSPredicate {
+        NSPredicate(
+            format: "%K == nil OR %K < %d",
+            relationship,
+            "\(relationship).status",
+            TransferStateStatus.firstTerminalRawValue
         )
     }
 

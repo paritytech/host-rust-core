@@ -181,8 +181,10 @@ The Rust core handles the wire protocol directly. Outbound responses and host-si
 
 The core's `Permissions` platform trait has two methods, and so does the bridge:
 
-- `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
-- `remotePermission(request)` - per-product capabilities. `request` is a typed `RemotePermission`.
+- `devicePermission(product, request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
+- `remotePermission(product, request)` - per-product capabilities. `request` is a typed `RemotePermission`.
+
+`product` is the requesting execution's `ProductExecutionConfig`.
 
 Both return `PermissionDecision` (`ALLOW_ONCE`, `ALLOW_ALWAYS`, or `DENY`). Preserve the choice so the core can consume one-use grants without persisting them. OS refusal after app consent should throw rather than record a product denial. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
@@ -335,14 +337,20 @@ class MyBridge(private val webView: WebView) : HostBridge {
         main.post { /* cancel notification */ }
     }
 
-    override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision {
+    override suspend fun devicePermission(
+        product: ProductExecutionConfig,
+        request: HostDevicePermissionRequest,
+    ): PermissionDecision {
         // Awaited by the core: present the prompt for the requested capability
         // (CAMERA, MICROPHONE, ...) and suspend until the user decides. Other
         // TrUAPI traffic keeps flowing while suspended.
         return withContext(Dispatchers.Main) { /* show prompt; */ PermissionDecision.DENY }
     }
 
-    override suspend fun remotePermission(request: RemotePermission): PermissionDecision = PermissionDecision.DENY
+    override suspend fun remotePermission(
+        product: ProductExecutionConfig,
+        request: RemotePermission,
+    ): PermissionDecision = PermissionDecision.DENY
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean = false
 
     // Core-owned auth state stream: render AuthState.Pairing as the pairing

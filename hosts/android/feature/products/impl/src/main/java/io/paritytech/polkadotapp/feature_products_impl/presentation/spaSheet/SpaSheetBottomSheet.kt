@@ -1,5 +1,7 @@
 package io.paritytech.polkadotapp.feature_products_impl.presentation.spaSheet
 
+import android.os.Bundle
+import android.view.View
 import androidx.compose.runtime.Composable
 import androidx.fragment.app.viewModels
 import dagger.hilt.android.AndroidEntryPoint
@@ -9,6 +11,13 @@ import io.paritytech.polkadotapp.feature_products_impl.presentation.spaSheet.com
 @AndroidEntryPoint
 class SpaSheetBottomSheet : BaseComposeBottomSheet<SpaSheetViewModel>() {
     override val viewModel: SpaSheetViewModel by viewModels()
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        // A draggable sheet consumes the drag before the hosted product can scroll.
+        bottomSheetBehavior?.isDraggable = false
+    }
 
     @Composable
     override fun Screen() = SpaSheetScreen(viewModel)

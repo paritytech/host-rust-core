@@ -14,6 +14,8 @@ import UIKitExt
 
 // MARK: - Helpers
 
+private let testProduct = ProductExecutionConfig(productId: "test.product", executionKind: .app)
+
 private func makeRegistryPool(chainRegistry: ChainRegistryProtocol) -> TrUAPIChainConnectionPool {
     TrUAPIChainConnectionPool(
         engineResolver: { genesisHash in
@@ -61,6 +63,10 @@ private struct StubHostProvider: ProductHostProviding {
     }
 
     func resolveHost(rawString _: String) async throws -> ProductHost? {
+        nil
+    }
+
+    func resolvePage(destination _: String) async throws -> ProductPage? {
         nil
     }
 }
@@ -120,7 +126,7 @@ struct RustRuntimeBridgeTests {
         guard_.verdictToReturn = true
         let bridge = makeBridge(productId: "cam.product", permissionGuard: guard_)
 
-        let result = try await bridge.devicePermission(request: .camera)
+        let result = try await bridge.devicePermission(product: testProduct, request: .camera)
 
         #expect(result == .allowAlways)
         #expect(guard_.requestedProductId == "cam.product")
@@ -132,7 +138,7 @@ struct RustRuntimeBridgeTests {
         guard_.verdictToReturn = false
         let bridge = makeBridge(permissionGuard: guard_)
 
-        let result = try await bridge.devicePermission(request: .notifications)
+        let result = try await bridge.devicePermission(product: testProduct, request: .notifications)
 
         #expect(result == .deny)
         #expect(guard_.requestedPermission == .deviceCapability(.notifications))
@@ -189,7 +195,7 @@ struct RustRuntimeBridgeTests {
         guard_.decisionToReturn = decision
         let bridge = makeBridge(permissionGuard: guard_)
 
-        let result = try await bridge.remotePermission(request: .remote(domains: ["a.io"]))
+        let result = try await bridge.remotePermission(product: testProduct, request: .remote(domains: ["a.io"]))
 
         let expected: TrUAPIPermissionDecision = switch decision {
         case .allowOnce: .allowOnce
@@ -204,7 +210,7 @@ struct RustRuntimeBridgeTests {
         let guard_ = MockPermissionGuard()
         let bridge = makeBridge(permissionGuard: guard_)
 
-        let result = try await bridge.remotePermission(request: .webRtc)
+        let result = try await bridge.remotePermission(product: testProduct, request: .webRtc)
 
         #expect(result == .allowAlways)
         #expect(guard_.requestedBatchedPermissions == [.webRtcAccess])

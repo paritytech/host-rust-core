@@ -657,6 +657,145 @@ fn create_transaction_accepts_confirmation_then_returns_sso_response() {
     ));
 }
 
+/// A `createTransaction` on a paired session whose confirmation prompt stays
+/// open until the returned sender releases it.
+fn gated_create_transaction(
+    request_id: &str,
+) -> (
+    Arc<StubPlatform>,
+    ProductRuntimeHost,
+    CallContext,
+    futures::channel::oneshot::Sender<()>,
+) {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        create_transaction_confirmed: true,
+        create_transaction_confirmation_gate: Mutex::new(Some(gate)),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, sso_session_info());
+    let cx = CallContext::with_parts(request_id.to_string(), truapi::CancellationToken::default());
+    (platform, host, cx, release)
+}
+
+/// A person who has not answered yet must not be able to authorize a
+/// transaction the product has already withdrawn, and the product must not
+/// wait on that person to learn the call is over.
+#[test]
+fn a_create_transaction_withdrawn_at_the_prompt_never_reaches_the_phone() {
+    let (platform, host, cx, _release) = gated_create_transaction("create-tx-withdrawn");
+    let request = HostCreateTransactionRequest::V1(product_tx_payload("myapp.dot"));
+    let mut call = Box::pin(host.create_transaction(&cx, request));
+    assert!(call.as_mut().now_or_never().is_none());
+    assert_eq!(platform.create_transaction_reviews.lock().unwrap().len(), 1);
+
+    cx.cancel().cancel();
+
+    let err = call
+        .as_mut()
+        .now_or_never()
+        .expect("a withdrawn call stops waiting on the prompt")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        CallError::Domain(HostCreateTransactionError::V1(
+            v01::HostCreateTransactionError::Unknown {
+                reason: "Account authority request cancelled for create-tx-withdrawn".to_string(),
+            }
+        ))
+    );
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "statement_subscribeStatement"),
+        0
+    );
+}
+
+/// An approval that lands after the withdrawal is an answer to a call that no
+/// longer exists, so it must authorize nothing. Either the prompt race or the
+/// authority call's own check is enough to hold this; the test pins that at
+/// least one of them does.
+#[test]
+fn a_create_transaction_approved_after_its_withdrawal_never_reaches_the_phone() {
+    let (platform, host, cx, release) = gated_create_transaction("create-tx-approved-late");
+    let request = HostCreateTransactionRequest::V1(product_tx_payload("myapp.dot"));
+    let mut call = Box::pin(host.create_transaction(&cx, request));
+    assert!(call.as_mut().now_or_never().is_none());
+
+    cx.cancel().cancel();
+    release.send(()).unwrap();
+
+    let err = call
+        .as_mut()
+        .now_or_never()
+        .expect("a withdrawn call settles without waiting")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        CallError::Domain(HostCreateTransactionError::V1(
+            v01::HostCreateTransactionError::Unknown {
+                reason: "Account authority request cancelled for create-tx-approved-late"
+                    .to_string(),
+            }
+        ))
+    );
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "statement_subscribeStatement"),
+        0
+    );
+}
+
+/// A withdrawal that lands while the paired-host request is still subscribing
+/// must stop it before the request itself is published.
+#[test]
+fn a_signature_withdrawn_during_sso_setup_is_never_submitted() {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_method_responses: vec![
+            ("statement_subscribeStatement", r#""own-sub""#.to_string()),
+            ("statement_subscribeStatement", r#""peer-sub""#.to_string()),
+            ("statement_unsubscribeStatement", "true".to_string()),
+            ("statement_unsubscribeStatement", "true".to_string()),
+            ("statement_submit", r#"{"status":"new"}"#.to_string()),
+        ],
+        rpc_method_responses_gate: Arc::new(Mutex::new(Some(gate))),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, sso_session_info());
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("sign-raw-setup".to_string(), cancel.clone());
+    let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+        account: account_id("myapp.dot", 0),
+        payload: raw_payload(),
+    });
+    let call = std::thread::spawn(move || {
+        futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err()
+    });
+    wait_until(
+        || recorded_rpc_method_count(&platform.sent_rpc, "statement_subscribeStatement") == 1,
+        "the paired-host request did not start subscribing",
+    );
+
+    cancel.cancel();
+    release.send(()).unwrap();
+    call.join().expect("sign_raw thread panicked");
+
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "statement_submit"),
+        0
+    );
+}
+
 #[test]
 fn legacy_sign_payload_rejects_identity_account() {
     let session = session_info();

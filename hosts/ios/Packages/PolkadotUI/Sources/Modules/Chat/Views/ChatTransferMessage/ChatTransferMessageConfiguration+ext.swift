@@ -5,9 +5,10 @@ public extension ChatTransferMessageConfiguration {
     static func inbox(
         amount: String,
         tokenSymbol: String,
+        assetIcon: UIImage? = nil,
         originalAmount: String? = nil,
         from username: String,
-        state: ChatTransferMessageConfiguration.State,
+        state: ChatTransferMessageConfiguration.IncomingState,
         statusConfiguration: ChatMessageStatusViewConfiguration,
         addReaction: ChatMessageContainerConfiguration.AddReactionViewModel? = nil,
         messageReaction: ChatMessageContainerConfiguration.MessageReactionViewModel? = nil
@@ -16,6 +17,7 @@ public extension ChatTransferMessageConfiguration {
             title: state.inboxTitle(username: username),
             amountText: amount,
             tokenSymbol: tokenSymbol,
+            assetIcon: assetIcon,
             originalAmountText: originalAmount,
             state: .incoming(state),
             statusConfiguration: statusConfiguration,
@@ -41,8 +43,9 @@ public extension ChatTransferMessageConfiguration {
     static func outbox(
         amount: String,
         tokenSymbol: String,
+        assetIcon: UIImage? = nil,
         originalAmount: String? = nil,
-        state: ChatTransferMessageConfiguration.State,
+        state: ChatTransferMessageConfiguration.OutgoingState,
         statusConfiguration: ChatMessageStatusViewConfiguration,
         addReaction: ChatMessageContainerConfiguration.AddReactionViewModel? = nil,
         messageReaction: ChatMessageContainerConfiguration.MessageReactionViewModel? = nil
@@ -51,6 +54,7 @@ public extension ChatTransferMessageConfiguration {
             title: String(localized: .chatTransferOutbox),
             amountText: amount,
             tokenSymbol: tokenSymbol,
+            assetIcon: assetIcon,
             originalAmountText: originalAmount,
             state: .outgoing(state),
             statusConfiguration: statusConfiguration,
@@ -74,15 +78,13 @@ public extension ChatTransferMessageConfiguration {
     }
 }
 
-private extension ChatTransferMessageConfiguration.State {
+private extension ChatTransferMessageConfiguration.IncomingState {
     func inboxTitle(username: String) -> String {
         switch self {
-        case .finished,
-             .sent,
-             .partiallyClaimed,
-             .error:
+        case .claimed,
+             .failed:
             String(localized: .chatTransferInbox(username: username))
-        case .processing,
+        case .detecting,
              .claiming:
             String(localized: .chatTransferInboxSending(username: username))
         }

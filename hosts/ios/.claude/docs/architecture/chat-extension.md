@@ -43,13 +43,24 @@ Chat is a core feature composed of multiple sub-modules under `Modules/Chat/`. I
 - `callCoordinator` manages call lifecycle
 - See `architecture/data-transport.md` for transport layer details
 
+### Push notification payload
+
+After a message is posted to the statement store, the sender also pushes it through the relay
+(`POST /api/v1/notify`) so the recipient's Notification Service Extension can render it without
+opening a statement-store connection. The `message` field is `hex(ChaCha20-Poly1305(SCALE(payload)))`,
+so hex doubles the size and an APNs alert (4 KB total) leaves under 2 KB of plaintext.
+
+The payload is the push-only `Chat.NotificationPayload`: `messageId ‖ timestamp ‖ version u8 = 0 ‖ kind u8 ‖ content`, where
+kind `0` is Stripped and `1` is Full. Full carries `RemoteMessageContentV1` unchanged. Stripped
+(`Chat.StrippedContentV1`) is used when the full content exceeds 1800 bytes.
+
 ### Media attachment thumbnails
 
 The optional `thumbnail: Data` field in image and video metadata contains a BlurHash string encoded as UTF-8. Senders generate the hash with 4×3 components from an image no larger than 128 points on its longest side. Receivers must parse the bytes through the typed `BlurHash` boundary before rendering. Invalid UTF-8, malformed BlurHash values, and legacy binary thumbnail bytes are treated as a missing preview; the full attachment download continues normally.
 
 ## Hard Rules
 
-1. **Chat extensions must not block the main chat flow** — extensions are additive surfaces (payment requests, game invites, coinage transfers). Their lifecycle and failures must not stall message send/receive, scroll, or compose state. Concretely:
+1. **Chat extensions must not block the main chat flow** — extensions are additive surfaces (payment requests, game invites). Coinage transfer bubbles are not an extension: they render `Content.Transfer.state`, read from the transfer state row related to the message (see architecture/coinage.md, "Chat transfer lifecycle"). Their lifecycle and failures must not stall message send/receive, scroll, or compose state. Concretely:
    - Extension setup is asynchronous and off the chat send path. Don't `await` extension readiness before letting the user type or send. A still-loading payment extension renders as a placeholder cell; the message above and below it still sends and renders.
    - Extension errors stay inside the extension. A failed `CoinagePaymentProcessingExtension` payment confirmation surfaces an in-cell error state — it does not throw out of the chat interactor or hide the underlying message.
    - Disable extensions at the registry/factory level (`ChatExtensionsRegistry.createDimExtensions`), never via `return nil` inside an extension method. A half-initialized extension that no-ops at runtime can still block the chat flow when other code awaits it.

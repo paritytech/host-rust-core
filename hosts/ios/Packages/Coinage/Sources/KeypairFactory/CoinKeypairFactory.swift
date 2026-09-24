@@ -1,8 +1,8 @@
-import KeyDerivation
+@preconcurrency import KeyDerivation
 import SubstrateSdk
 import NovaCrypto
 
-public protocol CoinKeyDeriving: CoinKeypairFactoryProtocol {}
+public protocol CoinKeyDeriving: CoinKeypairFactoryProtocol, Sendable {}
 
 public final class CoinKeypairFactory {
     let entropyManager: RootEntropyManaging

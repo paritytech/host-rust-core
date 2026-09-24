@@ -11,7 +11,7 @@ class AmountInputView: UIControl {
 
     let symbolImageView: UIImageView = .create { view in
         view.contentMode = .scaleAspectFit
-        view.tintColor = .fgPrimary
+        view.tintColor = .fgTertiary
         view.isHidden = true
     }
 
@@ -39,7 +39,7 @@ class AmountInputView: UIControl {
         }
     }
 
-    var maxFontSize: CGFloat = 80.0 {
+    var maxFontSize: CGFloat = UIFont.displayExtraLarge.pointSize {
         didSet {
             setNeedsLayout()
         }
@@ -54,11 +54,21 @@ class AmountInputView: UIControl {
     /// Currency mark drawn in front of the amount, in addition to `symbolLabel`.
     var symbolImage: UIImage? {
         didSet {
-            symbolImageView.image = symbolImage?.withRenderingMode(.alwaysTemplate)
-            symbolImageView.isHidden = symbolImage == nil
-
-            setNeedsLayout()
+            updateSymbolImage()
         }
+    }
+
+    var symbolImageRenderingMode: UIImage.RenderingMode = .alwaysTemplate {
+        didSet {
+            updateSymbolImage()
+        }
+    }
+
+    private func updateSymbolImage() {
+        symbolImageView.image = symbolImage?.withRenderingMode(symbolImageRenderingMode)
+        symbolImageView.isHidden = symbolImage == nil
+
+        setNeedsLayout()
     }
 
     var hasSymbolImage: Bool {
@@ -161,13 +171,10 @@ class AmountInputView: UIControl {
 
         let size = symbolImageSize(for: font)
 
-        // The digits are centred on midY, so their line box is too, and the mark
-        // sits on the baseline of that box.
-        let baseline = bounds.midY - font.lineHeight / 2.0 + font.ascender
-
+        // The digits are centred on midY, and the design centres the mark on the same line.
         symbolImageView.frame = CGRect(
             x: bounds.midX - totalWidth / 2.0,
-            y: baseline - size.height,
+            y: bounds.midY - size.height / 2.0,
             width: size.width,
             height: size.height
         )
@@ -284,13 +291,16 @@ class AmountInputView: UIControl {
 }
 
 private extension AmountInputView {
-    /// Sized to the cap height of the digits so the mark reads as part of the amount.
+    /// The design draws a 35pt mark next to 64pt digits; the ratio keeps that proportion as the
+    /// amount shrinks to fit.
+    static let symbolImageHeightRatio: CGFloat = 35.0 / 64.0
+
     func symbolImageSize(for font: UIFont) -> CGSize {
         guard let image = symbolImageView.image, image.size.height > 0 else {
             return .zero
         }
 
-        let height = font.capHeight
+        let height = font.pointSize * Self.symbolImageHeightRatio
 
         return CGSize(width: height * image.size.width / image.size.height, height: height)
     }

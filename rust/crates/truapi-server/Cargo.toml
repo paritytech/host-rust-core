@@ -72,9 +72,11 @@ tracing = "0.1"
 # `registry` + `std` only: pulls the Registry + per-layer filter/reload, but
 # not `env-filter` (which drags in `regex`, heavy on wasm).
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
-verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The browser core loads `truapi-verifiable` as a separate WASM module instead.
+verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff" }
+truapi-verifiable = { path = "../truapi-verifiable" }
 truapi = { path = "../truapi", features = ["uniffi"] }
 truapi-platform = { path = "../truapi-platform", features = ["uniffi"] }
 futures = { version = "0.3", features = ["thread-pool"] }

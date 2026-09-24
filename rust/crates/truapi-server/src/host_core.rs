@@ -853,17 +853,21 @@ impl SigningHostRuntime {
     /// Answer one decrypted SSO remote message with this signing host.
     ///
     /// Session control stays with the caller: `Disconnected` is reported as an
-    /// outcome, never handled here.
+    /// outcome, never handled here. A `Cancel` withdraws the request it names,
+    /// even while that request is still being answered by another call, and a
+    /// withdrawn request is answered `Ignored`.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.answer_sso_request"))]
     pub async fn answer_sso_request(
         &self,
         message: RemoteMessage,
     ) -> SsoRequestOutcome<RemoteMessage> {
         let service = SigningHostSsoService::new(self.signing_host.clone());
-        match service.dispatch(service.current_session(), message).await {
+        match service.answer(message).await {
             Dispatch::Response(answer) => SsoRequestOutcome::Response(answer.message),
             Dispatch::Disconnected => SsoRequestOutcome::Disconnected,
-            Dispatch::NotARequest(_) => SsoRequestOutcome::Ignored,
+            Dispatch::NotARequest(_) | Dispatch::Withdraw(_) | Dispatch::Withdrawn => {
+                SsoRequestOutcome::Ignored
+            }
         }
     }
 }

@@ -17,7 +17,7 @@ public final class StubPinnedChainView: PinnedChainViewProtocol, PinnedChainView
         var heads: ChainHeads
         var hashResults: [UInt32: ReadResult<Data>] = [:]
         var refResults: [Data: ReadResult<BlockRef>] = [:]
-        var outcomeResults: [UInt32: [Data: ReadResult<Bool>]] = [:]
+        var outcomeResults: [UInt32: [Data: ReadResult<DispatchOutcome>]] = [:]
         var bodySearchResponses: [Data: BodySearchOutcome] = [:]
         var pinCount = 0
         var pinFails = false
@@ -62,7 +62,8 @@ public final class StubPinnedChainView: PinnedChainViewProtocol, PinnedChainView
     }
 
     public func setDispatchOutcome(_ txHash: Data, at block: BlockRef, success: Bool) {
-        state.withLock { $0.outcomeResults[block.number, default: [:]][txHash] = .present(success) }
+        let outcome: DispatchOutcome = success ? .succeeded : .failed(reason: "Stub.DispatchFailed")
+        state.withLock { $0.outcomeResults[block.number, default: [:]][txHash] = .present(outcome) }
     }
 
     public func setDispatchOutcomeFailed(_ txHash: Data, at block: BlockRef) {
@@ -117,7 +118,7 @@ public final class StubPinnedChainView: PinnedChainViewProtocol, PinnedChainView
         state.withLock { $0.refResults[hash] ?? .absent }
     }
 
-    public func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<Bool> {
+    public func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<DispatchOutcome> {
         state.withLock { ($0.outcomeResults[block.number] ?? [:])[txHash] ?? .absent }
     }
 
