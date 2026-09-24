@@ -1,5 +1,0 @@
-error: `execute` is taken by the generated `…Db` constructor or by a `rusqlite` connection method; choose another name
- --> tests/ui/dao/fail/shadowed_name.rs:6:8
-  |
-6 |     fn execute(&self) -> rusqlite::Result<usize>;
-  |        ^^^^^^^

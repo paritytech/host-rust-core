@@ -1,4 +1,4 @@
-error: `new` is taken by the generated `…Db` constructor or by a `rusqlite` connection method; choose another name
+error: `new` is taken by the generated `…Db` struct; choose another name
  --> tests/ui/dao/fail/reserved_name.rs:6:8
   |
 6 |     fn new(&self) -> rusqlite::Result<i64>;

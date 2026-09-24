@@ -54,10 +54,11 @@ use proc_macro::TokenStream;
 /// Every method returns `rusqlite::Result<T>`. A `#[query]` returns `Vec<T>`
 /// (every row), `Option<T>` (the first row, if any) or `T` (the first row,
 /// which must exist); a nullable column in an optional row is
-/// `Option<Option<T>>`, and `Vec<u8>` is rejected because it would read one
-/// byte per row. Rows are deserialized with `serde_rusqlite`. An `#[execute]`
-/// returns `usize` (rows changed), `()`, or rows from its `RETURNING` clause
-/// in the same shapes as a query.
+/// `Option<Option<T>>`. Rows are deserialized with `serde_rusqlite` into
+/// structs, not tuples or arrays, and `Vec<u8>` is rejected because it would
+/// read one byte per row. An `#[execute]` returns `usize` (rows changed), `()`,
+/// or rows from its `RETURNING` clause in the same shapes as a query. A method
+/// may carry `doc`, `cfg` and `allow` attributes.
 #[proc_macro_attribute]
 pub fn dao(args: TokenStream, item: TokenStream) -> TokenStream {
     dao::expand(args, item)

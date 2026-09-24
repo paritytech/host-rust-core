@@ -139,19 +139,14 @@ Rows are deserialized with `serde_rusqlite`, so row structs derive
 `Option<T>` the first row if there is one, and `T` the first row, which must
 exist. A nullable column in an optional row is `Option<Option<T>>`. `Vec<u8>`
 is rejected, since it would read one byte per row; read a blob through a row
-struct with `#[serde(with = "serde_bytes")]`. An `#[execute]` returns `usize`
+struct with `#[serde(with = "serde_bytes")]`. Rows are read into structs, not
+tuples or arrays. An `#[execute]` returns `usize`
 (rows changed), `()`, or rows from its `RETURNING` clause in the same shapes;
 an insert that needs its id asks for it with `RETURNING id`, which yields no
 row when nothing was inserted.
 
-A method cannot be named `new` or after a `rusqlite` `Connection` or
-`Transaction` method (`execute`, `commit`, …), which would shadow it inside a
-`#[transaction]` body. `cfg` on a method carries over to everything generated for
-it. Lint levels carry over to the async twin and to the item holding the body,
-as `allow`: a lint fires on only one of them, so `expect` acts as `allow` on a
-DAO method. `cfg_attr` and `deprecated` also reach the twin, and a
-transaction's `cfg_attr` its body; `inline`, `cold` and `track_caller` move to
-the body.
+A method may carry `doc`, `cfg` and `allow` attributes, and cannot be named
+`new`, which the `…Db` struct defines.
 
 `…Db::QUERIES` lists every statement and whether it must only read.
 `store::prepare_all` prepares them against the migrated schema in a test, which
