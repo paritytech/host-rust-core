@@ -12,7 +12,22 @@ private struct WidgetActionHandlerKey: EnvironmentKey {
 /// Resolves where an image node's bytes can be fetched from. A source names a
 /// product archive path or a Bulletin CID, which only the host can turn into
 /// something loadable, so the renderer asks for it rather than knowing.
-public typealias WidgetImageResolver = @Sendable (CustomMessageWidgetNode.ImageSource) async -> URL?
+///
+/// A named type rather than a function typealias, because the resolver is held
+/// in the environment and read from a view body. A bare function value carries
+/// the isolation of wherever it was formed, which the environment then has to
+/// convert away.
+public struct WidgetImageResolver: Sendable {
+    private let resolve: @Sendable (CustomMessageWidgetNode.ImageSource) async -> URL?
+
+    public init(_ resolve: @escaping @Sendable (CustomMessageWidgetNode.ImageSource) async -> URL?) {
+        self.resolve = resolve
+    }
+
+    public func callAsFunction(_ source: CustomMessageWidgetNode.ImageSource) async -> URL? {
+        await resolve(source)
+    }
+}
 
 private struct WidgetImageResolverKey: EnvironmentKey {
     static let defaultValue: WidgetImageResolver? = nil
