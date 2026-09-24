@@ -80,6 +80,7 @@
   ],
   "scripts": {
     "build": "tsc -b && node scripts/build-cjs.mjs",
+    "typecheck:harness": "tsc -p tsconfig.harness.json",
     "build:wasm": "node scripts/build-wasm.mjs",
     "test": "bun test"
   },
@@ -90,6 +91,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
+    "happy-dom": "^20.11.2",
     "@types/bun": "^1.3.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.7"
