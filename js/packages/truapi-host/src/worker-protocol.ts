@@ -339,39 +339,22 @@ export type WorkerToMain =
   | { kind: "chainClose"; connId: number };
 
 /**
- * Is `url` a `ws://` URL on a loopback host? The debug tap forwards every frame
- * verbatim, including payloads carrying key material: there is no denylist and
- * nothing is redacted anywhere in this pipeline, so the loopback requirement is
- * the whole confinement story - refuse to stream them off the local machine.
- * `ws://` only, matching the native sink (`native_debug.rs`), also ws-only.
+ * Is `url` a `ws://` URL on a loopback host? The tap forwards every frame
+ * verbatim, key material included, and redacts nothing, so loopback is the whole
+ * confinement story.
  *
- * Cleartext is the right call *because* the target is loopback-only. TLS defends
- * against a party on the path, and a loopback socket has no path: the frames
- * never reach an interface. `wss://` would instead require the debugger to
- * present a certificate, unobtainable for `localhost` from a real CA, and
- * self-signed on iOS costs the developer a CA install plus a manual enable under
- * Settings → General → About → Certificate Trust Settings before a single frame
- * arrives. So `wss://` buys no confidentiality here and costs setup, while adding
- * a second protocol path and a trust surface to the gate.
+ * `ws://` only, matching the native sink. A loopback socket has no path for TLS
+ * to defend, so `wss://` would buy nothing and cost a certificate `localhost`
+ * cannot get from a real CA.
  *
- * Confidentiality for the trace stream comes from the loopback check, not from
- * the scheme: the frames never cross a network, so there is nothing on a network
- * to encrypt. That is the whole of it - a *remote* debugger would put plaintext
- * SCALE payloads on a network, and nothing in this codebase mitigates that, which
- * is why this gate refuses non-loopback targets outright rather than negotiating a
- * scheme for them.
+ * `WsDebugSink::connect` resolves the host and checks every address; this matches
+ * the normalized hostname. A Worker has no resolver and needs none, since this
+ * same string is handed to `new WebSocket`, so the native "validate one string,
+ * dial another" gap cannot open here.
  *
- * Unlike `WsDebugSink::connect`, which resolves the host and requires every
- * resolved address to be loopback, this matches the hostname the URL parser
- * normalized. There is no resolver in a Web Worker, and none is needed: the same
- * `url` string is passed to `new WebSocket(url)` below, so the browser resolves
- * exactly what was validated. The Rust "validate one string, dial another" gap
- * cannot open here because there is only ever one string.
- *
- * The accepted set is the one the native sink accepts, so a dial that works in
- * one host works in the other: `localhost`, 127.0.0.0/8, and `::1`. An
- * IPv4-mapped literal such as `ws://[::ffff:127.0.0.1]` is refused in both,
- * because `Ipv6Addr::is_loopback` on the native side matches only `::1`.
+ * Accepts what the native sink accepts: `localhost`, 127.0.0.0/8 and `::1`. An
+ * IPv4-mapped literal is refused in both, since `Ipv6Addr::is_loopback` matches
+ * only `::1`.
  */
 export function isLoopbackWsUrl(url: string): boolean {
   try {

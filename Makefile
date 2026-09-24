@@ -413,42 +413,32 @@ dev: dev-bootstrap ## Start dotli host (:5173) + playground (:3000) together; op
 	wait
 
 debugger: dev-bootstrap ## Wire debugger (:9231) + a DEV-MODE dotli host (:5173) + playground (:3000). Open http://127.0.0.1:9231
-	# `make dev` cannot drive the debugger: dotli ships only `build` and `preview`,
-	# both production builds, and the dial sits behind `import.meta.env.DEV`, which
-	# a production bundle replaces with `false`. The host then never dials and the
-	# board stays empty with no error - so build the host in dev mode here.
+	# `make dev` cannot drive this: dotli ships only production builds, and the dial
+	# sits behind `import.meta.env.DEV`, so the host never dials and the board stays
+	# empty with no error. Hence a dev-mode host build here.
 	#
-	# Building the host ALONE is not enough. `make dev` runs dotli's `preview`
-	# script, which is `turbo run build` (every app) before the preview server;
-	# going straight to the server instead leaves apps/sandbox unbuilt, and the
-	# server treats that one as required and exits 1. :5173 then never comes up at
-	# all, which on a laptop that has run `make dev` before is invisible: the stale
-	# dist from that run satisfies the check.
-	#
-	# So build everything EXCEPT the host, then build the host below. Naming the
-	# siblings instead (`--filter=@dotli/sandbox --filter=@dotli/protocol-app`) put
-	# a list of dotli's apps in this repo, and an app added there later would be
-	# silently missed - the same empty-board failure, reintroduced.
-	#
-	# Excluding the host rather than building everything and overwriting it is not
-	# just to save a build: dotli's own host build runs `tsc` first, and dotli does
-	# not typecheck against this repo's newer `@parity/truapi`. `vite build` below
-	# does not typecheck, which is what makes a dev-mode host buildable here at all.
+	# Build every app EXCEPT the host, then the host below. Excluding it by name
+	# would put a list of dotli's apps in this repo that a new app there would
+	# silently fall off; skipping the siblings entirely leaves apps/sandbox unbuilt
+	# and the preview server exits 1, which a stale dist from an earlier `make dev`
+	# hides. The host is separate because dotli's own build runs `tsc` and does not
+	# typecheck against this repo's newer `@parity/truapi`; `vite build` does not.
 	cd $(DOTLI) && VITE_APP_DEBUG=true bunx turbo run build --filter='!@dotli/host'
 	cd $(DOTLI)/apps/host && NODE_ENV=development VITE_APP_DEBUG=true \
 		VITE_TRUAPI_DEBUGGER_URL=ws://127.0.0.1:$(DEBUGGER_PORT) bunx --bun vite build
 	@printf '\n  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'
-	@printf '  Host:      http://localhost:5173/localhost:3000\n\n'
-	@printf '  The dial URL is built into the host, so there is nothing to enable and it\n'
-	@printf '  works in any browser profile. The host logs `wire debugger: dialling ...\n'
-	@printf '  from the build` once it connects.\n\n'
-	@printf '  To aim it somewhere else, move the port - it reaches both the server and\n'
-	@printf '  the host build, so they cannot drift apart:\n\n'
-	@printf '    DEBUGGER_PORT=9300 make debugger\n\n'
+	@printf '  Host:      http://localhost:5173/localhost:3000\n'
+	@printf '  Another port:  DEBUGGER_PORT=9300 make debugger\n\n'
+	# The three servers log for a while after they start, which buries anything
+	# printed here. Waiting for the slowest to answer and then reprinting the two
+	# URLs puts them at the bottom, where they are still on screen.
 	@trap 'kill 0' EXIT; \
 	( cd $(DEBUGGER_PKG) && TRUAPI_DEBUGGER_PORT=$(DEBUGGER_PORT) bun run src/server.ts ) & \
 	( cd $(DOTLI) && bun scripts/preview-server.ts ) & \
 	( cd $(PLAYGROUND) && yarn dev ) & \
+	( until curl -sfo /dev/null http://localhost:3000; do sleep 1; done; \
+	  printf '\n  Ready.  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'; \
+	  printf '          Host:      http://localhost:5173/localhost:3000\n\n' ) & \
 	wait
 
 e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local signing-host CLI.

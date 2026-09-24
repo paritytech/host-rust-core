@@ -282,14 +282,9 @@ function readPersistedLogLevel(): LogLevel | null {
 }
 
 /**
- * Why the wire debugger is (not) enabled, so a no-dial is never silent.
- *
- * There is no browser store in this path, and no runtime switch. The dial is
- * something the embedding host passes in (`options.debugger`), with the value a
- * dev build was compiled with as the default, and it is resolved once.
- * A library reading a key out of `localStorage` behind its embedder was both
- * un-turn-off-able from the host's own UI and invisible across origins and
- * browser profiles, which is what made a dark tap so hard to explain.
+ * Why the wire debugger is (not) enabled, so a no-dial is never silent. No
+ * browser store and no runtime switch: the host passes the dial in, the build's
+ * value is the default, and it is resolved once.
  */
 export type DebuggerEnablement = {
   readonly url: string | null;
@@ -303,16 +298,12 @@ export type DebuggerEnablement = {
 };
 
 /**
- * Dial URL a dev build was compiled with, when it was given one.
+ * Dial URL a dev build was compiled with, when it was given one. The default,
+ * not the mechanism: it lets `make debugger` hand a local stack a working tap
+ * with nothing to switch on, and an explicit `debugger` option overrides it.
  *
- * This is the default, not the mechanism: it lets `make debugger` hand a whole
- * local stack a working tap with nothing to switch on, in any browser profile.
- * An embedder that passes `debugger` explicitly overrides it.
- *
- * Same literal-token rule as the `DEV` read below: a bundler replaces the exact
- * `import.meta.env.VITE_TRUAPI_DEBUGGER_URL` expression, so it must not be aliased or
- * optionally chained. The try/catch covers realms with no `import.meta.env` at all
- * (tsc output under Node, unit tests), where the access throws.
+ * Same literal-token rule as the `DEV` read below, and the try/catch covers the
+ * realms with no `import.meta.env` at all.
  */
 function buildTimeDebuggerUrl(): string | null {
   let raw: unknown;
@@ -329,23 +320,16 @@ function buildTimeDebuggerUrl(): string | null {
 }
 
 /**
- * Whether this build may carry a wire tap at all.
+ * Whether this build may carry a wire tap at all. A hard gate, not a convention:
+ * a bundler replaces `import.meta.env.DEV` with a literal, so a production build
+ * returns false and no option can turn the tap on.
  *
- * Hard dev-only gate, not a convention: bundlers (Vite) replace
- * `import.meta.env.DEV` with a boolean literal, so a PRODUCTION build returns
- * false unconditionally, no option can turn the debugger on, and the tap is never
- * installed. The wire debugger streams fully-decoded frames and is strictly a
- * development tool.
- *
- * The expression below must stay the *literal* `import.meta.env.DEV`, with no
- * alias and no optional chaining. A bundler replaces that exact token; reading it
- * through `const meta = import.meta` or as `import.meta.env?.DEV` does not match,
- * so the expression survives into the bundle and is evaluated at runtime against
- * an `import.meta.env` that a plain module does not have. That reads as
- * `undefined`, and the gate then refuses in *every* bundled host rather than only
- * production ones - which silently disables the tap everywhere. The try/catch
- * keeps it safe where `import.meta.env` genuinely does not exist (tsc output run
- * under Node, unit tests), where the access throws.
+ * Keep the expression below the *literal* `import.meta.env.DEV`, with no alias
+ * and no optional chaining. A bundler replaces that exact token; written any
+ * other way it survives into the bundle and is evaluated against an
+ * `import.meta.env` a plain module does not have, reading as `undefined` - which
+ * refuses in every bundled host rather than only production ones, silently
+ * disabling the tap everywhere. The try/catch covers where the access throws.
  */
 function debuggerBuildAllows(): boolean {
   try {
@@ -358,26 +342,18 @@ function debuggerBuildAllows(): boolean {
 }
 
 /**
- * Which of the two production verdicts applies. Pure, and exported for the same
- * reason {@link resolveDebuggerEnablement} is: the caller reads
- * `import.meta.env`, which a bundler substitutes and a test runner cannot, so
- * neither the build value nor the DEV gate can be varied from a test.
- *
- * The build half is the one that matters and the one that is easy to drop. The
- * env var is substituted at build time, so it is still readable in a production
- * bundle - a build made with it but without `NODE_ENV=development` is exactly the
- * case that must not go quiet. An option, by contrast, is passed by a host that is
- * still running, so it is visible either way.
+ * Which of the two production verdicts applies. The build half is the one that
+ * matters: the env var is substituted at build time, so it is still readable in
+ * a production bundle, and a build made with it but without
+ * `NODE_ENV=development` is exactly the case that must not go quiet.
  */
 export function productionReason(
   fromOption: string | null | undefined,
   fromBuild: string | null,
 ): "production-build" | "production-build-configured" {
-  // Same precedence as `resolveDebuggerEnablement`, and for the same reason: an
-  // option the host passed is an answer either way, so it settles the question
-  // and the build value is not consulted. Reading the two as an OR told a host
-  // that had explicitly refused to rebuild in dev mode, which would resolve to
-  // `not-configured` and still not dial.
+  // Same precedence as `resolveDebuggerEnablement`: an option settles it, so the
+  // build is not consulted. As an OR this told a host that had refused to
+  // rebuild in dev mode, which would still resolve to `not-configured`.
   const asked =
     fromOption === undefined
       ? fromBuild !== null
@@ -390,44 +366,29 @@ function readDebuggerEnablement(
 ): DebuggerEnablement {
   const fromBuild = buildTimeDebuggerUrl();
   if (!debuggerBuildAllows()) {
-    // Somebody asked for a dial this build cannot carry. Saying nothing here is
-    // the failure design doc §9 exists to prevent: the easiest way to reach it is
-    // to copy the build command and drop `NODE_ENV=development`, and what you get
-    // is an empty board, no console line, and no error - which reads as a broken
-    // debugger rather than a build that compiled the dial out.
-    //
-    // Keyed on the BUILD value as well as the option, because the build value is
-    // the half that survives into a production bundle: the env var is substituted
-    // at build time, so it is still readable here, while an option passed by a
-    // host is not something this branch can see going unused.
+    // Somebody asked for a dial this build cannot carry. Going quiet is the §9
+    // failure: drop `NODE_ENV=development` from the build command and you get an
+    // empty board with no error, which reads as a broken debugger rather than a
+    // dial compiled out. Keyed on the build value too, since that is the half
+    // that survives into a production bundle.
     return { url: null, reason: productionReason(fromOption, fromBuild) };
   }
   return resolveDebuggerEnablement(fromOption, fromBuild);
 }
 
 /**
- * Resolve the dev-build switches into one verdict. Pure, and exported so the
- * precedence is testable: the caller reads `import.meta.env.DEV`, which a
- * bundler substitutes and `bun test` leaves undefined with no way to set it, so
- * the live path cannot reach this branch under test at all.
+ * Resolve the dev-build switches into one verdict. Exported so the precedence is
+ * testable without a bundler.
  *
- * `fromOption` is `undefined` when the embedder said nothing, and a URL when it
- * asked for one. Anything else, `null` and `""` included, is an explicit refusal.
- *
- * Precedence:
+ * Precedence, where an omitted option is the only one that defers to the build:
  *
  *  - option set to a URL  -> dial it, whatever the build says
  *  - option set null/""   -> OFF, whatever the build says
  *  - option omitted       -> the build's value, if it carries one
  *
- * The explicit-off case is the one that is easy to get wrong: folding `null` in
- * with "omitted" falls through to the build, and an embedder that compiled a URL
- * in then has no way to refuse the dial short of rebuilding.
- *
- * A resolved URL is loopback `ws://` or it is refused (§6). The worker builds an
- * inert link for anything else, so resolving one as enabled would report a dial
- * that never carries a frame - the silent-tap failure §9 exists to prevent, with
- * the host's own log and badge naming an endpoint nothing streams to.
+ * Folding `null` in with "omitted" is the easy mistake: it falls through to the
+ * build, leaving an embedder that compiled a URL in no way to refuse the dial
+ * short of rebuilding. A resolved URL is loopback `ws://` or it is refused (§6).
  */
 export function resolveDebuggerEnablement(
   fromOption: string | null | undefined,
@@ -455,13 +416,10 @@ function refuseUnlessLoopback(
 }
 
 /**
- * Say once whether the debugger will dial - and from which origin. Silence here
- * used to be indistinguishable from a working tap: the debugger's own socket
- * count still moves (its UI holds one), so "connected but no frames" reads as a
- * debugger bug rather than a host that never dialled.
- *
- * Silent in a production build, where the message would be noise and there is
- * nothing a developer could do about it in that build anyway.
+ * Say once whether the debugger will dial, and from where. The board's socket
+ * count moves whether or not a host dialled (its own UI holds one), so without
+ * this a host that never dialled reads as a broken debugger. Silent in a
+ * production build, where nothing could be done about it anyway.
  */
 function reportDebuggerEnablement(e: DebuggerEnablement): void {
   if (e.reason === "production-build") return;
@@ -1021,17 +979,10 @@ export interface CreateWebWorkerPairingHostRuntimeOptions {
   /**
    * Dev-only: a loopback `ws://` wire debugger to stream tapped frames to.
    *
-   * The host decides. Omit the field to take whatever the build was compiled with
-   * (`VITE_TRUAPI_DEBUGGER_URL`, which is how `make debugger` hands a local stack a
-   * working tap with nothing to switch on); pass `null` or `""` to refuse the dial
-   * even when the build carries one.
-   *
-   * Ignored outside a dev build: the `import.meta.env.DEV` gate refuses first, so
-   * a production bundle cannot be talked into a tap by any value here.
-   *
-   * Resolved once, when the runtime is created, and not changeable from the
-   * page afterwards: whether this host streams frames is a property of the
-   * build and of what the host asked for, nothing later.
+   * Omit to take what the build was compiled with
+   * (`VITE_TRUAPI_DEBUGGER_URL`); pass `null` or `""` to refuse it even when the
+   * build carries one. Ignored outside a dev build. Resolved once, at creation,
+   * and not changeable from the page.
    */
   debugger?: string | null;
   /**
@@ -1241,10 +1192,9 @@ export function createWebWorkerPairingHostRuntime(
       }
     };
 
-    // A worker that never loads still installed its dial below, and nothing will
-    // ever stream on its account, so the badge has to come off with it. Only the
-    // `ready` path keeps the dial, which is why this is its own exit rather than
-    // something `cleanupInit` does for every caller.
+    // A worker that never loads still installed its dial, and nothing will stream
+    // on its account, so the badge comes off with it. Its own exit rather than
+    // part of `cleanupInit`, which the `ready` path also calls.
     const failInit = (error: Error): void => {
       cleanupInit();
       releaseDebuggerDial(state);
@@ -1271,10 +1221,8 @@ export function createWebWorkerPairingHostRuntime(
       notifyFault(new Error("worker message could not be deserialized"));
     };
 
-    // The tap exists for this session exactly when a dial was resolved, and that
-    // is decided here, once. With no attach-later path there is no second piece
-    // of state to keep in step - which is what let an earlier
-    // `reason !== "production-build"` test arm a production build carrying a URL.
+    // Decided here, once. With no attach-later path there is no second piece of
+    // state to keep in step with this one.
     const debuggerDial = installDebuggerDial(
       state,
       readDebuggerEnablement(options.debugger),
@@ -1876,17 +1824,13 @@ function buildProvider(
 const DEBUGGER_INDICATOR_ID = "truapi-debugger-indicator";
 
 /**
- * What the badge names: the endpoint of every live dial that asked to be shown,
- * keyed by the runtime that owns it. A dial passing `debuggerIndicator: false`
- * renders its own signal and is deliberately absent, so this is not an inventory
- * of live taps.
+ * What the badge names: every live dial that asked to be shown, keyed by the
+ * runtime owning it. A `debuggerIndicator: false` dial renders its own signal
+ * and is absent, so this is not an inventory of live taps.
  *
- * The badge is a single node at a fixed id, while an embedder may create one
- * worker runtime per product surface and give only some of them a dial. Keyed
- * ownership is what keeps a runtime with no dial, or one that renders its own
- * signal, from taking down a badge another runtime's tap is still behind, and
- * what lets two live dials both be named instead of the later one hiding the
- * earlier.
+ * One node at a fixed id serves every runtime, so keying by owner is what stops
+ * one from taking down a badge another's tap is behind, and lets two live dials
+ * both be named.
  */
 const liveDebuggerDials = new Map<object, string>();
 
@@ -1899,11 +1843,8 @@ let indicatorRepaintQueued = false;
  * worker's `init` message carries.
  *
  * The three are one decision, so they are one function: a host that resolves a
- * dial and then reports, badges or forwards something else is the failure the
- * design doc's §9 is about. Taking the already-resolved enablement as an
- * argument is what makes that decision testable at all, since the live caller
- * reads `import.meta.env.DEV`, which a bundler substitutes and a test runner
- * cannot, so a test driving the runtime only ever sees the production verdict.
+ * dial and then reports, badges or forwards something else is the §9 failure.
+ * Taking the resolved enablement as an argument is what makes it testable.
  */
 export function installDebuggerDial(
   owner: object,
@@ -1929,33 +1870,20 @@ export function releaseDebuggerDial(owner: object): void {
 }
 
 /**
- * Show, in the page, that wire frames are leaving this host, naming every
- * endpoint they leave for.
- *
- * A console line is not enough on its own: it scrolls away, and a tap left on
- * from an earlier session is then invisible for the rest of the day. Loopback
- * makes that cheap today, but the dial is the thing that would carry decoded
- * frames off the machine if it ever pointed anywhere else, so it should be
- * something you can SEE is on.
- *
- * Default-on rather than opt-in, because the failure being prevented is a host
- * forgetting. A host that renders its own affordance passes
- * `debuggerIndicator: false` and takes the job on.
- *
- * Dev-only by construction: a dial only reaches {@link liveDebuggerDials} when
- * the `import.meta.env.DEV` gate resolved one, so a production bundle never
- * mounts this. Never throws - a host must not fail to start because a debug
- * badge could not render.
+ * Show in the page that frames are leaving, naming and linking every endpoint.
+ * A console line scrolls away, so a tap left on from an earlier session is
+ * invisible for the rest of the day. Default-on because the failure prevented is
+ * a host forgetting; one with its own affordance passes `debuggerIndicator:
+ * false`. Never throws: a badge must not stop a host starting.
  */
 function paintDebuggerIndicator(): void {
   try {
     const doc = globalThis.document;
     if (doc === undefined) return;
     if (doc.body === null) {
-      // A runtime created from a `<head>` script has no body to mount on yet.
-      // Returning alone would leave the dial live and the badge permanently
-      // absent, which is the one thing it exists to prevent. The flag keeps
-      // repeated paints from stacking listeners.
+      // A runtime created from a `<head>` script has no body yet, and returning
+      // alone would leave the tap live and the badge permanently absent. The flag
+      // keeps repeated paints from stacking listeners.
       if (!indicatorRepaintQueued) {
         indicatorRepaintQueued = true;
         doc.addEventListener(
@@ -1988,7 +1916,22 @@ function paintDebuggerIndicator(): void {
         "box-shadow:0 2px 8px rgba(0,0,0,.4)";
       doc.body.appendChild(el);
     }
-    el.textContent = `TrUAPI wire → ${endpoints.join(", ")}`;
+    // Each endpoint links to the board reading it, so noticing the tap and opening
+    // it are one step. The badge keeps `pointer-events:none` so it never swallows
+    // a click meant for the host; only the links take them back.
+    el.textContent = "TrUAPI wire → ";
+    endpoints.forEach((endpoint, i) => {
+      if (i > 0) el.appendChild(doc.createTextNode(", "));
+      const link = doc.createElement("a");
+      // The board is served over HTTP on the port the dial streams to.
+      link.href = endpoint.replace(/^ws/, "http");
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = endpoint;
+      link.style.cssText =
+        "color:inherit;text-decoration:underline;pointer-events:auto";
+      el.appendChild(link);
+    });
     el.title = "This host is streaming product wire frames to a debugger.";
   } catch {
     // A badge that cannot render must never disturb the host.

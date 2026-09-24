@@ -45,19 +45,15 @@ describe("debugger enablement reporting", () => {
     return logged;
   };
 
-  // Nothing was asked for, so there is nothing to report and the line would be
-  // pure noise. `readyRuntime` passes no `debugger` option, and under `bun test`
-  // there is no build value either.
+  // Nothing was asked for, so a line here would be pure noise.
   it("stays silent in a production build nobody asked to debug", async () => {
     const worker = new FakeWorker();
     const logged = await capturingInfo(() => readyRuntime(worker));
     expect(logged.filter((l) => l.includes("wire debugger"))).toHaveLength(0);
   });
 
-  // The counterpart, and the regression this pair exists for. Silence when a dial
-  // WAS configured is design doc §9's named failure: the easiest way to reach it
-  // is to copy the build command and drop `NODE_ENV=development`, and the result
-  // is an empty board with no console line and no error.
+  // The counterpart, and the regression this pair exists for: silence when a dial
+  // WAS configured is the §9 failure, an empty board with no error.
   it("says so once when a dial was configured but the build compiled it out", async () => {
     const worker = new FakeWorker();
     const logged = await capturingInfo(() =>
@@ -70,18 +66,15 @@ describe("debugger enablement reporting", () => {
     expect(line).toContain("did not resolve true");
 
     // The log line alone would pass while the worker still got a URL. `init`
-    // carrying null is what actually keeps a core from building a tap, and a
-    // configured dial is the only input that can tell the two apart: with no
-    // option and no build value, a broken gate looks identical to a working one.
+    // carrying null is what keeps a core from building a tap, and only a
+    // configured dial can tell a broken gate from a working one.
     const init = worker.messages.find((m) => m.kind === "init");
     expect(init).toMatchObject({ debuggerUrl: null });
   });
 });
 
-// The dev-build branch, which the suite above cannot reach: it gates on
-// `import.meta.env.DEV`, a token a bundler substitutes and `bun test` leaves
-// undefined, so the live call always takes the production path here. The pure
-// seam is where the precedence can actually be asserted.
+// The dev-build branch, which the live path above cannot reach: `import.meta.env
+// .DEV` is undefined under the runner, so it always takes the production branch.
 describe("debugger switch precedence", () => {
   const BUILD = "ws://127.0.0.1:9231";
 
@@ -101,13 +94,10 @@ describe("debugger switch precedence", () => {
     });
   });
 
-  // The case that is easy to fold in with "omitted". If null fell through to the
-  // build, a host compiled with a URL could not refuse the dial short of being
-  // rebuilt - so a host has no way to turn the tap off for its own users.
-  // Same reasoning as the null case, for the value a host that is not writing
-  // TypeScript actually produces. `wanted && url` yields `false`, and falling
-  // through to the build there turns the tap on for a host that asked for it
-  // off, which is the opposite of what the option is for.
+  // Easy to fold in with "omitted", and then a host compiled with a URL cannot
+  // refuse the dial short of being rebuilt.
+  // The same, for what a host not writing TypeScript produces: `wanted && url`
+  // yields `false`, which must not fall through and turn the tap on.
   it("treats any non-URL the host passed as OFF, beating the build", () => {
     expect(
       resolveDebuggerEnablement(false as unknown as string, BUILD),
@@ -135,10 +125,9 @@ describe("debugger switch precedence", () => {
     });
   });
 
-  // §6: the tap forwards frames verbatim, payloads included, so a target off this
-  // machine is refused rather than dialled. The worker already builds an inert
-  // link for one, which is exactly why resolving it as enabled is the dangerous
-  // half: the host would log and badge an endpoint that never carries a frame.
+  // §6: frames go verbatim, so an off-machine target is refused. The worker
+  // builds an inert link for one anyway, so resolving it as enabled would log and
+  // badge an endpoint that never carries a frame.
   it("refuses a target that is not loopback ws://, from either switch", () => {
     for (const hostile of [
       "ws://evil.example.com:9231",
@@ -167,9 +156,8 @@ describe("productionReason", () => {
     expect(productionReason("", null)).toBe("production-build");
   });
 
-  // The reviewer's scenario, and the half a test can otherwise never reach: the
-  // env var IS substituted into a production bundle, so a build made with it but
-  // without `NODE_ENV=development` is readable here and must not go quiet.
+  // The env var IS substituted into a production bundle, so a build made with it
+  // but without `NODE_ENV=development` is readable here and must not go quiet.
   it("reports a build-carried URL in a production build", () => {
     expect(productionReason(undefined, URL)).toBe(
       "production-build-configured",
@@ -180,22 +168,17 @@ describe("productionReason", () => {
     expect(productionReason(URL, null)).toBe("production-build-configured");
   });
 
-  // The one cell where the two sources disagree, and the only one that can tell
-  // this apart from an OR. A host that passed `debugger: null` refused, so the
-  // build value is not consulted: reporting it as configured advises a dev-mode
-  // rebuild that `resolveDebuggerEnablement` would still resolve to
-  // `not-configured`.
+  // The one cell where the sources disagree, so the only one that tells this from
+  // an OR: a refusal means the build is not consulted, and reporting it as
+  // configured advises a rebuild that would still not dial.
   it("stays silent for a host that refused, whatever the build carries", () => {
     expect(productionReason(null, URL)).toBe("production-build");
     expect(resolveDebuggerEnablement(null, URL).reason).toBe("not-configured");
   });
 });
 
-// What a resolved dial actually does, which is the half the suites above cannot
-// reach: they go through the live `import.meta.env.DEV` gate, so `url` is always
-// null there and every dev-build behaviour is invisible. `installDebuggerDial`
-// takes the enablement instead of resolving it, so the resolved case is
-// reachable here.
+// What a resolved dial does. `installDebuggerDial` takes the enablement rather
+// than resolving it, which is what makes the resolved case reachable at all.
 describe("putting a dial into service", () => {
   const ENDPOINT = "ws://127.0.0.1:9231";
   const OTHER = "ws://127.0.0.1:9300";
@@ -246,11 +229,9 @@ describe("putting a dial into service", () => {
       }
     ).getElementById("truapi-debugger-indicator");
 
-  // The live wiring, asserted as one thing. A runtime that resolves a dial has
-  // to report it, show it (PG's requirement: a host streaming frames says so
-  // where you can see it, not only in a console line that scrolls away), and
-  // hand that same URL to the worker, or the host and what it is doing part
-  // company. Dropping any one of the three leaves the other two looking fine.
+  // The live wiring, asserted as one thing: a resolved dial must be reported,
+  // shown in the page, and handed to the worker. Dropping any one of the three
+  // leaves the other two looking fine.
   it("reports the endpoint, shows it, and hands it to the worker", () => {
     const logged: string[] = [];
     const info = console.info;
@@ -274,8 +255,8 @@ describe("putting a dial into service", () => {
     expect(badge()?.textContent).toContain(ENDPOINT);
   });
 
-  // The null case is every production build, and any dev build nobody gave a
-  // dial: there is nothing to announce, so nothing may be painted.
+  // Every production build, and any dev build nobody gave a dial: nothing to
+  // announce, so nothing may be painted.
   it("paints nothing without a dial", () => {
     dial(null);
     expect(badge()).toBeNull();
@@ -299,6 +280,25 @@ describe("putting a dial into service", () => {
     expect(badge()?.textContent).toContain(ENDPOINT);
   });
 
+  // Noticing the tap and opening it should be one step.
+  it("links each endpoint to the board reading it", () => {
+    dial(ENDPOINT);
+    dial(OTHER);
+    const links = (
+      globalThis.document as unknown as {
+        getElementById(
+          id: string,
+        ): { querySelectorAll(s: string): { href: string }[] } | null;
+      }
+    )
+      .getElementById("truapi-debugger-indicator")!
+      .querySelectorAll("a");
+    expect([...links].map((a) => a.href)).toEqual([
+      "http://127.0.0.1:9231/",
+      "http://127.0.0.1:9300/",
+    ]);
+  });
+
   // Two taps are two places frames are going, and a badge naming one of them
   // reads as the whole story.
   it("names every live endpoint", () => {
@@ -319,9 +319,8 @@ describe("putting a dial into service", () => {
     expect(badge()).toBeNull();
   });
 
-  // A runtime created from a `<head>` script resolves its dial before there is a
-  // body to mount on. Returning alone would leave the tap live and the badge
-  // permanently absent, which is the one case it exists for.
+  // A `<head>` script resolves its dial before there is a body to mount on, and
+  // returning alone leaves the tap live with the badge permanently absent.
   it("paints once the document body arrives", () => {
     const withBody = globalThis.document;
     let pending: (() => void) | null = null;
@@ -349,10 +348,9 @@ describe("putting a dial into service", () => {
   });
 });
 
-// The runtime resolves its own dial behind `import.meta.env.DEV`, which reads as
-// undefined under the test runner - so a runtime-driven badge assertion passes
-// whatever the code does. Turning the gate on is what gives these two something
-// to observe; without it both would hold against a runtime that never releases.
+// `import.meta.env.DEV` reads undefined under the runner, so a runtime-driven
+// badge assertion passes whatever the code does. Setting it is what gives these
+// something to observe.
 describe("a runtime whose worker never loads", () => {
   const ENDPOINT = "ws://127.0.0.1:9231";
   const env = (import.meta as unknown as { env: Record<string, unknown> }).env;
@@ -398,8 +396,7 @@ describe("a runtime whose worker never loads", () => {
   };
 
   // Nothing streams for a worker that never came up, so a badge naming its
-  // endpoint is the silent-tap failure read backwards: it says frames are
-  // leaving for somewhere nothing is sending.
+  // endpoint says frames are leaving for somewhere nothing is sending.
   it("takes its dial out of service when init reports a fatal error", async () => {
     const worker = new FakeWorker();
     const started = startWithDial(worker);
@@ -420,9 +417,8 @@ describe("a runtime whose worker never loads", () => {
     expect(badge()).toBeNull();
   });
 
-  // The other half of the same decision: releasing for every `cleanupInit`
-  // caller rather than only the failing ones would take the badge down on the
-  // runtime that is about to start streaming.
+  // The other half: releasing for every `cleanupInit` caller would take the badge
+  // down on the runtime about to start streaming.
   it("keeps its dial once the worker is ready", async () => {
     const worker = new FakeWorker();
     const started = startWithDial(worker);
