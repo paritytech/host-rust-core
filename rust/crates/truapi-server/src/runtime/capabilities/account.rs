@@ -29,11 +29,12 @@ use truapi_platform::{
 
 use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::sso::messages::ProductRequest;
+use crate::runtime::authority::AuthorityError;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,
-    ring_vrf_proof_error, ring_vrf_register_error, ring_vrf_sign_error, until_cancelled,
-    validate_vrf_transcript, vrf_call_error,
+    ring_vrf_proof_error, ring_vrf_register_error, ring_vrf_sign_error, validate_vrf_transcript,
+    vrf_call_error,
 };
 
 #[truapi::async_trait]
@@ -81,33 +82,51 @@ impl Account for ProductRuntimeHost {
                     });
                 }
             }
-        } else if self
-            .authority
-            .subtree_resolution_reaches_account_holder(
-                &session,
-                &product_account_id.dot_ns_identifier,
-            )
+        } else {
+            // Own-account resolution walks two host callbacks before the
+            // bounded SSO call: a persisted subtree read, then a confirmation.
+            // Neither had a deadline, so a host that never answered its own
+            // storage parked the request forever, with no response and no
+            // error frame (host-rust-core#954). Both are bounded by the
+            // caller's context, falling back to the same default the SSO call
+            // uses, so an unresponsive host surfaces a typed error instead.
+            let authority_cx = remote_authority_context(cx);
+            let reaches_account_holder = remote_authority_call(&authority_cx, async {
+                Ok::<_, AuthorityError>(
+                    self.authority
+                        .subtree_resolution_reaches_account_holder(
+                            &session,
+                            &product_account_id.dot_ns_identifier,
+                        )
+                        .await,
+                )
+            })
             .await
-        {
-            // Own-account resolution has no access review, so a cold subtree
-            // that must reach the Account Holder is the one point a host can
-            // surface and reject before the SSO call.
-            let approved = until_cancelled(
-                cx,
-                self.platform
-                    .confirm_user_action(UserConfirmationReview::ProductSubtree(
-                        ProductSubtreeReview {
-                            product_id: product_account_id.dot_ns_identifier.clone(),
-                        },
-                    )),
-            )
-            .await
-            .map_err(account_get_authority_error)?
-            .map_err(|err| CallError::HostFailure { reason: err.reason })?;
-            if !approved {
-                return Err(CallError::Domain(HostAccountGetError::V1(
-                    v01::HostAccountGetError::Rejected,
-                )));
+            .map_err(account_get_authority_error)?;
+
+            if reaches_account_holder {
+                // Own-account resolution has no access review, so a cold
+                // subtree that must reach the Account Holder is the one point
+                // a host can surface and reject before the SSO call.
+                let approved = remote_authority_call(&authority_cx, async {
+                    Ok::<_, AuthorityError>(
+                        self.platform
+                            .confirm_user_action(UserConfirmationReview::ProductSubtree(
+                                ProductSubtreeReview {
+                                    product_id: product_account_id.dot_ns_identifier.clone(),
+                                },
+                            ))
+                            .await,
+                    )
+                })
+                .await
+                .map_err(account_get_authority_error)?
+                .map_err(|err| CallError::HostFailure { reason: err.reason })?;
+                if !approved {
+                    return Err(CallError::Domain(HostAccountGetError::V1(
+                        v01::HostAccountGetError::Rejected,
+                    )));
+                }
             }
         }
 
