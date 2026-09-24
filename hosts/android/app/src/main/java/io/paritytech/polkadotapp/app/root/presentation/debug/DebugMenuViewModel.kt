@@ -95,6 +95,10 @@ class DebugMenuViewModel @Inject constructor(
         router.openProductBotsManagement()
     }
 
+    override fun onPocketFacePreviewClick() {
+        router.openPocketFacePreview()
+    }
+
     override fun onRandomizeAccountClick() = launchUnit {
         randomizeAccountUseCase()
     }

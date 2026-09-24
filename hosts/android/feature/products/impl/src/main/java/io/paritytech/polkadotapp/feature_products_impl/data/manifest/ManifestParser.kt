@@ -5,6 +5,7 @@ import io.paritytech.polkadotapp.common.utils.enumValueOfOrNull
 import io.paritytech.polkadotapp.feature_products_api.model.ExecutableHost
 import io.paritytech.polkadotapp.feature_products_api.model.ExecutableKind
 import io.paritytech.polkadotapp.feature_products_api.model.PocketCardDefinition
+import io.paritytech.polkadotapp.feature_products_api.model.PocketCardPreview
 import io.paritytech.polkadotapp.feature_products_api.model.ProductExecutable
 import io.paritytech.polkadotapp.feature_products_api.model.ProductIcon
 import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.PocketCardIdentifier
@@ -96,7 +97,8 @@ internal class ManifestParser @Inject constructor(
         return PocketCardDefinition(
             id = PocketCardIdentifier.screen(requireNotNull(id) { "pocket card missing id" }),
             title = title,
-            preview = preview,
+            // Always a path in the archive: a published card must not be able to name a URL.
+            preview = PocketCardPreview.Archive(preview),
         )
     }
 

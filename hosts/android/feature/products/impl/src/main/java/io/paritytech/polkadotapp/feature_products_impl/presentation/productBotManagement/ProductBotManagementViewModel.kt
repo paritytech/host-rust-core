@@ -6,9 +6,11 @@ import io.paritytech.polkadotapp.common.utils.flatMap
 import io.paritytech.polkadotapp.common.utils.launchUnit
 import io.paritytech.polkadotapp.common.utils.mapList
 import io.paritytech.polkadotapp.common.utils.requireSuffix
+import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCardId
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_api.model.toUrl
 import io.paritytech.polkadotapp.feature_products_api.presentation.SpaBrowserPayload
+import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.DebugPocketCard
 import io.paritytech.polkadotapp.feature_products_impl.domain.productBotManagement.ProductBotManagementInteractor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.launchIn
@@ -57,12 +59,16 @@ class ProductBotManagementViewModel @Inject constructor(
         val product = state.value.products.find { it.id.value == productId } ?: return
         launch {
             val workerUrl = interactor.getUserWorkerUrl(product.id).orEmpty()
+            val card = interactor.getDebugCard(product.id)
             state.update {
                 it.copy(
                     dialogState = ProductDialogState.Form(
                         productId = product.id.value,
                         dotNsName = product.name,
                         workerUrl = workerUrl,
+                        cardId = card?.cardId?.value.orEmpty(),
+                        cardTitle = card?.title.orEmpty(),
+                        previewUrl = card?.previewUrl.orEmpty(),
                     )
                 )
             }
@@ -92,6 +98,27 @@ class ProductBotManagementViewModel @Inject constructor(
         }
     }
 
+    override fun onCardIdChanged(cardId: String) {
+        state.update {
+            val form = it.dialogState as? ProductDialogState.Form ?: return@update it
+            it.copy(dialogState = form.copy(cardId = cardId))
+        }
+    }
+
+    override fun onCardTitleChanged(title: String) {
+        state.update {
+            val form = it.dialogState as? ProductDialogState.Form ?: return@update it
+            it.copy(dialogState = form.copy(cardTitle = title))
+        }
+    }
+
+    override fun onPreviewUrlChanged(url: String) {
+        state.update {
+            val form = it.dialogState as? ProductDialogState.Form ?: return@update it
+            it.copy(dialogState = form.copy(previewUrl = url))
+        }
+    }
+
     override fun onDialogConfirm() = launchUnit {
         val form = state.value.dialogState as? ProductDialogState.Form ?: return@launchUnit
         if (form.workerUrl.isBlank() || form.dotNsName.isBlank()) return@launchUnit
@@ -100,8 +127,10 @@ class ProductBotManagementViewModel @Inject constructor(
             it.copy(dialogState = form.copy(isSubmitting = true))
         }
 
+        val card = form.toDebugCard()
+
         val result = if (form.productId != null) {
-            interactor.updateProduct(ProductId.fromStoredValue(form.productId), form.workerUrl, form.dotNsName)
+            interactor.updateProduct(ProductId.fromStoredValue(form.productId), form.workerUrl, form.dotNsName, card)
         } else {
             runCatching { requireNotNull(interactor.currentTld()) { "Network TLD is not known yet" } }
                 .flatMap { tld ->
@@ -111,7 +140,7 @@ class ProductBotManagementViewModel @Inject constructor(
                     ProductId.fromString(dotNs, tld)
                 }
                 .flatMap { productId ->
-                    interactor.upsertProduct(productId, form.workerUrl, form.dotNsName)
+                    interactor.upsertProduct(productId, form.workerUrl, form.dotNsName, card)
                 }
         }
 
@@ -126,5 +155,20 @@ class ProductBotManagementViewModel @Inject constructor(
                     it.copy(dialogState = form.copy(isSubmitting = false))
                 }
             }
+    }
+
+    /**
+     * A card needs both an id and a face to be worth declaring; either one alone would produce a
+     * worker whose card cannot be drawn. Screening the id is left to the store, which applies the
+     * same rules the manifest path does.
+     */
+    private fun ProductDialogState.Form.toDebugCard(): DebugPocketCard? {
+        if (cardId.isBlank() || previewUrl.isBlank()) return null
+
+        return DebugPocketCard(
+            cardId = PocketCardId(cardId.trim()),
+            title = cardTitle.ifBlank { cardId }.trim(),
+            previewUrl = previewUrl.trim(),
+        )
     }
 }
