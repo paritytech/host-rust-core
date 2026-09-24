@@ -93,18 +93,26 @@ cargo +stable test -p truapi-macros --locked
 
 ## Data-access objects
 
-`#[dao]` turns a trait whose methods carry SQL into two surfaces. The trait is
-implemented for `rusqlite::Connection`, so several calls, or several DAOs,
-compose inside one caller-owned `Db::write`. The generated `…Db` struct has an
-async twin of every method that takes a connection from the database itself and
-runs in its own transaction: `#[query]` on a reader, `#[execute]` and
-`#[transaction]` on the writer.
+`#[dao]` turns a trait whose methods carry SQL into three pieces:
+
+- The trait with its `#[query]` and `#[execute]` methods, implemented for
+  `rusqlite::Connection`, so several calls, or several DAOs, compose inside one
+  caller-owned `Db::write`.
+- `…Transactions`, holding the `#[transaction]` methods, implemented only for
+  `rusqlite::Transaction`. Their bodies rely on an enclosing transaction, so a
+  bare connection cannot call them.
+- The `…Db` struct, with an async twin of every method that takes a connection
+  from the database itself and runs in its own transaction: `#[query]` on a
+  read-only reader, `#[execute]` and `#[transaction]` on the writer.
 
 ```rust
 #[dao]
 pub(crate) trait LedgerDao {
     #[query("SELECT id, note, amount FROM ledger WHERE note = :note")]
     fn find(&self, note: &str) -> rusqlite::Result<Option<Entry>>;
+
+    #[execute("INSERT INTO ledger (note, amount) VALUES (:note, :amount) RETURNING id")]
+    fn insert(&self, note: &str, amount: i64) -> rusqlite::Result<i64>;
 
     #[execute("UPDATE ledger SET amount = :amount WHERE note = :note")]
     fn set_amount(&self, note: &str, amount: i64) -> rusqlite::Result<usize>;
@@ -119,14 +127,24 @@ let dao = LedgerDaoDb::new(db);
 let entry = dao.find("alice").await?;
 ```
 
-Parameters are `:name`, bound from the method's arguments by name; an unbound
-parameter, an unused argument or a positional `?` is a compile error. Rows are
-deserialized with `serde_rusqlite`, so row structs derive `serde::Deserialize`.
-The return type picks the shape: `Vec<T>`, `Option<T>` or exactly one `T` for a
-query; `usize` (rows changed), `i64` (last insert rowid) or `()` for an execute.
-`LedgerDaoDb::QUERIES` lists every statement; `store::prepare_all` prepares them
-against the migrated schema in a test, which catches a wrong table or column
-before it ships.
+Parameters are `:name`, bound from the method's arguments by name. An unbound
+parameter, an unused argument, or another SQLite parameter form (`?`, `@`, `$`,
+`#`) is a compile error. Arguments are owned values, `&T` or `Option<&T>`; the
+async twin copies borrowed ones into its connection thread.
+
+Rows are deserialized with `serde_rusqlite`, so row structs derive
+`serde::Deserialize`. The return type picks the shape: `Vec<T>` is every row,
+`Option<T>` the first row if there is one, and `T` the first row, which must
+exist. A nullable column in an optional row is `Option<Option<T>>`. `Vec<u8>`
+is rejected, since it would read one byte per row; read a blob through a row
+struct with `#[serde(with = "serde_bytes")]`. An `#[execute]` returns `usize`
+(rows changed), `()`, or rows from its `RETURNING` clause in the same shapes;
+an insert that needs its id asks for it with `RETURNING id`, which yields no
+row when nothing was inserted.
+
+`…Db::QUERIES` lists every statement and whether it must only read.
+`store::prepare_all` prepares them against the migrated schema in a test, which
+catches a wrong table or column, and a `#[query]` that writes, before it ships.
 
 There is no transaction that spans `.await`s: it would hold the single writer
 across network I/O. Atomic work goes in a `#[transaction]` method or one

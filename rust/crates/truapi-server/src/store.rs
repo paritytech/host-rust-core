@@ -216,34 +216,66 @@ fn apply_migrations(
     }
 }
 
-/// Maps a row that `serde_rusqlite` could not deserialize onto a
-/// `rusqlite::Error`, which is what `#[dao]` methods return. Called only from
-/// code that `#[dao]` generates.
+/// One statement a `#[dao]` runs, as listed in its `QUERIES`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaoStatement {
+    /// The SQL text.
+    pub sql: &'static str,
+    /// Whether it comes from a `#[query]`, which runs on a read-only
+    /// connection and so must not write.
+    pub read_only: bool,
+}
+
+/// Deserializes one row for code that `#[dao]` generates. A value that does
+/// not fit its field is reported with the column index and SQLite type it
+/// actually has.
 #[doc(hidden)]
-pub fn dao_decode_error(error: serde_rusqlite::Error) -> rusqlite::Error {
-    match error {
-        serde_rusqlite::Error::Rusqlite(error) => error,
-        other => rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Null,
-            Box::new(other),
-        ),
-    }
+pub fn dao_row<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>) -> rusqlite::Result<T> {
+    serde_rusqlite::from_row(row).map_err(|error| {
+        let column = match &error {
+            serde_rusqlite::Error::Rusqlite(_) => None,
+            serde_rusqlite::Error::Deserialization {
+                column: Some(name), ..
+            } => row.as_ref().column_index(name).ok(),
+            _ => Some(0),
+        };
+        match (error, column) {
+            (serde_rusqlite::Error::Rusqlite(error), _) => error,
+            (error, column) => {
+                let column = column.unwrap_or(0);
+                let found = row
+                    .get_ref(column)
+                    .map(|value| value.data_type())
+                    .unwrap_or(rusqlite::types::Type::Null);
+                rusqlite::Error::FromSqlConversionFailure(column, found, Box::new(error))
+            }
+        }
+    })
 }
 
 /// Prepares every statement against an in-memory database migrated to the
-/// latest schema. Returns the first statement that fails, with the reason.
+/// latest schema, and checks that each `#[query]` statement only reads.
+/// Returns the first statement that fails, with the reason.
 #[cfg(test)]
 pub(crate) fn prepare_all(
     migrations: fn() -> Migrations<'static>,
-    statements: &[&str],
+    statements: &[DaoStatement],
 ) -> Result<(), (String, String)> {
     let mut conn = rusqlite::Connection::open_in_memory()
         .map_err(|error| (String::new(), error.to_string()))?;
     apply_migrations(&mut conn, migrations).map_err(|error| (String::new(), error.to_string()))?;
     for statement in statements {
-        conn.prepare(statement)
-            .map_err(|error| ((*statement).to_owned(), error.to_string()))?;
+        let failure = |reason: String| (statement.sql.to_owned(), reason);
+        let prepared = conn
+            .prepare(statement.sql)
+            .map_err(|error| failure(error.to_string()))?;
+        if statement.read_only && !prepared.readonly() {
+            return Err(failure(
+                "a #[query] runs on a read-only connection but this statement writes; use \
+                 #[execute]"
+                    .to_owned(),
+            ));
+        }
     }
     Ok(())
 }

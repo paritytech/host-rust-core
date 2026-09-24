@@ -20,6 +20,9 @@ use proc_macro::TokenStream;
 ///     #[query("SELECT id, note FROM ledger WHERE note = :note")]
 ///     fn find(&self, note: &str) -> rusqlite::Result<Option<Entry>>;
 ///
+///     #[execute("INSERT INTO ledger (note) VALUES (:note) RETURNING id")]
+///     fn insert(&self, note: &str) -> rusqlite::Result<i64>;
+///
 ///     #[execute("UPDATE ledger SET amount = :amount WHERE id = :id")]
 ///     fn set_amount(&self, id: i64, amount: i64) -> rusqlite::Result<usize>;
 ///
@@ -30,22 +33,31 @@ use proc_macro::TokenStream;
 /// }
 /// ```
 ///
-/// Generates two surfaces from one declaration:
+/// Generates, from one declaration:
 ///
-/// - The trait, implemented for `rusqlite::Connection`, so the methods compose
-///   inside one caller-owned `Db::write`. A `Transaction` dereferences to a
-///   `Connection`, so `tx.find(…)` works there.
+/// - The trait with its `#[query]` and `#[execute]` methods, implemented for
+///   `rusqlite::Connection`, so the methods compose inside one caller-owned
+///   `Db::write`. A `Transaction` dereferences to a `Connection`, so
+///   `tx.find(…)` works there.
+/// - `LedgerDaoTransactions` with the `#[transaction]` methods, implemented
+///   only for `rusqlite::Transaction`: they rely on the caller's transaction,
+///   so a bare connection cannot call them.
 /// - `LedgerDaoDb`, whose async methods take a connection from the database
-///   themselves: `#[query]` on a reader, `#[execute]` and `#[transaction]` on
-///   the writer, one transaction per call. `LedgerDaoDb::QUERIES` lists every
-///   statement for a test that prepares them against the migrated schema.
+///   themselves: `#[query]` on a read-only reader, `#[execute]` and
+///   `#[transaction]` on the writer, one transaction per call.
+///   `LedgerDaoDb::QUERIES` lists every statement, and whether it must only
+///   read, for a test that prepares them against the migrated schema.
 ///
 /// SQL binds `:name` parameters from the method's arguments by name; an unbound
-/// parameter or an unused argument is a compile error. Every method returns
-/// `rusqlite::Result<T>`. A `#[query]` returns `Vec<T>` (every row),
-/// `Option<T>` (the first row, if any) or `T` (the first row, which must
-/// exist); rows are deserialized with `serde_rusqlite`. An `#[execute]`
-/// returns `usize` (rows changed), `i64` (last insert rowid) or `()`.
+/// parameter, an unused argument or another parameter form (`?`, `@`, `$`,
+/// `#`) is a compile error. Arguments are owned values, `&T` or `Option<&T>`.
+/// Every method returns `rusqlite::Result<T>`. A `#[query]` returns `Vec<T>`
+/// (every row), `Option<T>` (the first row, if any) or `T` (the first row,
+/// which must exist); a nullable column in an optional row is
+/// `Option<Option<T>>`, and `Vec<u8>` is rejected because it would read one
+/// byte per row. Rows are deserialized with `serde_rusqlite`. An `#[execute]`
+/// returns `usize` (rows changed), `()`, or rows from its `RETURNING` clause
+/// in the same shapes as a query.
 #[proc_macro_attribute]
 pub fn dao(args: TokenStream, item: TokenStream) -> TokenStream {
     dao::expand(args, item)

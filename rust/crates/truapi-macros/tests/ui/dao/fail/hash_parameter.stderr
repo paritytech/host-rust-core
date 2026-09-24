@@ -1,0 +1,5 @@
+error: use `:name` parameters, bound from the method's arguments
+ --> tests/ui/dao/fail/hash_parameter.rs:5:13
+  |
+5 |     #[query("SELECT note FROM ledger WHERE amount = :amount OR amount = #amount")]
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
