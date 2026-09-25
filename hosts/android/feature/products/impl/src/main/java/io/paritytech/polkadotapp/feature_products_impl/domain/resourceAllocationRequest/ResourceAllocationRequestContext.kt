@@ -1,10 +1,10 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.resourceAllocationRequest
 
+import io.paritytech.polkadotapp.common.utils.WithdrawableAnswer
 import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.ApAllocatableResource
 import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.ApAllocationOutcome
 import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.OnExistingAllowancePolicy
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
-import kotlinx.coroutines.CompletableDeferred
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,10 +17,13 @@ class ResourceAllocationRequestContext(
     val resources: List<ApAllocatableResource>,
     val onExisting: OnExistingAllowancePolicy,
 ) {
-    private val outcomes = CompletableDeferred<List<ApAllocationOutcome>>()
+    private val outcomes = WithdrawableAnswer<List<ApAllocationOutcome>>()
+
+    val isWithdrawn: Boolean
+        get() = outcomes.isWithdrawn
 
     fun deliver(outcomes: List<ApAllocationOutcome>) {
-        this.outcomes.complete(outcomes)
+        this.outcomes.deliver(outcomes)
     }
 
     /**
@@ -31,7 +34,9 @@ class ResourceAllocationRequestContext(
         deliver(List(resources.size) { outcome })
     }
 
-    suspend fun awaitOutcomes(): List<ApAllocationOutcome> = outcomes.await()
+    suspend fun awaitOutcomes(open: suspend () -> Unit): List<ApAllocationOutcome> = outcomes.await(open)
+
+    suspend fun awaitWithdrawal() = outcomes.awaitWithdrawal()
 }
 
 @Singleton
@@ -44,7 +49,10 @@ class ResourceAllocationRequestContextHolder @Inject constructor() {
 
     fun get(): ResourceAllocationRequestContext? = context
 
-    fun clear() {
-        context = null
+    // Owner-guarded: a sheet is cleared after its dismiss animation, when the holder may carry the next prompt
+    fun clear(owner: ResourceAllocationRequestContext) {
+        if (context === owner) {
+            context = null
+        }
     }
 }

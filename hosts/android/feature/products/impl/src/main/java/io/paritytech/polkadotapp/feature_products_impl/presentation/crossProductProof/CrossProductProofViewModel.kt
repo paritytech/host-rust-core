@@ -10,6 +10,7 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.crossProductProof.
 import io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductsRouter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
@@ -28,19 +29,26 @@ class CrossProductProofViewModel @Inject constructor(
             )
         )
 
+    private val withdrawalWatch = launch {
+        context.awaitWithdrawal()
+        router.back()
+    }
+
     fun onApproveClicked() = launchUnit {
+        withdrawalWatch.cancel()
         context.deliverApproved()
         router.back()
     }
 
     fun onRejectClicked() = launchUnit {
+        withdrawalWatch.cancel()
         context.deliverRejected()
         router.back()
     }
 
     override fun onCleared() {
         super.onCleared()
-        holder.clear()
+        holder.clear(context)
     }
 }
 

@@ -1,5 +1,7 @@
 package io.paritytech.polkadotapp.feature_products_api.model.signing
 
+import kotlinx.coroutines.awaitCancellation
+
 interface SigningContext {
     val requesterName: String
     val requesterIconUrl: String
@@ -24,4 +26,10 @@ interface SigningContext {
      * either way, but one holding a lock is not.
      */
     fun onAbandoned() = Unit
+
+    /**
+     * Returns once the caller withdraws the request, so the sheet closes without an answer.
+     * Never returns by default.
+     */
+    suspend fun awaitWithdrawal(): Unit = awaitCancellation()
 }

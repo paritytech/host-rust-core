@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.feature_sso_impl.domain.signTransaction
 
+import io.paritytech.polkadotapp.common.domain.errors.UserCancellation
 import io.paritytech.polkadotapp.common.utils.flatMap
 import io.paritytech.polkadotapp.feature_products_api.model.signing.SignedTransaction
 import io.paritytech.polkadotapp.feature_products_api.model.signing.SigningAccount
@@ -7,9 +8,12 @@ import io.paritytech.polkadotapp.feature_products_api.model.signing.SigningConte
 import io.paritytech.polkadotapp.feature_products_api.model.signing.SigningRequestBody
 import io.paritytech.polkadotapp.feature_sso_impl.domain.SsoService
 import io.paritytech.polkadotapp.feature_sso_impl.domain.model.SsoSessionData
+import io.paritytech.polkadotapp.feature_sso_impl.domain.session.model.SsoSessionId
 import io.paritytech.polkadotapp.feature_sso_impl.domain.session.model.SsoSessionRequest
+import io.paritytech.polkadotapp.feature_sso_impl.domain.session.model.SsoSessionRequestId
 import io.paritytech.polkadotapp.feature_sso_impl.domain.session.model.SsoSessionResponse
 import io.paritytech.polkadotapp.feature_sso_impl.domain.session.model.SsoSessionResponse.Companion.responseWith
+import kotlinx.coroutines.CompletableDeferred
 import timber.log.Timber
 
 class SsoSigningContext(
@@ -22,10 +26,26 @@ class SsoSigningContext(
     override val requesterName: String = sessionData.name
     override val requesterIconUrl: String = sessionData.icon
 
-    override suspend fun approve(sign: suspend () -> Result<SignedTransaction>): Result<Unit> =
-        sign().flatMap { signedTransaction -> deliverSignedResult(signedTransaction) }
+    private val withdrawal = CompletableDeferred<Unit>()
+
+    fun answers(sessionId: SsoSessionId, requestId: SsoSessionRequestId): Boolean =
+        request.sessionId == sessionId && request.requestId == requestId
+
+    fun withdraw() {
+        withdrawal.complete(Unit)
+    }
+
+    override suspend fun awaitWithdrawal() = withdrawal.await()
+
+    override suspend fun approve(sign: suspend () -> Result<SignedTransaction>): Result<Unit> {
+        if (withdrawal.isCompleted) return Result.failure(RequestWithdrawn())
+
+        return sign().flatMap { signedTransaction -> deliverSignedResult(signedTransaction) }
+    }
 
     private suspend fun deliverSignedResult(signedTransaction: SignedTransaction): Result<Unit> {
+        if (withdrawal.isCompleted) return Result.failure(RequestWithdrawn())
+
         Timber.d("Delivering signed result to $requesterName")
         val responseContent = when (signedTransaction) {
             is SignedTransaction.GeneralTransaction -> SsoSessionResponse.Content.SignedGeneralTransaction(signedTransaction.signedTx)
@@ -47,6 +67,8 @@ class SsoSigningContext(
     }
 
     override suspend fun deliverRejection(): Result<Unit> {
+        if (withdrawal.isCompleted) return Result.success(Unit)
+
         Timber.d("Delivering rejection to $requesterName")
         val responseContent = when (signingRequestBody) {
             is SigningRequestBody.Transaction, is SigningRequestBody.Raw -> SsoSessionResponse.Content.FailedToSignTransaction("Rejected")
@@ -65,3 +87,5 @@ class SsoSigningContext(
             .onFailure { Timber.e(it, "Failed to deliver rejection to $requesterName") }
     }
 }
+
+private class RequestWithdrawn : IllegalStateException("The pairing host withdrew this request"), UserCancellation
