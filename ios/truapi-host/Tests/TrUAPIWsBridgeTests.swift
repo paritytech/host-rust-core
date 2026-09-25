@@ -1,6 +1,7 @@
 import Foundation
 import Testing
-import TrUAPIHost
+@testable import TrUAPIHost
+import UIKit
 
 struct TrUAPIWsBridgeTests {
     @Test(.timeLimit(.minutes(1)))
@@ -71,6 +72,53 @@ struct TrUAPIWsBridgeTests {
             return
         }
         #expect(response.suffix(Self.hostInfoResponseTail.count) == Self.hostInfoResponseTail)
+    }
+
+    /// iOS reclaims a suspended app's listening socket while products keep
+    /// the endpoint they were given, so returning to the foreground must
+    /// rebind the listener on that same port.
+    @Test(.timeLimit(.minutes(1)))
+    func testReturningToTheForegroundRebindsTheBridgeOnItsPort() async throws {
+        let bridge = StubHostBridge()
+        let notifications = NotificationCenter()
+        let runtime = try TrUAPIHostRuntime(
+            bridge: bridge,
+            runtimeConfig: Self.makeHostRuntimeConfig(),
+            notificationCenter: notifications
+        )
+        let execution = try runtime.openProductExecution(
+            bridge: bridge,
+            configuration: ProductExecutionConfig(
+                productId: "test.dot",
+                executionKind: .app
+            )
+        )
+        let endpoint = try execution.startWsBridge(bindPort: 0)
+        defer { execution.stopWsBridge() }
+
+        withExtendedLifetime(runtime) {
+            notifications.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        }
+
+        let rebound = "truapi.ws_bridge.relistened port=\(endpoint.port)"
+        let deadline = Date().addingTimeInterval(5)
+        while !bridge.coreLogs.contains(rebound), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(bridge.coreLogs.contains(rebound))
+        let url = try #require(URL(string: "ws://127.0.0.1:\(endpoint.port)/?t=\(endpoint.token)"))
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.resume()
+        defer { task.cancel(with: .normalClosure, reason: nil) }
+
+        try await task.send(.data(Self.featureSupportedRequestFrame()))
+        let message = try await task.receive()
+
+        guard case let .data(response) = message else {
+            Issue.record("expected binary frame, got \(message)")
+            return
+        }
+        #expect(response.suffix(4) == Data([0x01, 0x00, 0x00, 0x01]))
     }
 }
 
@@ -156,10 +204,12 @@ final class StubCoreStorage: HostCoreStorageBackend, @unchecked Sendable {
 // Conforms to HostBridge rather than the generated HostCallbacks, so the
 // protocol extension supplies every optional callback and a new one cannot
 // leave this file behind. Only the six requirements without a default are
-// written out.
+// written out, plus the core log recorder.
 final class StubHostBridge: HostBridge, @unchecked Sendable {
     let storage: HostStorageBackend = StubStorage()
     let coreStorage: HostCoreStorageBackend = StubCoreStorage()
+    private let logLock = NSLock()
+    private var logs: [String] = []
     private let permissionLock = NSLock()
     private var remoteDecisions: [PermissionDecision]
     private var deviceDecisions: [PermissionDecision]
@@ -172,6 +222,14 @@ final class StubHostBridge: HostBridge, @unchecked Sendable {
 
     var requestedDevicePermissions: [HostDevicePermissionRequest] {
         permissionLock.withLock { deviceRequests }
+    }
+
+    var coreLogs: [String] {
+        logLock.withLock { logs }
+    }
+
+    func onCoreLog(marker: String, detail: String) {
+        logLock.withLock { logs.append("\(marker) \(detail)") }
     }
 
     private func nextDeviceDecision(request: HostDevicePermissionRequest) -> PermissionDecision {
