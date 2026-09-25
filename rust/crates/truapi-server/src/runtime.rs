@@ -128,7 +128,7 @@ pub(crate) const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration:
 /// before it is dropped. A call parked in the statement-store setup, which does
 /// not watch the cancel token, would otherwise outlive its deadline, so this
 /// caps the wait. A normal unwind completes in well under this.
-const AUTHORITY_CANCEL_UNWIND_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const AUTHORITY_CANCEL_UNWIND_GRACE: Duration = Duration::from_secs(2);
 /// Resource allocation may include a People -> Bulletin cross-chain
 /// propagation before the signing host can truthfully report `Allocated`.
 /// Keep this above the signing host's 240-second propagation ceiling while

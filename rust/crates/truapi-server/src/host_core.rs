@@ -1439,13 +1439,8 @@ impl ProductRuntime {
         };
         let dispatch_id = self.next_dispatch_id.fetch_add(1, Ordering::Relaxed);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        // Same poison recovery as `self.debug`, and for a concrete reason rather than
-        // symmetry: `dispose` below holds THIS guard across its whole drain loop and
-        // calls `AbortHandle::abort()` inside it, which wakes the task's waker - i.e.
-        // arbitrary out-of-repo executor code, under the lock. One panicking waker
-        // would poison this mutex and every later `receive_frame` would then panic
-        // here, which is exactly the production-host-killing shape the debug tap
-        // above was fixed for.
+        // Same poison recovery as `self.debug`: a panic anywhere under this guard
+        // must not turn every later `receive_frame` into a panic.
         //
         // Re-check under the disposal lock so a racing dispatch cannot register
         // after `dispose` has drained the active requests.
@@ -1545,15 +1540,18 @@ impl ProductRuntime {
 
     /// Dispose this host core. Idempotent.
     ///
-    /// Disposal suppresses future outgoing frames, aborts in-flight dispatch
-    /// futures, and cancels active subscriptions.
+    /// Disposal suppresses future outgoing frames, withdraws in-flight calls
+    /// and aborts them after a grace, and cancels active subscriptions.
+    ///
+    /// Withdrawing first lets a call that is waiting on a paired host tell it
+    /// to stop, which an abort alone would drop before it could.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.dispose"))]
     pub fn dispose(&self) {
-        // Aborting under the lock can wake code that re-enters disposal.
+        // Code that disposal wakes can re-enter it.
         if self.disposed.load(Ordering::Acquire) {
             return;
         }
-        {
+        let in_flight = {
             let mut in_flight = self
                 .in_flight
                 .lock()
@@ -1561,10 +1559,18 @@ impl ProductRuntime {
             if self.disposed.swap(true, Ordering::AcqRel) {
                 return;
             }
-            for (_, handle) in in_flight.drain() {
+            in_flight
+                .drain()
+                .map(|(_, handle)| handle)
+                .collect::<Vec<_>>()
+        };
+        self.core.withdraw_requests();
+        (self.admin.product_runtime.services().spawner)(Box::pin(async move {
+            futures_timer::Delay::new(crate::runtime::AUTHORITY_CANCEL_UNWIND_GRACE).await;
+            for handle in in_flight {
                 handle.abort();
             }
-        }
+        }));
         self.admin.product_runtime.detach_chat();
         self.admin.product_runtime.detach_renderer();
         self.admin.product_runtime.release_open_operations();
@@ -3169,6 +3175,80 @@ mod tests {
                 .is_empty(),
             "a dispatch that lost the race with dispose still reached the platform"
         );
+    }
+
+    /// Closing a product must reach the phone that is prompting for it. An
+    /// abort alone drops the call before it can send the paired host a
+    /// `Cancel`, and approving the stale prompt would still allocate.
+    #[test]
+    fn disposing_mid_sso_call_withdraws_the_request_from_the_paired_host() {
+        let session = crate::test_support::sso_session_info();
+        let answers = |method: &'static str, result: &str| {
+            std::iter::repeat_n((method, result.to_string()), 4)
+        };
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            rpc_method_responses: answers("statement_subscribeStatement", r#""sub""#)
+                .chain(answers("statement_submit", r#"{"status":"new"}"#))
+                .chain(answers("statement_unsubscribeStatement", "true"))
+                .collect(),
+            ..Default::default()
+        });
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = Arc::new(ProductRuntime::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        ));
+        runtime
+            .admin
+            .product_runtime()
+            .test_session_state()
+            .set_session(session.clone());
+        let ids = request_ids("resource_allocation_request").expect("known request method");
+        let frame = ProtocolMessage {
+            request_id: "alloc:1".to_string(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest::V1(
+                    v01::HostRequestResourceAllocationRequest {
+                        resources: vec![v01::AllocatableResource::StatementStoreAllowance],
+                    },
+                )
+                .encode(),
+            },
+        }
+        .encode();
+        let dispatching = {
+            let runtime = runtime.clone();
+            std::thread::spawn(move || {
+                futures::executor::block_on(runtime.receive_frame(frame)).expect("receive frame");
+            })
+        };
+        let published = || crate::test_support::submitted_remote_messages(&platform, &session);
+        wait_until(|| published().len() == 1, "the request was not published");
+        let request = published()[0].message_id.clone();
+
+        runtime.dispose();
+
+        let withdrawn = || {
+            published()
+                .into_iter()
+                .filter_map(|message| match message.data {
+                    crate::host_logic::sso::messages::RemoteMessageData::V1(
+                        crate::host_logic::sso::messages::v1::RemoteMessage::Cancel(withdrawal),
+                    ) => Some(withdrawal.message_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        wait_until(|| !withdrawn().is_empty(), "disposing sent no Cancel");
+        assert_eq!(withdrawn(), vec![request]);
+        dispatching.join().expect("dispatch thread panicked");
     }
 
     #[test]

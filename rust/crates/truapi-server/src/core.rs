@@ -149,6 +149,11 @@ impl TrUApiCore {
     pub fn cancel_subscriptions(&self) {
         self.dispatcher.cancel_subscriptions();
     }
+
+    /// Withdraw every request in flight and every one that arrives later.
+    pub fn withdraw_requests(&self) {
+        self.dispatcher.withdraw_requests();
+    }
 }
 
 /// Single-slot transport that captures the next response the dispatcher
