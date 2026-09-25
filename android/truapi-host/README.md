@@ -155,6 +155,22 @@ The `NativeAnnouncedPairing` that `notifyPairingAllowanceAllocation` returns hol
 
 On the execution: `publishChatAction` delivers a user's action back to the product (buffered until it subscribes), `notifyChatRoomsChanged` republishes the room list, `render` returns a `Flow` of `RendererNode` trees for one render context, `publishRendererAction` delivers a renderer action back to the product, and `sessionChatIdentityKey` reads the session's X25519 chat identity key. An open render stream is one worker reference the core holds on the product's behalf; the transition it causes arrives on the runtime bridge's `workerDemandChanged`, never on the execution's. Two rules the core cannot check are the host's to keep: send a render context only for a surface the product's manifest `includes`, and publish a renderer action only from the current tree of an open render stream.
 
+## Wire debugger
+
+A host can stream its product frames to a `@parity/truapi-debugger` listening on
+loopback. Nothing is tapped unless the host installs a sink:
+
+```kotlin
+execution.setDebugSink(NativeDebugSink.connect("ws://127.0.0.1:9231"))
+val endpoint = execution.startWsBridge()
+```
+
+The sink applies to connections the bridge accepts after the call, so install it
+before `startWsBridge`; `null` leaves later connections untapped. It queues each
+frame in Rust and never calls back into Kotlin. Its URL must be `ws://` on a
+loopback host, so an emulator reaches a debugger on its computer through
+`adb reverse tcp:9231 tcp:9231`.
+
 ## Architecture
 
 ```text
@@ -487,3 +503,7 @@ uniffi` regenerates the Swift bindings; use `make uniffi-kotlin` for Android.)
 No CI job compiles this package. After changing `TrUAPIHost.kt` or the UniFFI
 surface it wraps, run `make android-check` locally — it regenerates the Kotlin
 bindings and compiles the module against them.
+
+JVM unit tests under `src/test/` load the host-built cdylib from
+`target/codegen/`, so run `make uniffi-kotlin` first, then
+`gradle :truapi-host:testDebugUnitTest`.

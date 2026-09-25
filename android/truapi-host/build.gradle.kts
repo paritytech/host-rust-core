@@ -34,6 +34,9 @@ android {
             java.srcDirs("src/main/kotlin")
             manifest.srcFile("src/main/AndroidManifest.xml")
         }
+        getByName("test") {
+            java.srcDirs("src/test/kotlin")
+        }
     }
 
     compileOptions {
@@ -43,6 +46,13 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    testOptions {
+        // JVM unit tests load the host-built cdylib that `make uniffi-kotlin` leaves here.
+        unitTests.all {
+            it.systemProperty("jna.library.path", rootProject.file("target/codegen").absolutePath)
+        }
     }
 
     publishing {
@@ -60,6 +70,10 @@ dependencies {
     // jobs, and `TrUAPIProductExecution.render` returns a `Flow`, so consumers
     // compile against this.
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+
+    testImplementation("junit:junit:4.13.2")
+    // The AAR above carries only Android's native dispatch; a JVM test needs the jar's.
+    testImplementation("net.java.dev.jna:jna:5.14.0")
 }
 
 extra["truapiSourceDir"] = rootProject.projectDir

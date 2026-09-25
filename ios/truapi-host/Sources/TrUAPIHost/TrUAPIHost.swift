@@ -1071,6 +1071,13 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         inner.stopWsBridge()
     }
 
+    /// Tap every frame on connections the bridge accepts after this call and
+    /// forward it to `sink`; `nil` leaves later connections untapped. Install it
+    /// before ``startWsBridge(bindPort:)`` to see the first connection.
+    public func setDebugSink(_ sink: NativeDebugSink?) {
+        inner.setDebugSink(sink: sink)
+    }
+
     public func close() {
         inner.shutdown()
     }

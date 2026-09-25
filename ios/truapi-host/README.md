@@ -286,6 +286,22 @@ the host keeps its own record of which devices it has already seen. It arrives
 on the thread answering the handshake, so hand the device off rather than
 announcing it inline. Defaults to a no-op for a host that answers no pairing.
 
+## Wire debugger
+
+A host can stream its product frames to a `@parity/truapi-debugger` listening on
+loopback. Nothing is tapped unless the host installs a sink:
+
+```swift
+execution.setDebugSink(try NativeDebugSink.connect(url: "ws://127.0.0.1:9231"))
+let endpoint = try execution.startWsBridge()
+```
+
+The sink applies to connections the bridge accepts after the call, so install it
+before `startWsBridge`; `nil` leaves later connections untapped. It queues each
+frame in Rust and never calls back into Swift. Its URL must be `ws://` on a
+loopback host, which a simulator shares with its Mac and a physical device does
+not.
+
 ## Architecture
 
 ```text

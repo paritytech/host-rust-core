@@ -65,6 +65,7 @@ import uniffi.truapi_server.NativeChatRoomRegistrationStatus
 import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativePocketRemoval
 import uniffi.truapi_server.NativeRendererObserver
+import uniffi.truapi_server.NativeDebugSink
 import uniffi.truapi_server.NativeDevicePermissionStatus
 import uniffi.truapi_server.NativePermissionDecision
 import uniffi.truapi_server.NativeProductExecution
@@ -1003,6 +1004,15 @@ class TrUAPIProductExecution internal constructor(
     /** Revoke this execution's bridge registration while leaving it reusable. */
     fun stopWsBridge() {
         inner.stopWsBridge()
+    }
+
+    /**
+     * Tap every frame on connections the bridge accepts after this call and
+     * forward it to [sink]; `null` leaves later connections untapped. Install it
+     * before [startWsBridge] to see the first connection.
+     */
+    fun setDebugSink(sink: NativeDebugSink?) {
+        inner.setDebugSink(sink)
     }
 
     /**

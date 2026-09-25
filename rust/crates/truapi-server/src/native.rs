@@ -964,6 +964,8 @@ impl NativeTrUApiHostRuntime {
             bridge_token: Mutex::new(None),
             #[cfg(feature = "ws-bridge")]
             product_control: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "ws-bridge")]
+            debug_sink: Arc::new(Mutex::new(None)),
         });
 
         if product.execution_kind == ProductExecutionKind::Worker {
@@ -1519,6 +1521,10 @@ pub struct NativeProductExecution {
     bridge_token: Mutex<Option<String>>,
     #[cfg(feature = "ws-bridge")]
     product_control: Arc<Mutex<Option<crate::ProductRuntimeControl>>>,
+    /// Sink installed on each connection the bridge accepts. Unset unless the
+    /// host calls [`Self::set_debug_sink`].
+    #[cfg(feature = "ws-bridge")]
+    debug_sink: Arc<Mutex<Option<Arc<NativeDebugSink>>>>,
 }
 
 impl NativeProductExecution {
@@ -1812,9 +1818,23 @@ impl NativeProductExecution {
         let product = self.product.clone();
         let adapters = self.adapters();
         let product_control = self.product_control.clone();
+        let debug_sink = self.debug_sink.clone();
         let runtime_factory = Arc::new(move |sink| {
             let product_runtime =
                 runtime.product_runtime_with(product.clone(), adapters.clone(), sink);
+            let debug_sink = debug_sink
+                .lock()
+                .expect("native debug sink mutex poisoned")
+                .clone();
+            if let Some(debug_sink) = debug_sink {
+                // Request ids restart per connection, so a reconnect, or an App and
+                // a Worker of one product, would interleave on a bare product id.
+                let ordinal = DEBUG_CHANNEL_ORDINAL.fetch_add(1, Ordering::Relaxed);
+                product_runtime.set_debug_sink(
+                    crate::ChannelId(format!("{}#{ordinal}", product.product_id)),
+                    debug_sink.inner.clone(),
+                );
+            }
             *product_control
                 .lock()
                 .expect("native product control mutex poisoned") = Some(product_runtime.control());
@@ -1830,6 +1850,98 @@ impl NativeProductExecution {
     /// Revoke this execution's bridge registration while leaving it reusable.
     pub fn stop_ws_bridge(&self) {
         self.stop_bridge();
+    }
+
+    /// Tap every frame, in both directions, on each connection the bridge
+    /// accepts after this call, forwarding it to `sink`. `None` leaves later
+    /// connections untapped. A connection already open keeps whatever it was
+    /// accepted with, so install the sink before [`Self::start_ws_bridge`] to
+    /// see the first connection.
+    pub fn set_debug_sink(&self, sink: Option<Arc<NativeDebugSink>>) {
+        *self
+            .debug_sink
+            .lock()
+            .expect("native debug sink mutex poisoned") = sink;
+    }
+}
+
+/// Distinguishes tapped connections across every execution in the process.
+#[cfg(feature = "ws-bridge")]
+static DEBUG_CHANNEL_ORDINAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Failure building a [`NativeDebugSink`].
+#[cfg(feature = "ws-bridge")]
+#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
+pub enum NativeDebugSinkError {
+    /// The URL did not parse or its host did not resolve.
+    #[error("invalid debug url: {reason}")]
+    InvalidUrl {
+        /// Parse or resolution failure.
+        reason: String,
+    },
+    /// The URL was not `ws://` on a loopback host.
+    #[error("debug url must be ws:// on a loopback host, got {url}")]
+    NotLoopback {
+        /// The rejected URL.
+        url: String,
+    },
+    /// The native executor the sink's writer runs on could not start.
+    #[error("debug sink executor unavailable: {reason}")]
+    Unavailable {
+        /// Executor start failure.
+        reason: String,
+    },
+}
+
+#[cfg(feature = "ws-bridge")]
+impl From<crate::DebugSinkError> for NativeDebugSinkError {
+    fn from(err: crate::DebugSinkError) -> Self {
+        match err {
+            crate::DebugSinkError::NotLoopback(url) => Self::NotLoopback { url },
+            crate::DebugSinkError::NoRuntime => Self::Unavailable {
+                reason: err.to_string(),
+            },
+            crate::DebugSinkError::Url(_) | crate::DebugSinkError::Resolve(_) => Self::InvalidUrl {
+                reason: err.to_string(),
+            },
+        }
+    }
+}
+
+/// Forwards tapped frames to a `@parity/truapi-debugger` listening on loopback.
+///
+/// A [`crate::WsDebugSink`] owned by Rust: the frame path serializes and
+/// enqueues without calling into the host, and a writer on the shared native
+/// executor owns the socket. Install it with
+/// [`NativeProductExecution::set_debug_sink`]; nothing is tapped until a host
+/// does.
+#[cfg(feature = "ws-bridge")]
+#[derive(uniffi::Object)]
+pub struct NativeDebugSink {
+    inner: Arc<crate::WsDebugSink>,
+}
+
+#[cfg(feature = "ws-bridge")]
+#[uniffi::export]
+impl NativeDebugSink {
+    /// Start a sink targeting `url`, which must be `ws://` on a loopback host;
+    /// a URL without a port uses the debugger's default, 9231. Returns before
+    /// the debugger is reachable: the writer dials lazily and reconnects.
+    #[uniffi::constructor]
+    pub fn connect(url: String) -> Result<Arc<Self>, NativeDebugSinkError> {
+        let handle = crate::ws_bridge::shared_native_handle().map_err(|err| {
+            NativeDebugSinkError::Unavailable {
+                reason: err.to_string(),
+            }
+        })?;
+        let _entered = handle.enter();
+        let inner = crate::WsDebugSink::connect(&url)?;
+        Ok(Arc::new(Self { inner }))
+    }
+
+    /// Frames this sink has shed because its queue was full.
+    pub fn dropped(&self) -> u64 {
+        self.inner.dropped()
     }
 }
 
@@ -4871,6 +4983,114 @@ mod tests {
             err,
             NativeRuntimeConfigError::InsecureHostIcon { scheme } if scheme == "http"
         ));
+    }
+
+    /// A sink installed through the native surface sees both directions of a
+    /// bridged request, as the loopback debugger receives them.
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn installed_debug_sink_forwards_bridged_frames_to_the_debugger() {
+        use base64::Engine;
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+        use crate::frame::{Payload, ProtocolMessage, request_ids};
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .expect("bind debugger");
+        let debugger_port = listener.local_addr().expect("debugger addr").port();
+
+        let execution = native_product_execution(Arc::new(EventCallbacks::new()), "dotli.dot");
+        let sink = NativeDebugSink::connect(format!("ws://127.0.0.1:{debugger_port}"))
+            .expect("loopback debug sink");
+        execution.set_debug_sink(Some(sink));
+        let endpoint = execution.start_ws_bridge(0).expect("start bridge");
+        let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
+
+        let feature_ids = request_ids("system_feature_supported").expect("known request method");
+        let request = ProtocolMessage {
+            request_id: "p:feature".into(),
+            payload: Payload {
+                trait_id: feature_ids.trait_id,
+                method_id: feature_ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::system::HostFeatureSupportedRequest::V1(
+                    v01::HostFeatureSupportedRequest::Chain {
+                        genesis_hash: vec![0u8; 32],
+                    },
+                )
+                .encode(),
+            },
+        }
+        .encode();
+
+        let (response, envelopes) = rt.block_on(async {
+            let (mut product, _) = tokio_tungstenite::connect_async(&url).await.expect("dial");
+            product
+                .send(WsMessage::Binary(request.clone()))
+                .await
+                .expect("send request");
+            let response = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    match product.next().await {
+                        Some(Ok(WsMessage::Binary(bytes))) => break bytes,
+                        Some(Ok(_)) => continue,
+                        other => panic!("product socket ended: {other:?}"),
+                    }
+                }
+            })
+            .await
+            .expect("bridge must answer the request");
+
+            let envelopes = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let (stream, _) = listener.accept().await.expect("debugger accept");
+                let mut debugger = tokio_tungstenite::accept_async(stream)
+                    .await
+                    .expect("debugger handshake");
+                let mut envelopes = Vec::new();
+                while envelopes.len() < 2 {
+                    match debugger.next().await {
+                        Some(Ok(WsMessage::Text(text))) => envelopes.push(
+                            serde_json::from_str::<serde_json::Value>(&text).expect("envelope"),
+                        ),
+                        Some(Ok(_)) => continue,
+                        other => panic!("debugger socket ended: {other:?}"),
+                    }
+                }
+                envelopes
+            })
+            .await
+            .expect("installed sink never reached the debugger");
+            (response, envelopes)
+        });
+
+        let base64 = base64::engine::general_purpose::STANDARD;
+        let channel_id = envelopes[0]["channelId"].as_str().expect("channel id");
+        assert!(channel_id.starts_with("dotli.dot#"), "{channel_id}");
+        assert_eq!(envelopes[0]["dir"], "out");
+        assert_eq!(envelopes[0]["frame"], base64.encode(&request));
+        assert_eq!(envelopes[1]["channelId"], channel_id);
+        assert_eq!(envelopes[1]["dir"], "in");
+        assert_eq!(envelopes[1]["frame"], base64.encode(&response));
+        execution.stop_ws_bridge();
+    }
+
+    /// The sink keeps the loopback-only target it wraps.
+    #[cfg(feature = "ws-bridge")]
+    #[test]
+    fn native_debug_sink_refuses_a_routable_target() {
+        let refused = NativeDebugSink::connect("ws://192.0.2.1:9231".to_string())
+            .err()
+            .expect("routable debug url must be refused");
+        assert!(
+            matches!(refused, NativeDebugSinkError::NotLoopback { .. }),
+            "{refused:?}"
+        );
     }
 
     /// Calling `start_ws_bridge` twice on the same product execution

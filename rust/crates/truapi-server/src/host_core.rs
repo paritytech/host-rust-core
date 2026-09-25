@@ -1597,13 +1597,14 @@ impl SinkTransport {
         // `Option<(ChannelId, Arc<..>)>` clone.
         //
         // That poisoner is unreachable in what ships, and not because of the
-        // profile. There are two non-test `set_debug_sink` callers: `wasm.rs`, on a
-        // target that cannot unwind, and `truapi-host-cli`'s `DebugTappedRuntime`
-        // behind `--debugger`, which can. Both share the property that actually
-        // closes the hole: each builds a fresh `SinkTransport` per
-        // `product_runtime()` and installs at most once on it, so `previous` is
-        // always `None` and there is no destructor to run under the lock, whatever
-        // the profile or target.
+        // profile. There are three non-test `set_debug_sink` callers: `wasm.rs`, on
+        // a target that cannot unwind, and two that can: `truapi-host-cli`'s
+        // `DebugTappedRuntime` behind `--debugger`, and the native bridge's runtime
+        // factory in `native.rs` once a host installs a `NativeDebugSink`. All
+        // share the property that actually closes the hole: each builds a fresh
+        // `SinkTransport` per product runtime and installs at most once on it, so
+        // `previous` is always `None` and there is no destructor to run under the
+        // lock, whatever the profile or target.
         //
         // The recovery is kept regardless, because this guard sits on the per-frame
         // path in both directions and outside `emit_debug`'s `catch_unwind`, so any

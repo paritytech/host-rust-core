@@ -165,6 +165,11 @@ fn shared_native_executor() -> io::Result<(&'static SharedNativeExecutor, bool)>
     Ok((executor, initialized))
 }
 
+/// Handle to the process-wide native executor, starting it on first use.
+pub(crate) fn shared_native_handle() -> io::Result<Handle> {
+    shared_native_executor().map(|(executor, _)| executor.handle())
+}
+
 struct RegistryEntry {
     runtime_factory: Arc<dyn WsProductRuntimeFactory>,
     logger: BridgeLogger,
