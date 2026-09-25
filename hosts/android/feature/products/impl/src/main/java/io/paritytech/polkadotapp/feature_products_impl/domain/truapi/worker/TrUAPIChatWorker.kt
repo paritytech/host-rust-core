@@ -13,15 +13,24 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.renderer.to
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWorker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -50,12 +59,14 @@ class TrUAPIChatWorker(
                 .onFailure { Timber.w(it, "TrUAPI releaseWorker failed for %s", productId.value) }
         }
         scope.launch {
-            val execution = runCatching { runningExecution() }.getOrElse { failure ->
-                if (failure is CancellationException) throw failure
-                Timber.w(failure, "TrUAPI chat room forwarding for %s did not start: no running execution", productId.value)
-                return@launch
-            }
-            TrUAPIChatRoomForwarding(productId, execution, chatMessaging).start(this)
+            // Forwarding follows the executions: a failed boot ends this one, the next boot gets a new one.
+            workers.executionState(productId)
+                .map { (it as? WorkerExecutionState.Running)?.execution }
+                .distinctUntilChanged()
+                .collectLatest { execution ->
+                    if (execution == null) return@collectLatest
+                    coroutineScope { TrUAPIChatRoomForwarding(productId, execution, chatMessaging).start(this) }
+                }
         }
     }
 
@@ -74,6 +85,7 @@ class TrUAPIChatWorker(
         return outcome.logFailure("truapi.chat.action for ${productId.value}")
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     override fun renderMessage(
         roomId: String?,
         messageId: ChatMessageId,
@@ -83,8 +95,26 @@ class TrUAPIChatWorker(
         return channelFlow {
             val job = scope.launch {
                 val outcome = runCatching {
-                    val execution = awaitRunningExecution()
-                    reopeningChatRender(execution, roomId.orDefaultChat(), messageId, messageType, messageData.value)
+                    // Rendering follows the executions: one dying mid-render is redrawn by the next.
+                    workers.executionState(productId)
+                        .map { state ->
+                            if (state is WorkerExecutionState.Failed) throw ExecutionUnavailableException(state.reason)
+                            (state as? WorkerExecutionState.Running)?.execution
+                        }
+                        .distinctUntilChanged()
+                        .flatMapLatest { execution ->
+                            if (execution == null) {
+                                emptyFlow()
+                            } else {
+                                reopeningChatRender(
+                                    execution,
+                                    roomId.orDefaultChat(),
+                                    messageId,
+                                    messageType,
+                                    messageData.value,
+                                )
+                            }
+                        }
                         .collect { send(it) }
                 }
                 outcome.exceptionOrNull()?.let { failure ->
@@ -154,7 +184,8 @@ class TrUAPIChatWorker(
 
             val failure = outcome.exceptionOrNull()
             if (failure is DownstreamEmitFailure) throw failure.original
-            if (failure is CancellationException) throw failure
+            // Only the collector's own cancellation ends the render; the execution's death is one more failed attempt.
+            if (failure is CancellationException && !currentCoroutineContext().isActive) throw failure
             if (failure == null && drewThisAttempt) break
 
             if (failure != null) {

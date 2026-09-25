@@ -21,6 +21,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -226,10 +227,74 @@ class TrUAPIChatWorkerTest {
     }
 
     @Test
+    fun `a render whose execution dies before drawing is redrawn on the replacement execution`() = runTest {
+        val dying: TrUAPIProductExecution = mock()
+        val replacement: TrUAPIProductExecution = mock()
+        whenever(dying.render(any())).thenReturn(flow { throw CancellationException("execution disposed") })
+        whenever(replacement.render(any())).thenReturn(flowOf(RendererNode.Nil))
+        val states = MutableStateFlow<WorkerExecutionState?>(WorkerExecutionState.Running(dying))
+        val workers: TrUAPIWorkerSupervisor = mock()
+        whenever(workers.executionState(productId)).thenReturn(states)
+        val worker = worker(workers = workers, scope = CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        val results = mutableListOf<Result<JsWidget>>()
+        val collector = launch {
+            worker.renderMessage(roomId, messageId, messageType, messageData).collect { results += it }
+        }
+        advanceUntilIdle()
+
+        assertTrue("the dying execution must not end the cell's flow", collector.isActive)
+
+        states.value = WorkerExecutionState.Running(replacement)
+        advanceUntilIdle()
+
+        assertEquals(Result.success(JsWidget.Spacer()), results.lastOrNull())
+        verify(replacement, times(1)).render(any())
+
+        collector.cancel()
+    }
+
+    @Test
+    fun `cancelling the collector stops the render instead of leaking it`() = runTest {
+        val execution: TrUAPIProductExecution = mock()
+        val replacement: TrUAPIProductExecution = mock()
+        var rendering = false
+        whenever(execution.render(any())).thenReturn(
+            flow {
+                rendering = true
+                try {
+                    awaitCancellation()
+                } finally {
+                    rendering = false
+                }
+            },
+        )
+        val states = MutableStateFlow<WorkerExecutionState?>(WorkerExecutionState.Running(execution))
+        val workers: TrUAPIWorkerSupervisor = mock()
+        whenever(workers.executionState(productId)).thenReturn(states)
+        val worker = worker(workers = workers, scope = CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        val collector = launch {
+            worker.renderMessage(roomId, messageId, messageType, messageData).collect { }
+        }
+        advanceUntilIdle()
+        assertTrue(rendering)
+
+        collector.cancel()
+        advanceUntilIdle()
+
+        assertFalse("the render must not outlive its collector", rendering)
+        states.value = WorkerExecutionState.Running(replacement)
+        advanceUntilIdle()
+        verify(replacement, never()).render(any())
+    }
+
+    @Test
     fun `dispatchEvent publishes a renderer action addressed by RenderContext ChatMessage`() = runTest {
         val execution: TrUAPIProductExecution = mock()
         val workers: TrUAPIWorkerSupervisor = mock()
         whenever(workers.currentExecution(productId)).thenReturn(execution)
+        whenever(workers.executionState(productId)).thenReturn(emptyFlow())
         val worker = worker(workers = workers)
 
         worker.dispatchEvent(
@@ -322,6 +387,34 @@ class TrUAPIChatWorkerTest {
         advanceUntilIdle()
 
         verify(execution, times(1)).notifyChatRoomsChanged(any())
+    }
+
+    @Test
+    fun `forwarding starts on the execution that follows a failed boot, and moves to a replacement`() = runTest {
+        val first: TrUAPIProductExecution = mock()
+        val replacement: TrUAPIProductExecution = mock()
+        val rooms = MutableSharedFlow<List<ProductChatRoom>>()
+        val chatMessaging = FakeChatMessaging(rooms = rooms)
+        val states = MutableStateFlow<WorkerExecutionState?>(WorkerExecutionState.Failed(IllegalStateException("boot failed")))
+        val workers: TrUAPIWorkerSupervisor = mock()
+        whenever(workers.executionState(productId)).thenReturn(states)
+
+        worker(workers = workers, chatMessaging = chatMessaging, scope = CoroutineScope(StandardTestDispatcher(testScheduler)))
+        advanceUntilIdle()
+
+        states.value = WorkerExecutionState.Running(first)
+        advanceUntilIdle()
+        rooms.emit(listOf(ProductChatRoom(roomId, ROOM_HOST)))
+        advanceUntilIdle()
+        verify(first, times(1)).notifyChatRoomsChanged(any())
+
+        states.value = WorkerExecutionState.Running(replacement)
+        advanceUntilIdle()
+        rooms.emit(listOf(ProductChatRoom(roomId, ROOM_HOST)))
+        advanceUntilIdle()
+
+        verify(replacement, times(1)).notifyChatRoomsChanged(any())
+        verify(first, times(1)).notifyChatRoomsChanged(any())
     }
 
     @Test

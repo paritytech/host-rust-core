@@ -50,12 +50,17 @@ export function labelChatDiagnosisReport(
           accepted.details.test(failure.details),
       ),
   );
+  // Every ❌ must be one of the rows above: one in prose, or in a row this parser misses, still fails.
+  const marked = report
+    .split("\n")
+    .filter((line) => line.includes("\u274c")).length;
   if (
     !report.startsWith(CHAT_DIAGNOSIS_HEADING) ||
     !counts ||
     counts[1] === "0" ||
     Number(counts[2]) !== failures.length ||
-    unexpected.length > 0
+    unexpected.length > 0 ||
+    marked !== failures.length
   ) {
     throw new Error(`Chat diagnosis reported a failure:\n${report}`);
   }

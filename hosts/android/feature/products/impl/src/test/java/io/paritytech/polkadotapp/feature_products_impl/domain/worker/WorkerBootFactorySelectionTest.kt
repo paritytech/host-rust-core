@@ -13,6 +13,7 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker.TrUA
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker.TrUAPIWorkerSupervisor
 import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -78,9 +79,12 @@ class WorkerBootFactorySelectionTest {
         val runtime: TrUAPIHostRuntime = mock()
         whenever(runtimeProvider.runtime()).thenReturn(Result.success(runtime))
         val scriptExecutorFactory: HostApiProductsScriptExecutor.Factory = mock()
+        val workerSupervisor: TrUAPIWorkerSupervisor = mock()
+        whenever(workerSupervisor.executionState(productId)).thenReturn(emptyFlow())
         val factory = factory(
             settingsWith(enabled = true),
             runtimeProvider = runtimeProvider,
+            workerSupervisor = workerSupervisor,
             scriptExecutorFactory = scriptExecutorFactory,
         )
         val scope = CoroutineScope(StandardTestDispatcher(testScheduler))

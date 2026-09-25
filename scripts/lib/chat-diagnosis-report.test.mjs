@@ -88,3 +88,13 @@ test("an unexpected failure still fails, accepted list or not", () => {
     }),
   );
 });
+
+test("a ❌ outside the table throws even when the summary says 0 failed", () => {
+  const stray = `${GREEN}\n\n_the bridge dropped a call ❌_`;
+  assert.throws(() => labelChatDiagnosisReport(stray, "Android"));
+  assert.throws(() =>
+    labelChatDiagnosisReport(stray, "Android", {
+      acceptedFailures: REGISTER_BOT_GAP,
+    }),
+  );
+});

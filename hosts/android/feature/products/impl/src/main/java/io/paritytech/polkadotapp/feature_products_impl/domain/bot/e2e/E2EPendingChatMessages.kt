@@ -9,7 +9,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import timber.log.Timber
-import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -21,24 +20,31 @@ class E2EPendingChatMessages(private val scope: CoroutineScope) {
 
     data class PendingMessage(val roomId: String?, val text: String)
 
-    private val pending = ConcurrentHashMap<ProductId, PendingMessage>()
-    private val attached = ConcurrentHashMap<ProductId, ProductWorker>()
+    // One lock over both maps: parking and draining must not interleave, or a message is lost or doubled.
+    private val lock = Any()
+    private val pending = mutableMapOf<ProductId, PendingMessage>()
+    private val attached = mutableMapOf<ProductId, ProductWorker>()
 
     fun queue(productId: ProductId, roomId: String?, text: String) {
         if (!BuildConfig.DEBUG) return
 
         val message = PendingMessage(roomId, text)
-        val worker = attached[productId]
-        if (worker == null) pending[productId] = message else deliver(productId, worker, message)
+        val worker = synchronized(lock) {
+            attached[productId].also { if (it == null) pending[productId] = message }
+        }
+        worker?.let { deliver(productId, it, message) }
     }
 
     fun attach(productId: ProductId, worker: ProductWorker) {
-        attached[productId] = worker
-        pending.remove(productId)?.let { deliver(productId, worker, it) }
+        val parked = synchronized(lock) {
+            attached[productId] = worker
+            pending.remove(productId)
+        }
+        parked?.let { deliver(productId, worker, it) }
     }
 
     fun detach(productId: ProductId, worker: ProductWorker) {
-        attached.remove(productId, worker)
+        synchronized(lock) { if (attached[productId] === worker) attached.remove(productId) }
     }
 
     // Delivery waits on the worker's boot, so it never runs in the caller: the receiver is inside goAsync().
@@ -48,7 +54,7 @@ class E2EPendingChatMessages(private val scope: CoroutineScope) {
                 .onSuccess { Timber.tag(E2E_LOG_TAG).i(E2EAcks.messageDelivered(productId.value, message.roomId)) }
                 .onFailure { error ->
                     if (error is CancellationException) {
-                        pending[productId] = message
+                        requeue(productId, worker, message)
                         Timber.tag(E2E_LOG_TAG).i(E2EAcks.messageRequeued(productId.value, message.roomId))
                         return@onFailure
                     }
@@ -56,5 +62,19 @@ class E2EPendingChatMessages(private val scope: CoroutineScope) {
                         .i(E2EAcks.error("deliver_message", error.message ?: error::class.java.simpleName))
                 }
         }
+    }
+
+    // A worker that has already been replaced must not park a message the replacement drained past.
+    private fun requeue(productId: ProductId, worker: ProductWorker, message: PendingMessage) {
+        val replacement = synchronized(lock) {
+            val current = attached[productId]
+            if (current != null && current !== worker) {
+                current
+            } else {
+                pending[productId] = message
+                null
+            }
+        }
+        replacement?.let { deliver(productId, it, message) }
     }
 }

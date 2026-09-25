@@ -111,7 +111,16 @@ class TrUAPIWorkerSupervisor @Inject constructor(
                         }
                     }
                 }
-                .onSuccess { Timber.d("TrUAPI worker for %s is running", productId.value) }
+                // Same guard as the failure path: a STOP that raced the boot must not be
+                // overwritten with a Running on the execution it has already disposed.
+                .onSuccess { execution ->
+                    transitions.withLock {
+                        if (workers[productId] === worker) {
+                            executionStates.update { it + (productId to WorkerExecutionState.Running(execution)) }
+                            Timber.d("TrUAPI worker for %s is running", productId.value)
+                        }
+                    }
+                }
         }
     }
 
@@ -149,9 +158,6 @@ class TrUAPIWorkerSupervisor @Inject constructor(
                     // exists, so it connects.
                     .flatMap { webViewRuntime.loadEntryModule(workerScript.entrypoint) }
                     .map { execution }
-            }
-            .onSuccess { execution ->
-                executionStates.update { it + (productId to WorkerExecutionState.Running(execution)) }
             }
     }
 
