@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.app
 
+import android.app.Instrumentation
 import android.content.Context
 import android.os.Build
 import android.webkit.JavascriptInterface
@@ -10,10 +11,10 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import io.mockk.every
+import io.mockk.mockk
 import io.parity.truapi.HostBridge
-import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostRuntimeConfig
-import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
 import io.parity.truapi.ProductExecutionConfig
 import io.parity.truapi.ProductExecutionKind
@@ -33,20 +34,14 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import uniffi.truapi.HostDevicePermissionRequest
-import uniffi.truapi.HostFeatureSupportedRequest
-import uniffi.truapi.RemotePermission
-import uniffi.truapi_platform.PermissionDecision
-import java.lang.reflect.Proxy
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class RendererLossRecoveryTest {
     // A renderer can die while the product sits in the background. Android never revives that
-    // WebView, so the product only comes back if a fresh one loads with the same bootstrap and
-    // reconnects to the execution it already has.
+    // WebView, so the product only comes back if a fresh one loads the route it was on with the
+    // same bootstrap and reconnects to the execution it already has.
     @Test
     fun productReconnectsFromAFreshWebViewAfterItsRendererDies() {
         assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
@@ -54,7 +49,7 @@ class RendererLossRecoveryTest {
         val context = instrumentation.targetContext
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         val reports = Reports()
-        val bridge = Bridge()
+        val bridge = mockk<HostBridge>(relaxed = true) { every { coreStorage.read(any()) } returns null }
         TrUAPIHostRuntime(bridge, CONFIG).use { runtime ->
             runtime.openProductExecution(bridge, ProductExecutionConfig(PRODUCT, ProductExecutionKind.APP)).use { execution ->
                 val endpoint = execution.startWsBridge()
@@ -70,10 +65,12 @@ class RendererLossRecoveryTest {
                         provider.accessWebView { it.apply { loadUrl(PAGE_URL) } }
                     }
                     val beforeLoss = reports.statuses.poll(15, TimeUnit.SECONDS)
+                    instrumentation.runOnMainSync { first.evaluateJavascript("history.pushState({}, '', '/route')", null) }
+                    instrumentation.awaitUrl(first, "$ORIGIN/route")
                     instrumentation.runOnMainSync { checkNotNull(first.webViewRenderProcess).terminate() }
                     val afterLoss = reports.statuses.poll(15, TimeUnit.SECONDS)
 
-                    assertEquals(listOf("connected", "connected"), listOf(beforeLoss, afterLoss))
+                    assertEquals(listOf("connected /", "connected /route"), listOf(beforeLoss, afterLoss))
                     assertNotSame(first, provider.getWebViewOrNull())
                 } finally {
                     instrumentation.runOnMainSync { provider.getWebViewOrNull()?.destroy() }
@@ -106,27 +103,22 @@ class RendererLossRecoveryTest {
         override suspend fun loadInitialContent() = Unit
     }
 
-    private class Bridge : HostBridge {
-        override val storage: HostStorage = unused()
-        override val coreStorage = object : HostCoreStorage {
-            private val values = ConcurrentHashMap<List<Byte>, ByteArray>()
-            override fun read(key: ByteArray): ByteArray? = values[key.toList()]
-            override fun write(key: ByteArray, value: ByteArray) { values[key.toList()] = value }
-            override fun clear(key: ByteArray) { values.remove(key.toList()) }
-        }
-        override suspend fun navigateTo(url: String) = Unit
-        override suspend fun featureSupported(request: HostFeatureSupportedRequest) = false
-        override suspend fun remotePermission(product: ProductExecutionConfig, request: RemotePermission) = PermissionDecision.DENY
-        override suspend fun devicePermission(product: ProductExecutionConfig, request: HostDevicePermissionRequest) =
-            PermissionDecision.DENY
-    }
-
     private class Reports {
         val statuses = LinkedBlockingQueue<String>()
         @JavascriptInterface fun status(value: String) { statuses.add(value) }
     }
 
     companion object {
+        private fun Instrumentation.awaitUrl(webView: WebView, expected: String) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            var url: String? = null
+            while (url != expected) {
+                check(System.nanoTime() < deadline) { "WebView stayed on $url" }
+                runOnMainSync { url = webView.url }
+                Thread.sleep(20)
+            }
+        }
+
         private const val PRODUCT = "recovery.paseo"
         private const val ORIGIN = "http://localhost"
         private const val PAGE_URL = "$ORIGIN/"
@@ -138,16 +130,13 @@ class RendererLossRecoveryTest {
             networkSuffix = "paseo",
         )
 
-        @Suppress("UNCHECKED_CAST")
-        private inline fun <reified T> unused(): T = Proxy.newProxyInstance(
-            T::class.java.classLoader, arrayOf(T::class.java),
-        ) { _, method, _ -> error("Unexpected ${T::class.java.simpleName}.${method.name}") } as T
-
         // Reading the client is what dials the host, so each fresh page reports its own connection.
         private const val PAGE = """
             <!doctype html><html><script>
             const host = window.__HOST_API_CLIENT__;
-            host.subscribeConnectionStatus(status => { if (status === 'connected') report.status(status); });
+            host.subscribeConnectionStatus(status => {
+              if (status === 'connected') report.status(status + ' ' + location.pathname);
+            });
             host.client;
             </script></html>
         """
