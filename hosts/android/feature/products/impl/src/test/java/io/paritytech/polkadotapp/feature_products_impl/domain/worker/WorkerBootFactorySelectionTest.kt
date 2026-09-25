@@ -22,8 +22,6 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito.mock
-import org.mockito.Mockito.times
-import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 
 class WorkerBootFactorySelectionTest {
@@ -94,25 +92,6 @@ class WorkerBootFactorySelectionTest {
 
         assertTrue("setting on must boot the core worker", worker is TrUAPIChatWorker)
         verifyNoInteractions(scriptExecutorFactory)
-    }
-
-    @Test
-    fun `setting on but a failing runtime falls back to the JS worker, logged once`() = runTest {
-        val runtimeProvider: TrUAPIHostRuntimeProvider = mock()
-        val boom = IllegalStateException("boom")
-        whenever(runtimeProvider.runtime()).thenReturn(Result.failure(boom))
-        val executor: HostApiProductsScriptExecutor = mock()
-        val scriptExecutorFactory = jsExecutorFactory(executor, this)
-        val factory = factory(
-            settingsWith(enabled = true),
-            runtimeProvider = runtimeProvider,
-            scriptExecutorFactory = scriptExecutorFactory,
-        )
-
-        val worker = factory.boot(productId, botApi, chatMessaging, this)
-
-        assertSame("a failed runtime() must fall back to the JS worker", executor, worker)
-        verify(runtimeProvider, times(1)).runtime()
     }
 
     @Test

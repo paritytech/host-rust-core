@@ -19,7 +19,6 @@ class E2EPendingChatMessages(private val scope: CoroutineScope) {
 
     data class PendingMessage(val roomId: String?, val text: String)
 
-    // One lock over both maps: parking and draining must not interleave, or a message is lost or doubled.
     private val lock = Any()
     private val pending = mutableMapOf<ProductId, PendingMessage>()
     private val attached = mutableMapOf<ProductId, ProductWorker>()
@@ -44,7 +43,6 @@ class E2EPendingChatMessages(private val scope: CoroutineScope) {
         synchronized(lock) { if (attached[productId] === worker) attached.remove(productId) }
     }
 
-    // Delivery waits on the worker's boot, so it never runs in the caller: the receiver is inside goAsync().
     private fun deliver(productId: ProductId, worker: ProductWorker, message: PendingMessage) {
         scope.launch {
             runCatching { worker.onUserMessage(message.roomId, message.text).getOrThrow() }
@@ -61,7 +59,6 @@ class E2EPendingChatMessages(private val scope: CoroutineScope) {
         }
     }
 
-    // A worker that has already been replaced must not park a message the replacement drained past.
     private fun requeue(productId: ProductId, worker: ProductWorker, message: PendingMessage) {
         val replacement = synchronized(lock) {
             val current = attached[productId]

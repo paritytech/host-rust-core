@@ -7,12 +7,12 @@ import { dirname, resolve } from "node:path";
 import {
   DEFAULT_AVD,
   DEFAULT_PACKAGE,
+  amStart,
   chatIdHex,
   clearAppData,
   clearLogcat,
   decodeSqliteHexRows,
   ensureEmulator,
-  forceStop,
   grantPermission,
   installApk,
   removeReversePort,
@@ -20,8 +20,6 @@ import {
   runAsSqlite,
   screencap,
   sendBroadcast,
-  startActivity,
-  startDeepLink,
   waitForLogcatMessage,
   waitForProcess,
 } from "./lib/android-emulator.mjs";
@@ -46,7 +44,6 @@ const DEFAULT_USERNAME = "truapi-e2e";
 const CORE_MARKER = "truapi.ws_bridge.connection_open";
 const DATABASE = "databases/app_v2.db";
 
-/** Acks the debug hooks log under `E2E_TAG`; the formats live in `E2EAcks`. */
 const ACKS = {
   seedIdentityDone: "seed_identity done",
   productRegistered: (id) => `product registered id=${id}`,
@@ -120,11 +117,9 @@ if (url.hostname !== "127.0.0.1") {
 const launcherActivity = `${packageName}/${DEFAULT_ACTIVITY}`;
 const receiverComponent = `${packageName}/${receiver}`;
 const workerUrl = `${productUrl.replace(/\/$/, "")}/worker/index.js`;
-// ChatId bytes: `ChatExtension:<ProductId.toChatExtensionId()>:<roomId>`.
 const extensionId = `ProductBot_${productHost}`;
 const chatHex = chatIdHex(extensionId, roomId);
 const productPort = url.port || "80";
-// The hook acks spell a missing room as "-".
 const roomMarker = roomId || "-";
 
 const receiverHint =
@@ -179,7 +174,6 @@ try {
   step(`install ${apk}`);
   installApk(serial, apk);
 
-  // A warm emulator must not go green on the rows a previous run left behind.
   step(`clear ${packageName} app data`);
   clearAppData(serial, packageName);
 
@@ -193,9 +187,8 @@ try {
     console.log(`    not granted (ignored): ${grant.output}`);
   }
 
-  // Seeding reads the People chain, and chain connections need the FOREGROUND.
   step("start the app so its chain connections come up");
-  startActivity(serial, launcherActivity);
+  amStart(serial, ["-n", launcherActivity]);
   await waitForProcess(serial, packageName);
   await delay(TIMEOUTS.foregroundSettle);
 
@@ -222,17 +215,14 @@ try {
   step("wait for product registered");
   await awaitHookAck(ACKS.productRegistered(productHost));
 
-  // The splash routes on onboarding state once, at start.
   step("relaunch the app on the seeded identity");
-  forceStop(serial, packageName);
-  clearLogcat(serial);
-  startActivity(serial, launcherActivity);
+  clearLogcat(serial, { stopPackage: packageName });
+  amStart(serial, ["-n", launcherActivity]);
   await waitForProcess(serial, packageName);
   await delay(TIMEOUTS.relaunchSettle);
 
   const watermark = chatMessageWatermark();
 
-  // The queue lived in the process the relaunch killed, so send it again.
   step(`queue ${JSON.stringify(message)} again in the relaunched process`);
   sendDebugHooks([
     ["--es", "product_id", productHost],
@@ -257,9 +247,8 @@ try {
     errorTag: E2E_TAG,
   });
 
-  // The report is posted only once the custom message renders on screen.
   step("open the chat deeplink");
-  startDeepLink(serial, `polkadotapp://chat?chatId=${chatHex}`);
+  amStart(serial, ["-a", "android.intent.action.VIEW", "-d", `polkadotapp://chat?chatId=${chatHex}`]);
 
   if (expectCustomRenderer) {
     step("wait for custom_renderer_update");
@@ -387,7 +376,6 @@ function waitForChatMessage(prefix, after, timeoutMs = TIMEOUTS.chatMessage) {
   );
 }
 
-/** `searchableContent` is indexed for search; fail loudly if it is a preview. */
 function assertNotTruncated(report) {
   if (!/\*\*\d+ success · \d+ failed\*\*/.test(report)) {
     throw new Error(

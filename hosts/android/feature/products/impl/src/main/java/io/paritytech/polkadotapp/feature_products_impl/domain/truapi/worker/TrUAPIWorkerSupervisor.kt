@@ -111,8 +111,6 @@ class TrUAPIWorkerSupervisor @Inject constructor(
                         }
                     }
                 }
-                // Same guard as the failure path: a STOP that raced the boot must not be
-                // overwritten with a Running on the execution it has already disposed.
                 .onSuccess { execution ->
                     transitions.withLock {
                         if (workers[productId] === worker) {
@@ -175,7 +173,6 @@ class TrUAPIWorkerSupervisor @Inject constructor(
     )
 
     companion object {
-        // Generous: a cold WebView fetching a worker archive over dotNS.
         internal val READY_TIMEOUT = 60.seconds
     }
 }

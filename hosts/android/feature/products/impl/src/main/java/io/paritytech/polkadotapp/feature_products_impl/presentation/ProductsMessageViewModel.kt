@@ -4,6 +4,7 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.paritytech.polkadotapp.common.BuildConfig
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.common.utils.logFailure
@@ -68,7 +69,7 @@ class ProductsMessageViewModel @AssistedInject constructor(
             .onSuccess { widget ->
                 _state.value = LoadingState.Loaded(widget)
 
-                if (e2eMarkers.enabled) {
+                if (BuildConfig.DEBUG && e2eMarkers.enabled) {
                     Timber.tag(E2E_LOG_TAG).i(E2EAcks.customRendererUpdate(product.id.value))
                 }
             }

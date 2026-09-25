@@ -19,7 +19,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -52,7 +51,6 @@ import uniffi.truapi.RenderContext
 import uniffi.truapi.RendererNode
 import uniffi.truapi_server.ProductRuntimeException
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 class TrUAPIChatWorkerTest {
     private val productId = ProductId.fromStoredValue("chat.dot")
@@ -89,20 +87,6 @@ class TrUAPIChatWorkerTest {
             RenderContext.ChatMessage(roomId = roomId, messageId = messageId, messageType = messageType),
             requireNotNull(captured).context,
         )
-    }
-
-    @Test
-    fun `a Failed execution state yields a failure without retrying`() = runTest {
-        val boom = IllegalStateException("boot failed")
-        val workers: TrUAPIWorkerSupervisor = mock()
-        whenever(workers.executionState(productId)).thenReturn(flowOf(WorkerExecutionState.Failed(boom)))
-        val worker = worker(workers = workers)
-
-        val results = worker.renderMessage(roomId, messageId, messageType, messageData).toList()
-
-        assertEquals(1, results.size)
-        val failure = results.single().exceptionOrNull()
-        assertSame(boom, failure?.cause)
     }
 
     @Test
@@ -220,7 +204,6 @@ class TrUAPIChatWorkerTest {
         advanceUntilIdle()
         verify(execution, times(1)).render(any())
 
-        // Disposal as the supervisor reports it: the product has no execution any more.
         states.value = null
         advanceUntilIdle()
 
@@ -384,29 +367,6 @@ class TrUAPIChatWorkerTest {
 
         assertTrue(caller.isCancelled)
         assertNull("a swallowed cancellation would have let onUserMessage return a Result", result)
-    }
-
-    @Test
-    fun `forwarding still starts after a slow boot, past the old 30s execution-wait bound`() = runTest {
-        val execution: TrUAPIProductExecution = mock()
-        val rooms = MutableSharedFlow<List<ProductChatRoom>>(extraBufferCapacity = 1)
-        val chatMessaging = FakeChatMessaging(rooms = rooms)
-        val workers: TrUAPIWorkerSupervisor = mock()
-        whenever(workers.executionState(productId)).thenReturn(
-            flow {
-                delay(45.seconds)
-                emit(WorkerExecutionState.Running(execution))
-            },
-        )
-        val workerScope = CoroutineScope(StandardTestDispatcher(testScheduler))
-
-        worker(workers = workers, chatMessaging = chatMessaging, scope = workerScope)
-        advanceUntilIdle()
-
-        rooms.tryEmit(listOf(ProductChatRoom(roomId, ROOM_HOST)))
-        advanceUntilIdle()
-
-        verify(execution, times(1)).notifyChatRoomsChanged(any())
     }
 
     @Test

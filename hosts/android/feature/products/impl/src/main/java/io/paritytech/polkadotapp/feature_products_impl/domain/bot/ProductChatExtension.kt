@@ -1,6 +1,7 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.bot
 
 import android.content.Context
+import io.paritytech.polkadotapp.common.BuildConfig
 import io.paritytech.polkadotapp.common.utils.childScope
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.ChatExtensionContext
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.CreateRoomRequest
@@ -104,10 +105,10 @@ class ProductChatExtension(
                 val worker = reference.worker()
                 attachedWorker = worker
                 runningWorker.attach(worker)
-                pendingE2EMessages.attach(product.id, worker)
+                if (BuildConfig.DEBUG) pendingE2EMessages.attach(product.id, worker)
                 awaitCancellation()
             } finally {
-                attachedWorker?.let { pendingE2EMessages.detach(product.id, it) }
+                if (BuildConfig.DEBUG) attachedWorker?.let { pendingE2EMessages.detach(product.id, it) }
                 withContext(NonCancellable) { reference.release() }
                 runningWorker.attach(null)
             }

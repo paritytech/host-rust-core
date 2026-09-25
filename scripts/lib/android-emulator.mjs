@@ -10,7 +10,6 @@ export const DEFAULT_AVD = "truapi-chat-e2e";
 
 export const DEFAULT_PACKAGE = "com.example.polkadot.debug";
 
-/** Headless emulator flags; the data partition is wiped on every boot. */
 const EMULATOR_HEADLESS_ARGS = [
   "-no-window",
   "-no-audio",
@@ -72,14 +71,13 @@ function emulatorPath() {
   return sdkTool("emulator/emulator", "Install it with: sdkmanager 'emulator'");
 }
 
-/** `ChatExtension:<extensionId>:<roomId>` as `ChatId.forExtensionRoom` encodes it, hex for `X'…'`. */
 export function chatIdHex(extensionId, roomId) {
   return Buffer.from(`ChatExtension:${extensionId}:${roomId}`, "utf8")
     .toString("hex")
     .toUpperCase();
 }
 
-export function parseDeviceList(output) {
+function parseDeviceList(output) {
   return (output ?? "")
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -95,7 +93,7 @@ export function parseDeviceList(output) {
     .map(([serial, state]) => ({ serial, state }));
 }
 
-export function selectDevice(output, requested) {
+function selectDevice(output, requested) {
   const devices = parseDeviceList(output);
   if (requested) {
     return devices.find(
@@ -117,8 +115,7 @@ const ADB_UNHEALTHY_MARKERS = [
   "device not found",
 ];
 
-/** Detect the failures a `kill-server`/`start-server` cycle can recover from. */
-export function isAdbUnhealthy({
+function isAdbUnhealthy({
   status,
   stdout = "",
   stderr = "",
@@ -137,7 +134,7 @@ export function isAdbUnhealthy({
 const LOGCAT_THREADTIME =
   /^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+([VDIWEF])\s+(\S.*?)\s*:\s?(.*)$/;
 
-export function parseLogcatLine(line) {
+function parseLogcatLine(line) {
   const match = LOGCAT_THREADTIME.exec(line ?? "");
   if (!match) {
     return undefined;
@@ -145,7 +142,7 @@ export function parseLogcatLine(line) {
   return { level: match[1], tag: match[2], message: match[3] };
 }
 
-export function findLogcatMessage(output, needle) {
+function findLogcatMessage(output, needle) {
   for (const line of (output ?? "").split(/\r?\n/)) {
     const entry = parseLogcatLine(line);
     if (entry?.message.includes(needle)) {
@@ -155,7 +152,7 @@ export function findLogcatMessage(output, needle) {
   return undefined;
 }
 
-export function findLogcatError(output, tag) {
+function findLogcatError(output, tag) {
   for (const line of (output ?? "").split(/\r?\n/)) {
     const entry = parseLogcatLine(line);
     if (!entry || (tag && entry.tag !== tag)) {
@@ -168,22 +165,21 @@ export function findLogcatError(output, tag) {
   return undefined;
 }
 
-export function shellQuote(value) {
+function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-export function shellCommand(parts) {
+function shellCommand(parts) {
   return parts.map(shellQuote).join(" ");
 }
 
-export function parseAvdList(output) {
+function parseAvdList(output) {
   return (output ?? "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !/\s/.test(line) && !line.startsWith("INFO"));
 }
 
-/** Decode rows selected as `hex(column)`; hex survives sqlite3's list mode. */
 export function decodeSqliteHexRows(output) {
   return (output ?? "")
     .split(/\r?\n/)
@@ -192,9 +188,8 @@ export function decodeSqliteHexRows(output) {
     .map((row) => Buffer.from(row, "hex").toString("utf8"));
 }
 
-/** The rejection `am broadcast` printed, if any; it reports result=0 either way. */
-export function parseBroadcastResult(output) {
-  const error = (output ?? "")
+function parseBroadcastResult(output) {
+  return (output ?? "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) =>
@@ -202,14 +197,13 @@ export function parseBroadcastResult(output) {
         line,
       ),
     );
-  return { error };
 }
 
 let lastAdbRestart = 0;
 
-function runAdbOnce(args, { timeoutMs, encoding }) {
+function runAdbOnce(args, timeoutMs) {
   const result = spawnSync(adbPath(), args, {
-    encoding,
+    encoding: "utf8",
     timeout: timeoutMs,
     maxBuffer: ADB_MAX_BUFFER,
   });
@@ -218,11 +212,8 @@ function runAdbOnce(args, { timeoutMs, encoding }) {
     (result.signal !== null && result.signal !== undefined);
   return {
     status: result.status,
-    stdout: result.stdout ?? (encoding === "buffer" ? Buffer.alloc(0) : ""),
-    stderr:
-      encoding === "buffer"
-        ? (result.stderr ?? Buffer.alloc(0)).toString("utf8")
-        : (result.stderr ?? ""),
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
     timedOut,
   };
 }
@@ -242,12 +233,11 @@ function restartAdbServer() {
   return true;
 }
 
-/** Run one adb command with a timeout; never throws for a non-zero exit. */
-function adb(args, { serial, timeoutMs = DEFAULT_ADB_TIMEOUT_MS, encoding = "utf8" } = {}) {
+function adb(args, { serial, timeoutMs = DEFAULT_ADB_TIMEOUT_MS } = {}) {
   const full = serial ? ["-s", serial, ...args] : args;
-  let result = runAdbOnce(full, { timeoutMs, encoding });
+  let result = runAdbOnce(full, timeoutMs);
   if (isAdbUnhealthy(result) && restartAdbServer()) {
-    result = runAdbOnce(full, { timeoutMs, encoding });
+    result = runAdbOnce(full, timeoutMs);
   }
   return result;
 }
@@ -284,7 +274,7 @@ function listAvds() {
   return parseAvdList(result.stdout);
 }
 
-function startEmulator(avd, extraArgs = []) {
+function startEmulator(avd) {
   const available = listAvds();
   if (!available.includes(avd)) {
     throw new Error(
@@ -294,7 +284,7 @@ function startEmulator(avd, extraArgs = []) {
   }
   const child = spawn(
     emulatorPath(),
-    ["-avd", avd, ...EMULATOR_HEADLESS_ARGS, ...extraArgs],
+    ["-avd", avd, ...EMULATOR_HEADLESS_ARGS],
     { detached: true, stdio: "ignore" },
   );
   child.unref();
@@ -337,7 +327,6 @@ export async function ensureEmulator({
   return device.serial;
 }
 
-/** Install unconditionally: `-no-snapshot` wipes the data partition each boot. */
 export function installApk(serial, apk, timeoutMs = INSTALL_TIMEOUT_MS) {
   if (!existsSync(apk)) {
     throw new Error(`APK not found: ${apk}`);
@@ -371,11 +360,9 @@ export function removeReversePort(serial, port) {
 
 export function grantPermission(serial, packageName, permission) {
   const result = adbShell(serial, ["pm", "grant", packageName, permission]);
-  // Not what is under test, so a refused grant must not fail the run.
   return { granted: result.status === 0, output: `${result.stdout}${result.stderr}`.trim() };
 }
 
-/** Send a debug-hook broadcast; a freshly installed app is still stopped. */
 export function sendBroadcast(serial, { action, component, extras = [] }) {
   const parts = ["am", "broadcast", "--include-stopped-packages", "-a", action];
   if (component) {
@@ -386,35 +373,22 @@ export function sendBroadcast(serial, { action, component, extras = [] }) {
   }
   const result = adbShell(serial, parts);
   const output = `${result.stdout}\n${result.stderr}`;
-  return { ...parseBroadcastResult(output), output: output.trim() };
+  return { error: parseBroadcastResult(output), output: output.trim() };
 }
 
-export function startActivity(serial, component) {
-  const result = adbShell(serial, ["am", "start", "-n", component]);
+export function amStart(serial, args) {
+  const result = adbShell(serial, ["am", "start", ...args]);
   const output = `${result.stdout}\n${result.stderr}`;
   if (result.status !== 0 || /Error|does not exist/i.test(output)) {
-    throw new Error(`am start -n ${component} failed:\n${output.trim()}`);
+    throw new Error(`am start ${args.join(" ")} failed:\n${output.trim()}`);
   }
   return output;
 }
 
-export function startDeepLink(serial, uri) {
-  const result = adbShell(serial, [
-    "am",
-    "start",
-    "-a",
-    "android.intent.action.VIEW",
-    "-d",
-    uri,
-  ]);
-  const output = `${result.stdout}\n${result.stderr}`;
-  if (result.status !== 0 || /Error|does not exist/i.test(output)) {
-    throw new Error(`am start -d ${uri} failed:\n${output.trim()}`);
+export function clearLogcat(serial, { stopPackage } = {}) {
+  if (stopPackage) {
+    adbShell(serial, ["am", "force-stop", stopPackage]);
   }
-  return output;
-}
-
-export function clearLogcat(serial) {
   return adb(["logcat", "-c"], { serial });
 }
 
@@ -470,24 +444,19 @@ export function runAsSqlite(serial, packageName, database, sql) {
 }
 
 export function screencap(serial, destination) {
-  const result = adb(["exec-out", "screencap", "-p"], {
-    serial,
-    encoding: "buffer",
+  const result = spawnSync(adbPath(), ["-s", serial, "exec-out", "screencap", "-p"], {
+    timeout: DEFAULT_ADB_TIMEOUT_MS,
+    maxBuffer: ADB_MAX_BUFFER,
   });
-  if (result.status !== 0 || result.stdout.length === 0) {
+  if (result.status !== 0 || !result.stdout?.length) {
     throw new Error(
-      `adb exec-out screencap failed: ${result.stderr.trim() || `exit ${result.status}`}`,
+      `adb exec-out screencap failed: ${String(result.stderr ?? "").trim() || `exit ${result.status}`}`,
     );
   }
   writeFileSync(destination, result.stdout);
   return destination;
 }
 
-export function forceStop(serial, packageName) {
-  adbShell(serial, ["am", "force-stop", packageName]);
-}
-
-/** Wait until the package has a live process; `am start` returns before it exists. */
 export function waitForProcess(
   serial,
   packageName,

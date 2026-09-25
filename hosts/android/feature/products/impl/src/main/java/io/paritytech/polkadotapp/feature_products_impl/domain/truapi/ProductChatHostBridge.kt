@@ -22,7 +22,6 @@ class ProductChatHostBridge(
 ) : ChatHostBridge {
 
     override suspend fun createRoom(roomId: String, name: String, icon: String): NativeChatRoomRegistrationStatus {
-        // An empty id names no room, and the chat identifier built from it would be malformed.
         if (roomId.isEmpty()) throw HostRejection.Rejected("a chat room needs an id")
         return chatMessaging.createRoom(CreateProductRoomRequest(ProductChatIdParameter(roomId), name, icon))
             .orReject()

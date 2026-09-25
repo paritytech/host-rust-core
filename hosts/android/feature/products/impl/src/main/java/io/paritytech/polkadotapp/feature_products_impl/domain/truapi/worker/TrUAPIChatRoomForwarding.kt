@@ -24,7 +24,6 @@ internal class TrUAPIChatRoomForwarding(
         repeat(REBIND_POLL_ATTEMPTS) { attempt ->
             chatMessaging.subscribeChatRooms()
                 .onEach { rooms -> execution.notifyChatRoomsChanged(rooms.map { it.toCoreChatRoom() }) }
-                // A bad room must not kill the scope.
                 .catch { failure ->
                     if (failure is CancellationException) throw failure
                     Timber.w(

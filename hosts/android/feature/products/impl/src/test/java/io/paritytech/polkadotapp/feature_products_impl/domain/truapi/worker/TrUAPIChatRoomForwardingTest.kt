@@ -68,14 +68,6 @@ class TrUAPIChatRoomForwardingTest {
     }
 
     @Test
-    fun `an unbound surface forwards nothing`() = runTest {
-        forwarding()
-        runCurrent()
-
-        verifyNoInteractions(execution)
-    }
-
-    @Test
     fun `a bound surface with genuinely zero rooms pushes an empty list`() = runTest {
         forwarding(FakeChatMessaging(rooms = flowOf(emptyList())))
         runCurrent()

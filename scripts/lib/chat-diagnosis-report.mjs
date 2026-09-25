@@ -16,7 +16,6 @@ export function decodeTextMessage(hex) {
 /** Title line the Chat diagnosis worker renders its report under. */
 export const CHAT_DIAGNOSIS_HEADING = "## Truapi Chat Diagnosis";
 
-// This host's bridge refuses registerBot; every other ❌ row fails the run.
 export const REGISTER_BOT_GAP = [
   { method: "Chat/register_bot", details: /no bot registry|not supported/ },
 ];
@@ -34,7 +33,6 @@ export function diagnosisFailures(report) {
   return failures;
 }
 
-/** Validate a Chat report and label it; a ❌ row must match `acceptedFailures`. */
 export function labelChatDiagnosisReport(
   report,
   host,
@@ -50,7 +48,6 @@ export function labelChatDiagnosisReport(
           accepted.details.test(failure.details),
       ),
   );
-  // Every ❌ must be one of the rows above: one in prose, or in a row this parser misses, still fails.
   const marked = report
     .split("\n")
     .filter((line) => line.includes("\u274c")).length;

@@ -58,7 +58,6 @@ class TrUAPIChatWorker(
                 .onFailure { Timber.w(it, "TrUAPI releaseWorker failed for %s", productId.value) }
         }
         scope.launch {
-            // Forwarding follows the executions: a failed boot ends this one, the next boot gets a new one.
             workers.executionState(productId)
                 .map { (it as? WorkerExecutionState.Running)?.execution }
                 .distinctUntilChanged()
@@ -93,7 +92,6 @@ class TrUAPIChatWorker(
     ): Flow<Result<JsWidget>> {
         return channelFlow {
             val outcome = runCatching {
-                // Rendering follows the executions: one dying mid-render is redrawn by the next.
                 workers.executionState(productId)
                     .map { state ->
                         if (state is WorkerExecutionState.Failed) throw ExecutionUnavailableException(state.reason)
@@ -117,7 +115,6 @@ class TrUAPIChatWorker(
             }
             outcome.exceptionOrNull()?.let { failure ->
                 if (failure is CancellationException) throw failure
-                // trySend: a throw here would crash the process, not just this cell.
                 trySend(Result.failure(failure))
             }
         }.buffer(Channel.UNLIMITED)
@@ -138,7 +135,6 @@ class TrUAPIChatWorker(
         }.logFailure("truapi.renderer.action '${event.actionId}' for ${productId.value}")
     }
 
-    // The core addresses a product's default chat by the empty room id, as iOS does.
     private fun String?.orDefaultChat(): String = this ?: ""
 
     private suspend fun runningExecution(): TrUAPIProductExecution =
@@ -179,7 +175,6 @@ class TrUAPIChatWorker(
 
             val failure = outcome.exceptionOrNull()
             if (failure is DownstreamEmitFailure) throw failure.original
-            // Only the collector's own cancellation ends the render; the execution's death is one more failed attempt.
             if (failure is CancellationException && !currentCoroutineContext().isActive) throw failure
             if (failure == null && drewThisAttempt) break
 

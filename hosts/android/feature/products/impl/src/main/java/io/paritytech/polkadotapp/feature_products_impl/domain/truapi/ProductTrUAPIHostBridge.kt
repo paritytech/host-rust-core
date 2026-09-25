@@ -244,7 +244,6 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         navigationPolicy: NavigationPolicy,
         kind: ProductExecutionKind,
         onReadyToInject: (bootstrap: String) -> Unit,
-        // Only a WORKER execution serves chat; APP passes nothing.
         chat: ChatHostBridge? = null,
     ): Result<TrUAPIProductExecution> {
         execution?.let {

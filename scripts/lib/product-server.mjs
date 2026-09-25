@@ -9,7 +9,6 @@ export function isLoopback(url) {
   return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
 }
 
-/** Serve `root` over loopback; null when the expected app already answers there. */
 export async function startProductServer(urlString, root, appMarker) {
   const url = new URL(urlString);
   if (!isLoopback(url)) {

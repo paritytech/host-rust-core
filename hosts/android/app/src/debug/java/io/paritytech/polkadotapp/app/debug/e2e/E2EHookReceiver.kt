@@ -63,7 +63,6 @@ class E2EHookReceiver : BroadcastReceiver() {
             if (productId == null) {
                 logError("message", "message requires $EXTRA_PRODUCT_ID")
             } else {
-                // Before registration: registering starts the extension, which consumes this.
                 val roomId = intent.stringExtra(EXTRA_ROOM_ID)
                 hooks.pendingE2EMessages().queue(productId, roomId, message)
                 log(E2EAcks.messageQueued(productId.value, roomId))

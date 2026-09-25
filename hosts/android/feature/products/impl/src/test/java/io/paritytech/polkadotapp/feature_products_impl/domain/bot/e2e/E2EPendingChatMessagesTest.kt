@@ -22,42 +22,24 @@ class E2EPendingChatMessagesTest {
     private fun TestScope.queued() = holder().apply { queue(product, ROOM, MESSAGE) }
 
     @Test
-    fun `attaching a worker delivers the queued message with its room`() = runTest {
-        val worker = RecordingWorker()
-
-        queued().attach(product, worker)
+    fun `a queue and an attach rendezvous in either order`() = runTest {
+        val parked = RecordingWorker()
+        queued().attach(product, parked)
         advanceUntilIdle()
+        assertEquals(listOf<Pair<String?, String>>(ROOM to MESSAGE), parked.delivered)
 
-        assertEquals(listOf<Pair<String?, String>>(ROOM to MESSAGE), worker.delivered)
-    }
-
-    @Test
-    fun `a message queued while the worker is attached is delivered at once`() = runTest {
         val pending = holder()
-        val worker = RecordingWorker()
-        pending.attach(product, worker)
-
-        pending.queue(product, ROOM, MESSAGE)
-        advanceUntilIdle()
-
-        assertEquals(listOf<Pair<String?, String>>(ROOM to MESSAGE), worker.delivered)
-    }
-
-    @Test
-    fun `queueing never waits on the delivery`() = runTest {
-        val pending = holder()
-        val worker = RecordingWorker()
-        pending.attach(product, worker)
-
+        val attached = RecordingWorker()
+        pending.attach(product, attached)
         pending.queue(product, ROOM, MESSAGE)
 
-        assertEquals(emptyList<Pair<String?, String>>(), worker.delivered)
+        assertEquals(emptyList<Pair<String?, String>>(), attached.delivered)
         advanceUntilIdle()
-        assertEquals(listOf<Pair<String?, String>>(ROOM to MESSAGE), worker.delivered)
+        assertEquals(listOf<Pair<String?, String>>(ROOM to MESSAGE), attached.delivered)
     }
 
     @Test
-    fun `a message queued after detach is parked for the next worker`() = runTest {
+    fun `a detach parks for the next worker, but a stale one does not evict it`() = runTest {
         val pending = holder()
         val detached = RecordingWorker()
         pending.attach(product, detached)
@@ -69,24 +51,12 @@ class E2EPendingChatMessagesTest {
 
         val next = RecordingWorker()
         pending.attach(product, next)
+        pending.detach(product, detached)
         advanceUntilIdle()
-        assertEquals(listOf<Pair<String?, String>>(ROOM to MESSAGE), next.delivered)
-    }
-
-    @Test
-    fun `a detach from the worker being replaced does not evict the new one`() = runTest {
-        val pending = holder()
-        val restarting = RecordingWorker()
-        pending.attach(product, restarting)
-
-        val next = RecordingWorker()
-        pending.attach(product, next)
-        pending.detach(product, restarting)
-
         pending.queue(product, ROOM, MESSAGE)
         advanceUntilIdle()
 
-        assertEquals(listOf<Pair<String?, String>>(ROOM to MESSAGE), next.delivered)
+        assertEquals(List(2) { ROOM to MESSAGE }, next.delivered)
     }
 
     @Test

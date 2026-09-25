@@ -41,7 +41,6 @@ class TrUAPILocalSessionSource @Inject constructor(
         )
     }
 
-    /** Bounded: a People-chain read that never emits must not hold the runtime boot. */
     private suspend fun resolveLiteUsername(): String? {
         val username = withTimeoutOrNull(LITE_USERNAME_LOOKUP_TIMEOUT) { usernameOfAccountUseCase.getUsername() }
             ?: return null.also {
