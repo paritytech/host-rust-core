@@ -1496,7 +1496,11 @@ async function sendFrame(port: number, channelId: string): Promise<void> {
       schema: TRUAPI_WIRE_SCHEMA_HASH,
     }),
   );
-  await new Promise((r) => setTimeout(r, 60));
+  const base = `http://localhost:${port}`;
+  const want = normalizeId(channelId);
+  for (let i = 0; i < 50 && !(await channelIds(base)).includes(want); i++) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
   ws.close();
 }
 
