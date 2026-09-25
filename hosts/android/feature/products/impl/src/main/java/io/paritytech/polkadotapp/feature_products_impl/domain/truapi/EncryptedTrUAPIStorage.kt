@@ -6,18 +6,20 @@ import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.Encry
 import uniffi.truapi.HostLocalStorageReadError
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
+import java.text.Normalizer
 
 /**
  * Product-scoped storage for the Rust core, encrypted at rest.
  *
- * [namespace] carries the product id, matching how the native host namespaces
- * `localStorageRead`/`Write`/`Clear`: one product must not be able to read
- * another's keys.
+ * Each key is filed under the product the core named as its owner, which is
+ * another product on a granted foreign read. Own keys use [productId] as given.
  */
 class EncryptedHostStorage(
     private val preferences: EncryptedPreferences,
-    private val namespace: String,
+    private val productId: String,
 ) : HostStorage {
+    private val normalizedProductId = normalizeProductId(productId)
+
     override fun read(key: String): ByteArray? = readValue(preferences, qualify(key))
 
     override fun write(key: String, value: ByteArray) {
@@ -30,7 +32,10 @@ class EncryptedHostStorage(
             .getOrElse { throw storageFailure("failed to clear product storage key: ${it.message}") }
     }
 
-    private fun qualify(key: String) = "$namespace/$key"
+    private fun qualify(key: String) = "${productStorageNamespace(ownerOf(key))}/$key"
+
+    private fun ownerOf(key: String): String =
+        productStorageKeyOwner(key)?.takeUnless { it == normalizedProductId } ?: productId
 }
 
 /**
@@ -66,6 +71,23 @@ class EncryptedHostCoreStorage(
 
 /** Namespace for one product's core-facing local storage. */
 fun productStorageNamespace(productId: String): String = "truapi/product/$productId"
+
+private const val PRODUCT_STORAGE_KEY_PREFIX = "truapi:product-storage:v1:"
+
+/** Mirrors `ProductStorageKey::decode` in truapi-platform: `truapi:product-storage:v1:<byte length>:<product id>:<key>`. */
+internal fun productStorageKeyOwner(key: String): String? {
+    if (!key.startsWith(PRODUCT_STORAGE_KEY_PREFIX)) return null
+    val rest = key.removePrefix(PRODUCT_STORAGE_KEY_PREFIX).encodeToByteArray()
+    val colon = rest.indexOf(':'.code.toByte()).takeIf { it > 0 } ?: return null
+    val length = rest.decodeToString(0, colon).toIntOrNull()?.takeIf { it > 0 } ?: return null
+    val start = colon + 1
+    if (length > rest.size - start - 1 || rest[start + length] != ':'.code.toByte()) return null
+    return runCatching { rest.decodeToString(start, start + length, throwOnInvalidSequence = true) }.getOrNull()
+}
+
+/** Matches the core's `normalize_product_identifier`, the form written into keys. */
+internal fun normalizeProductId(productId: String): String =
+    Normalizer.normalize(productId.trim(), Normalizer.Form.NFC).lowercase()
 
 /**
  * `EncryptionUtil` reports both a failed encrypt and a failed decrypt by

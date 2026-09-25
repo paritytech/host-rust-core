@@ -4,6 +4,7 @@ import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.Encry
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -15,7 +16,7 @@ class EncryptedTrUAPIStorageTest {
 
     @Test
     fun `an empty value is a value, not a miss`() {
-        val storage = EncryptedHostStorage(prefs, productStorageNamespace("a.dot"))
+        val storage = EncryptedHostStorage(prefs, "a.dot")
 
         storage.write("k", ByteArray(0))
 
@@ -26,14 +27,14 @@ class EncryptedTrUAPIStorageTest {
     /** `EncryptionUtil` returns "" instead of throwing when encryption fails. */
     @Test
     fun `a silently failed write is reported`() {
-        val storage = EncryptedHostStorage(prefs.swallowingWrites(), productStorageNamespace("a.dot"))
+        val storage = EncryptedHostStorage(prefs.swallowingWrites(), "a.dot")
 
         assertThrows(HostStorageException::class.java) { storage.write("k", byteArrayOf(9)) }
     }
 
     @Test
     fun `an undecryptable value reads as a miss, not empty bytes`() {
-        val storage = EncryptedHostStorage(prefs, productStorageNamespace("a.dot"))
+        val storage = EncryptedHostStorage(prefs, "a.dot")
         storage.write("k", byteArrayOf(9))
         prefs.corrupt()
 
@@ -42,9 +43,40 @@ class EncryptedTrUAPIStorageTest {
 
     @Test
     fun `products cannot read each other's keys`() {
-        EncryptedHostStorage(prefs, productStorageNamespace("a.dot")).write("shared", byteArrayOf(7))
+        EncryptedHostStorage(prefs, "a.dot").write("shared", byteArrayOf(7))
 
-        assertNull(EncryptedHostStorage(prefs, productStorageNamespace("b.dot")).read("shared"))
+        assertNull(EncryptedHostStorage(prefs, "b.dot").read("shared"))
+    }
+
+    /** The core addresses a granted foreign read with the owner's key. */
+    @Test
+    fun `a foreign read reaches the owner's storage`() {
+        val key = "truapi:product-storage:v1:13:counter.paseo:count"
+        EncryptedHostStorage(prefs, "counter.paseo").write(key, byteArrayOf(7))
+
+        assertArrayEquals(byteArrayOf(7), EncryptedHostStorage(prefs, "oracle.paseo").read(key))
+    }
+
+    @Test
+    fun `own keys keep their physical key`() {
+        val key = "truapi:product-storage:v1:13:counter.paseo:count"
+        EncryptedHostStorage(prefs, "counter.paseo").write(key, byteArrayOf(1))
+
+        assertNotNull(prefs.getDecryptedString("truapi/product/counter.paseo/$key"))
+    }
+
+    @Test
+    fun `the owner is read from the core key format`() {
+        assertEquals("counter.paseo", productStorageKeyOwner("truapi:product-storage:v1:13:counter.paseo:a:b"))
+        assertEquals("caf\u00e9.p", productStorageKeyOwner("truapi:product-storage:v1:7:caf\u00e9.p:k"))
+        listOf(
+            "truapi:product-storage:v1:13:counter.paseo",
+            "truapi:product-storage:v1:12:counter.paseo:k",
+            "truapi:product-storage:v1:99:counter.paseo:k",
+            "truapi:product-storage:v1:x:counter.paseo:k",
+            "truapi:product-storage:v1:4:caf\u00e9.p:k",
+            "k",
+        ).forEach { assertNull(it, productStorageKeyOwner(it)) }
     }
 
     @Test
