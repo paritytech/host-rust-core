@@ -121,14 +121,16 @@ function rawCallbacks(
       bridge.callbackRequest("cancelNotification", [id]) as ReturnType<
         Required<RawCallbacks>["cancelNotification"]
       >,
-    devicePermission: (request) =>
-      bridge.callbackRequest("devicePermission", [request]) as ReturnType<
-        Required<RawCallbacks>["devicePermission"]
-      >,
-    remotePermission: (request) =>
-      bridge.callbackRequest("remotePermission", [request]) as ReturnType<
-        Required<RawCallbacks>["remotePermission"]
-      >,
+    devicePermission: (product, request) =>
+      bridge.callbackRequest("devicePermission", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["devicePermission"]>,
+    remotePermission: (product, request) =>
+      bridge.callbackRequest("remotePermission", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["remotePermission"]>,
     beginOperation: (product, label) =>
       bridge.callbackRequest("beginOperation", [product, label]) as ReturnType<
         Required<RawCallbacks>["beginOperation"]

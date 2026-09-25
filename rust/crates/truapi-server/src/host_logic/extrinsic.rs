@@ -1,10 +1,10 @@
 //! sr25519 transaction signing shared by chain-facing runtime services.
 //!
-//! [`Sr25519Signer`] is the one subxt [`Signer`] in the crate; Bulletin
+//! `Sr25519Signer` is the one subxt [`Signer`] in the crate; Bulletin
 //! preimage submission and the signing-host product key both go through it.
-//! [`build_signed_extrinsic_v4`] assembles a signed V4 extrinsic from
+//! `build_signed_extrinsic_v4` assembles a signed V4 extrinsic from
 //! caller-supplied, already-SCALE-encoded parts (local `create_transaction`),
-//! so it needs no metadata at all. [`build_signed_extrinsic_v5`] needs the
+//! so it needs no metadata at all. `build_signed_extrinsic_v5` needs the
 //! runtime's extension pipeline, and signs only when the caller leaves
 //! `VerifyMultiSignature` to the host.
 

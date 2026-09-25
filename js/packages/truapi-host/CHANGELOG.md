@@ -1,5 +1,101 @@
 # @parity/truapi-host
 
+## 0.21.0
+
+### Minor Changes
+
+- 579f450: Load `verifiable` on demand in the browser. The core WASM is 2.64 MiB raw and 775 KiB brotli, down from 7.76
+  MiB and 5.40 MiB: `verifiable` and its 4.5 MiB of powers of tau live in a separate module, `truapi_verifiable.js` and
+  `truapi_verifiable_bg.wasm` beside the core's files in each bundle, fetched in the background once a pairing session
+  connects, or when a ring-VRF operation first runs. Bundlers that follow `new URL(…, import.meta.url)`, such as Vite,
+  emit both files, and a host serving a bundle directory as a whole needs no change; a host that copies individual files
+  out of it must copy both too.
+- db004aa: SSO request cancellation. A pairing host whose caller withdraws a request it has published sends a `Cancel`
+  naming it, when that request is still the newest one on the session; a host timeout sends nothing. The core's
+  signing-host responder reads `Cancel` while it is still serving earlier requests: a running request stops at its
+  confirmation prompt or before its next allocation step and posts no response, and one not yet started never runs.
+  `Cancel` is appended to the SSO catalog at the next index, so a peer that predates it logs the message and serves the
+  request as before.
+- 0e56d37: Take the wire debugger's dial from the embedding host instead of `localStorage`.
+
+  `createWebWorkerPairingHostRuntime` accepts a `debugger` option; a dev build may carry a default in
+  `VITE_TRUAPI_DEBUGGER_URL`. The host's own value wins, and `null` or `""` refuses the dial outright. The dial is
+  resolved once at construction and cannot be changed from the page afterwards, so whether a session is observed is a
+  property of the build and the host rather than of anything typed into a console later.
+
+  While a dial is live the host shows a small dev-only badge naming every endpoint frames are going to, suppressible
+  with `debuggerIndicator: false` for a host that renders its own. The badge belongs to the runtimes that are dialling,
+  so an embedder with one worker runtime per product surface can give a dial to some of them without the rest taking the
+  badge down.
+
+  A dial URL must be `ws://` on `localhost`, 127.0.0.0/8 or `[::1]`, the same set the native sink accepts. An
+  IPv4-mapped literal such as `ws://[::ffff:127.0.0.1]` is refused.
+
+  **Breaking for anyone enabling the debugger today:** the `truapi:debugger` `localStorage` key is no longer read, and
+  setting it has no effect. Pass the `debugger` option, or build with `VITE_TRUAPI_DEBUGGER_URL`.
+
+- 5a9f4b9: The `Permissions` host callbacks name the product that asked: `devicePermission(product, request)` and
+  `remotePermission(product, request)` take the requesting `ProductContext` first, like the other product-scoped
+  callbacks, so a host can title the prompt with the product and key any grant it keeps itself by the product. Stored
+  decisions stay keyed by `productId` alone.
+
+  The `truapi-host` CLI names the requesting product in its permission approvals.
+
+### Patch Changes
+
+- cf1702f: Initialize built-in personhood ring keys when an authorized product lists the personhood owner's keys, so
+  full and lite handles are available without prior registration on the device.
+- dadcabd: A withdrawn request stops on the host, not only at the product. A call cancelled while its confirmation
+  prompt is open stops waiting, and an answer given afterwards authorizes nothing. A withdrawn call never publishes its
+  paired-host request, never sends a broadcast, statement, notification or navigation it had not yet sent, and a
+  broadcast already sent is stopped when the node gave it an operation id. Permission prompts still finish and record
+  their answer. Every stop reaches the product as `CallError.Cancelled`.
+- Updated dependencies [ffdd9b4]
+- Updated dependencies [5a9f4b9]
+- Updated dependencies [cf1702f]
+  - @parity/truapi@0.21.0
+
+## 0.20.0
+
+### Patch Changes
+
+- Updated dependencies [5f3dc71]
+- Updated dependencies
+  - @parity/truapi@0.20.0
+
+## 0.19.0
+
+### Minor Changes
+
+- 5709e2b: `@parity/truapi-host/testing` exposes a mock host products can be tested against. `createMockHost` answers
+  the host callbacks from memory and records what the core asked for, so a test asserts on the confirmation reviews,
+  permission answers, navigations and storage writes the core produced rather than on a host's internals.
+  `./testing/playwright` provides a fixture that runs the real core in a Web Worker with the product in an iframe,
+  `./testing/server` the node server behind it, `./testing/client` a no-iframe variant for unit tests, and
+  `./testing/dev-accounts` named accounts that sign with real sr25519 from fixed entropy.
+
+  A second WASM bundle at `./wasm/testing` carries the `wasm-signing-host` and `test-host` Cargo features, which is what
+  lets the test host own keys and answer resource allocation as granted without allocating anything. Neither feature is
+  on in the `./wasm/web` production bundle, so no shipping browser host has an entry point to either.
+
+  Statement Store and Bulletin allowance allocation compiles for `wasm32` as well as native, so a browser signing host
+  reaches the same on-chain allocation path a native one does. That adds about 1.7 KB to the `./wasm/web` bundle.
+
+  Statement-store controls are served through the chain connection the host owns: `injectStatement` publishes a
+  SCALE-encoded statement into the product's subscriptions, `getSubmittedStatements` reads submissions back off the
+  transport, and `injectChatAction` publishes a host-authored Chat action into the product's action stream.
+
+  Payments throw with the reason rather than returning a plausible value: the protocol declares them but no host
+  implements them, so a test reaching that path learns why instead of passing against a fake. `setLoginBehavior` throws
+  too, pointing at the `loginBehavior` fixture option, which is where the test host takes it.
+
+### Patch Changes
+
+- Updated dependencies [a78d73c]
+- Updated dependencies [303b163]
+- Updated dependencies [5d5fd1c]
+  - @parity/truapi@0.19.0
+
 ## 0.18.0
 
 ### Major Changes

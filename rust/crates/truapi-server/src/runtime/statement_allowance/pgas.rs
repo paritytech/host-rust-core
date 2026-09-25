@@ -12,7 +12,11 @@
 //! authorized against a revision Asset Hub has already imported, so the flow
 //! waits for it rather than submitting a proof the runtime cannot verify.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use parity_scale_codec::{Decode, DecodeAll};
 use scale_decode::DecodeAsType;
@@ -254,7 +258,8 @@ pub async fn claim_pgas(
             AS_PGAS,
         )?;
         let domain = proof::domain_for_ring_exponent(ring.exponent)?;
-        let ring_proof = proof::ring_vrf_proof(domain, entropy, &ring.members, &context, &message)?;
+        let ring_proof =
+            proof::ring_vrf_proof(domain, entropy, &ring.members, &context, &message).await?;
         let extra = extrinsic::build_as_pgas_extra(
             asset_hub_metadata,
             &ring_proof,

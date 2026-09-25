@@ -88,6 +88,7 @@ extension MessageExchangeCoordinatorFactory: MessageExchangeCoordinatorMaking {
             ),
             pushIdFactory: pushIdFactory,
             pushMessageCoder: ChatPushMessageCoder(encryptionManager: encryptionManager),
+            notificationPayloadBuilder: ChatNotificationPayloadBuilder(logger: logger),
             chatRequestStoreService: ChatRequestStoreService(
                 messageExchangeModeProvider: messageExchangeModeProvider,
                 storageFacade: storageFacade,

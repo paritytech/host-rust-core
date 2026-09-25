@@ -62,20 +62,24 @@ jobs:
           keystore_alias: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
           keystore_key_pass: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
 
-      # Configuration rather than credentials. The app tree reads each of these
-      # from the environment when local.properties does not carry it, so a
-      # preview build needs none of them provisioned. The application id is the
-      # exception: it has to match the Google configuration above.
+      # Cosmetic strings are placeholders, because nothing reads them back.
+      # The three backend identifiers are not: they name the Google project the
+      # running app authenticates against, so a placeholder does not merely look
+      # wrong, it stops the app at registration. Play Integrity refuses cloud
+      # project number 0, attestation fails on the first network call, and the
+      # username screen reports the generic error it falls back to. They match
+      # what android-nightly.yml passes. The application id is fixed rather than
+      # a placeholder because it has to match the Google configuration above.
       - name: Build the APK
         working-directory: hosts/android
         env:
           APPLICATION_ID: io.parity.polkadotapp
           APPLICATION_NAME: Polkadot
           CURRENCY_SYMBOL: DOT
-          FIRESTORE_DATABASE_ID: preview
-          GOOGLE_OAUTH_ID: preview
-          # Typed as a long, so a non-numeric placeholder is a compile error.
-          GOOGLE_PROJECT_ID: "0"
+          FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+          GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
+          GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
+          CONTACT_EMAIL: preview@example.invalid
           LOG_COLLECTION_EMAIL: preview@example.invalid
           NIGHTLY_FUNDING_MNEMONIC: preview
           PRIVACY_POLICY_URL: https://example.invalid/privacy

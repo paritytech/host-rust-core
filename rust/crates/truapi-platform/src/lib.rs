@@ -29,6 +29,11 @@ uniffi::setup_scaffolding!();
 uniffi::use_remote_type!(truapi::Bytes32);
 
 use truapi::Bytes32;
+
+/// In-memory mock platform for tests and host simulators (enable the `mock` feature).
+#[cfg(feature = "mock")]
+pub mod mock;
+
 use truapi::latest::{
     AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
     ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
@@ -763,7 +768,7 @@ fn validate_chat_url(field: &'static str, url: &str) -> Result<String, ChatField
 }
 
 /// Validate a product-supplied chat icon: absent, an `https` URL, or an inline
-/// image in [`ALLOWED_ICON_DATA_TYPES`].
+/// PNG, JPEG, GIF, WebP, or AVIF image.
 ///
 /// An allowlist rather than a denylist, because a URL parser reaches a scheme
 /// through whitespace, tabs and NUL that a prefix comparison does not.
@@ -1156,15 +1161,17 @@ pub enum PermissionDecision {
 /// surface mirrors that split.
 #[async_trait]
 pub trait Permissions: Send + Sync {
-    /// Prompt the user for a device-level permission.
+    /// Prompt the user for a device-level permission `product` requested.
     async fn device_permission(
         &self,
+        product: &ProductContext,
         request: HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, GenericError>;
 
-    /// Prompt the user for a remote (product-scoped) permission bundle.
+    /// Prompt the user for a remote permission bundle `product` requested.
     async fn remote_permission(
         &self,
+        product: &ProductContext,
         request: RemotePermissionRequest,
     ) -> Result<PermissionDecision, GenericError>;
 }
@@ -3119,6 +3126,10 @@ pub trait UserConfirmation: Send + Sync {
     }
 
     /// Confirm a reviewed action before the core continues.
+    ///
+    /// The core drops this future when the request behind the review is
+    /// withdrawn, and an answer given afterwards reaches nobody. A host should
+    /// dismiss its prompt when that happens.
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,

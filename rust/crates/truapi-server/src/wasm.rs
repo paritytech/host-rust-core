@@ -1193,6 +1193,18 @@ pub struct WasmSigningHostRuntime {
 #[cfg(feature = "wasm-signing-host")]
 #[wasm_bindgen]
 impl WasmSigningHostRuntime {
+    /// Answer resource allocation as granted without performing it.
+    ///
+    /// A test host serves suites that exercise allowance-dependent product
+    /// paths without an on-chain personhood identity. Nothing is allocated, so
+    /// a green run says the product handles a grant, not that a host would
+    /// have given one.
+    #[cfg(feature = "test-host")]
+    #[wasm_bindgen(js_name = setGrantAllowancesUnchecked)]
+    pub fn set_grant_allowances_unchecked(&self, granted: bool) {
+        self.runtime.set_grant_allowances_unchecked(granted);
+    }
+
     /// Build a shared signing runtime from host callbacks and host config.
     #[wasm_bindgen(constructor)]
     pub fn new(
@@ -1320,6 +1332,22 @@ pub fn product_account_address(public_key: Vec<u8>) -> Result<String, JsValue> {
     let public_key = <[u8; 32]>::try_from(public_key.as_slice())
         .map_err(|_| JsValue::from_str("product account public key must be 32 bytes"))?;
     Ok(crate::host_logic::product_account::product_public_key_to_address(public_key))
+}
+
+/// The ring-VRF member for `entropy`, derived through the module this core
+/// loads on demand.
+///
+/// For test hosts: it shows the core finds `truapi_verifiable` beside it and accepts
+/// the build it pins, which no product call reaches without a chain.
+#[cfg(feature = "test-host")]
+#[wasm_bindgen(js_name = ringVrfMember)]
+pub async fn ring_vrf_member(entropy: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+    let entropy = <[u8; 32]>::try_from(entropy.as_slice())
+        .map_err(|_| JsValue::from_str("ring-VRF entropy must be 32 bytes"))?;
+    crate::runtime::ring_vrf_member(&entropy)
+        .await
+        .map(|member| member.to_vec())
+        .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 /// Set the live log level (`off`/`error`/`warn`/`info`/`debug`/`trace`).

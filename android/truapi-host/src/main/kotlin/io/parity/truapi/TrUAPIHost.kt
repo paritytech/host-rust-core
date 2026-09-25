@@ -14,14 +14,14 @@
 //     key-value backends the host persists.
 //   * `TrUAPIHostRuntime` / `TrUAPIProductExecution` - process-owned host state
 //     and independently scoped product connections.
-//   * `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge
-//     endpoint to the product page so it can dial back in.
+//   * `LocalhostBridgeBootstrap` - private endpoint configuration consumed by
+//     the shared browser container before product scripts run.
 //
 // Products running inside a `WebView` connect to the Rust core via the
 // localhost WebSocket bridge. Start it with `execution.startWsBridge()` and load
-// the product page with a `LocalhostBridgeBootstrap.script(...)` snippet
-// injected at document start so the page's `@parity/truapi`
-// `createWebSocketProvider` can dial `ws://127.0.0.1:<port>/?t=<token>`.
+// the product page after injecting `LocalhostBridgeBootstrap.script(...)` and
+// `ContainerScriptBundle.load(...)` at document start. The container publishes
+// `window.__HOST_API_CLIENT__` and a compatibility MessagePort for older SDKs.
 
 package io.parity.truapi
 
@@ -33,10 +33,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
-import uniffi.truapi.ChatBotRegistrationStatus
 import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatRoom
-import uniffi.truapi.ChatRoomRegistrationStatus
 import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
@@ -47,6 +45,7 @@ import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.HostRendererActionSubscribeItem
 import uniffi.truapi.ProductRendererRenderRequest
 import uniffi.truapi.RemotePermission
+import uniffi.truapi.RemotePermissionRequest
 import uniffi.truapi.RendererNode
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.ThemeName
@@ -60,7 +59,9 @@ import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.PermissionDecision
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
+import uniffi.truapi_server.NativeChatBotRegistrationStatus
 import uniffi.truapi_server.NativeChatCallbacks
+import uniffi.truapi_server.NativeChatRoomRegistrationStatus
 import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativePocketRemoval
 import uniffi.truapi_server.NativeRendererObserver
@@ -75,6 +76,7 @@ import uniffi.truapi_server.ProductRuntimeException
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
+import uniffi.truapi_server.localhostBridgeBootstrapScript
 import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
@@ -104,6 +106,15 @@ enum class ProductExecutionKind {
             WIDGET -> UniFfiProductExecutionKind.WIDGET
             WORKER -> UniFfiProductExecutionKind.WORKER
         }
+
+    internal companion object {
+        fun fromNative(kind: UniFfiProductExecutionKind): ProductExecutionKind =
+            when (kind) {
+                UniFfiProductExecutionKind.APP -> APP
+                UniFfiProductExecutionKind.WIDGET -> WIDGET
+                UniFfiProductExecutionKind.WORKER -> WORKER
+            }
+    }
 }
 
 /**
@@ -190,6 +201,14 @@ data class ProductExecutionConfig(
             productId = productId,
             executionKind = executionKind.toNative(),
         )
+
+    internal companion object {
+        fun fromNative(config: UniFfiNativeProductExecutionConfig): ProductExecutionConfig =
+            ProductExecutionConfig(
+                productId = config.productId,
+                executionKind = ProductExecutionKind.fromNative(config.executionKind),
+            )
+    }
 }
 
 /**
@@ -268,11 +287,15 @@ interface HostBridge {
     fun cancelNotification(id: UInt) {}
 
     /**
-     * Prompt for a device-level permission on the main thread, suspending until
-     * the user decides. Preserve whether approval applies once or always.
+     * Prompt for a device-level permission [product] requested on the main
+     * thread, suspending until the user decides. Preserve whether approval
+     * applies once or always.
      */
     @Throws(HostRejection::class)
-    suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision
+    suspend fun devicePermission(
+        product: ProductExecutionConfig,
+        request: HostDevicePermissionRequest,
+    ): PermissionDecision
 
     /**
      * Report the OS status of a device capability without prompting. Answer from
@@ -295,11 +318,14 @@ interface HostBridge {
     ): NativeDevicePermissionStatus = NativeDevicePermissionStatus.NOT_APPLICABLE
 
     /**
-     * Prompt for a remote (product-scoped) permission bundle on the main thread,
-     * suspending until the user decides.
+     * Prompt for a remote permission bundle [product] requested on the main
+     * thread, suspending until the user decides.
      */
     @Throws(HostRejection::class)
-    suspend fun remotePermission(request: RemotePermission): PermissionDecision
+    suspend fun remotePermission(
+        product: ProductExecutionConfig,
+        request: RemotePermission,
+    ): PermissionDecision
 
     /**
      * Observe an auth state change, in transition order: render
@@ -433,10 +459,9 @@ interface HostBridge {
  * [TrUAPIHostRuntime.openProductExecution] when the host supports the Chat
  * modality; hosts without it pass nothing.
  *
- * Threading: these run inline on the process-wide dispatch pool shared by
- * every product execution, so implementations must be safe to enter
- * concurrently and one that blocks stalls the others. Return promptly and
- * marshal UI work to the main thread.
+ * Threading: these run on the process-wide dispatch pool shared by every
+ * product execution, so implementations must be safe to enter concurrently.
+ * Marshal UI work to the main thread.
  */
 interface ChatHostBridge {
     /**
@@ -445,7 +470,7 @@ interface ChatHostBridge {
      * for the surface that renders them is still the host's job.
      */
     @Throws(HostRejection::class)
-    fun createRoom(roomId: String, name: String, icon: String): ChatRoomRegistrationStatus
+    suspend fun createRoom(roomId: String, name: String, icon: String): NativeChatRoomRegistrationStatus
 
     /**
      * Register or resolve a native product Chat bot. The core has bounded and
@@ -453,7 +478,7 @@ interface ChatHostBridge {
      * for the surface that renders them is still the host's job.
      */
     @Throws(HostRejection::class)
-    fun registerBot(botId: String, name: String, icon: String): ChatBotRegistrationStatus
+    suspend fun registerBot(botId: String, name: String, icon: String): NativeChatBotRegistrationStatus
 
     /**
      * Persist a product-authored message in native Chat storage. Throw for a
@@ -469,11 +494,11 @@ interface ChatHostBridge {
      * may name a message in another room, or none at all.
      */
     @Throws(HostRejection::class)
-    fun postMessage(roomId: String, content: ChatMessageContent): String
+    suspend fun postMessage(roomId: String, content: ChatMessageContent): String
 
     /** Return the current product-scoped native Chat rooms. */
     @Throws(HostRejection::class)
-    fun listRooms(): List<ChatRoom>
+    suspend fun listRooms(): List<ChatRoom>
 }
 
 /**
@@ -540,15 +565,25 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun cancelNotification(id: UInt) =
         withHostRejection { bridge.cancelNotification(id) }
 
-    override suspend fun devicePermission(request: HostDevicePermissionRequest): NativePermissionDecision =
-        withHostRejection { bridge.devicePermission(request).toNative() }
+    override suspend fun devicePermission(
+        product: UniFfiNativeProductExecutionConfig,
+        request: HostDevicePermissionRequest,
+    ): NativePermissionDecision =
+        withHostRejection {
+            bridge.devicePermission(ProductExecutionConfig.fromNative(product), request).toNative()
+        }
 
     override suspend fun devicePermissionStatus(
         request: HostDevicePermissionRequest,
     ): NativeDevicePermissionStatus = withHostRejection { bridge.devicePermissionStatus(request) }
 
-    override suspend fun remotePermission(request: RemotePermission): NativePermissionDecision =
-        withHostRejection { bridge.remotePermission(request).toNative() }
+    override suspend fun remotePermission(
+        product: UniFfiNativeProductExecutionConfig,
+        request: RemotePermission,
+    ): NativePermissionDecision =
+        withHostRejection {
+            bridge.remotePermission(ProductExecutionConfig.fromNative(product), request).toNative()
+        }
 
     override fun authStateChanged(state: AuthState) {
         try {
@@ -669,22 +704,22 @@ private inline fun <T> withStorageException(operation: () -> T): T =
  * [NativeChatCallbacks] interface.
  */
 private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeChatCallbacks {
-    override fun createRoom(
+    override suspend fun createRoom(
         roomId: String,
         name: String,
         icon: String,
-    ): ChatRoomRegistrationStatus = withHostRejection { bridge.createRoom(roomId, name, icon) }
+    ): NativeChatRoomRegistrationStatus = withHostRejection { bridge.createRoom(roomId, name, icon) }
 
-    override fun registerBot(
+    override suspend fun registerBot(
         botId: String,
         name: String,
         icon: String,
-    ): ChatBotRegistrationStatus = withHostRejection { bridge.registerBot(botId, name, icon) }
+    ): NativeChatBotRegistrationStatus = withHostRejection { bridge.registerBot(botId, name, icon) }
 
-    override fun postMessage(roomId: String, content: ChatMessageContent): String =
+    override suspend fun postMessage(roomId: String, content: ChatMessageContent): String =
         withHostRejection { bridge.postMessage(roomId, content) }
 
-    override fun listRooms(): List<ChatRoom> = withHostRejection { bridge.listRooms() }
+    override suspend fun listRooms(): List<ChatRoom> = withHostRejection { bridge.listRooms() }
 }
 
 /**
@@ -704,123 +739,11 @@ private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : Nati
  */
 object LocalhostBridgeBootstrap {
     /**
-     * Returns a `<script>`-injectable snippet that publishes the endpoint
-     * metadata on `window.__truapi_localhost`, exposes the legacy
-     * `window.__HOST_API_PORT__` webview transport shape, and fires a
-     * `truapi-native-ready` event. Inject at document start (before the product
-     * page scripts run) so the page can dial the bridge immediately.
+     * Supplies the WebSocket endpoint to the shared browser container.
+     * Inject at document start, before the container and product scripts.
      */
-    fun script(port: UShort, token: String): String {
-        val url = "ws://127.0.0.1:$port/?t=$token"
-        val safeUrl = jsStringLiteral(url)
-        val safeToken = jsStringLiteral(token)
-        return """
-        (function() {
-          var endpoint = { url: $safeUrl, token: $safeToken };
-
-          function createWebSocketMessagePort(url) {
-            var socket = null;
-            var started = false;
-            var queue = [];
-
-            var port = {
-              onmessage: null,
-              onmessageerror: null,
-
-              postMessage: function(message) {
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                  socket.send(message);
-                } else {
-                  queue.push(message);
-                }
-              },
-
-              start: function() {
-                if (started) return;
-                started = true;
-
-                socket = new WebSocket(url);
-                socket.binaryType = "arraybuffer";
-
-                socket.onopen = function() {
-                  var pending = queue;
-                  queue = [];
-                  pending.forEach(function(message) {
-                    socket.send(message);
-                  });
-                };
-
-                socket.onmessage = function(event) {
-                  if (typeof port.onmessage === "function") {
-                    port.onmessage({ data: new Uint8Array(event.data) });
-                  }
-                };
-
-                socket.onerror = function() {
-                  if (typeof port.onmessageerror === "function") {
-                    port.onmessageerror();
-                  }
-                };
-
-                socket.onclose = function() {
-                  if (typeof port.onmessageerror === "function") {
-                    port.onmessageerror();
-                  }
-                };
-              },
-
-              close: function() {
-                queue = [];
-                if (socket) {
-                  socket.close();
-                }
-              }
-            };
-
-            return port;
-          }
-
-          window.__truapi_localhost = endpoint;
-          window.__HOST_WEBVIEW_MARK__ = true;
-          window.__HOST_API_PORT__ = createWebSocketMessagePort(endpoint.url);
-          window.dispatchEvent(new Event('truapi-native-ready'));
-        })();
-        """.trimIndent()
-    }
-
-    /**
-     * Encodes [value] as a complete double-quoted JavaScript string literal,
-     * safe to embed inside a `<script>` body. Escapes quotes, backslashes,
-     * control characters, `/` (closing `</script` tags), and the U+2028 /
-     * U+2029 line terminators that JS treats as newlines.
-     */
-    private fun jsStringLiteral(value: String): String {
-        val sb = StringBuilder(value.length + 2)
-        sb.append('"')
-        for (ch in value) {
-            when (ch.code) {
-                '"'.code -> sb.append("\\\"")
-                '\\'.code -> sb.append("\\\\")
-                '/'.code -> sb.append("\\/")
-                0x0A -> sb.append("\\n")
-                0x0D -> sb.append("\\r")
-                0x09 -> sb.append("\\t")
-                0x08 -> sb.append("\\b")
-                0x0C -> sb.append("\\f")
-                0x2028 -> sb.append("\\u2028")
-                0x2029 -> sb.append("\\u2029")
-                else ->
-                    if (ch.code < 0x20) {
-                        sb.append("\\u")
-                        sb.append(ch.code.toString(16).padStart(4, '0'))
-                    } else {
-                        sb.append(ch)
-                    }
-            }
-        }
-        sb.append('"')
-        return sb.toString()
-    }
+    fun script(port: UShort, token: String): String =
+        localhostBridgeBootstrapScript(port = port, token = token)
 }
 
 /**
@@ -1168,6 +1091,11 @@ class TrUAPIProductExecution internal constructor(
     suspend fun permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
     ): PermissionAuthorizationStatus = inner.permissionAuthorizationStatus(request)
+
+    /** Authorize one native network operation, consuming an existing Allow once grant. */
+    @Throws(HostRejection::class)
+    suspend fun authorizeRemotePermission(request: RemotePermissionRequest): Boolean =
+        inner.authorizeRemotePermission(request)
 
     /**
      * Update a stored permission authorization status. Passing `NotDetermined`

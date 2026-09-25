@@ -55,6 +55,9 @@ export type CallbackArgs = readonly unknown[];
  * worker/core lifecycle, forward encoded TrUAPI frames into the core, or return
  * host callback/subscription/chain responses requested by the worker.
  */
+/** Which host role a worker runtime plays. */
+export type HostRole = "pairing" | "signing";
+
 export type MainToWorker =
   | {
       kind: "init";
@@ -69,6 +72,14 @@ export type MainToWorker =
       // Dev-only: when set, the worker dials this debugger and streams tapped
       // frames to it. Null in production, so the host tap stays inert.
       debuggerUrl: string | null;
+      /**
+       * Which host role the worker constructs. Omitted means `"pairing"`, so a
+       * host written before this existed behaves exactly as it did.
+       *
+       * `"signing"` needs the `testing` WASM bundle, which is the only one
+       * built with a signing host in it.
+       */
+      role?: HostRole;
     }
   | { kind: "createCore"; coreId: number; product: unknown }
   | { kind: "disposeCore"; coreId: number }
@@ -81,6 +92,27 @@ export type MainToWorker =
   | { kind: "releaseWorker"; productId: string }
   | { kind: "activateStoredSession"; requestId: number }
   | { kind: "activateExternalSession"; requestId: number; blob: Uint8Array }
+  /**
+   * Establish a session from host-held entropy. Signing hosts only: a pairing
+   * host has no local secret and answers this with an error.
+   */
+  | {
+      kind: "activateLocalSession";
+      requestId: number;
+      secret: Uint8Array;
+      /**
+       * Display name to activate the session under. Absent activates without
+       * one, which leaves the session with no primary username -- and
+       * `account.get_user_id` answers `Unknown` rather than a name.
+       */
+      liteUsername?: string;
+    }
+  | {
+      kind: "setGrantAllowancesUnchecked";
+      requestId: number;
+      /** Answer allocation as granted without performing it. */
+      granted: boolean;
+    }
   | { kind: "resetSessionState"; requestId: number }
   | {
       kind: "getPermissionAuthorizationStatus";
@@ -305,3 +337,36 @@ export type WorkerToMain =
   | { kind: "chainConnectStart"; connId: number; genesisHash: string }
   | { kind: "chainSend"; connId: number; request: string }
   | { kind: "chainClose"; connId: number };
+
+/**
+ * Is `url` a `ws://` URL on a loopback host? The tap forwards every frame
+ * verbatim, key material included, and redacts nothing, so loopback is the whole
+ * confinement story.
+ *
+ * `ws://` only, matching the native sink. A loopback socket has no path for TLS
+ * to defend, so `wss://` would buy nothing and cost a certificate `localhost`
+ * cannot get from a real CA.
+ *
+ * `WsDebugSink::connect` resolves the host and checks every address; this matches
+ * the normalized hostname. A Worker has no resolver and needs none, since this
+ * same string is handed to `new WebSocket`, so the native "validate one string,
+ * dial another" gap cannot open here.
+ *
+ * Accepts what the native sink accepts: `localhost`, 127.0.0.0/8 and `::1`. An
+ * IPv4-mapped literal is refused in both, since `Ipv6Addr::is_loopback` matches
+ * only `::1`.
+ */
+export function isLoopbackWsUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "ws:") return false;
+    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "::1" ||
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+    );
+  } catch {
+    return false;
+  }
+}

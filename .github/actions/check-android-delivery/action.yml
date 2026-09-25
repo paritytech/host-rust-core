@@ -20,6 +20,13 @@ inputs:
   service_account:
     description: Service account the identity exchange impersonates
     required: true
+  workload_identity_provider:
+    description: >-
+      Provider the exchange authenticated through. Read only when a refusal
+      needs explaining, as the audience the identity token is requested under,
+      so the claims shown are the ones the exchange itself saw.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -29,6 +36,7 @@ runs:
         APP_ID: ${{ inputs.app_id }}
         GROUPS: ${{ inputs.groups }}
         SERVICE_ACCOUNT: ${{ inputs.service_account }}
+        PROVIDER: ${{ inputs.workload_identity_provider }}
       run: |
         set -euo pipefail
 
@@ -68,14 +76,46 @@ runs:
         if ! json="$("${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
           --project "${project}" --json 2>"${err}")"; then
           echo "::error::Could not list tester groups in ${project}"
-          printf '%s\n' "${json}" | head -20
+          printf '%s\n' "${json}" | head -20 || true
           cat "${err}" >&2 || true
+          # The JSON path silences every logger, so the payload above carries
+          # only a summary and the cause is discarded. Asking again without it
+          # turns the console logging back on, which is where the reason the
+          # credentials were refused actually appears. Request and response
+          # lines are logged; authorization headers and token values are not.
+          echo "--- asking again for the reason ---" >&2
+          "${cli}/node_modules/.bin/firebase" appdistribution:groups:list \
+            --project "${project}" --debug >&2 2>&1 || true
+
+          # A refusal to impersonate is matched against the identity this
+          # run presents, and the binding that grants it names one exact
+          # string, so the two have to be compared rather than guessed at.
+          # Requested under the provider as audience, which is what the
+          # exchange itself uses, so these are the claims it saw. Identity
+          # claims rather than a credential; the token is never printed.
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            audience="${PROVIDER:-https://iam.googleapis.com}"
+            token="$(curl -sS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" \
+              | jq -r '.value // ""')" || true
+            if [ -n "${token}" ]; then
+              segment="$(cut -d. -f2 <<<"${token}")"
+              case $(( ${#segment} % 4 )) in
+                2) segment="${segment}==" ;;
+                3) segment="${segment}=" ;;
+              esac
+              claims="$(tr '_-' '/+' <<<"${segment}" | base64 -d 2>/dev/null || true)"
+              echo "--- the identity this run presented ---" >&2
+              jq '{sub, repository, ref, event_name, environment,
+                   workflow_ref, job_workflow_ref}' <<<"${claims}" >&2 || true
+            fi
+          fi
           exit 1
         fi
         if ! jq -e . >/dev/null 2>&1 <<<"${json}"; then
           echo "::error::Could not parse the group listing from ${project}"
-          printf '%s\n' "${json}" | head -20
-          cat "${err}" >&2 || true
+          printf '%s\n' "${json}" | head -20 || true
+          tail -60 "${err}" >&2 || true
           exit 1
         fi
 

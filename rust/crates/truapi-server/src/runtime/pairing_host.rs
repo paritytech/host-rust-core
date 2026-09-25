@@ -50,6 +50,7 @@ use crate::host_logic::session::{SessionInfo, SessionState, encode_persisted_ses
 use crate::host_logic::session_store::SessionStoreChangeNotifier;
 use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
+use crate::runtime::vrf;
 use crate::subscription::Spawner;
 
 use futures::StreamExt;
@@ -64,8 +65,7 @@ use zeroize::Zeroizing;
 
 use super::ring_vrf_registry::{RingVrfRegistryStore, validate_owner_listing};
 use super::signing_host::ring_vrf::{
-    ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
-    development_context_bytes, member_from_entropy, sign_from_entropy,
+    ChainRingResolver, MemberCandidate, RingResolver, create_proof, development_context_bytes,
 };
 
 struct LoginInFlight {
@@ -244,6 +244,9 @@ pub(crate) struct PairingHost {
     /// People-chain statement store RPC client.
     pub(super) statement_store: StatementStoreRpc,
     session_disconnects: Arc<SessionDisconnects>,
+    /// `message_id` of the request the session's request channel carries,
+    /// the only one a `Cancel` may name without replacing another request.
+    newest_request: Mutex<Option<String>>,
     disconnect_monitor: Mutex<Option<SsoDisconnectMonitor>>,
     login_in_flight: Mutex<Option<LoginInFlight>>,
     login_generation: Mutex<u64>,
@@ -296,6 +299,7 @@ impl PairingHost {
             auth_state,
             statement_store: services.statement_store.clone(),
             session_disconnects: Arc::new(SessionDisconnects::default()),
+            newest_request: Mutex::new(None),
             disconnect_monitor: Mutex::new(None),
             login_in_flight: Mutex::new(None),
             login_generation: Mutex::new(0),
@@ -352,6 +356,15 @@ impl PairingHost {
     #[cfg(test)]
     pub(crate) fn start_session_store_sync_for_tests(self: Arc<Self>, spawner: Spawner) {
         self.start_session_store_sync(spawner);
+    }
+
+    /// `message_id` of the request the session's request channel carries.
+    #[cfg(test)]
+    pub(crate) fn newest_request_for_tests(&self) -> Option<String> {
+        self.newest_request
+            .lock()
+            .expect("newest request mutex poisoned")
+            .clone()
     }
 
     /// Change notifications the sync task has finished reconciling.
@@ -940,6 +953,7 @@ impl PairingHost {
             self.stop_session_channel(previous.as_ref());
         }
         self.start_disconnect_monitor(&session);
+        vrf::prefetch(&self.spawner);
         self.auth_state
             .connected(&connected_session_ui_info(&session));
         true
@@ -1981,7 +1995,8 @@ impl PairingHost {
             auto_signing.ring_vrf_domain_entropy(),
             &handle.derivation_index,
         ));
-        if entry.public_key != Some(member_from_entropy(&entropy)?) {
+        let vrf = vrf::load().await?;
+        if entry.public_key != Some(vrf.member(&entropy)?) {
             return Err(RingVrfError::Unknown {
                 reason: "registered ring-VRF public key does not match the AutoSigning capability"
                     .to_string(),
@@ -2138,16 +2153,18 @@ impl PairingHost {
             );
             return Ok(v01::VrfSignature { pre_output, proof });
         }
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
-                calling_product_id: calling_product_id.clone(),
-                request: request.clone(),
-            }))
-            .await
-            .map_err(|err| AuthorityError::Unknown {
-                reason: format!("VRF signing confirmation failed: {err:?}"),
-            })?;
+        let confirmed = super::until_cancelled(
+            cx,
+            self.platform
+                .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                    calling_product_id: calling_product_id.clone(),
+                    request: request.clone(),
+                })),
+        )
+        .await?
+        .map_err(|err| AuthorityError::Unknown {
+            reason: format!("VRF signing confirmation failed: {err:?}"),
+        })?;
         if !confirmed {
             return Err(AuthorityError::Rejected);
         }
@@ -2264,9 +2281,10 @@ impl PairingHost {
             self.ring_resolver
                 .validate(&request.payload.ring_location)
                 .await?;
+            let vrf = vrf::load().await?;
             self.current_private_session(session)?;
             let context = development_context_bytes(&request.payload.context);
-            let alias = alias_from_entropy(&entropy, &context)?;
+            let alias = vrf.alias(&entropy, &context)?;
             return Ok(v01::ContextualAlias {
                 context,
                 alias: alias.to_vec(),
@@ -2304,7 +2322,8 @@ impl PairingHost {
             )
             .await?
         {
-            let member = member_from_entropy(&entropy)?;
+            let vrf = vrf::load().await?;
+            let member = vrf.member(&entropy)?;
             let resolved = self
                 .ring_resolver
                 .resolve(
@@ -2314,8 +2333,13 @@ impl PairingHost {
                 .await?;
             self.current_private_session(session)?;
             let context = development_context_bytes(&request.payload.context);
-            let (proof, alias) =
-                create_proof(&entropy, &resolved, &context, &request.payload.message)?;
+            let (proof, alias) = create_proof(
+                &vrf,
+                &entropy,
+                &resolved,
+                &context,
+                &request.payload.message,
+            )?;
             return Ok(v01::HostAccountCreateProofResponse {
                 proof,
                 contextual_alias: v01::ContextualAlias {
@@ -2351,12 +2375,13 @@ impl PairingHost {
             .map_err(RingVrfError::from)?
         {
             self.ring_resolver.validate(&request.payload.ring).await?;
+            let vrf = vrf::load().await?;
             self.current_private_session(session)?;
             let entropy = Zeroizing::new(derive_ring_vrf_entropy_from_domain(
                 auto_signing.ring_vrf_domain_entropy(),
                 &request.payload.index,
             ));
-            let public_key = member_from_entropy(&entropy)?;
+            let public_key = vrf.member(&entropy)?;
             self.ring_vrf_registry
                 .register(
                     private_session.public_key,
@@ -2440,8 +2465,9 @@ impl PairingHost {
             .local_ring_vrf_entropy(&private_session, &key_handle)
             .await?
         {
+            let vrf = vrf::load().await?;
             self.current_private_session(session)?;
-            return sign_from_entropy(&entropy, &request.payload.message);
+            return vrf.sign(&entropy, &request.payload.message);
         }
         self.remote_ring_vrf_sign(cx, &private_session, request)
             .await

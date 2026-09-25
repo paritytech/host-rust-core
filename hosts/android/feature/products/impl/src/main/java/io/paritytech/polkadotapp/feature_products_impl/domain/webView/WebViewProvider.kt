@@ -76,10 +76,10 @@ abstract class WebViewProvider(
     }
 
     fun pauseConnections() {
-        cachedWebView?.evaluateJavascript("__pauseConnections__()") {}
+        cachedWebView?.evaluateJavascript("window.__pauseConnections__?.()") {}
     }
 
     fun resumeConnections() {
-        cachedWebView?.evaluateJavascript("__resumeConnections__()") {}
+        cachedWebView?.evaluateJavascript("window.__resumeConnections__?.()") {}
     }
 }

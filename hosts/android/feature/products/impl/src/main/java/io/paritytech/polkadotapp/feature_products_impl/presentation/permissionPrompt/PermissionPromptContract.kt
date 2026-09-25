@@ -7,7 +7,7 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.coroutines.flow.StateFlow
 
 interface PermissionPromptContract {
-    val state: StateFlow<PermissionPromptUiState>
+    val state: StateFlow<PermissionPromptUiState?>
 
     fun onAllowAlwaysClicked()
 

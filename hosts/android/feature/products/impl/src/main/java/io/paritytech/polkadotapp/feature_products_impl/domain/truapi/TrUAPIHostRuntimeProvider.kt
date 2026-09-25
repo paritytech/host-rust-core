@@ -5,6 +5,7 @@ import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostRuntimeConfig
 import io.parity.truapi.HostStorage
+import io.parity.truapi.ProductExecutionConfig
 import io.parity.truapi.TrUAPIHostRuntime
 import io.parity.truapi.WebSocketChainProvider
 import io.paritytech.polkadotapp.chains.multiNetwork.ChainRegistry
@@ -207,10 +208,16 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
             throw HostNavigateRejection.Navigate(HostNavigateToError.Unknown("navigation unavailable at host level"))
         }
 
-        override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision =
+        override suspend fun devicePermission(
+            product: ProductExecutionConfig,
+            request: HostDevicePermissionRequest,
+        ): PermissionDecision =
             PermissionDecision.DENY
 
-        override suspend fun remotePermission(request: RemotePermission): PermissionDecision =
+        override suspend fun remotePermission(
+            product: ProductExecutionConfig,
+            request: RemotePermission,
+        ): PermissionDecision =
             PermissionDecision.DENY
 
         override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =

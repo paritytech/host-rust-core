@@ -23,6 +23,13 @@ public struct CompletionLadder: Sendable {
         view: any PinnedChainViewProtocol,
         recordedStillCanonical: Bool?
     ) async -> RuleOutcome {
+        // A transaction with no attempt has no bytes, no window and no inclusion to read, so no rule
+        // could decide it. Such rows never reach a pass; this keeps the type honest rather than
+        // inventing a window for one that has none.
+        guard let attempt = transaction.attempt else {
+            return .undecided
+        }
+
         if let outcome = recordedInclusion(
             transaction,
             scope: scope,
@@ -43,11 +50,11 @@ public struct CompletionLadder: Sendable {
             return decided(transaction, rule: "2 completed at B", .pendingSuccess, at: view.bestHead)
         }
 
-        let windowClosed = transaction.isWindowClosed(atFinalized: view.finalizedHead.number)
+        let windowClosed = attempt.isWindowClosed(atFinalized: view.finalizedHead.number)
 
         // Rule 3 — proven not to have run, and it can no longer run.
         if windowClosed, scope.provenNotCompleted(transaction, at: .finalized) {
-            return decided(transaction, rule: "3 not completed at F", .failure, at: nil)
+            return decided(transaction, rule: "3 not completed at F", .failure, at: nil, failure: .expired)
         }
 
         // Rule 4 — short-circuits, so a transaction with no positive evidence does not run a body search
@@ -57,7 +64,12 @@ public struct CompletionLadder: Sendable {
             return decided(transaction, rule: "4 not completed at B", .pending, at: nil)
         }
 
-        return await searchForTransaction(transaction, view: view, windowClosed: windowClosed)
+        return await searchForTransaction(
+            transaction,
+            attempt: attempt,
+            view: view,
+            windowClosed: windowClosed
+        )
     }
 }
 
@@ -116,36 +128,43 @@ private extension CompletionLadder {
     /// finalized head, so both terminal verdicts rest on a finalized fact.
     func searchForTransaction(
         _ transaction: DurableTxEntry,
+        attempt: DurableTxAttempt,
         view: any PinnedChainViewProtocol,
         windowClosed: Bool
     ) async -> RuleOutcome {
         // The checkpoint is above the finalized head, so there is nothing to read yet. The window cannot
         // be closed here: closing needs the finalized head past the mortality end, which is at or above
         // the checkpoint.
-        guard let window = searchWindow(transaction, finalizedNumber: view.finalizedHead.number) else {
+        guard let window = searchWindow(attempt, finalizedNumber: view.finalizedHead.number) else {
             return decided(transaction, rule: "5 nothing to search yet", .pending, at: nil)
         }
 
-        switch await view.searchBodies(for: transaction.txHash, in: window) {
+        switch await view.searchBodies(for: attempt.txHash, in: window) {
         case let .foundSucceeded(block):
             return decided(transaction, rule: "5 found, dispatch succeeded", .finalizedSuccess, at: block)
-        case .foundFailed:
+        case let .foundFailed(_, reason):
             // Inclusion is not success — an extrinsic can be applied and its dispatch still fail.
-            return decided(transaction, rule: "5 found, dispatch failed", .failure, at: nil)
+            return decided(
+                transaction,
+                rule: "5 found, dispatch failed: \(reason ?? "unknown error")",
+                .failure,
+                at: nil,
+                failure: .dispatchFailed
+            )
         case .foundOutcomeUnreadable:
             return decided(transaction, rule: "5 found, outcome unreadable", .pending, at: nil)
         case .notFoundWindowComplete:
             return windowClosed
-                ? decided(transaction, rule: "5 whole window read, absent", .failure, at: nil)
+                ? decided(transaction, rule: "5 whole window read, absent", .failure, at: nil, failure: .expired)
                 : decided(transaction, rule: "5 absent, window open", .pending, at: nil)
         case .incomplete:
             return decided(transaction, rule: "5 window incomplete", .pending, at: nil)
         }
     }
 
-    func searchWindow(_ transaction: DurableTxEntry, finalizedNumber: UInt32) -> ClosedRange<UInt32>? {
-        let lowerBound = transaction.checkpoint.number
-        let upperBound = UInt32(min(transaction.mortalityEnd, UInt64(finalizedNumber)))
+    func searchWindow(_ attempt: DurableTxAttempt, finalizedNumber: UInt32) -> ClosedRange<UInt32>? {
+        let lowerBound = attempt.checkpoint.number
+        let upperBound = UInt32(min(attempt.mortalityEnd, UInt64(finalizedNumber)))
         return lowerBound <= upperBound ? lowerBound ... upperBound : nil
     }
 }
@@ -159,12 +178,13 @@ private extension CompletionLadder {
         _ transaction: DurableTxEntry,
         rule: String,
         _ status: DurableTxStatus,
-        at successDetectedAt: BlockRef?
+        at successDetectedAt: BlockRef?,
+        failure: DurableFailureKind? = nil
     ) -> RuleOutcome {
         logger?
             .debug(
                 "\(transaction.id) rule=\"\(rule)\" -> \(status) record=\(successDetectedAt?.number.description ?? "none")"
             )
-        return .decided(Verdict(status: status, successDetectedAt: successDetectedAt))
+        return .decided(Verdict(status: status, successDetectedAt: successDetectedAt, failure: failure))
     }
 }

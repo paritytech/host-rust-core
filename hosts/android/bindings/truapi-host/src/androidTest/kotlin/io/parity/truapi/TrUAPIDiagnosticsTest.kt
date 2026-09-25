@@ -1,8 +1,12 @@
 package io.parity.truapi
 
+import android.net.Uri
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -80,10 +84,14 @@ class TrUAPIDiagnosticsTest {
                 synchronized(authStates) { authStates.add(state) }
             }
             override suspend fun navigateTo(url: String) = onCoreLog("truapi.host.navigate_to", url)
-            override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision =
-                PermissionDecision.ALLOW_ALWAYS
-            override suspend fun remotePermission(request: RemotePermission): PermissionDecision =
-                PermissionDecision.ALLOW_ALWAYS
+            override suspend fun devicePermission(
+                product: ProductExecutionConfig,
+                request: HostDevicePermissionRequest,
+            ): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
+            override suspend fun remotePermission(
+                product: ProductExecutionConfig,
+                request: RemotePermission,
+            ): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
             override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean = true
             override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean = false
             override fun chainConnect(genesisHash: ByteArray): UInt? = chainProvider.connect(genesisHash)
@@ -125,34 +133,27 @@ class TrUAPIDiagnosticsTest {
         assertTrue("expected a Connected auth state from the local session", sawConnected)
 
         val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token)
+        val container = ContainerScriptBundle.load(context)
         val url = args.getString("truapi.playgroundUrl") ?: "http://localhost:3000/"
+        val origin = Uri.parse(url).let { "${it.scheme}://${it.encodedAuthority}" }
 
         // The playground is a static export; a `?e2e` query param does not
         // survive its client-side routing, so enable the e2e hook via the
-        // localStorage fallback (`truapi:playground:e2e=1`) instead. That must
-        // be set before the app mounts, so on the first page load we set it and
-        // reload; the reloaded page installs window.__truapiPlaygroundE2E.
+        // localStorage fallback (`truapi:playground:e2e=1`) before the app mounts.
         val webViewRef = AtomicReference<WebView>()
-        val bootstrapped = java.util.concurrent.atomic.AtomicBoolean(false)
         instrumentation.runOnMainSync {
             val wv = WebView(context)
             wv.settings.javaScriptEnabled = true
             wv.settings.domStorageEnabled = true
-            wv.webViewClient = object : android.webkit.WebViewClient() {
-                override fun onPageFinished(view: WebView, loadedUrl: String) {
-                    if (bootstrapped.compareAndSet(false, true)) {
-                        view.evaluateJavascript(
-                            "try { window.localStorage.setItem('truapi:playground:e2e','1'); } " +
-                                "catch (e) {}; window.location.reload();",
-                            null,
-                        )
-                    } else {
-                        // Reloaded page: inject the bridge bootstrap. The
-                        // transport calls port.start() once it reads the port.
-                        view.evaluateJavascript(bootstrap, null)
-                    }
-                }
-            }
+            wv.webViewClient = WebViewClient()
+            check(WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
+            WebViewCompat.addDocumentStartJavaScript(
+                wv,
+                "if (window === window.top) {\n$bootstrap\n" +
+                    "window.localStorage.setItem('truapi:playground:e2e','1');\n}",
+                setOf(origin),
+            )
+            WebViewCompat.addDocumentStartJavaScript(wv, container, setOf("*"))
             wv.loadUrl(url)
             webViewRef.set(wv)
         }

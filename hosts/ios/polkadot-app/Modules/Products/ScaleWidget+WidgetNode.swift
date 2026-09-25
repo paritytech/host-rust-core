@@ -181,7 +181,7 @@ private extension [ScaleModifier] {
 
 // MARK: - Enum Mapping
 
-private extension ScaleArrangement {
+extension ScaleArrangement {
     var toNodeArrangement: CustomMessageWidgetNode.Arrangement {
         switch self {
         case .start: .start
@@ -194,7 +194,7 @@ private extension ScaleArrangement {
     }
 }
 
-private extension ScaleButtonVariant {
+extension ScaleButtonVariant {
     var toNodeVariant: CustomMessageWidgetNode.ButtonVariant {
         switch self {
         case .primary: .primary
@@ -206,7 +206,7 @@ private extension ScaleButtonVariant {
 
 // MARK: - Alignment Conversions
 
-private extension ScaleContentAlignment {
+extension ScaleContentAlignment {
     var swiftUIAlignment: Alignment {
         switch self {
         case .topStart: .topLeading
@@ -222,7 +222,7 @@ private extension ScaleContentAlignment {
     }
 }
 
-private extension ScaleHorizontalAlignment {
+extension ScaleHorizontalAlignment {
     var swiftUIAlignment: HorizontalAlignment {
         switch self {
         case .start: .leading
@@ -232,7 +232,7 @@ private extension ScaleHorizontalAlignment {
     }
 }
 
-private extension ScaleVerticalAlignment {
+extension ScaleVerticalAlignment {
     var swiftUIAlignment: VerticalAlignment {
         switch self {
         case .top: .top
@@ -244,7 +244,7 @@ private extension ScaleVerticalAlignment {
 
 // MARK: - Typography Mapping
 
-private extension ScaleTypographyStyle {
+extension ScaleTypographyStyle {
     var toLabelStyle: PolkadotUI.LabelStyle {
         switch self {
         case .titleXL: .title32SemiBold()

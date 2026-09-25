@@ -23,8 +23,16 @@ struct ClaimableCoin {
 /// the durability layer under one `groupId` so the whole claim group is recorded or none of it is.
 ///
 /// The peer's key is a `Received` input — never a local asset — so the ledger holds it against exactly
-/// one non-failure claim without us ever minting it. A retry after a `FAILURE` is safe: the failed
-/// entry released its claim, so a fresh attempt mints a new destination and registers again.
+/// one non-failure claim without us ever minting it.
+///
+/// One registration per coin, for the life of the message. Retries belong to the submission policy,
+/// which rebuilds into the destination this claim recorded — a retry minting a fresh destination would
+/// strand any payment already registered against the first.
+///
+/// The store *would* permit a fresh registration once an entry reaches `FAILURE` (`filterClaimed`
+/// excludes failed entries for exactly that reason), but nothing issues one: the claim loop counts a
+/// failed entry as a coin already registered. So a coin whose policy has given up is not recoverable
+/// in-app, and its secret stays in the chat row.
 protocol CoinageClaimSubmitting: Sendable {
     /// Registers one claim per coin and returns once registration commits — not settlement. Status is
     /// observed via ``CoinageTxServicing/subscribeOperationGroupStatuses(_:)`` for `groupId`.
@@ -34,7 +42,8 @@ protocol CoinageClaimSubmitting: Sendable {
     func submit(
         claimable: [ClaimableCoin],
         bundleSize: Int,
-        groupId: CoinageTxGroupId
+        groupId: CoinageTxGroupId,
+        retryUntil: Date
     ) async throws
 }
 
@@ -59,7 +68,8 @@ final class CoinageClaimSubmitter: CoinageClaimSubmitting, @unchecked Sendable {
     func submit(
         claimable: [ClaimableCoin],
         bundleSize: Int,
-        groupId: CoinageTxGroupId
+        groupId: CoinageTxGroupId,
+        retryUntil: Date
     ) async throws {
         guard !claimable.isEmpty else { return }
 
@@ -69,7 +79,7 @@ final class CoinageClaimSubmitter: CoinageClaimSubmitting, @unchecked Sendable {
         for coin in claimable {
             // Every coin in the transfer shares its bundle size, including ones a later pass claims.
             try await requests.append(
-                buildClaim(coin, bundleSize: bundleSize, groupId: groupId)
+                buildClaim(coin, bundleSize: bundleSize, groupId: groupId, retryUntil: retryUntil)
             )
         }
 
@@ -86,7 +96,8 @@ private extension CoinageClaimSubmitter {
     func buildClaim(
         _ coin: ClaimableCoin,
         bundleSize: Int,
-        groupId: CoinageTxGroupId
+        groupId: CoinageTxGroupId,
+        retryUntil: Date
     ) async throws -> CoinageTxRequest {
         // Nothing in a peer's coin reveals the recycler it came out of, but the chain does give its
         // age — enough to reconstruct a conservative chain of one transfer per unit of it, with this
@@ -105,11 +116,16 @@ private extension CoinageClaimSubmitter {
 
         logger?.debug("Built claim group=\(groupId) value=\(coin.valueExponent)")
 
-        return CoinageTxRequest(
+        return try CoinageTxRequest(
             inputs: [.coin(.received(coin.publicKey))],
             outputs: [.coin(destination.derivationIndex, destination.publicKey)],
             builder: builder,
-            origin: origin
+            origin: origin,
+            // A failed claim is rebuilt into *this* destination coin: a claim retried into a fresh one
+            // would strand any payment already registered against the first.
+            policy: CoinageSubmissionParams.claimPolicy(
+                ClaimSubmissionParams(retryUntil: retryUntil, receivedKey: coinPrivateKey)
+            )
         )
     }
 }

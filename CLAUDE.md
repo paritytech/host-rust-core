@@ -16,13 +16,21 @@ rust/crates/
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
+  truapi-verifiable/     ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
   truapi-host-cli/       CLI pairing/signing hosts; Bun scripts share the container web API gates
 js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
   truapi-host/            @parity/truapi-host: WASM-backed host runtime. Subpath entries:
                           `.` (shared host types), `/web` (iframe + Web
-                          Worker), `/worker-runtime` (Worker entry).
-                          WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
+                          Worker), `/worker-runtime` (Worker entry), and the
+                          test host `/testing` (createMockHost),
+                          `/testing/playwright` (fixture), `/testing/server`
+                          (node server), `/testing/client` (no-iframe client),
+                          `/testing/dev-accounts`, `/testing/host-page`.
+                          Two WASM bundles (gitignored) under dist/wasm/, built
+                          via `make wasm`: `web/` is the production browser host
+                          and `testing/` adds the `wasm-signing-host` and
+                          `test-host` Cargo features the test host needs
   truapi-debugger/        @parity/truapi-debugger (published to npm): the debugger.
                           Owns all decoding of the wire frames the Rust host tap
                           (truapi-server's DebugSink) streams out, and decodes
@@ -114,13 +122,26 @@ scripts/cli-runner-package.test.ts
   (`%40parity%2Ftruapi%40<version>`). `make cli-dist CLI_TARGET=<triple>`
   reproduces one archive locally, and `make e2e-cli-update` installs and
   self-updates it against a loopback release server.
+- The browser core does not link `verifiable`, whose ring prover compiles in
+  4.5 MiB of powers of tau. `truapi-verifiable` holds the four ring-VRF
+  operations truapi-server uses (member, sign, alias, prove). Native builds link
+  it; the browser core loads it as a separate WASM module,
+  `truapi_verifiable.js` and `truapi_verifiable_bg.wasm` beside the core's own
+  files in each bundle (`dist/wasm/web/` or `dist/wasm/testing/`), in the
+  background once a pairing session connects or when one of them first runs,
+  through `truapi-server/src/runtime/vrf.rs`. Its loader names both files as
+  literal `new URL(…, import.meta.url)` specifiers, so bundlers such as Vite
+  emit them. `make wasm` builds the module first and compiles its SHA-256 into
+  both cores, which load no other.
 - `truapi-server` WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever
   `rust/crates/truapi-server/` changes). CI compiles the crate for
   `wasm32-unknown-unknown` to guard the wasm bridge and its offline subxt
-  surface, but does not build or publish the packaged bundle; run `make wasm`
-  locally before relying on the browser host.
+  surface, and the `@parity/truapi-host (wasm bridge)` job builds both bundles
+  and runs the package's bun tests against them with `REQUIRE_WASM=1`, so a
+  suite needing a bundle fails instead of skipping. `release.yml` rebuilds the
+  bundles for a `@parity/truapi-host` release and publishes them in the package.
 - The UniFFI bindings and the container bundle are gitignored build outputs.
   After changing UniFFI-exposed types or native bindings, run
   `./ios/truapi-host/scripts/rebuild.sh` to refresh them locally; when only the

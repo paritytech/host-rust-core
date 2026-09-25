@@ -225,7 +225,7 @@ extension MixnetUploadServiceTests {
         let facade = UserDataStorageTestFacade()
 
         let attachmentsStore = MockAttachmentStore()
-        try? attachmentsStore.store(attachment: fileData, filename: localFilePath)
+        _ = try? attachmentsStore.store(attachment: fileData, filename: localFilePath)
 
         let uploadRepoFactory = MixnetUploadRepositoryFactory(storageFacade: facade)
 

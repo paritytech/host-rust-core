@@ -27,6 +27,12 @@ public protocol CoinageAssetLedgerProtocol: Sendable {
     /// The entry with this id joined to its assets, if any.
     func getEntry(id: CoinageTxId) async throws -> CoinageTxEntry?
 
+    /// The entries of each of `ids`, in one batched read rather than one per transaction.
+    ///
+    /// A submission policy reads every transaction it was handed at once; the ledger is append-only and
+    /// grows for the life of the installation, so this must not be answered by scanning all of it.
+    func assets(of ids: [CoinageTxId]) async throws -> [CoinageTxId: CoinageTxEntry]
+
     /// Every entry registered under `groupId`, ordered by `sequence`.
     func getOperationGroupStatuses(_ groupId: CoinageTxGroupId) async throws -> [CoinageTxEntry]
 
@@ -42,12 +48,18 @@ public protocol CoinageAssetLedgerProtocol: Sendable {
         validation: @escaping (any CoinageTxValidationContextProtocol) throws -> Void
     ) async throws
 
-    /// Promotes provisional marks to final — the keys have durably left. Keyed by ``OwnAsset/publicKey``,
-    /// the form the transport can name without reconstructing the asset.
-    func commitHandoffs(_ keys: [PublicKey]) async throws
-
     /// Clears every uncommitted mark. Runs once, on launch.
     func releaseUncommittedHandoffs() async throws
+
+    /// Drops the marks on `keys` that were never committed — the payment behind them never happened.
+    func releaseUncommittedHandoffs(_ keys: [PublicKey]) async throws
+
+    /// Promotes provisional marks to final — the keys have durably left.
+    ///
+    /// Only ever inside a transaction the caller already opened, so the marks become final exactly
+    /// when whatever carries the keys does. Keyed by ``OwnAsset/publicKey``, the form the transport
+    /// can name without reconstructing the asset.
+    func commitHandoffs(_ keys: [PublicKey], in scope: any DurableTxRegistrationScope) throws
 
     func handedOffCoins() async throws -> [OwnAsset]
 }

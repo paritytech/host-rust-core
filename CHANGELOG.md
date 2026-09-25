@@ -5,6 +5,71 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.21.0] - 2026-09-24
+
+### Added
+
+- load verifiable on demand in the browser (#922)
+- host-supplied wire-debugger dial, plus a make debugger target (#604)
+- let a withdrawal reach the paired host that is serving it (#933)
+- stop a withdrawn call before it prompts, acts or reaches another party (#927)
+- pass the requesting ProductContext to permission prompts (#936)
+- stream product frames to a wire debugger behind --debugger (#656)
+
+### Changed
+
+- build smoldot's secp256k1 tables on first use in the browser (#928)
+
+### Fixed
+
+- mark the debugger private, since it is not published (#911)
+- initialize built-in personhood keys (#924)
+
+## [0.20.0] - 2026-09-23
+
+### Added
+
+- chat modality on the shared TrUAPI core (#840)
+
+### Changed
+
+- @parity/truapi 0.20.0, @parity/truapi-host 0.20.0, @parity/ios-host 0.20.0 (#920)
+
+### Fixed
+
+- repair source installs and gate rustdoc (#917)
+- stop freezing built-in prototypes (#915)
+
+## [0.19.0] - 2026-09-22
+
+### Added
+
+- add typed script projects (#549)
+- a TrUAPI-native test host (#294)
+- report a newly paired device to the host (#851)
+- let an Android preview name the commit it came from (#882)
+- distribute Android nightly and debug builds (#864)
+- build an installable Android APK on demand (#858)
+
+### Changed
+
+- @parity/truapi 0.19.0, @parity/truapi-host 0.19.0 (#904)
+- Sandbox CLI product scripts by default (#829)
+- @parity/truapi-provider 0.2.1 (#871)
+
+### Fixed
+
+- mask the signed download link the distributor prints (#906)
+- pass CONTACT_EMAIL to the Android builds (#903)
+- balance the delivery preflight, and shellcheck inline action shell (#902)
+- reconnect the localhost bridge after its socket dies (#872)
+- say why the delivery check refused (#894)
+- generate the bindings for every build type, not two (#884)
+- hand each reusable workflow the secrets it reads (#860)
+- use the application id the Google configuration is built for (#863)
+- re-apply deleted paths by removing them, not by patching (#859)
+- take the light client's full-node statement replay (#870)
+
 ## [0.18.0] - 2026-09-21
 
 ### RFCs
@@ -24,6 +89,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.18.0, @parity/truapi-host 0.18.0 (#869)
 - Authorize browser APIs through Rust permissions (#828)
 - Preserve permission decisions in the Rust core (#827)
 - Share one localhost WS listener across native product executions (#600)

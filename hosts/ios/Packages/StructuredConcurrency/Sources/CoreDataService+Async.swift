@@ -3,10 +3,9 @@ import Foundation
 import Operation_iOS
 
 public extension CoreDataServiceProtocol {
-    /// Acquires a managed object context from the service and executes `block`
-    /// on the context's queue, bridging the callback-based API to async/await.
-    /// `block` is dispatched via `context.perform`, so it is thread-safe and
-    /// does not block the caller of `performAsync` waiting for the queue.
+    /// Legacy bridge: runs `block` on the writer context and hands it out raw, so the block owns
+    /// `save()` / `rollback()`. Prefer `performWrite` / `performRead`; this stays for callers not yet
+    /// migrated and must leave no unsaved changes behind.
     func perform<T>(
         _ block: @escaping (NSManagedObjectContext) throws -> T
     ) async throws -> T {
@@ -25,6 +24,25 @@ public extension CoreDataServiceProtocol {
                     }
                 }
             }
+        }
+    }
+
+    /// One transaction on the writer: saved when the block leaves changes, rolled back and rethrown
+    /// when it throws. Writes are serialized in call order.
+    func performWrite<T>(
+        _ block: @escaping (NSManagedObjectContext) throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            performWrite(block) { continuation.resume(with: $0) }
+        }
+    }
+
+    /// One-shot read on a reader context; may overlap the writer and other reads. Do not mutate the context.
+    func performRead<T>(
+        _ block: @escaping (NSManagedObjectContext) throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            performRead(block) { continuation.resume(with: $0) }
         }
     }
 }

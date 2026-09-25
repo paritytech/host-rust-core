@@ -290,7 +290,7 @@ pub trait Signing: Send + Sync {
     /// This permits transaction-shaped data and requires signing authorization
     /// and explicit user confirmation.
     ///
-    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612
+    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See <https://github.com/paritytech/host-rust-core/issues/612>
     ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
@@ -328,7 +328,7 @@ pub trait Signing: Send + Sync {
     /// This permits transaction-shaped data and requires signing authorization
     /// and explicit user confirmation.
     ///
-    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612
+    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See <https://github.com/paritytech/host-rust-core/issues/612>
     ///
     /// ```ts
     /// const accountsResult = await truapi.account.getLegacyAccounts();
