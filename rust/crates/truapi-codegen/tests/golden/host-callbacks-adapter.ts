@@ -71,6 +71,8 @@ export interface RawCallbacks {
   clearCoreStorage(key: Uint8Array): Promise<void>;
   featureSupported(request: Uint8Array): Promise<Uint8Array>;
   supportedChains(): Promise<Uint8Array>;
+  scheduleGameReminder?(product: Uint8Array, startsAt: bigint): Promise<void>;
+  cancelGameReminder?(product: Uint8Array): Promise<void>;
   subscribeLocale(
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
@@ -115,6 +117,7 @@ export function createWasmRawCallbacks(
   callbacks: RequiredHostCallbacks,
 ): RawCallbacks {
   const chat = callbacks.chat;
+  const game = callbacks.game;
   const permissionStatus = callbacks.permissionStatus;
   const pocket = callbacks.pocket;
   return {
@@ -169,6 +172,17 @@ export function createWasmRawCallbacks(
       ),
     supportedChains: async () =>
       HostChainSet.enc(await callbacks.features.supportedChains()),
+    ...(game
+      ? {
+          scheduleGameReminder: async (product, startsAt) =>
+            await game.scheduleGameReminder(
+              ProductContext.dec(product),
+              startsAt,
+            ),
+          cancelGameReminder: async (product) =>
+            await game.cancelGameReminder(ProductContext.dec(product)),
+        }
+      : {}),
     subscribeLocale: (sendItem, sendError) =>
       driveResultStream(
         callbacks.locale.subscribeLocale(),

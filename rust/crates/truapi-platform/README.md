@@ -59,15 +59,19 @@ revokes the grant.
 - `PocketPlatform`: stream the product's Pocket card collection and remove a
   card from it. The host owns the collection and decides which cards are
   privileged.
+- `GamePlatform`: hold a product's next-game reminder and drop it. The host
+  owns the reminder: one per product, replaced by every schedule, kept across
+  app kill and reboot, rung as an alarm or delivered as a notification.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
-traits above except `ChatPlatform`, `PermissionStatusHost` and
-`PocketPlatform`, which `OptionalPlatform` lists instead: a host supplies each
-only when it can serve it. Codegen reads `OptionalPlatform` to emit each listed
-capability as an optional group on the host-callback surface.
+traits above except `ChatPlatform`, `PermissionStatusHost`, `PocketPlatform`
+and `GamePlatform`, which `OptionalPlatform` lists instead: a host supplies
+each only when it can serve it. Codegen reads `OptionalPlatform` to emit each
+listed capability as an optional group on the host-callback surface.
 
-Omitting `ChatPlatform` makes the core answer Chat calls `Unsupported`, and
-omitting `PocketPlatform` does the same for Pocket calls.
+Omitting `ChatPlatform` makes the core answer Chat calls `Unsupported`,
+omitting `PocketPlatform` does the same for Pocket calls, and omitting
+`GamePlatform` does the same for Game calls.
 Omitting `PermissionStatusHost` leaves device grants resolving from stored
 state alone, which is what a host with no OS permission model does anyway.
 Serving it gates both halves of the surface: a device permission request and a

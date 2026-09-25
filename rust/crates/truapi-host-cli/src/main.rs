@@ -19,6 +19,7 @@ mod chain;
 mod chat;
 mod dotns_read;
 mod frame_server;
+mod game;
 mod network;
 mod platform;
 mod pocket;
@@ -1115,6 +1116,7 @@ async fn run_pairing_host(
     if let Some(pocket) = pocket_host {
         pairing_runtime.set_pocket_platform(pocket);
     }
+    pairing_runtime.set_game_platform(game::CliGameHost::new());
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -1626,6 +1628,7 @@ fn build_signing_runtime(
     if let Some(pocket) = pocket {
         runtime.set_pocket_platform(pocket);
     }
+    runtime.set_game_platform(game::CliGameHost::new());
     runtime.start_statement_allowance_renewal();
     Ok((runtime, platform))
 }

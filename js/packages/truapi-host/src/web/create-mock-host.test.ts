@@ -128,6 +128,27 @@ describe("createMockHost callbacks", () => {
     expect(host.getNotificationLog().length).toBe(2);
   });
 
+  it("holds one game reminder per product and drops it on cancel", async () => {
+    const host = createMockHost();
+    const product = { productId: "game.dot", executionKind: "Worker" as const };
+    const other = { productId: "other.dot", executionKind: "App" as const };
+
+    await host.callbacks.game!.scheduleGameReminder(product, 1_000n);
+    await host.callbacks.game!.scheduleGameReminder(product, 2_000n);
+    await host.callbacks.game!.scheduleGameReminder(other, 3_000n);
+    expect(host.getGameReminders()).toEqual([
+      { productId: "game.dot", startsAt: 2_000n },
+      { productId: "other.dot", startsAt: 3_000n },
+    ]);
+
+    await host.callbacks.game!.cancelGameReminder(product);
+    await host.callbacks.game!.cancelGameReminder(product);
+    expect(host.getGameReminders()).toEqual([{ productId: "other.dot", startsAt: 3_000n }]);
+
+    host.clearGameReminders();
+    expect(host.getGameReminders()).toEqual([]);
+  });
+
   it("confirms per config and records chain sends", async () => {
     const denied = createMockHost({ confirmUserActions: false });
     expect(

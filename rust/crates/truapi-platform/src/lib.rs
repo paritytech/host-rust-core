@@ -3235,6 +3235,32 @@ pub trait PocketPlatform: Send + Sync {
     ) -> Result<(), HostPocketRemoveCardError>;
 }
 
+/// Host-implemented adapter that holds a product's next-game reminder.
+/// Optional: a host that omits it leaves Game requests answered `Unsupported`.
+/// See [`OptionalPlatform`].
+///
+/// The core checks the `Alarm` grant and refuses a start that is not in the
+/// future before it calls here. The host owns everything else: one reminder
+/// per product, replaced by every schedule; kept across app kill and device
+/// reboot; rung as an alarm, or delivered as an ordinary notification when the
+/// OS refuses alarms; dropped once the game has started, when the product's
+/// `Alarm` grant is revoked, and when the product is uninstalled. A host
+/// reports `Alarm` as OS-`Denied` only when the OS allows neither alarms nor
+/// notifications.
+#[async_trait]
+pub trait GamePlatform: Send + Sync {
+    /// Hold `starts_at` (Unix milliseconds, UTC) as the product's reminder,
+    /// replacing any it holds.
+    async fn schedule_game_reminder(
+        &self,
+        product: &ProductContext,
+        starts_at: u64,
+    ) -> Result<(), GenericError>;
+
+    /// Drop the product's reminder. Idempotent: dropping none succeeds.
+    async fn cancel_game_reminder(&self, product: &ProductContext) -> Result<(), GenericError>;
+}
+
 /// What the operating system currently says about a device capability.
 ///
 /// Distinct from [`PermissionAuthorizationStatus`], which is the product-scoped
@@ -3349,6 +3375,12 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+pub trait OptionalPlatform:
+    ChatPlatform + PermissionStatusHost + PocketPlatform + GamePlatform
+{
+}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+impl<T> OptionalPlatform for T where
+    T: ChatPlatform + PermissionStatusHost + PocketPlatform + GamePlatform
+{
+}

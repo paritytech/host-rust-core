@@ -42,6 +42,9 @@ pub(crate) struct RuntimeServices {
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
     pocket_platform: OnceLock<Arc<dyn truapi_platform::PocketPlatform>>,
+    /// Host Game adapter, installed once at startup by a host that can hold
+    /// reminders. Unset leaves every product Game call `Unsupported`.
+    game_platform: OnceLock<Arc<dyn truapi_platform::GamePlatform>>,
     /// Host observer told when a device finishes pairing with this signing
     /// host. Unset leaves a paired device unannounced.
     device_pairing_observer: OnceLock<Arc<dyn DevicePairingObserver>>,
@@ -104,6 +107,7 @@ impl RuntimeServices {
             chat_platform: None,
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
+            game_platform: OnceLock::new(),
             device_pairing_observer: OnceLock::new(),
             asset_hub_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
@@ -193,6 +197,22 @@ impl RuntimeServices {
     /// The host's Pocket adapter, when one is installed.
     pub(crate) fn pocket_platform(&self) -> Option<Arc<dyn truapi_platform::PocketPlatform>> {
         self.pocket_platform.get().cloned()
+    }
+
+    /// Install the host's Game adapter.
+    ///
+    /// Set-once, like every optional capability, so reminders cannot change
+    /// hands under a running product. Returns whether this call installed it.
+    pub(crate) fn install_game_platform(
+        &self,
+        platform: Arc<dyn truapi_platform::GamePlatform>,
+    ) -> bool {
+        self.game_platform.set(platform).is_ok()
+    }
+
+    /// The host's Game adapter, when one is installed.
+    pub(crate) fn game_platform(&self) -> Option<Arc<dyn truapi_platform::GamePlatform>> {
+        self.game_platform.get().cloned()
     }
 
     /// Install the host's device-pairing observer.

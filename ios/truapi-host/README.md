@@ -225,6 +225,40 @@ A card's face does not cross this bridge. The host keeps each card's newest
 face itself: that is what the card shows while the worker is down, and at cold
 start before the worker answers.
 
+## Game
+
+A host that can hold reminders implements `GameHostBridge`, passed as `game:`
+to `openProductExecution`. Hosts without the bridge pass nothing and Game
+calls answer unsupported.
+
+```swift
+final class MyGameBridge: GameHostBridge, @unchecked Sendable {
+    private let reminders: ReminderStore
+
+    init(reminders: ReminderStore) { self.reminders = reminders }
+
+    func scheduleReminder(startsAt: UInt64) throws {
+        reminders.hold(startsAt: startsAt)
+    }
+
+    func cancelReminder() throws {
+        reminders.drop()
+    }
+}
+
+let execution = try runtime.openProductExecution(
+    bridge: bridge,
+    configuration: ProductExecutionConfig(productId: "game.dot", executionKind: .worker),
+    game: MyGameBridge(reminders: reminderStore)
+)
+```
+
+The host owns the reminder: one per product, replaced by every
+`scheduleReminder`, kept across app kill and device reboot, rung as an alarm or
+delivered as an ordinary notification when the OS refuses alarms, and dropped
+once the game has started, when the product's Alarm grant is revoked, and when
+the product is uninstalled.
+
 On the execution: `publishChatAction` delivers a user's action back to the
 product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
 republishes the room list; `render` returns a stream of `RendererNode` trees

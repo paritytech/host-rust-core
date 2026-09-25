@@ -256,6 +256,13 @@ resting on the product's word. The report lands at
 `explorer/diagnosis-reports/pocket/signing-host-cli.md` and feeds the explorer's
 Pocket compatibility matrix.
 
+`Game` (`remind_next_game`, `cancel_next_game`) has no phase of its own: both
+CLI host roles serve it for every execution kind, so its generated examples run
+in the same battery pass as everything else, backed by an in-memory
+`CliGameHost` that never rings anything. dot.li serves no `Game` surface, so the
+playground's Diagnosis skips the `Game` service. `truapi-server`'s runtime tests
+cover the consent and start-time checks.
+
 To run the playground locally in a plain browser tab, against a signing host on
 your own machine:
 

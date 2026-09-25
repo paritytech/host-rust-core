@@ -121,6 +121,7 @@ const callbacks: HostCallbacks = {
   chat, // optional: leave it out and chat products get `Unsupported`
   permissionStatus, // optional: reports live OS permission state
   pocket, // optional: serves the host's Pocket card collection
+  game, // optional: holds the host's game reminders
 };
 ```
 
@@ -133,6 +134,12 @@ stops reading as usable. Omit it and a stored grant answers on its own.
 calling product's cards and every later replacement, and `removePocketCard`
 takes one out. The host owns the collection: removing an absent card succeeds,
 and a card the host pins is refused with `Privileged`.
+
+`game` holds one reminder per product. `scheduleGameReminder` replaces the
+product's held reminder, and `cancelGameReminder` drops it. The mock test host
+(`@parity/truapi-host/testing`) exposes what it holds through
+`getGameReminders()` and `clearGameReminders()`, and the Playwright `TestHost`
+fixture wraps the same pair.
 
 Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
 reported to the worker in its `init` message, so the core sees the same

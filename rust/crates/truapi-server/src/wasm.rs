@@ -27,7 +27,7 @@ use truapi::v01;
 #[cfg(feature = "wasm-signing-host")]
 use truapi_platform::SigningHostConfig;
 use truapi_platform::{
-    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
+    ChainProvider, ChatPlatform, GamePlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
     PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
     RuntimeConfigValidationError,
 };
@@ -841,6 +841,7 @@ struct WasmPlatformAdapters {
     chat_platform: Option<Arc<dyn ChatPlatform>>,
     status_host: Option<Arc<dyn PermissionStatusHost>>,
     pocket_platform: Option<Arc<dyn PocketPlatform>>,
+    game_platform: Option<Arc<dyn GamePlatform>>,
 }
 
 /// Build the platform and the optional capability adapters supplied by the host.
@@ -848,15 +849,18 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     let has_chat = bridge.has_chat();
     let has_permission_status = bridge.has_permission_status();
     let has_pocket = bridge.has_pocket();
+    let has_game = bridge.has_game();
     let platform = Arc::new(WasmPlatform::new(bridge));
     let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
     let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
     let pocket = has_pocket.then(|| platform.clone() as Arc<dyn PocketPlatform>);
+    let game = has_game.then(|| platform.clone() as Arc<dyn GamePlatform>);
     WasmPlatformAdapters {
         platform,
         chat_platform: chat,
         status_host: status,
         pocket_platform: pocket,
+        game_platform: game,
     }
 }
 
@@ -919,6 +923,7 @@ impl WasmPairingHostRuntime {
             chat_platform,
             status_host,
             pocket_platform,
+            game_platform,
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
@@ -931,6 +936,9 @@ impl WasmPairingHostRuntime {
         }
         if let Some(pocket_platform) = pocket_platform {
             runtime.set_pocket_platform(pocket_platform);
+        }
+        if let Some(game_platform) = game_platform {
+            runtime.set_game_platform(game_platform);
         }
         install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
@@ -1217,6 +1225,7 @@ impl WasmSigningHostRuntime {
         let WasmPlatformAdapters {
             platform,
             pocket_platform,
+            game_platform,
             ..
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
@@ -1226,6 +1235,9 @@ impl WasmSigningHostRuntime {
         let runtime = SigningHostRuntime::new(platform, host_config, spawner);
         if let Some(pocket_platform) = pocket_platform {
             runtime.set_pocket_platform(pocket_platform);
+        }
+        if let Some(game_platform) = game_platform {
+            runtime.set_game_platform(game_platform);
         }
         install_worker_demand_observer(runtime.worker_ledger(), &callbacks)?;
         Ok(Self {
@@ -1385,6 +1397,7 @@ impl WasmProductRuntime {
             chat_platform,
             status_host,
             pocket_platform,
+            game_platform,
         } = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
@@ -1399,6 +1412,9 @@ impl WasmProductRuntime {
         }
         if let Some(pocket_platform) = pocket_platform {
             pairing.set_pocket_platform(pocket_platform);
+        }
+        if let Some(game_platform) = game_platform {
+            pairing.set_game_platform(game_platform);
         }
         install_worker_demand_observer(pairing.worker_ledger(), &callbacks)?;
         let core = pairing.product_runtime(product, frame_sink);

@@ -139,4 +139,40 @@ describe("worker raw callbacks", () => {
       { name: "subscribePocketCards", payload: product },
     ]);
   });
+
+  it("omits the game proxies when no game capability is reported", () => {
+    const { bridge } = stubBridge();
+
+    const callbacks = createWorkerRawCallbacks(
+      bridge as unknown as Parameters<typeof createWorkerRawCallbacks>[0],
+    );
+
+    expect(callbacks.scheduleGameReminder).toBeUndefined();
+    expect(callbacks.cancelGameReminder).toBeUndefined();
+  });
+
+  it("proxies game through the bridge when the capability is reported", async () => {
+    const { bridge, requests } = stubBridge();
+
+    const callbacks = createWorkerRawCallbacks(
+      bridge as unknown as Parameters<typeof createWorkerRawCallbacks>[0],
+      { game: true },
+    );
+
+    const product = new Uint8Array([1]);
+    await (
+      callbacks.scheduleGameReminder as (
+        product: Uint8Array,
+        startsAt: bigint,
+      ) => Promise<unknown>
+    )(product, 1000n);
+    await (
+      callbacks.cancelGameReminder as (product: Uint8Array) => Promise<unknown>
+    )(product);
+
+    expect(requests.map((r) => r.name)).toEqual([
+      "scheduleGameReminder",
+      "cancelGameReminder",
+    ]);
+  });
 });
