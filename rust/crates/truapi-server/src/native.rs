@@ -21,10 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::channel::mpsc;
-use futures::executor::ThreadPool;
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
-use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
 use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
@@ -973,7 +971,7 @@ impl NativeTrUApiHostRuntime {
             events: events.clone(),
             storage_events: events.clone(),
         });
-        let spawner = native_thread_pool_spawner(&callbacks);
+        let spawner = native_spawner(&callbacks);
         let runtime = Arc::new(SigningHostRuntime::new(
             platform.clone(),
             runtime_config.signing,
@@ -1979,26 +1977,31 @@ pub fn set_log_level(level: String) {
     crate::logging::set_level_from_str(&level);
 }
 
-/// Build a [`Spawner`] backed by a shared `futures::executor::ThreadPool`.
-/// The pool is sized at the default (one worker per logical CPU). Falls
-/// back to a thread-per-subscription spawner if the pool fails to build,
-/// which only ever happens if the host has no available threads at all.
-fn native_thread_pool_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
-    match ThreadPool::new() {
-        Ok(pool) => {
-            let callbacks = callbacks.clone();
+/// Build a [`Spawner`] that runs core tasks on the shared native runtime, the
+/// same one the WebSocket bridge serves connections on. Falls back to a
+/// thread-per-subscription spawner if the runtime fails to build, which only
+/// ever happens if the host has no available threads at all.
+fn native_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
+    match crate::native_executor::shared_native_executor() {
+        Ok((executor, initialized)) => {
+            let handle = executor.handle();
+            if initialized {
+                callbacks.on_core_log(
+                    "truapi.native.executor.started".to_string(),
+                    format!(
+                        "runtime_id={} worker_threads={}",
+                        handle.id(),
+                        executor.worker_threads()
+                    ),
+                );
+            }
             Arc::new(move |fut: BoxFuture<'static, ()>| {
-                if let Err(err) = pool.spawn(fut) {
-                    callbacks.on_core_log(
-                        "truapi.native.core.subscription.spawn_failed".to_string(),
-                        format!("{err}"),
-                    );
-                }
+                handle.spawn(fut);
             })
         }
         Err(err) => {
             callbacks.on_core_log(
-                "truapi.native.core.subscription.pool_unavailable".to_string(),
+                "truapi.native.core.subscription.runtime_unavailable".to_string(),
                 format!("{err}; falling back to thread-per-subscription"),
             );
             crate::subscription::thread_per_subscription_spawner()
@@ -2824,6 +2827,31 @@ mod tests {
     use truapi_platform::CreateTransactionReview;
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
+
+    /// Core work and the WebSocket bridge must share one runtime, so a
+    /// subscription a bridged product opens runs where its request was
+    /// decoded. The spawn comes from a plain thread, as a host thread or a
+    /// `Drop` on one would issue it.
+    #[test]
+    fn native_spawner_runs_core_work_on_the_shared_tokio_runtime() {
+        let callbacks: Arc<dyn HostCallbacks> = Arc::new(EventCallbacks::new());
+        let spawner = native_spawner(&callbacks);
+        let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
+
+        spawner(
+            async move {
+                let runtime = tokio::runtime::Handle::try_current().map(|handle| handle.id());
+                runtime_tx.send(runtime.ok()).unwrap();
+            }
+            .boxed(),
+        );
+
+        let ran_on = runtime_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("spawned core work never ran");
+        let (shared, _) = crate::native_executor::shared_native_executor().unwrap();
+        assert_eq!(ran_on, Some(shared.handle().id()));
+    }
 
     fn pocket_card(card_id: &str, privileged: bool) -> v01::PocketCard {
         v01::PocketCard {

@@ -47,6 +47,9 @@ pub mod generated;
 pub mod ws_bridge;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod native_executor;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 
 #[cfg(not(target_arch = "wasm32"))]
