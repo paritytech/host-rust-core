@@ -5,32 +5,37 @@ import { reloadAfterMessagePortLoss } from './message-port-loss.js';
 type Status = 'connecting' | 'connected' | 'disconnected';
 
 function page(visibility: 'visible' | 'hidden') {
-  const timers = new Map<number, () => void>();
+  const timers = new Map<number, { callback: () => void; due: number }>();
   let nextTimer = 1;
-  const visibilityListeners: (() => void)[] = [];
-  const statusListeners: ((status: Status) => void)[] = [];
+  let now = 0;
+  const visibilityListeners = new Set<() => void>();
+  const statusListeners = new Set<(status: Status) => void>();
   let reloads = 0;
   const win = {
     document: {
       visibilityState: visibility,
       addEventListener(type: string, listener: () => void) {
-        if (type === 'visibilitychange') visibilityListeners.push(listener);
+        if (type === 'visibilitychange') visibilityListeners.add(listener);
+      },
+      removeEventListener(type: string, listener: () => void) {
+        if (type === 'visibilitychange') visibilityListeners.delete(listener);
       },
     },
     location: { reload: () => { reloads += 1; } },
-    setTimeout(callback: () => void) {
-      timers.set(nextTimer, callback);
+    performance: { now: () => now },
+    setTimeout(callback: () => void, ms: number) {
+      timers.set(nextTimer, { callback, due: now + ms });
       return nextTimer++;
     },
-    clearTimeout(id: number) {
-      timers.delete(id);
+    clearTimeout(id: number | undefined) {
+      if (id !== undefined) timers.delete(id);
     },
   };
   return {
     win,
     subscribeConnectionStatus(callback: (status: Status) => void) {
-      statusListeners.push(callback);
-      return () => {};
+      statusListeners.add(callback);
+      return () => statusListeners.delete(callback);
     },
     setStatus(status: Status) {
       for (const listener of statusListeners) listener(status);
@@ -39,11 +44,14 @@ function page(visibility: 'visible' | 'hidden') {
       win.document.visibilityState = next;
       for (const listener of visibilityListeners) listener();
     },
-    async expireProbe() {
+    async expireProbe({ lateBy = 0 } = {}) {
       // Let a live port deliver before the probe deadline is forced.
       await new Promise((resolve) => setTimeout(resolve, 20));
-      for (const callback of [...timers.values()]) callback();
-      timers.clear();
+      for (const [id, timer] of [...timers]) {
+        timers.delete(id);
+        now = timer.due + lateBy;
+        timer.callback();
+      }
     },
     reloads: () => reloads,
   };
@@ -94,5 +102,38 @@ describe('reloadAfterMessagePortLoss', () => {
     await host.expireProbe();
 
     expect([whileHidden, host.reloads()]).toEqual([0, 1]);
+  });
+
+  // A main thread blocked past the deadline fires it late, possibly ahead of the
+  // canary's queued reply, so the page probes again before deciding.
+  it('probes again when the deadline fires late', async () => {
+    const host = page('visible');
+    const canary = new MessageChannel();
+    reloadAfterMessagePortLoss(host.win, host.subscribeConnectionStatus, canary);
+
+    canary.port1.close();
+    host.setStatus('disconnected');
+    await host.expireProbe({ lateBy: 500 });
+    const afterLateDeadline = host.reloads();
+    await host.expireProbe();
+
+    expect([afterLateDeadline, host.reloads()]).toEqual([0, 1]);
+  });
+
+  // A page being torn down disposes its connection, which may still report a
+  // disconnect; reloading it then would revive a page the user left.
+  it('stops probing once stopped', async () => {
+    const host = page('visible');
+    const canary = new MessageChannel();
+    const stop = reloadAfterMessagePortLoss(host.win, host.subscribeConnectionStatus, canary);
+
+    canary.port1.close();
+    host.setStatus('disconnected');
+    stop();
+    host.setStatus('disconnected');
+    host.setVisibility('visible');
+    await host.expireProbe();
+
+    expect(host.reloads()).toBe(0);
   });
 });

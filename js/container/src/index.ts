@@ -27,8 +27,14 @@ if (connection) {
     set() {},
     configurable: false,
   });
-  window.addEventListener('pagehide', () => connection.dispose());
-  reloadAfterMessagePortLoss(window, connection.subscribeConnectionStatus);
+  const stopWatchingMessagePorts = reloadAfterMessagePortLoss(
+    window,
+    connection.subscribeConnectionStatus,
+  );
+  window.addEventListener('pagehide', () => {
+    stopWatchingMessagePorts();
+    connection.dispose();
+  });
 }
 installContainer(createPermissionAuthorization(window, connection?.internal), {
   nativeHttp: config?.nativeHttp === true,
