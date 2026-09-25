@@ -132,6 +132,60 @@ struct GameReminderCenterTests {
 
         #expect(reloaded?.startsAt == now.addingTimeInterval(600))
     }
+
+    @Test("changes yields the current set, then the set after each change")
+    func changesStream() async throws {
+        let store = try makeStore()
+        let center = makeCenter(store: store, delivery: MockGameReminderDelivery())
+        var iterator = await center.changes().makeAsyncIterator()
+
+        #expect(await iterator.next()?.isEmpty == true)
+        await center.schedule(productId: "jollity.dot", startsAt: now.addingTimeInterval(600))
+        #expect(await iterator.next()?.map(\.productId) == ["jollity.dot"])
+        await center.cancel(productId: "jollity.dot")
+        #expect(await iterator.next()?.isEmpty == true)
+    }
+
+    @Test("markOpened only applies once the game has started")
+    func markOpenedAfterStart() async throws {
+        let store = try makeStore()
+        store.save(["early.dot": GameReminder(productId: "early.dot", startsAt: now.addingTimeInterval(60), delivery: nil, openedAfterStart: false),
+                    "live.dot": GameReminder(productId: "live.dot", startsAt: now.addingTimeInterval(-60), delivery: nil, openedAfterStart: false)])
+        let center = makeCenter(store: store, delivery: MockGameReminderDelivery())
+
+        await center.markOpened(productId: "early.dot")
+        await center.markOpened(productId: "live.dot")
+
+        #expect(store.load()["early.dot"]?.openedAfterStart == false)
+        #expect(store.load()["live.dot"]?.openedAfterStart == true)
+    }
+
+    @Test("productLeft drops a reminder only after it was opened after the start")
+    func productLeftDrops() async throws {
+        let store = try makeStore()
+        store.save(["opened.dot": GameReminder(productId: "opened.dot", startsAt: now.addingTimeInterval(-60), delivery: nil, openedAfterStart: true),
+                    "unopened.dot": GameReminder(productId: "unopened.dot", startsAt: now.addingTimeInterval(-60), delivery: nil, openedAfterStart: false)])
+        let center = makeCenter(store: store, delivery: MockGameReminderDelivery())
+
+        await center.productLeft(productId: "opened.dot")
+        await center.productLeft(productId: "unopened.dot")
+
+        #expect(Set(store.load().keys) == ["unopened.dot"])
+    }
+
+    @Test("suppressAlarm withdraws the delivery and keeps the reminder")
+    func suppressAlarm() async throws {
+        let store = try makeStore()
+        let delivery = MockGameReminderDelivery()
+        let center = makeCenter(store: store, delivery: delivery)
+        await center.schedule(productId: "jollity.dot", startsAt: now.addingTimeInterval(600))
+
+        await center.suppressAlarm(productId: "jollity.dot")
+        await center.suppressAlarm(productId: "jollity.dot")
+
+        #expect(delivery.withdrawn == [.notification("game:jollity.dot")])
+        #expect(store.load()["jollity.dot"]?.delivery == nil)
+    }
 }
 
 /// A thread-safe increasing counter for tests that need distinct values across concurrently racing closures.

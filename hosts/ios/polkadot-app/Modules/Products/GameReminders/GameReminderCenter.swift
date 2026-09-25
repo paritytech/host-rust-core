@@ -9,6 +9,18 @@ protocol GameReminderScheduling: Sendable {
     func cancel(productId: ProductId) async
 }
 
+/// What the game reminder opener and pill observe and drive on ``GameReminderCenter``.
+protocol GameReminderObserving: Sendable {
+    /// The current reminders, then the whole set again after every change.
+    func changes() async -> AsyncStream<[GameReminder]>
+    /// Record that the player is in the product after its start.
+    func markOpened(productId: ProductId) async
+    /// The player left the product; drops a reminder already opened after its start.
+    func productLeft(productId: ProductId) async
+    /// Withdraw the scheduled alarm or notification, keeping the reminder.
+    func suppressAlarm(productId: ProductId) async
+}
+
 /// Holds the one game reminder each product may have, persists it across app kill and reboot, and asks the OS
 /// to reach the user twenty seconds before the start.
 ///
@@ -22,6 +34,7 @@ actor GameReminderCenter: GameReminderScheduling {
     private let now: @Sendable () -> Date
     private let logger: LoggerProtocol
     private var tail: Task<Void, Never>?
+    private var observers: [UUID: AsyncStream<[GameReminder]>.Continuation] = [:]
 
     init(
         store: GameReminderStoring = UserDefaultsGameReminderStore(),
@@ -60,6 +73,35 @@ actor GameReminderCenter: GameReminderScheduling {
     func reminder(for productId: ProductId) -> GameReminder? {
         store.load()[productId]
     }
+
+    func changes() -> AsyncStream<[GameReminder]> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<[GameReminder]>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        continuation.yield(Array(store.load().values))
+        observers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeObserver(id) }
+        }
+        return stream
+    }
+
+    func markOpened(productId: ProductId) async {
+        await serialized { center in
+            await center.performMarkOpened(productId: productId)
+        }
+    }
+
+    func productLeft(productId: ProductId) async {
+        await serialized { center in
+            await center.performProductLeft(productId: productId)
+        }
+    }
+
+    func suppressAlarm(productId: ProductId) async {
+        await serialized { center in
+            await center.performSuppressAlarm(productId: productId)
+        }
+    }
 }
 
 private extension GameReminderCenter {
@@ -95,6 +137,7 @@ private extension GameReminderCenter {
         )
         store.save(reminders)
         logger.debug("Game reminder held for \(productId) at \(startsAt)")
+        publish()
     }
 
     func performCancel(productId: ProductId) async {
@@ -107,6 +150,7 @@ private extension GameReminderCenter {
         }
         store.save(reminders)
         logger.debug("Game reminder dropped for \(productId)")
+        publish()
     }
 
     func performRestore() async {
@@ -123,5 +167,55 @@ private extension GameReminderCenter {
             reminders.removeValue(forKey: reminder.productId)
         }
         store.save(reminders)
+        publish()
+    }
+
+    func removeObserver(_ id: UUID) {
+        observers[id] = nil
+    }
+
+    func publish() {
+        let current = Array(store.load().values)
+        observers.values.forEach { $0.yield(current) }
+    }
+
+    func performMarkOpened(productId: ProductId) async {
+        var reminders = store.load()
+        guard var reminder = reminders[productId],
+              !reminder.openedAfterStart,
+              GameReminderPhase.of(reminder, at: now()) == .started else {
+            return
+        }
+        reminder.openedAfterStart = true
+        reminders[productId] = reminder
+        store.save(reminders)
+        publish()
+    }
+
+    func performProductLeft(productId: ProductId) async {
+        var reminders = store.load()
+        guard let reminder = reminders[productId], reminder.openedAfterStart else {
+            return
+        }
+        reminders.removeValue(forKey: productId)
+        if let scheduled = reminder.delivery {
+            await delivery.withdraw(scheduled)
+        }
+        store.save(reminders)
+        publish()
+    }
+
+    func performSuppressAlarm(productId: ProductId) async {
+        var reminders = store.load()
+        guard var reminder = reminders[productId], let scheduled = reminder.delivery else {
+            return
+        }
+        await delivery.withdraw(scheduled)
+        reminder.delivery = nil
+        reminders[productId] = reminder
+        store.save(reminders)
+        publish()
     }
 }
+
+extension GameReminderCenter: GameReminderObserving {}

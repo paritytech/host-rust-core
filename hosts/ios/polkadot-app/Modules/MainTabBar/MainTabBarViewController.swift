@@ -14,6 +14,18 @@ final class MainTabBarViewController: UIViewController {
 
     private let chromeController = TabBarBottomChromeController()
 
+    private lazy var gameReminderPill = GameReminderPillPresenter(
+        reminders: GameReminderCenter.shared,
+        visibility: ProductVisibilityTracker.shared,
+        widgets: self,
+        onTap: { GameReminderProductOpener.open(productId: $0) }
+    )
+    private lazy var gameReminderOpener = GameReminderOpener(
+        reminders: GameReminderCenter.shared,
+        visibility: ProductVisibilityTracker.shared,
+        open: { GameReminderProductOpener.open(productId: $0) }
+    )
+
     private lazy var statusBarHost = UIHostingController(rootView: ChainConnectionStatusBarView(models: []))
 
     /// The rings sit at the trailing end of the full-width strip, so the tip anchors here
@@ -92,6 +104,10 @@ final class MainTabBarViewController: UIViewController {
         }
 
         presenter.setup()
+
+        ProductVisibilityTracker.shared.startObservingApplicationState()
+        gameReminderPill.start()
+        gameReminderOpener.start()
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -150,6 +166,7 @@ private extension MainTabBarViewController {
     func reconcileChromeWithSelectedTab() {
         chromeController.apply(chromeContext(for: container.selectedController))
         applyChips()
+        publishVisibleProduct()
     }
 
     func chromeContext(for controller: UIViewController?) -> TabBarChromeContext {
@@ -397,7 +414,7 @@ extension MainTabBarViewController: TopmostChildProviding {
     }
 }
 
-extension MainTabBarViewController {
+extension MainTabBarViewController: AppWidgetManaging {
     func attachWidget(_ configuration: any HashableContentConfiguration, for id: AppWidgetID) {
         chromeController.attachWidget(configuration, for: id)
     }
@@ -468,6 +485,7 @@ private extension MainTabBarViewController {
         container.mountSPA(controller, for: tab.id)
         chromeController.apply(.spa(controller))
         applyChips()
+        publishVisibleProduct()
     }
 
     func applyChips() {
@@ -482,5 +500,12 @@ private extension MainTabBarViewController {
             return nil
         }
         return id
+    }
+
+    func publishVisibleProduct() {
+        let productId = mountedSPATabId.flatMap { tabId in
+            browserCoordinator.tabs.first { $0.id == tabId }?.dotDomain
+        }
+        ProductVisibilityTracker.shared.setMountedProduct(productId)
     }
 }
