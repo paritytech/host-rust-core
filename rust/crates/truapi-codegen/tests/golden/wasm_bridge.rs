@@ -365,11 +365,15 @@ impl truapi_platform::PermissionStatusHost for WasmPlatform {
 impl truapi_platform::Permissions for WasmPlatform {
     async fn device_permission(
         &self,
+        product: &truapi_platform::ProductContext,
         request: v01::HostDevicePermissionRequest,
     ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         let bytes = invoke_bytes_return(
             &self.bridge.device_permission,
-            vec![Uint8Array::from(request.encode().as_slice()).into()],
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                Uint8Array::from(request.encode().as_slice()).into(),
+            ],
         )
         .await
         .map_err(generic)?;
@@ -382,11 +386,15 @@ impl truapi_platform::Permissions for WasmPlatform {
 
     async fn remote_permission(
         &self,
+        product: &truapi_platform::ProductContext,
         request: v01::RemotePermissionRequest,
     ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
         let bytes = invoke_bytes_return(
             &self.bridge.remote_permission,
-            vec![Uint8Array::from(request.encode().as_slice()).into()],
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                Uint8Array::from(request.encode().as_slice()).into(),
+            ],
         )
         .await
         .map_err(generic)?;

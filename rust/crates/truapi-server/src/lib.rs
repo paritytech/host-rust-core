@@ -61,7 +61,7 @@ mod native_renderer;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
 pub mod native_debug;
 
 pub use core::TrUApiCore;
@@ -73,7 +73,7 @@ pub use host_logic::session::{
     ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
 };
 pub use host_logic::worker::{WorkerLedger, WorkerTransition};
-#[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
 pub use native_debug::{DebugSinkError, WsDebugSink};
 pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;

@@ -110,14 +110,53 @@ since the release runs after the handler returns and an aborted future never rea
 registry itself is dropped with the connection, and a monotonic id is never presented again, so nothing is left
 reachable.
 
-Cancelling a call that waits on a paired host ends the local wait by the path a timeout already takes. The paired host
-is not told, because the SSO protocol has no cancel message.
+### What a withdrawn call stops
+
+A handler stops at the next point where going on would ask a person, or would act or send a request on the product's
+behalf. Work already handed to another party is not recalled, and a call whose remote effect starts with one request is
+left to finish. Per site:
+
+- **Prompts for this call's action stop.** The local confirmation behind every `signing` method,
+  `resourceAllocation.request`, `preimage.submit`, a cold `account.get`, and VRF signing races the token. A withdrawn
+  call stops waiting, and an answer the person gives afterwards authorizes nothing. The host's modal is not dismissed,
+  because `UserConfirmation` has no way to withdraw a prompt it has shown.
+- **Permission prompts finish, and the action behind them does not happen.** Identity disclosure, account access, and
+  the device and remote permission gates ask about the product, not about this call, and the answer is stored for
+  later calls. The decision is recorded. The call then does nothing further: a statement is not submitted, a
+  notification is not shown, a navigation is not handed off, and a paired-host lookup is not sent. The cost is that the
+  product waits for the person to answer before it learns the call is over. The exception is an account-access prompt
+  the local signing host shows inside an authority call (`account.getAccountAlias`, `account.listRingVrfKeys`): it
+  ends with that call's unwind grace, so its answer is not recorded.
+- **Paired-host requests stop at this host.** A request whose call was withdrawn before it was published is never
+  published, including a withdrawal that lands while the request is still subscribing. One already published ends the
+  local wait by the path a timeout already takes, and the paired host is not told, because the SSO protocol has no
+  cancel message. See the open question.
+- **A local signing host starts no further allocation.** When this host holds the keys, `resourceAllocation.request`
+  allocates each resource in turn, and a withdrawal stops it before the next one. An allocation already under way
+  runs until the unwind grace ends.
+- **Other `chain` one-shots finish.** Each is a single JSON-RPC round trip. Several of them start a node-side operation
+  and answer the id that stops it, and dropping one mid-flight would leave an operation that nobody can name.
+- **A broadcast is not sent once withdrawn, and is stopped if it already was.** A withdrawn `broadcastTransaction`
+  answers `Cancelled`, so the product never learns the operation id it would stop the broadcast with. The host stops it
+  instead, within the unwind grace, when the node returned an id; without one there is nothing to stop it with. Only a
+  withdrawal stops it: a call the host cancels for any other reason still answers with the id. A transaction a peer has
+  already received may still be included; stopping ends only this host's rebroadcast. A `Cancel` that arrives after the
+  handler has returned but before the dispatcher settles the call is not seen by the handler, so that broadcast keeps
+  running.
+- **Bulletin submission stops.** `preimage.submit` builds, broadcasts and watches its transaction as separate steps.
+  A withdrawal before the broadcast prevents it; after the broadcast it only stops the watch.
+- **Login finishes.** `account.requestLogin` does not observe the token, so a withdrawn login keeps the pairing flow
+  open until the person completes or dismisses it.
+
+Each handler returns its method's own error. For a call a `Cancel` frame withdrew, the dispatcher replaces it with
+`CallError::Cancelled`. A stop caused by a host-internal timeout reaches the product as the domain error it always did.
 
 ## Trade-offs
 
 - Cooperative, not preemptive. A handler that never observes the token runs to completion: the caller is told the call
   was cancelled, but the work behind it was not stopped, and the caller waits as long as it would have.
 - Aborting is not instant. The product learns the outcome when the response arrives.
+- Permission prompts are not raced, so a call withdrawn during one settles only once the person answers.
 - One dispatch arm and one registry per side, and codegen emits the arm for every request method.
 - A single protocol-level cancel address carrying the target `requestId` in its payload, as `(255, 255)` carries
   protocol errors, needs no per-method codegen. It was dropped because a frame that names no method is opaque to a
@@ -126,8 +165,27 @@ is not told, because the SSO protocol has no cancel message.
 
 ## Open questions
 
-1. Does the SSO protocol need a cancel message in the same change? Unblocking the product while the phone keeps
-   prompting is half of what cancelling a signature is asked to do.
+1. Does the SSO protocol need a cancel message? It does for resource allocation and not for signing, and a message
+   alone would not reach the prompt it is meant to stop.
+
+   What the paired host does once the person approves decides whether the missing cancel matters. A signing request, a
+   `createTransaction` included, only returns bytes. The phone broadcasts nothing, and a response nobody is waiting for
+   is skipped by the next call's reply matcher, so a withdrawn signature costs a stale prompt. A resource allocation
+   spends. After approval the responder registers a statement-store or bulletin allowance on chain, or claims one of the
+   day's PGAS slots, depending on what was asked for, and records a renewal target, so a withdrawal that stops at this
+   host still lets the phone spend on the product's behalf.
+
+   A `Cancel` variant would not be enough to stop that. The responder serves one request at a time. It awaits each
+   request, prompt included, before it reads the next statement, so a cancel queued behind the prompt it targets is read
+   only after that prompt has been answered. `Disconnected` already has the same limit. And `confirm_user_action` has
+   no way to withdraw a prompt it has shown. Honouring a cancel on the paired host needs all three of these:
+
+   - a request variant naming the withdrawn message id;
+   - a responder that reads control messages while a request is running;
+   - a platform prompt that can be dismissed, with a check between allocation steps.
+
+   The last one lands in every native SSO stack, not only in the Rust responder. That is a change of its own, not a
+   follow-on to this one.
 
 [0028]: 0028-wire-message-type-byte.md
 [478]: https://github.com/paritytech/truapi/issues/478

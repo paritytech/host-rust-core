@@ -53,6 +53,7 @@ fun DebugMenuScreen(contract: DebugMenuContract) {
         onCopyWalletMnemonicClick = contract::onCopyWalletMnemonicClick,
         onOpenVideoGameClick = contract::onOpenVideoGameClick,
         onProductBotsClick = contract::onProductBotsClick,
+        onPocketFacePreviewClick = contract::onPocketFacePreviewClick,
         onRandomizeAccountClick = contract::onRandomizeAccountClick,
         onOpenSpaBrowserClick = contract::onOpenSpaBrowserClick,
         onSpaBrowserUrlEntered = contract::onSpaBrowserUrlEntered,
@@ -79,6 +80,7 @@ private fun DebugMenuScreenInternal(
     onShareLogsClick: () -> Unit,
     onOpenVideoGameClick: () -> Unit,
     onProductBotsClick: () -> Unit,
+    onPocketFacePreviewClick: () -> Unit,
     onRandomizeAccountClick: () -> Unit,
     onOpenSpaBrowserClick: () -> Unit,
     onSpaBrowserUrlEntered: (String) -> Unit,
@@ -177,6 +179,14 @@ private fun DebugMenuScreenInternal(
                 title = stringResource(RCommon.string.debug_menu_product_bots),
                 enabled = true,
                 onClick = onProductBotsClick
+            )
+
+            VerticalSpacer { mediumIncreased }
+
+            DebugMenuItem(
+                title = stringResource(RCommon.string.debug_menu_pocket_face_preview),
+                enabled = true,
+                onClick = onPocketFacePreviewClick
             )
 
             VerticalSpacer { mediumIncreased }
@@ -396,6 +406,7 @@ private fun DebugMenuScreenPreview() {
             onCopyWalletMnemonicClick = {},
             onShareLogsClick = {},
             onOpenVideoGameClick = {},
+            onPocketFacePreviewClick = {},
             onProductBotsClick = {},
             onCopyCandidateAccountClick = {},
             onRandomizeAccountClick = {},

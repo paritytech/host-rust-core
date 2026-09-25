@@ -1,7 +1,7 @@
 //! Shared runtime fixtures and cross-capability integration tests.
 
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parity_scale_codec::Encode;
 use truapi::api::{
@@ -20,6 +20,7 @@ use truapi::versioned::account::{
 use truapi::versioned::chain::{
     RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
     RemoteChainTransactionBroadcastError, RemoteChainTransactionBroadcastRequest,
+    RemoteChainTransactionBroadcastResponse,
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
@@ -362,6 +363,124 @@ fn a_grant_to_another_product_does_not_admit_this_caller() {
     );
 }
 
+/// The account gate, which decides whether a signature may be made with
+/// another product's account. The caller is `unknown.dot` throughout, so a
+/// manifest names the bare label `unknown`.
+fn account_target(host: &ProductRuntimeHost, target: &str) -> Option<String> {
+    futures::executor::block_on(host.authorized_product_account(target, &CallContext::default()))
+}
+
+#[test]
+fn the_callers_own_account_needs_no_grant_and_no_manifest() {
+    // No manifest is cached for anyone: reaching for one here would be a
+    // chain read in front of every signature a product makes for itself.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    assert_eq!(
+        account_target(&host, "unknown.dot").as_deref(),
+        Some("unknown.dot")
+    );
+}
+
+#[test]
+fn a_context_grant_admits_the_granting_products_account() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        account_target(&host, "wallet.dot").as_deref(),
+        Some("wallet.dot")
+    );
+}
+
+#[test]
+fn all_admits_the_granting_products_account() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["all"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        account_target(&host, "wallet.dot").as_deref(),
+        Some("wallet.dot")
+    );
+}
+
+#[test]
+fn a_storage_grant_alone_does_not_admit_the_account() {
+    // The scopes are separable on purpose: "read what I stored" is not "act
+    // as me", and a publisher that wrote the narrower one meant it.
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["storage"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(account_target(&host, "wallet.dot"), None);
+}
+
+#[test]
+fn a_context_grant_to_another_product_does_not_admit_this_caller() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"stash":["context"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(account_target(&host, "wallet.dot"), None);
+}
+
+#[test]
+fn a_product_publishing_no_manifest_admits_nobody() {
+    let platform = stub_platform();
+    cache_manifest_entry(&platform, "wallet.dot", None, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(account_target(&host, "wallet.dot"), None);
+}
+
+/// A subname of the granting product is that product, as it is for every
+/// other grant: the grant is filed under the bare label.
+#[test]
+fn a_subname_of_the_granting_product_is_admitted_under_its_base_grant() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "app.wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        account_target(&host, "app.wallet.dot").as_deref(),
+        Some("app.wallet.dot")
+    );
+}
+
+/// What `sign_payload` answers for an account owned by `wallet.dot`.
+fn sign_with_wallets_account(host: &ProductRuntimeHost) -> CallError<HostSignPayloadError> {
+    futures::executor::block_on(host.sign_payload(
+        &CallContext::default(),
+        HostSignPayloadRequest::V1(v01::HostSignPayloadRequest {
+            account: account_id("wallet.dot", 0),
+            payload: crate::test_support::sign_payload_data(),
+        }),
+    ))
+    .expect_err("no session is connected, so nothing signs here")
+}
+
+/// The grant is consulted after the session, so a caller with no session is
+/// told the same thing whether or not the account it named would have admitted
+/// it. Consulting the grant first made the pair of refusals a probe for which
+/// products grant which, and reached the chain to answer it.
+#[test]
+fn a_caller_without_a_session_cannot_tell_a_granted_account_from_an_ungranted_one() {
+    let granting = stub_platform();
+    cache_manifest(&granting, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    let granted = ProductRuntimeHost::new_compat(granting, test_spawner());
+
+    let withholding = stub_platform();
+    cache_manifest(&withholding, "wallet.dot", r#"{"stash":["context"]}"#, 0);
+    let ungranted = ProductRuntimeHost::new_compat(withholding, test_spawner());
+
+    for host in [&granted, &ungranted] {
+        assert!(
+            matches!(
+                sign_with_wallets_account(host),
+                CallError::Domain(HostSignPayloadError::V1(
+                    v01::HostSignPayloadError::Rejected
+                ))
+            ),
+            "a session-less caller learns only that there is no session",
+        );
+    }
+}
+
 #[test]
 fn a_cached_miss_refuses_without_returning_to_the_chain() {
     // "This product publishes no manifest" is an answer worth keeping. Without
@@ -612,6 +731,229 @@ impl truapi_platform::ChatPlatform for RecordingChatPlatform {
     > {
         Box::pin(futures::stream::empty())
     }
+}
+
+/// The phone may already be prompting for a request this host has published.
+/// Withdrawing the call has to reach it there, or the person is left
+/// approving a request nobody is waiting for.
+#[test]
+fn a_withdrawn_request_already_published_is_cancelled_on_the_phone() {
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_responses: vec![
+            subscribe_ack_frame("truapi:1", "own-sub-withdrawn"),
+            subscribe_ack_frame("truapi:2", "peer-sub-withdrawn"),
+            r#"{"jsonrpc":"2.0","id":"truapi:3","result":{"status":"new"}}"#.to_string(),
+        ],
+        ..Default::default()
+    });
+    let (host_config, _) = runtime_config("myapp.dot");
+    let product = ProductContext::new("myapp.dot".to_string()).expect("product context is valid");
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host.clone(), product);
+    install_pairing_session(&host, session.clone());
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("sign-raw-withdrawn".to_string(), cancel.clone());
+    let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+        account: account_id("myapp.dot", 0),
+        payload: raw_payload(),
+    });
+    let call = std::thread::spawn(move || {
+        futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err()
+    });
+    let published = submitted_remote_message(&platform, &session).message_id;
+    wait_until(
+        || pairing_host.newest_request_for_tests().as_deref() == Some(&published),
+        "the request was not published",
+    );
+
+    cancel.cancel();
+    call.join().expect("sign_raw thread panicked");
+
+    let withdrawn = || withdrawn_requests(&platform, &session);
+    wait_until(|| !withdrawn().is_empty(), "no request was withdrawn");
+    assert_eq!(withdrawn(), vec![published]);
+}
+
+/// A request whose statement never went out is not on the channel, so a
+/// `Cancel` for it would replace whatever older request is there instead.
+#[test]
+fn a_request_withdrawn_before_it_is_submitted_sends_no_cancel() {
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_responses: vec![
+            subscribe_ack_frame("truapi:1", "own-sub-unsent"),
+            subscribe_ack_frame("truapi:2", "peer-sub-unsent"),
+        ],
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session);
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("sign-raw-unsent".to_string(), cancel);
+    let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+        account: account_id("myapp.dot", 0),
+        payload: raw_payload(),
+    });
+
+    futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+    // Long enough for a spawned `Cancel` to have been submitted.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "statement_submit"),
+        0
+    );
+}
+
+/// A host that times out has not been asked to stop, so the phone keeps the
+/// request: a slow allocation it finishes stays available to the next call.
+#[test]
+fn a_request_that_times_out_is_not_withdrawn_from_the_phone() {
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_responses: vec![
+            subscribe_ack_frame("truapi:1", "own-sub-timeout"),
+            subscribe_ack_frame("truapi:2", "peer-sub-timeout"),
+            r#"{"jsonrpc":"2.0","id":"truapi:3","result":{"status":"new"}}"#.to_string(),
+        ],
+        ..Default::default()
+    });
+    let (host_config, _) = runtime_config("myapp.dot");
+    let product = ProductContext::new("myapp.dot".to_string()).expect("product context is valid");
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host.clone(), product);
+    install_pairing_session(&host, session.clone());
+    let mut cx = CallContext::with_request_id("sign-raw-timeout".to_string());
+    cx.set_timeout(std::time::Duration::from_millis(50));
+    let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+        account: account_id("myapp.dot", 0),
+        payload: raw_payload(),
+    });
+
+    futures::executor::block_on(host.sign_raw(&cx, request)).unwrap_err();
+
+    let published = submitted_remote_message(&platform, &session).message_id;
+    assert_eq!(pairing_host.newest_request_for_tests(), Some(published));
+}
+
+/// `message_id`s every `Cancel` this host has published names, oldest first.
+fn withdrawn_requests(platform: &Arc<StubPlatform>, session: &SessionInfo) -> Vec<String> {
+    submitted_remote_messages(platform, session)
+        .into_iter()
+        .filter_map(|message| match message.data {
+            RemoteMessageData::V1(v1::RemoteMessage::Cancel(withdrawal)) => {
+                Some(withdrawal.message_id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The store keeps one statement per channel, so a `Cancel` replaces the
+/// newest request this host published. Sent for an older one it would
+/// replace a request the product is still waiting on instead.
+#[test]
+fn a_withdrawn_request_with_a_newer_one_behind_it_sends_no_cancel() {
+    let session = sso_session_info();
+    let answers = |method: &'static str, result: &str, times: usize| {
+        std::iter::repeat_n((method, result.to_string()), times)
+    };
+    let platform = Arc::new(StubPlatform {
+        sign_raw_confirmed: true,
+        rpc_method_responses: answers("statement_subscribeStatement", r#""sub""#, 4)
+            .chain(answers("statement_submit", r#"{"status":"new"}"#, 4))
+            .chain(answers("statement_unsubscribeStatement", "true", 4))
+            .collect(),
+        ..Default::default()
+    });
+    let (host_config, _) = runtime_config("myapp.dot");
+    let product = ProductContext::new("myapp.dot".to_string()).expect("product context is valid");
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = Arc::new(ProductRuntimeHost::from_services(
+        services,
+        adapters,
+        pairing_host.clone(),
+        product,
+    ));
+    install_pairing_session(&host, session.clone());
+    let start = |request_id: &str| {
+        let host = host.clone();
+        let cancel = truapi::CancellationToken::default();
+        let cx = CallContext::with_parts(request_id.to_string(), cancel.clone());
+        let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
+            account: account_id("myapp.dot", 0),
+            payload: raw_payload(),
+        });
+        let call = std::thread::spawn(move || {
+            let _ = futures::executor::block_on(host.sign_raw(&cx, request));
+        });
+        (cancel, call)
+    };
+    let wait_published = |count: usize| {
+        wait_until(
+            || {
+                let published = submitted_remote_messages(&platform, &session);
+                published.len() == count
+                    && pairing_host.newest_request_for_tests().as_deref()
+                        == published.last().map(|message| message.message_id.as_str())
+            },
+            "the request was not published",
+        );
+        submitted_remote_messages(&platform, &session)
+            .last()
+            .expect("a published request")
+            .message_id
+            .clone()
+    };
+    let (first_cancel, first_call) = start("sign-raw-first");
+    wait_published(1);
+    let (second_cancel, second_call) = start("sign-raw-second");
+    let second = wait_published(2);
+
+    first_cancel.cancel();
+    first_call.join().expect("first sign_raw thread panicked");
+    second_cancel.cancel();
+    second_call.join().expect("second sign_raw thread panicked");
+
+    let withdrawn = || withdrawn_requests(&platform, &session);
+    wait_until(|| !withdrawn().is_empty(), "no request was withdrawn");
+    assert_eq!(withdrawn(), vec![second]);
 }
 
 #[test]
@@ -1259,7 +1601,13 @@ fn bare_localhost_product_allows_dev_product_accounts() {
     let host =
         ProductRuntimeHost::new(stub_platform(), runtime_config("localhost"), test_spawner());
 
-    assert!(host.is_product_account_valid_for_caller("myapp.dot"));
+    assert_eq!(
+        futures::executor::block_on(
+            host.authorized_product_account("myapp.dot", &CallContext::default())
+        )
+        .as_deref(),
+        Some("myapp.dot")
+    );
 }
 
 /// A product destination reaches the platform as a `polkadot://` URL, whatever
@@ -1290,6 +1638,31 @@ fn navigate_to_hands_a_product_destination_over_as_a_polkadot_url() {
     }
 }
 
+/// A navigation the product withdrew must not move the person anywhere.
+#[test]
+fn navigate_to_withdrawn_before_the_handoff_goes_nowhere() {
+    let platform = Arc::new(StubPlatform::default());
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("navigate-withdrawn".to_string(), cancel);
+    let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+        url: "mytestapp.dot".to_string(),
+    });
+
+    let result = futures::executor::block_on(host.navigate_to(&cx, request));
+
+    assert_eq!(
+        result,
+        Err(CallError::Domain(HostNavigateToError::V1(
+            v01::HostNavigateToError::Unknown {
+                reason: "navigation cancelled".to_string(),
+            }
+        )))
+    );
+    assert!(platform.navigations.lock().unwrap().is_empty());
+}
+
 /// A web address still arrives as `https://`, so the two stay distinguishable.
 #[test]
 fn navigate_to_hands_a_web_address_over_unchanged() {
@@ -1305,6 +1678,48 @@ fn navigate_to_hands_a_web_address_over_unchanged() {
     assert_eq!(
         platform.navigations.lock().unwrap().as_slice(),
         ["https://example.com/path".to_string()]
+    );
+}
+
+#[test]
+fn permission_prompts_name_the_requesting_product_and_execution_kind() {
+    let (host_config, _) = runtime_config("camera.dot");
+    let product = ProductContext::new_with_execution(
+        "camera.dot".to_string(),
+        truapi_platform::ProductExecutionKind::Worker,
+    )
+    .expect("test product context is valid");
+    let spawner = test_spawner();
+    let platform = stub_platform();
+    let services = RuntimeServices::new(
+        platform.clone(),
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        spawner,
+    );
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product.clone());
+    let cx = CallContext::default();
+
+    futures::executor::block_on(host.request_device_permission(
+        &cx,
+        HostDevicePermissionRequest::V1(v01::HostDevicePermissionRequest::Camera),
+    ))
+    .expect("device prompt answers");
+    futures::executor::block_on(host.request_remote_permission(
+        &cx,
+        truapi::versioned::permissions::RemotePermissionRequest::V1(v01::RemotePermissionRequest {
+            permission: v01::RemotePermission::ChainSubmit,
+        }),
+    ))
+    .expect("remote prompt answers");
+
+    assert_eq!(
+        *platform.permission_prompt_products.lock().unwrap(),
+        [product.clone(), product],
     );
 }
 
@@ -1749,6 +2164,37 @@ fn push_notification_delegates_payload_and_returns_host_id() {
             scheduled_at: Some(1_776_144_000_000),
         }]
     );
+}
+
+/// A notification the product withdrew must not reach the person.
+#[test]
+fn push_notification_withdrawn_before_it_is_scheduled_is_never_shown() {
+    let pushed_notifications = Arc::new(Mutex::new(Vec::new()));
+    let platform = Arc::new(StubPlatform {
+        pushed_notifications: pushed_notifications.clone(),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("notification-withdrawn".to_string(), cancel);
+    let request = HostPushNotificationRequest::V1(v01::HostPushNotificationRequest {
+        text: "Hello".to_string(),
+        deeplink: None,
+        scheduled_at: None,
+    });
+
+    let result = futures::executor::block_on(host.send_push_notification(&cx, request));
+
+    assert_eq!(
+        result,
+        Err(CallError::Domain(HostPushNotificationError::V1(
+            v01::HostPushNotificationError::Unknown {
+                reason: "notification cancelled".to_string(),
+            }
+        )))
+    );
+    assert!(pushed_notifications.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -2799,6 +3245,131 @@ fn preimage_submit_requires_remote_permission_before_backend_call() {
     );
 }
 
+fn broadcast_request() -> RemoteChainTransactionBroadcastRequest {
+    RemoteChainTransactionBroadcastRequest::V1(v01::RemoteChainTransactionBroadcastRequest {
+        genesis_hash: vec![0; 32],
+        transaction: vec![1, 2, 3],
+    })
+}
+
+/// Only a `Cancel` frame turns the answer into `Cancelled`. A token the host
+/// fires itself still answers with the operation id, so the product is the one
+/// holding it and the broadcast must keep running.
+#[test]
+fn a_broadcast_the_host_cancels_itself_keeps_running() {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        rpc_method_responses: vec![
+            ("transaction_v1_broadcast", r#""REMOTE-OP""#.to_string()),
+            ("transaction_v1_stop", "null".to_string()),
+        ],
+        rpc_method_responses_gate: Arc::new(Mutex::new(Some(gate))),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("broadcast-timed-out".to_string(), cancel.clone());
+    let request = broadcast_request();
+    let call = std::thread::spawn(move || {
+        futures::executor::block_on(Chain::broadcast_transaction(&host, &cx, request))
+    });
+    wait_until(
+        || recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast") == 1,
+        "the broadcast was not sent",
+    );
+
+    cancel.cancel_with_reason(truapi::CancellationReason::TimedOut {
+        timeout: std::time::Duration::from_secs(1),
+    });
+    release.send(()).unwrap();
+    let RemoteChainTransactionBroadcastResponse::V1(response) =
+        call.join().expect("broadcast thread panicked").unwrap();
+
+    assert_eq!(
+        (
+            response.operation_id.is_some(),
+            recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_stop")
+        ),
+        (true, 0)
+    );
+}
+
+/// The product withdrew a broadcast that had already gone out, and the
+/// `Cancelled` it is answered with carries no operation id, so the host is the
+/// only one left that can stop it.
+#[test]
+fn a_broadcast_withdrawn_in_flight_is_stopped_by_the_host() {
+    let (release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        rpc_method_responses: vec![
+            ("transaction_v1_broadcast", r#""REMOTE-OP""#.to_string()),
+            ("transaction_v1_stop", "null".to_string()),
+        ],
+        rpc_method_responses_gate: Arc::new(Mutex::new(Some(gate))),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("broadcast-withdrawn".to_string(), cancel.clone());
+    let request = broadcast_request();
+    let call = std::thread::spawn(move || {
+        futures::executor::block_on(Chain::broadcast_transaction(&host, &cx, request))
+    });
+    wait_until(
+        || recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast") == 1,
+        "the broadcast was not sent",
+    );
+
+    cancel.cancel();
+    release.send(()).unwrap();
+    call.join().expect("broadcast thread panicked").unwrap();
+
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_stop"),
+        1
+    );
+}
+
+/// A call withdrawn before its broadcast went out must not send it.
+#[test]
+fn a_broadcast_withdrawn_before_it_is_sent_never_reaches_the_node() {
+    let platform = stub_platform();
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("myapp.dot"),
+        test_spawner(),
+    );
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("broadcast-withdrawn-early".to_string(), cancel);
+    let request = broadcast_request();
+
+    let result = Chain::broadcast_transaction(&host, &cx, request)
+        .now_or_never()
+        .expect("a withdrawn broadcast settles without waiting");
+
+    assert_eq!(
+        result,
+        Err(CallError::Domain(RemoteChainTransactionBroadcastError::V1(
+            v01::GenericError {
+                reason: "broadcast cancelled".to_string(),
+            }
+        )))
+    );
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast"),
+        0
+    );
+}
+
 #[test]
 fn chain_broadcast_requires_remote_permission_before_backend_call() {
     let platform = Arc::new(StubPlatform {
@@ -3703,6 +4274,81 @@ fn resource_allocation_respects_a_shorter_call_context_timeout() {
     );
 }
 
+/// An allocation the person approves spends chain resources on the phone, so
+/// one the product withdrew while the prompt was open must never be sent.
+#[test]
+fn resource_allocation_withdrawn_at_the_prompt_is_never_requested() {
+    let (_release, gate) = futures::channel::oneshot::channel();
+    let platform = Arc::new(StubPlatform {
+        resource_allocation_confirmed: true,
+        resource_allocation_confirmation_gate: Mutex::new(Some(gate)),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+    install_pairing_session(&host, sso_session_info());
+    let cancel = truapi::CancellationToken::default();
+    let cx = CallContext::with_parts("alloc-withdrawn".to_string(), cancel.clone());
+    let mut call = Box::pin(ResourceAllocation::request(
+        &host,
+        &cx,
+        resource_allocation_request(),
+    ));
+    assert!(call.as_mut().now_or_never().is_none());
+    assert_eq!(
+        platform.resource_allocation_reviews.lock().unwrap().len(),
+        1
+    );
+
+    cancel.cancel();
+
+    let err = call
+        .as_mut()
+        .now_or_never()
+        .expect("a withdrawn call stops waiting on the prompt")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        CallError::Domain(HostRequestResourceAllocationError::V1(
+            v01::ResourceAllocationError::Unknown {
+                reason: "Account authority request cancelled for alloc-withdrawn".to_string(),
+            }
+        ))
+    );
+    assert_eq!(
+        recorded_rpc_method_count(&platform.sent_rpc, "statement_subscribeStatement"),
+        0
+    );
+}
+
+/// The unwind grace exists for a call that already started. One whose token
+/// fired before it got here must not be started just to be unwound.
+#[test]
+fn an_authority_call_withdrawn_before_it_starts_is_never_polled() {
+    let cancel = truapi::CancellationToken::default();
+    cancel.cancel();
+    let cx = CallContext::with_parts("withdrawn-before-start".to_string(), cancel);
+    let started = AtomicBool::new(false);
+    let call = async {
+        started.store(true, Ordering::SeqCst);
+        Ok::<(), AuthorityError>(())
+    };
+
+    let result = remote_authority_call(&cx, call)
+        .now_or_never()
+        .expect("a withdrawn call settles without waiting");
+
+    assert_eq!(
+        (result, started.load(Ordering::SeqCst)),
+        (
+            Err(AuthorityError::Cancelled(AuthorityCancelError::new(
+                "withdrawn-before-start",
+                CancellationReason::Cancelled,
+            ))),
+            false,
+        )
+    );
+}
+
 #[test]
 fn resource_allocation_accepts_confirmation_then_returns_sso_response() {
     let session = sso_session_info();
@@ -4274,7 +4920,10 @@ fn auto_signing_ring_vrf_requires_registration_and_signs_locally() {
         &domain,
         &handle.derivation_index,
     );
-    let public_key = crate::runtime::signing_host::ring_vrf::member_from_entropy(&entropy).unwrap();
+    let public_key = futures::executor::block_on(crate::runtime::vrf::load())
+        .expect("verifiable is linked")
+        .member(&entropy)
+        .unwrap();
     futures::executor::block_on(pairing_host.register_ring_vrf_key_for_tests(
         &session,
         handle.clone(),

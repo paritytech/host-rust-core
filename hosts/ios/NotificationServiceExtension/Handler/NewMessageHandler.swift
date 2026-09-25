@@ -47,13 +47,16 @@ extension NewMessageHandler: PushNotificationHandling {
                     .asyncExecute()
                     .mapOrThrow(NewMessageHandlerError.noContact)
 
-                let message = try messageDecoder.decodeMessage(messageHex, for: contact)
+                let payload = try messageDecoder.decodeMessage(messageHex, for: contact)
 
-                await save(message, for: contact)
-                badgeCount = await calculateBadgeCount()
+                if let fullMessage = payload.fullMessage {
+                    await save(fullMessage, for: contact)
+                }
+
+                badgeCount = await calculateBadgeCount(for: payload)
 
                 let contentResult = try await makeContentResult(
-                    for: message,
+                    for: payload,
                     contact: contact
                 )
                 completion(contentResult.withBadgeCount(badgeCount))
@@ -66,12 +69,30 @@ extension NewMessageHandler: PushNotificationHandling {
 }
 
 private extension NewMessageHandler {
-    // swiftlint:disable:next cyclomatic_complexity
     func makeContentResult(
-        for message: Chat.RemoteMessage,
+        for payload: Chat.NotificationPayload,
         contact: Chat.Contact
     ) async throws -> NotificationContentResult {
-        switch message.versioned.ensureV1()?.content {
+        switch payload.versioned {
+        case let .v1(.full(content)):
+            try await makeContentResult(for: content.content, contact: contact)
+        case let .v1(.stripped(.coinageSend(coinage))):
+            try await NotificationContentResult(
+                title: contact.username,
+                body: makeBody(totalValue: coinage.totalValue, contact: contact, displayInfo: assetDisplayInfo()),
+                accountId: contact.accountId
+            )
+        case let .v1(.stripped(stripped)):
+            try await makeContentResult(for: stripped.regularContent, contact: contact)
+        }
+    }
+
+    // swiftlint:disable:next cyclomatic_complexity
+    func makeContentResult(
+        for content: ChatRemoteMessageContent?,
+        contact: Chat.Contact
+    ) async throws -> NotificationContentResult {
+        switch content {
         case let .text(string):
             NotificationContentResult(
                 title: contact.username,
@@ -140,7 +161,7 @@ private extension NewMessageHandler {
         case let .coinageSend(content):
             try await NotificationContentResult(
                 title: contact.username,
-                body: makeBody(coinageSendContent: content, contact: contact, displayInfo: assetDisplayInfo()),
+                body: makeBody(totalValue: content.totalValue, contact: contact, displayInfo: assetDisplayInfo()),
                 accountId: contact.accountId
             )
         case .token,
@@ -159,9 +180,13 @@ private extension NewMessageHandler {
         }
     }
 
-    func calculateBadgeCount() async -> Int? {
+    func calculateBadgeCount(for payload: Chat.NotificationPayload) async -> Int? {
+        let unsavedMessageId = payload.fullMessage == nil ? payload.messageId : nil
+
         do {
-            return try await unreadMessageCountService.totalUnreadBadgeMessageCount()
+            return try await unreadMessageCountService.totalUnreadBadgeMessageCount(
+                unsavedMessageId: unsavedMessageId
+            )
         } catch {
             assertionFailure("Failed to calculate unread message badge count: \(error)")
             return nil
@@ -210,7 +235,7 @@ private extension NewMessageHandler {
     }
 
     func makeBody(
-        coinageSendContent: Chat.RemoteMessageContentV1.MessageContent.SendContent.Coinage,
+        totalValue: Balance,
         contact: Chat.Contact,
         displayInfo: AssetBalanceDisplayInfo
     ) -> String {
@@ -219,7 +244,7 @@ private extension NewMessageHandler {
             targetAssetInfo: displayInfo,
             formatterFactory: formatterFactory
         )
-        let amountString = formatter.amount(from: coinageSendContent.totalValue)
+        let amountString = formatter.amount(from: totalValue)
         return String(localized: .contactSentYouAsset(username: contact.username)) + " \(amountString)"
     }
 

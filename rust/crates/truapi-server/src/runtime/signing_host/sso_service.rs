@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use futures::{FutureExt, pin_mut};
 use tracing::warn;
 use truapi::latest as api;
 use truapi_platform::{
@@ -19,7 +20,7 @@ use crate::host_internal::sso_messages::{
     CreateAccountProofResponse, CreateTransactionLegacyPayload, CreateTransactionPayload,
     CreateTransactionRequest, CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest,
     GetAccountAliasResponse, ListRingVrfKeysResponse, OnExistingAllowancePolicy, ProductRequest,
-    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
+    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse, RemoteMessage,
     ResourceAllocationRequest, ResourceAllocationResponse, RingVrfSignResponse,
     SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
     SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
@@ -32,7 +33,11 @@ use crate::runtime::authority::{
     AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest,
 };
-use crate::runtime::sso_service::{SsoReply, SsoRequestContext};
+use crate::runtime::sso_service::{Dispatch, SsoReply, SsoRequestContext};
+
+/// Handler error once the pairing host has withdrawn the request; never
+/// posted, because a withdrawn request has no response.
+const WITHDRAWN: &str = "Withdrawn";
 
 /// SSO handlers served by a locally activated [`SigningHost`].
 pub struct SigningHostSsoService {
@@ -50,13 +55,60 @@ impl SigningHostSsoService {
         self.signing_host.current_session()
     }
 
+    /// Answer `message`, unless the pairing host withdraws it first.
+    ///
+    /// A `Cancel` withdraws the request it names and is itself not answered.
+    /// A withdrawn request has no response to post.
+    pub async fn answer(&self, message: RemoteMessage) -> Dispatch {
+        let withdrawals = self.signing_host.sso_withdrawals();
+        let Some(request) = withdrawals.begin(&message.message_id) else {
+            return Dispatch::Withdrawn;
+        };
+        let cx = self.current_session().map(|session| {
+            SsoRequestContext::new(&message.message_id, session, request.cancel.clone())
+        });
+        match self.dispatch(cx, message).await {
+            Dispatch::Withdraw(target) => {
+                withdrawals.withdraw(&target);
+                Dispatch::Withdraw(target)
+            }
+            Dispatch::Response(_) if request.cancel.is_cancelled() => Dispatch::Withdrawn,
+            dispatch => dispatch,
+        }
+    }
+
+    /// The person's answer to `review`, or `None` once the pairing host has
+    /// withdrawn the request, which leaves nothing authorized.
+    async fn prompt(
+        &self,
+        cx: &SsoRequestContext,
+        review: UserConfirmationReview,
+    ) -> Option<Result<bool, api::GenericError>> {
+        let answer = self
+            .signing_host
+            .platform
+            .confirm_user_action(review)
+            .fuse();
+        let withdrawn = cx.call.cancel().cancelled().fuse();
+        pin_mut!(answer, withdrawn);
+        futures::select_biased! {
+            _ = withdrawn => None,
+            answer = answer => Some(answer),
+        }
+    }
+
     /// Run the platform confirmation seam; rejection and failure both refuse
     /// the operation with an opaque reason (host-spec B.7).
-    async fn confirm(&self, review: UserConfirmationReview) -> Result<(), String> {
-        match self.signing_host.platform.confirm_user_action(review).await {
-            Ok(true) => Ok(()),
-            Ok(false) => Err("Rejected".to_string()),
-            Err(err) => Err(format!("confirmation failed: {}", err.reason)),
+    async fn confirm(
+        &self,
+        cx: &SsoRequestContext,
+        review: UserConfirmationReview,
+    ) -> Result<(), String> {
+        match self.prompt(cx, review).await {
+            Some(Ok(true)) => Ok(()),
+            Some(Ok(false)) => Err("Rejected".to_string()),
+            Some(Err(err)) => Err(format!("confirmation failed: {}", err.reason)),
+            None => Err(WITHDRAWN.to_string()),
         }
     }
 
@@ -68,9 +120,14 @@ impl SigningHostSsoService {
         match request {
             SignRequest::Payload(request) => {
                 let request = *request;
-                self.confirm(UserConfirmationReview::SignPayload(
-                    SignPayloadReview::Product(request.clone()),
-                ))
+                self.confirm(
+                    cx,
+                    UserConfirmationReview::SignPayload(SignPayloadReview::Product {
+                        // A relayed request carries no caller identity.
+                        calling_product_id: None,
+                        request: request.clone(),
+                    }),
+                )
                 .await?;
                 self.signing_host
                     .sign_payload(
@@ -101,10 +158,14 @@ impl SigningHostSsoService {
         request: api::HostSignRawRequest,
         watermarked: bool,
     ) -> Result<api::HostSignPayloadResponse, String> {
-        self.confirm(UserConfirmationReview::SignRaw(SignRawReview::Product {
-            request: request.clone(),
-            watermarked,
-        }))
+        self.confirm(
+            cx,
+            UserConfirmationReview::SignRaw(SignRawReview::Product {
+                calling_product_id: None,
+                request: request.clone(),
+                watermarked,
+            }),
+        )
         .await?;
         self.signing_host
             .sign_raw(
@@ -128,12 +189,13 @@ impl SigningHostSsoService {
             signer: product_public_key_to_address(request.account),
             payload: request.data,
         };
-        self.confirm(UserConfirmationReview::SignRaw(
-            SignRawReview::LegacyAccount {
+        self.confirm(
+            cx,
+            UserConfirmationReview::SignRaw(SignRawReview::LegacyAccount {
                 request: public_request.clone(),
                 watermarked,
-            },
-        ))
+            }),
+        )
         .await?;
         self.signing_host
             .sign_raw(
@@ -156,7 +218,7 @@ impl SigningHostSsoService {
         review: CreateTransactionReview,
         request: CreateTransactionAuthorityRequest,
     ) -> Result<Vec<u8>, String> {
-        self.confirm(UserConfirmationReview::CreateTransaction(review))
+        self.confirm(cx, UserConfirmationReview::CreateTransaction(review))
             .await?;
         self.signing_host
             .create_transaction(&cx.call, &cx.session, None, request)
@@ -352,15 +414,16 @@ impl SigningHostSsoService {
                 calling_product_id: request.calling_product_id.clone(),
                 resources: request.resources.clone(),
             });
-            match self.signing_host.platform.confirm_user_action(review).await {
-                Ok(true) => {}
-                Ok(false) => {
+            match self.prompt(cx, review).await {
+                Some(Ok(true)) => {}
+                Some(Ok(false)) => {
                     return Ok(vec![
                         SsoAllocationOutcome::Rejected;
                         request.resources.len()
                     ]);
                 }
-                Err(err) => return Err(format!("confirmation failed: {}", err.reason)),
+                Some(Err(err)) => return Err(format!("confirmation failed: {}", err.reason)),
+                None => return Err(WITHDRAWN.to_string()),
             }
 
             self.signing_host
@@ -371,6 +434,9 @@ impl SigningHostSsoService {
                 self.signing_host
                     .require_current_session(&cx.session)
                     .map_err(|err| err.to_string())?;
+                if cx.call.cancel().is_cancelled() {
+                    return Err(WITHDRAWN.to_string());
+                }
                 let outcome = self
                     .allocate(
                         &cx.session,
@@ -407,7 +473,10 @@ impl SigningHostSsoService {
         let CreateTransactionPayload::V1(payload) = request.payload;
         self.serve_create_transaction(
             cx,
-            CreateTransactionReview::Product(payload.clone()),
+            CreateTransactionReview::Product {
+                calling_product_id: None,
+                payload: payload.clone(),
+            },
             CreateTransactionAuthorityRequest::Product(payload),
         )
         .await

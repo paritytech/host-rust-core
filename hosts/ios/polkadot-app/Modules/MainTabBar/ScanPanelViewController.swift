@@ -1,17 +1,23 @@
 import UIKit
-import DesignSystem
+import FoundationExt
 import PolkadotUI
-import SnapKit
 
 /// Composes the scan panel's content so Common/QRScanner stays free of contact-search knowledge.
-final class ScanPanelViewController: UIViewController {
-    private let scannerController: UIViewController
-    private let onSearchTap: () -> Void
-    private let searchButton = SearchContactFieldButton()
+final class ScanPanelViewController: UIViewController, ViewHolder {
+    typealias RootViewType = ScanPanelViewLayout
 
-    init(scannerController: UIViewController, onSearchTap: @escaping () -> Void) {
+    private let scannerController: UIViewController & ScanPanelScannerControlling
+    private let presenter: SearchContactPresenterProtocol
+
+    var onChatFound: ((ChatOpenModel) -> Void)?
+    var onContentHeightChanged: (() -> Void)?
+
+    init(
+        scannerController: UIViewController & ScanPanelScannerControlling,
+        presenter: SearchContactPresenterProtocol
+    ) {
         self.scannerController = scannerController
-        self.onSearchTap = onSearchTap
+        self.presenter = presenter
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -20,32 +26,73 @@ final class ScanPanelViewController: UIViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func loadView() {
+        view = ScanPanelViewLayout()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
 
         addChild(scannerController)
-        view.addSubview(scannerController.view)
+        rootView.setupScannerView(scannerController.view)
         scannerController.didMove(toParent: self)
 
-        searchButton.onTap = { [weak self] in
-            self?.onSearchTap()
-        }
-        view.addSubview(searchButton)
-
-        setupLayout()
+        setupHandlers()
+        presenter.setup()
     }
 }
 
+// MARK: - Private
+
 private extension ScanPanelViewController {
-    func setupLayout() {
-        scannerController.view.snp.makeConstraints {
-            $0.top.leading.trailing.equalToSuperview()
+    func setupHandlers() {
+        rootView.searchRow.cancelHandler = { [weak self] in
+            self?.cancelSearch()
         }
 
-        searchButton.snp.makeConstraints {
-            $0.top.equalTo(scannerController.view.snp.bottom)
-            $0.leading.trailing.equalToSuperview().inset(DSSpacings.mediumIncreased)
-            $0.bottom.equalToSuperview().inset(DSSpacings.small)
+        rootView.onCameraTapped = { [weak self] in
+            self?.cancelSearch()
         }
+
+        rootView.searchRow.searchHandler = { [weak self] text in
+            self?.presenter.search(username: text ?? "")
+        }
+
+        rootView.resultsView.selectionHandler = { [weak self] identifier in
+            self?.presenter.didSelectContact(identifier: identifier)
+        }
+    }
+
+    func cancelSearch() {
+        let searchField = rootView.searchRow.searchField
+        searchField.text = nil
+        presenter.search(username: "")
+        searchField.resignFirstResponder()
+    }
+}
+
+extension ScanPanelViewController: TabBarKeyboardTrackingContent {
+    var isKeyboardInputFocused: Bool {
+        rootView.searchRow.searchField.isFirstResponder
+    }
+
+    /// Focusing the field shrinks the camera to a thumbnail and disarms recognition, so a code
+    /// cannot be picked up from the sliver of preview left behind the keyboard.
+    func setKeyboardInputFocused(_ focused: Bool) {
+        scannerController.setRecognitionArmed(!focused)
+        scannerController.setPreviewCompact(focused)
+        rootView.setSearchFocused(focused)
+    }
+}
+
+extension ScanPanelViewController: SearchContactViewProtocol {
+    func didReceive(viewModel: SearchContactResultsView.ViewModel) {
+        rootView.resultsView.bind(viewModel: viewModel)
+        onContentHeightChanged?()
+    }
+
+    func didReceive(status: SearchContactResultsView.StatusViewModel) {
+        rootView.resultsView.bind(status: status)
+        onContentHeightChanged?()
     }
 }

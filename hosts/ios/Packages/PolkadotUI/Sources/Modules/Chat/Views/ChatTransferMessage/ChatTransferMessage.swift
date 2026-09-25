@@ -7,6 +7,7 @@ public struct ChatTransferMessageConfiguration: HashableContentConfiguration {
     let title: String
     let amountText: String
     let tokenSymbol: String
+    let assetIcon: UIImage?
     let originalAmountText: String?
     let state: ChatTransferMessageConfiguration.DirectionalState
     let statusConfiguration: ChatMessageStatusViewConfiguration
@@ -26,18 +27,22 @@ public struct ChatTransferMessageConfiguration: HashableContentConfiguration {
 
 public extension ChatTransferMessageConfiguration {
     enum DirectionalState: Hashable {
-        case incoming(State)
-        case outgoing(State)
+        case incoming(IncomingState)
+        case outgoing(OutgoingState)
     }
 
-    enum State: Hashable {
-        case processing
-        case sent
+    enum IncomingState: Hashable {
+        case detecting
         case claiming
-        /// Some coins received, the rest still being claimed (a retry is in flight).
-        case partiallyClaimed
-        case finished
-        case error
+        case claimed
+        case failed
+    }
+
+    enum OutgoingState: Hashable {
+        case sending
+        case sent
+        case claimed
+        case failed
     }
 }
 
@@ -46,56 +51,67 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
 
     private let titleLabel: Label = create {
         $0.lineBreakMode = .byTruncatingMiddle
-        $0.typography = .paragraphLarge
+        $0.typography = .bodyMedium
         $0.numberOfLines = 1
         $0.textAlignment = .left
     }
 
-    private let amountContainerView: GenericBackgroundView<GenericPairValueView<TopBottomLabelView, Label>> =
+    private typealias AmountRowView = GenericPairValueView<UIImageView, Label>
+
+    /// The original amount sits above the icon + amount row, so the icon centres on the amount alone.
+    private let amountContainerView: GenericBackgroundView<GenericPairValueView<Label, AmountRowView>> =
         create { container in
-            container.insets = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+            container.insets = UIEdgeInsets(
+                top: DSSpacings.mediumIncreased,
+                left: DSSpacings.mediumIncreased,
+                bottom: DSSpacings.mediumIncreased,
+                right: DSSpacings.mediumIncreased
+            )
 
-            let pair = container.wrappedView
-            pair.setVerticalAndSpacing(0)
-            pair.stackView.alignment = .center
+            let amounts = container.wrappedView
+            amounts.makeVertical()
+            amounts.spacing = 0
+            amounts.stackView.alignment = .fill
 
-            let amounts = pair.fView
-            amounts.stackView.spacing = 0
+            let originalAmount = amounts.fView
+            originalAmount.typography = .bodyMedium
+            originalAmount.numberOfLines = 1
+            originalAmount.textAlignment = .left
+            originalAmount.isHidden = true
 
-            amounts.topLabel.typography = .bodyMedium
-            amounts.topLabel.numberOfLines = 1
-            amounts.topLabel.textAlignment = .center
-            amounts.topLabel.isHidden = true
+            let amountRow = amounts.sView
+            amountRow.makeHorizontal()
+            amountRow.spacing = Constants.assetIconSpacing
+            amountRow.stackView.alignment = .center
 
-            amounts.bottomLabel.typography = .headlineLarge
-            amounts.bottomLabel.numberOfLines = 1
-            amounts.bottomLabel.textAlignment = .center
+            let icon = amountRow.fView
+            icon.contentMode = .scaleAspectFit
+            icon.snp.makeConstraints { $0.size.equalTo(Constants.assetIconSize) }
 
-            let symbol = pair.sView
-            symbol.typography = .bodyMedium
-            symbol.textColor = .fgSecondary
-            symbol.numberOfLines = 1
-            symbol.textAlignment = .center
+            let amount = amountRow.sView
+            amount.typography = .headlineLarge
+            amount.numberOfLines = 1
+            amount.textAlignment = .left
         }
 
     private var receivedAmountLabel: Label {
-        amountContainerView.wrappedView.fView.bottomLabel
+        amountContainerView.wrappedView.sView.sView
     }
 
-    private var originalAmountLabel: Label {
-        amountContainerView.wrappedView.fView.topLabel
+    var originalAmountLabel: Label {
+        amountContainerView.wrappedView.fView
     }
 
-    private var tokenSymbolLabel: Label {
-        amountContainerView.wrappedView.sView
+    var assetIconView: UIImageView {
+        amountContainerView.wrappedView.sView.fView
     }
 
-    private let subtitleIconView: UIImageView = create {
+    let subtitleIconView: UIImageView = create {
         $0.contentMode = .scaleAspectFit
     }
 
-    private let subtitleLabel: Label = create {
-        $0.typography = .bodySmallEmphasized
+    let subtitleLabel: Label = create {
+        $0.typography = .bodyMedium
         $0.numberOfLines = 2
         $0.textAlignment = .left
         $0.setContentCompressionResistancePriority(.fittingSizeLevel, for: .horizontal)
@@ -155,33 +171,33 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
         }
 
         titleLabel.snp.makeConstraints {
-            $0.leading.equalToSuperview().offset(14)
-            $0.trailing.lessThanOrEqualToSuperview().inset(14)
-            $0.top.equalToSuperview().offset(12)
+            $0.leading.equalToSuperview().offset(Constants.bubbleLeadingInset)
+            $0.trailing.lessThanOrEqualToSuperview().inset(Constants.bubbleTrailingInset)
+            $0.top.equalToSuperview().offset(DSSpacings.extraMedium)
         }
 
         amountContainerView.snp.makeConstraints {
             $0.width.greaterThanOrEqualTo(150).priority(.medium)
-            $0.leading.equalToSuperview().offset(14)
-            $0.trailing.equalToSuperview().inset(14)
-            $0.top.equalTo(titleLabel.snp.bottom).offset(8)
+            $0.leading.equalToSuperview().offset(Constants.bubbleLeadingInset)
+            $0.trailing.equalToSuperview().inset(Constants.bubbleTrailingInset)
+            $0.top.equalTo(titleLabel.snp.bottom).offset(Constants.rowSpacing)
         }
 
         subtitleIconView.snp.makeConstraints {
-            $0.size.equalTo(12)
+            $0.size.equalTo(Constants.statusIconSize)
         }
 
         subtitleStackView.snp.makeConstraints {
-            $0.leading.equalToSuperview().offset(14)
-            $0.trailing.lessThanOrEqualToSuperview().inset(14)
-            $0.top.equalTo(amountContainerView.snp.bottom).offset(4)
+            $0.leading.equalToSuperview().offset(Constants.bubbleLeadingInset)
+            $0.trailing.lessThanOrEqualToSuperview().inset(Constants.bubbleTrailingInset)
+            $0.top.equalTo(amountContainerView.snp.bottom).offset(Constants.rowSpacing)
         }
 
         statusView.snp.makeConstraints {
-            $0.leading.greaterThanOrEqualToSuperview().offset(14)
-            $0.trailing.equalToSuperview().inset(8)
-            $0.top.equalTo(subtitleStackView.snp.bottom).offset(4)
-            $0.bottom.equalToSuperview().inset(8)
+            $0.leading.greaterThanOrEqualToSuperview().offset(Constants.bubbleLeadingInset)
+            $0.trailing.equalToSuperview().inset(Constants.bubbleTrailingInset)
+            $0.top.equalTo(subtitleStackView.snp.bottom).offset(Constants.rowSpacing)
+            $0.bottom.equalToSuperview().inset(DSSpacings.small)
         }
     }
 
@@ -191,7 +207,8 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
 
         titleLabel.text = configuration.title
         receivedAmountLabel.text = configuration.amountText
-        tokenSymbolLabel.text = configuration.tokenSymbol
+        assetIconView.image = configuration.assetIcon ?? UIImage.cashLogo.withRenderingMode(.alwaysTemplate)
+        assetIconView.tintColor = configuration.amountTextColor
 
         originalAmountLabel.textColor = configuration.originalAmountTextColor
         if let originalAmount = configuration.originalAmountText {
@@ -201,7 +218,7 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
                 font: .app(typography),
                 lineHeight: spec.lineHeight,
                 tracking: spec.tracking
-            ).attributes(for: .center)
+            ).attributes(for: .left)
             attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             originalAmountLabel.attributedText = NSAttributedString(
                 string: originalAmount,
@@ -245,29 +262,25 @@ final class ChatTransferMessageView: UIView, UIContentView, ReactableContentView
 private extension ChatTransferMessageConfiguration.DirectionalState {
     var icon: UIImage? {
         switch self {
-        case .incoming(.processing),
-             .incoming(.sent),
-             .incoming(.claiming),
-             .incoming(.partiallyClaimed):
+        case .incoming(.detecting),
+             .incoming(.claiming):
             UIImage(resource: .iconTransferIn)
-        case .outgoing(.processing),
-             .outgoing(.sent),
-             .outgoing(.claiming),
-             .outgoing(.partiallyClaimed):
+        case .outgoing(.sending),
+             .outgoing(.sent):
             UIImage(resource: .iconTransferOut)
-        case .incoming(.finished),
-             .outgoing(.finished):
+        case .incoming(.claimed),
+             .outgoing(.claimed):
             UIImage(resource: .iconTransferDone)
-        case .incoming(.error),
-             .outgoing(.error):
+        case .incoming(.failed),
+             .outgoing(.failed):
             UIImage(resource: .iconTransferError)
         }
     }
 
     var color: UIColor {
         switch self {
-        case .incoming(.error),
-             .outgoing(.error):
+        case .incoming(.failed),
+             .outgoing(.failed):
             .fgError
         case .incoming:
             .fgSecondary
@@ -279,44 +292,38 @@ private extension ChatTransferMessageConfiguration.DirectionalState {
     var title: String {
         switch self {
         case let .incoming(state):
-            state.incomingTitle
+            state.title
         case let .outgoing(state):
-            state.outgoingTitle
+            state.title
         }
     }
 }
 
-private extension ChatTransferMessageConfiguration.State {
-    var incomingTitle: String {
+private extension ChatTransferMessageConfiguration.IncomingState {
+    var title: String {
         switch self {
-        case .processing:
-            String(localized: .transferStatusDetecting)
-        case .sent:
+        case .detecting:
             String(localized: .transferStatusDetecting)
         case .claiming:
             String(localized: .transferStatusClaiming)
-        case .partiallyClaimed:
-            String(localized: .transferStatusPartiallyClaimed)
-        case .finished:
+        case .claimed:
             String(localized: .transferStatusFinished)
-        case .error:
+        case .failed:
             String(localized: .transferStatusError)
         }
     }
+}
 
-    var outgoingTitle: String {
+private extension ChatTransferMessageConfiguration.OutgoingState {
+    var title: String {
         switch self {
-        case .processing:
+        case .sending:
             String(localized: .transferStatusSending)
         case .sent:
             String(localized: .transferStatusSent)
-        case .claiming:
-            String(localized: .transferStatusClaiming)
-        case .partiallyClaimed:
-            String(localized: .transferStatusPartiallyClaimed)
-        case .finished:
+        case .claimed:
             String(localized: .transferStatusFinished)
-        case .error:
+        case .failed:
             String(localized: .transferStatusError)
         }
     }
@@ -333,57 +340,13 @@ extension ChatTransferMessageView: AccessibilityBound {
     }
 }
 
-#if DEBUG
-    #Preview {
-        let inbox = ChatTransferMessageConfiguration.inbox(
-            amount: "17",
-            tokenSymbol: "DOT",
-            from: "Samuel.long.long.18",
-            state: .processing,
-            statusConfiguration: .init(
-                dateFormatter: TimestampFormatter(),
-                date: .now,
-                textColor: .fgPrimary,
-                image: nil,
-                isEdited: false
-            )
-        ).makeContentView()
-
-        let inbox2 = ChatTransferMessageConfiguration.inbox(
-            amount: "17",
-            tokenSymbol: "DOT",
-            originalAmount: "55",
-            from: "Samuel.long.18",
-            state: .processing,
-            statusConfiguration: .init(
-                dateFormatter: TimestampFormatter(),
-                date: .now,
-                textColor: .fgPrimary,
-                image: nil,
-                isEdited: false
-            )
-        ).makeContentView()
-
-        let outbox = ChatTransferMessageConfiguration.outbox(
-            amount: "99999",
-            tokenSymbol: "DOT",
-            state: .sent,
-            statusConfiguration: .init(
-                dateFormatter: TimestampFormatter(),
-                date: .now,
-                textColor: .fgPrimaryInverted,
-                image: nil,
-                isEdited: false
-            )
-        ).makeContentView()
-
-        let stack = UIStackView(arrangedSubviews: [inbox, inbox2, outbox])
-        stack.axis = .vertical
-        stack.spacing = 20
-        stack.backgroundColor = .bgSurfaceMain
-        stack.isLayoutMarginsRelativeArrangement = true
-        stack.layoutMargins.top = 20
-        stack.layoutMargins.bottom = 20
-        return stack
+private extension ChatTransferMessageView {
+    enum Constants {
+        static let assetIconSize = CGSize(width: 20, height: 22)
+        static let assetIconSpacing = DSSpacings.small
+        static let bubbleLeadingInset = DSSpacings.medium
+        static let bubbleTrailingInset = DSSpacings.small
+        static let rowSpacing = DSSpacings.small
+        static let statusIconSize: CGFloat = 14
     }
-#endif
+}

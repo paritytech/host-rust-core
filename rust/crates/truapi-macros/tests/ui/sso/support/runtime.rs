@@ -21,6 +21,7 @@ mod runtime {
             Response(Box<Answer>),
             Disconnected,
             NotARequest(&'static str),
+            Withdraw(String),
         }
 
         pub struct Answer;

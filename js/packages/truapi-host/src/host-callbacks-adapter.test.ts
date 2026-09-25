@@ -106,6 +106,11 @@ describe("createWasmRawCallbacks", () => {
     const writes: [string, number[]][] = [];
     const clears: string[] = [];
     const cancelled: number[] = [];
+    const askedBy: ProductContext[] = [];
+    const worker: ProductContext = {
+      productId: "camera.dot",
+      executionKind: "Worker",
+    };
     const raw = createWasmRawCallbacks(
       makeHostCallbacks({
         notifications: {
@@ -117,10 +122,16 @@ describe("createWasmRawCallbacks", () => {
           },
         },
         permissions: {
-          devicePermission: async (request) =>
-            request === "Camera" ? "AllowAlways" : "Deny",
-          remotePermission: async (request) =>
-            request.permission.tag === "ChainSubmit" ? "AllowOnce" : "Deny",
+          devicePermission: async (product, request) => {
+            askedBy.push(product);
+            return request === "Camera" ? "AllowAlways" : "Deny";
+          },
+          remotePermission: async (product, request) => {
+            askedBy.push(product);
+            return request.permission.tag === "ChainSubmit"
+              ? "AllowOnce"
+              : "Deny";
+          },
         },
         features: {
           featureSupported: async (request) => ({
@@ -153,18 +164,23 @@ describe("createWasmRawCallbacks", () => {
     ).toBe(5);
     expect(
       PermissionDecision.dec(
-        await raw.devicePermission!(HostDevicePermissionRequest.enc("Camera")),
+        await raw.devicePermission!(
+          ProductContext.enc(worker),
+          HostDevicePermissionRequest.enc("Camera"),
+        ),
       ),
     ).toBe("AllowAlways");
     expect(
       PermissionDecision.dec(
         await raw.remotePermission!(
+          ProductContext.enc(worker),
           RemotePermissionRequest.enc({
             permission: { tag: "ChainSubmit" },
           }),
         ),
       ),
     ).toBe("AllowOnce");
+    expect(askedBy).toEqual([worker, worker]);
     expect(
       HostFeatureSupportedResponse.dec(
         await raw.featureSupported!(
@@ -218,13 +234,15 @@ describe("createWasmRawCallbacks", () => {
               case "SignPayload":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.account.dotNsIdentifier ===
+                  review.value.value.callingProductId === "playground.dot" &&
+                  review.value.value.request.account.dotNsIdentifier ===
                     "playground.dot" &&
-                  review.value.value.payload.method === "0x0102"
+                  review.value.value.request.payload.method === "0x0102"
                 );
               case "SignRaw":
                 return (
                   review.value.tag === "Product" &&
+                  review.value.value.callingProductId === "playground.dot" &&
                   review.value.value.watermarked === false &&
                   review.value.value.request.payload.tag === "Bytes" &&
                   review.value.value.request.payload.value.bytes === "0x0304"
@@ -232,8 +250,10 @@ describe("createWasmRawCallbacks", () => {
               case "CreateTransaction":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.signer.derivationIndex.tag === "Index" &&
-                  review.value.value.callData === "0x0506"
+                  review.value.value.callingProductId === "playground.dot" &&
+                  review.value.value.payload.signer.derivationIndex.tag ===
+                    "Index" &&
+                  review.value.value.payload.callData === "0x0506"
                 );
               case "AccountAlias":
                 return (
@@ -304,8 +324,11 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
-              account: PRODUCT_ACCOUNT,
-              payload: SIGN_PAYLOAD,
+              callingProductId: "playground.dot",
+              request: {
+                account: PRODUCT_ACCOUNT,
+                payload: SIGN_PAYLOAD,
+              },
             },
           },
         }),
@@ -318,6 +341,7 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
+              callingProductId: "playground.dot",
               request: {
                 account: PRODUCT_ACCOUNT,
                 payload: {
@@ -338,11 +362,14 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
-              signer: PRODUCT_ACCOUNT,
-              genesisHash: GENESIS,
-              callData: "0x0506",
-              extensions: [],
-              txExtVersion: 0,
+              callingProductId: "playground.dot",
+              payload: {
+                signer: PRODUCT_ACCOUNT,
+                genesisHash: GENESIS,
+                callData: "0x0506",
+                extensions: [],
+                txExtVersion: 0,
+              },
             },
           },
         }),

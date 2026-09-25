@@ -1,5 +1,38 @@
 # @parity/truapi
 
+## 0.21.0
+
+### Minor Changes
+
+- ffdd9b4: `truapi-host` streams product frames to a wire debugger behind `--debugger <ws-url>` (or
+  `TRUAPI_DEBUGGER_URL`).
+
+  The commands that serve frames, `pairing-host`, `dev` and `signing-host`, resolve the switch before their frame
+  listener binds, so a non-loopback URL fails startup rather than at first dial. Each of those commands reports the
+  outcome once as a lifecycle event, naming the endpoint and the switch clap read it from, or saying the debugger is
+  off. Each accepted connection gets its own channel id, `<product-id>#<n>`, so concurrent peers under one host do not
+  share a trace key.
+
+- 5a9f4b9: The `Permissions` host callbacks name the product that asked: `devicePermission(product, request)` and
+  `remotePermission(product, request)` take the requesting `ProductContext` first, like the other product-scoped
+  callbacks, so a host can title the prompt with the product and key any grant it keeps itself by the product. Stored
+  decisions stay keyed by `productId` alone.
+
+  The `truapi-host` CLI names the requesting product in its permission approvals.
+
+### Patch Changes
+
+- cf1702f: Initialize built-in personhood ring keys when an authorized product lists the personhood owner's keys, so
+  full and lite handles are available without prior registration on the device.
+
+## 0.20.0
+
+### Minor Changes
+
+- 5f3dc71: Regenerate Rust and TypeScript sources before building the headless CLI so source installation works in fresh
+  and updated checkouts. Fix invalid documentation links and reject rustdoc warnings during code generation and CI.
+- Stop freezing built-in prototypes in the container so Next.js products hydrate in the CLI and native web views.
+
 ## 0.19.0
 
 ### Minor Changes

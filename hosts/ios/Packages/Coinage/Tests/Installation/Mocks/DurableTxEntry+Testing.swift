@@ -18,16 +18,9 @@ extension DurableTxEntry {
         .fixture(id: id, domainId: .coinageInstallation, status: status, groupId: target.registrationGroup)
     }
 
+    /// The production copy helper: it carries the attempt across, so a test cannot accidentally
+    /// rebuild an entry with a different one.
     func changing(status: DurableTxStatus) -> DurableTxEntry {
-        .fixture(
-            id: id,
-            domainId: domainId,
-            checkpoint: checkpoint,
-            mortality: mortality,
-            successDetectedAt: successDetectedAt,
-            status: status,
-            groupId: groupId,
-            txHash: txHash
-        )
+        withStatus(status)
     }
 }

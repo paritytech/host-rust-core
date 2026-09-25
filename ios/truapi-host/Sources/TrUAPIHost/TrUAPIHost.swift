@@ -13,6 +13,7 @@
 // `window.__truapi_localhost` for the shared container to consume.
 
 import Foundation
+import UIKit
 
 /// Package metadata.
 public enum TrUAPIHost {
@@ -97,6 +98,10 @@ public struct ProductExecutionConfig: Sendable, Equatable {
         self.executionKind = executionKind
     }
 
+    fileprivate init(native: NativeProductExecutionConfig) {
+        self.init(productId: native.productId, executionKind: native.executionKind)
+    }
+
     fileprivate var native: NativeProductExecutionConfig {
         NativeProductExecutionConfig(
             productId: productId,
@@ -135,9 +140,9 @@ public protocol HostCoreStorageBackend: AnyObject, Sendable {
 /// native shell owns. The permission split mirrors the Rust `Permissions`
 /// trait:
 ///
-///   * ``devicePermission(request:)`` handles OS-scoped grants (camera,
-///     mic, location).
-///   * ``remotePermission(request:)`` handles per-product capability
+///   * ``devicePermission(product:request:)`` handles OS-scoped grants
+///     (camera, mic, location).
+///   * ``remotePermission(product:request:)`` handles per-product capability
 ///     bundles.
 ///
 /// The Rust core invokes callbacks on its shared background bridge executor.
@@ -158,9 +163,12 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Cancel a previously scheduled notification id.
     func cancelNotification(id: UInt32) throws
 
-    /// Prompt for a device-level permission on the main actor, suspending until
-    /// the user decides. Preserve the approval lifetime.
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> PermissionDecision
+    /// Prompt for a device-level permission `product` requested on the main
+    /// actor, suspending until the user decides. Preserve the approval lifetime.
+    func devicePermission(
+        product: ProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> PermissionDecision
 
     /// Report the OS status of a device capability without prompting. Answer
     /// from the platform's authorization APIs, for example
@@ -175,9 +183,12 @@ public protocol HostBridge: AnyObject, Sendable {
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
         -> NativeDevicePermissionStatus
 
-    /// Prompt for a remote (product-scoped) permission bundle on the main actor,
-    /// suspending until the user decides.
-    func remotePermission(request: RemotePermission) async throws -> PermissionDecision
+    /// Prompt for a remote permission bundle `product` requested on the main
+    /// actor, suspending until the user decides.
+    func remotePermission(
+        product: ProductExecutionConfig,
+        request: RemotePermission
+    ) async throws -> PermissionDecision
 
     /// Observe an auth state change, in transition order: render `.pairing` as
     /// the pairing QR UI, `.connected`/`.disconnected` as the account badge,
@@ -518,9 +529,15 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> NativePermissionDecision {
+    func devicePermission(
+        product: NativeProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> NativePermissionDecision {
         try await withHostRejection {
-            try await bridge.devicePermission(request: request).native
+            try await bridge.devicePermission(
+                product: ProductExecutionConfig(native: product),
+                request: request
+            ).native
         }
     }
 
@@ -532,9 +549,15 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func remotePermission(request: RemotePermission) async throws -> NativePermissionDecision {
+    func remotePermission(
+        product: NativeProductExecutionConfig,
+        request: RemotePermission
+    ) async throws -> NativePermissionDecision {
         try await withHostRejection {
-            try await bridge.remotePermission(request: request).native
+            try await bridge.remotePermission(
+                product: ProductExecutionConfig(native: product),
+                request: request
+            ).native
         }
     }
 
@@ -706,14 +729,41 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
 public final class TrUAPIHostRuntime: @unchecked Sendable {
     private let inner: NativeTrUApiHostRuntime
     private let callbackRetainer: HostCallbacks
+    private let notificationCenter: NotificationCenter
+    private let foregroundObserver: NSObjectProtocol
 
-    public init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
+    public convenience init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
+        try self.init(bridge: bridge, runtimeConfig: runtimeConfig, notificationCenter: .default)
+    }
+
+    init(
+        bridge: HostBridge,
+        runtimeConfig: HostRuntimeConfig,
+        notificationCenter: NotificationCenter
+    ) throws {
         let adapter = HostCallbackAdapter(bridge: bridge)
         callbackRetainer = adapter
-        inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
+        let inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
             callbacks: adapter,
             runtimeConfig: runtimeConfig.native
         )
+        self.inner = inner
+        self.notificationCenter = notificationCenter
+        // iOS reclaims a suspended app's listening sockets. Rebinding waits on
+        // the Rust runtime's threads, so it runs off the main thread and at their QoS.
+        foregroundObserver = notificationCenter.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            DispatchQueue.global().async(flags: .noQoS) {
+                inner.relistenWsBridge()
+            }
+        }
+    }
+
+    deinit {
+        notificationCenter.removeObserver(foregroundObserver)
     }
 
     /// Open one executable connection with a host-assigned immutable context.

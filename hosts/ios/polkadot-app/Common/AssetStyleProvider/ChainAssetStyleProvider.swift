@@ -27,7 +27,7 @@ extension ChainAssetStyleProvider: ChainAssetStyleProviding {
         #if UNSTABLE
             case SupportedAssets.dDollar:
                 .init(
-                    displayTitle: String(localized: .tokenName),
+                    displayTitle: PaymentAssetBranding.shared.current.symbol,
                     logo: nil,
                     brandColor: .white,
                     mainTextColor: .black100,
@@ -36,7 +36,7 @@ extension ChainAssetStyleProvider: ChainAssetStyleProviding {
         #else
             case SupportedAssets.pusdPPL:
                 .init(
-                    displayTitle: String(localized: .tokenName),
+                    displayTitle: PaymentAssetBranding.shared.current.symbol,
                     logo: nil,
                     brandColor: .white,
                     mainTextColor: .black100,

@@ -48,7 +48,7 @@ use truapi::latest::{
 use truapi_platform::{
     BLESSED_REMOTE_DOMAINS, CoreStorage, CoreStorageKey, DevicePermissionStatus,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision,
-    PermissionStatusHost, Permissions, has_trusted_remote_permissions,
+    PermissionStatusHost, Permissions, ProductContext, has_trusted_remote_permissions,
     is_valid_remote_domain_pattern, normalize_remote_domain, remote_domain_candidates,
 };
 
@@ -158,11 +158,11 @@ impl TemporaryPermissions {
 pub struct PermissionsService<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> {
     storage: &'a S,
     prompt: &'a P,
-    product_id: &'a str,
+    product: &'a ProductContext,
     /// Live OS permission state, when the host serves that capability. Absent
     /// leaves the stored decision governing on its own.
     status: Option<&'a dyn PermissionStatusHost>,
-    /// Whether `product_id` holds every remote permission without prompting.
+    /// Whether `product` holds every remote permission without prompting.
     remote_auto_granted: bool,
     /// One-use grants remain local to the execution that requested them.
     temporary_permissions: Arc<TemporaryPermissions>,
@@ -174,13 +174,13 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     /// Device grants resolve without an OS check by default. Use
     /// [`Self::with_status_host`] on paths that enforce a device capability, so
     /// a grant the OS has since withdrawn stops reading as usable.
-    pub fn new(storage: &'a S, prompt: &'a P, product_id: &'a str) -> Self {
+    pub fn new(storage: &'a S, prompt: &'a P, product: &'a ProductContext) -> Self {
         Self {
             storage,
             prompt,
-            product_id,
+            product,
             status: None,
-            remote_auto_granted: has_trusted_remote_permissions(product_id),
+            remote_auto_granted: has_trusted_remote_permissions(&product.product_id),
             temporary_permissions: Arc::default(),
         }
     }
@@ -188,6 +188,10 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     pub fn with_temporary_permissions(mut self, permissions: Arc<TemporaryPermissions>) -> Self {
         self.temporary_permissions = permissions;
         self
+    }
+
+    fn product_id(&self) -> &str {
+        &self.product.product_id
     }
 
     /// Revalidate device capabilities against the OS state `status` reports.
@@ -223,7 +227,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         if self.os_refuses(*permission).await {
             return Ok(PermissionAuthorizationStatus::Denied);
         }
-        let key = CoreStorageKey::device_permission_authorization(self.product_id, permission);
+        let key = CoreStorageKey::device_permission_authorization(self.product_id(), permission);
         self.cached_authorization(&key, false).await
     }
 
@@ -237,7 +241,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         request: &RemotePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         let Some(domains) = requested_domains(request) else {
-            let key = CoreStorageKey::remote_permission_authorization(self.product_id, request);
+            let key = CoreStorageKey::remote_permission_authorization(self.product_id(), request);
             return self.cached_remote_authorization(&key, false).await;
         };
         match self.resolve_domains(domains).await?.0 {
@@ -289,7 +293,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     /// multi-domain denial lives. For one domain this is that domain's own key.
     fn bundle_key(&self, domains: &[String]) -> CoreStorageKey {
         CoreStorageKey::remote_permission_authorization(
-            self.product_id,
+            self.product_id(),
             &remote_bundle_request(domains),
         )
     }
@@ -312,7 +316,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             self.default_remote_status()
         };
         for candidate in remote_domain_candidates(domain) {
-            let key = CoreStorageKey::remote_domain_authorization(self.product_id, &candidate);
+            let key = CoreStorageKey::remote_domain_authorization(self.product_id(), &candidate);
             if let Some(stored) = peek_stored(self.storage, key.clone()).await? {
                 fallback = stored.into();
                 break;
@@ -378,7 +382,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             PermissionAuthorizationRequest::IdentityDisclosure => {
                 authorization_status(
                     self.storage,
-                    CoreStorageKey::identity_disclosure_authorization(self.product_id),
+                    CoreStorageKey::identity_disclosure_authorization(self.product_id()),
                 )
                 .await
             }
@@ -386,7 +390,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                 authorization_status(
                     self.storage,
                     CoreStorageKey::account_access_authorization(
-                        self.product_id,
+                        self.product_id(),
                         target_product_id,
                     ),
                 )
@@ -419,7 +423,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     ) -> Result<(), GenericError> {
         let key = match request {
             PermissionAuthorizationRequest::Device(permission) => {
-                CoreStorageKey::device_permission_authorization(self.product_id, permission)
+                CoreStorageKey::device_permission_authorization(self.product_id(), permission)
             }
             PermissionAuthorizationRequest::Remote(request) => {
                 // This is the host's per-domain surface: it names the patterns it
@@ -429,7 +433,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                 if let Some(domains) = requested_domains(request) {
                     for domain in domains {
                         let key =
-                            CoreStorageKey::remote_domain_authorization(self.product_id, domain);
+                            CoreStorageKey::remote_domain_authorization(self.product_id(), domain);
                         self.temporary_permissions.revoke(&key);
                         set_authorization_status(self.storage, key, status).await?;
                     }
@@ -439,13 +443,13 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                     }
                     return Ok(());
                 }
-                CoreStorageKey::remote_permission_authorization(self.product_id, request)
+                CoreStorageKey::remote_permission_authorization(self.product_id(), request)
             }
             PermissionAuthorizationRequest::IdentityDisclosure => {
-                CoreStorageKey::identity_disclosure_authorization(self.product_id)
+                CoreStorageKey::identity_disclosure_authorization(self.product_id())
             }
             PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
-                CoreStorageKey::account_access_authorization(self.product_id, target_product_id)
+                CoreStorageKey::account_access_authorization(self.product_id(), target_product_id)
             }
         };
         self.temporary_permissions.revoke(&key);
@@ -487,7 +491,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         consume: bool,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         let _guard = self.temporary_permissions.authorization.lock().await;
-        let key = CoreStorageKey::device_permission_authorization(self.product_id, &permission);
+        let key = CoreStorageKey::device_permission_authorization(self.product_id(), &permission);
         if self.os_refuses(permission).await {
             return Ok(PermissionAuthorizationStatus::Denied);
         }
@@ -498,7 +502,11 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         // Only a genuine user authorization is persisted. A prompt-callback
         // error is transient (dismissed UI, unavailable UI, IPC timeout), not
         // a denial, so leave the authorization ask/default.
-        let authorization = match self.prompt.device_permission(permission).await {
+        let authorization = match self
+            .prompt
+            .device_permission(self.product, permission)
+            .await
+        {
             Ok(decision) => decision,
             Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
         };
@@ -534,14 +542,14 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         let _guard = self.temporary_permissions.authorization.lock().await;
         let Some(domains) = requested_domains(&request).map(<[String]>::to_vec) else {
-            let key = CoreStorageKey::remote_permission_authorization(self.product_id, &request);
+            let key = CoreStorageKey::remote_permission_authorization(self.product_id(), &request);
             match self.cached_remote_authorization(&key, consume).await? {
                 PermissionAuthorizationStatus::NotDetermined => {}
                 decided => return Ok(decided),
             }
             // See `check_or_prompt_device`: persist only a genuine user decision;
             // transient callback errors leave the authorization ask/default.
-            let authorization = match self.prompt.remote_permission(request).await {
+            let authorization = match self.prompt.remote_permission(self.product, request).await {
                 Ok(decision) => decision,
                 Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
             };
@@ -575,7 +583,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
 
         let authorization = match self
             .prompt
-            .remote_permission(remote_bundle_request(&undecided))
+            .remote_permission(self.product, remote_bundle_request(&undecided))
             .await
         {
             Ok(decision) => decision,
@@ -587,7 +595,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             PermissionDecision::AllowAlways | PermissionDecision::AllowOnce => {
                 for domain in &undecided {
                     self.record_decision(
-                        CoreStorageKey::remote_domain_authorization(self.product_id, domain),
+                        CoreStorageKey::remote_domain_authorization(self.product_id(), domain),
                         authorization,
                         consume,
                     )
@@ -640,6 +648,35 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     }
 }
 
+/// Stored decision on `caller_id` reaching `target_product_id`'s account.
+pub async fn account_access_status<S: CoreStorage + ?Sized>(
+    storage: &S,
+    caller_id: &str,
+    target_product_id: &str,
+) -> Result<PermissionAuthorizationStatus, GenericError> {
+    authorization_status(
+        storage,
+        CoreStorageKey::account_access_authorization(caller_id, target_product_id),
+    )
+    .await
+}
+
+/// Store a decision on `caller_id` reaching `target_product_id`'s account.
+/// `NotDetermined` clears it.
+pub async fn set_account_access_status<S: CoreStorage + ?Sized>(
+    storage: &S,
+    caller_id: &str,
+    target_product_id: &str,
+    status: PermissionAuthorizationStatus,
+) -> Result<(), GenericError> {
+    set_authorization_status(
+        storage,
+        CoreStorageKey::account_access_authorization(caller_id, target_product_id),
+        status,
+    )
+    .await
+}
+
 async fn authorization_status<S: CoreStorage + ?Sized>(
     storage: &S,
     key: CoreStorageKey,
@@ -684,10 +721,27 @@ mod tests {
     use super::*;
     use futures::lock::Mutex;
     use std::collections::HashMap;
+    use std::sync::LazyLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use truapi::latest::RemotePermission;
     use truapi::v01;
     use truapi::v01::GenericError;
+
+    static PRODUCT: LazyLock<ProductContext> = LazyLock::new(|| {
+        ProductContext::new("product.dot".to_string()).expect("product id is valid")
+    });
+
+    static OTHER_PRODUCT: LazyLock<ProductContext> = LazyLock::new(|| {
+        ProductContext::new("other.dot".to_string()).expect("product id is valid")
+    });
+
+    static PEOPL_APP: LazyLock<ProductContext> = LazyLock::new(|| {
+        ProductContext::new("app.peopl.dot".to_string()).expect("product id is valid")
+    });
+
+    static PEOPL: LazyLock<ProductContext> = LazyLock::new(|| {
+        ProductContext::new("peopl.dot".to_string()).expect("product id is valid")
+    });
 
     #[derive(Default)]
     struct MemStorage {
@@ -753,9 +807,9 @@ mod tests {
                     let prompt =
                         ScriptedPrompt::decisions(vec![], vec![PermissionDecision::Deny, decision]);
                     let grants = Arc::default();
-                    let sdk = PermissionsService::new(&storage, &prompt, "product.dot")
+                    let sdk = PermissionsService::new(&storage, &prompt, &PRODUCT)
                         .with_temporary_permissions(Arc::clone(&grants));
-                    let native = PermissionsService::new(&storage, &prompt, "product.dot")
+                    let native = PermissionsService::new(&storage, &prompt, &PRODUCT)
                         .with_temporary_permissions(grants);
                     let pending_answer = prompt.remote_answers.lock().await;
                     let mut first = Box::pin(sdk.authorize_remote(request.clone()));
@@ -794,7 +848,7 @@ mod tests {
                 let storage = MemStorage::default();
                 let prompt =
                     ScriptedPrompt::decisions(vec![PermissionDecision::Deny, decision], vec![]);
-                let service = PermissionsService::new(&storage, &prompt, "product.dot");
+                let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
                 let pending_answer = prompt.device_answers.lock().await;
                 let mut first =
                     Box::pin(service.authorize_device(HostDevicePermissionRequest::Camera));
@@ -822,7 +876,7 @@ mod tests {
         futures::executor::block_on(async {
             let storage = MemStorage::default();
             let prompt = ScriptedPrompt::decisions(vec![], vec![PermissionDecision::AllowAlways]);
-            let service = PermissionsService::new(&storage, &prompt, "product.dot");
+            let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
             let request = remote_domains(&["cdn.example.com"]);
             let pending_answer = prompt.remote_answers.lock().await;
             let mut cancelled = Box::pin(service.authorize_remote(request.clone()));
@@ -832,7 +886,7 @@ mod tests {
 
             let other_prompt =
                 ScriptedPrompt::decisions(vec![], vec![PermissionDecision::AllowAlways]);
-            let other = PermissionsService::new(&storage, &other_prompt, "other.dot");
+            let other = PermissionsService::new(&storage, &other_prompt, &OTHER_PRODUCT);
             let mut independent = Box::pin(other.authorize_remote(request));
             assert_eq!(
                 futures::poll!(&mut independent),
@@ -860,13 +914,13 @@ mod tests {
                 vec![PermissionDecision::Deny, PermissionDecision::AllowOnce],
             );
             let grants = Arc::default();
-            let sdk = PermissionsService::new(&storage, &prompt, "product.dot")
+            let sdk = PermissionsService::new(&storage, &prompt, &PRODUCT)
                 .with_temporary_permissions(Arc::clone(&grants));
-            let operation = PermissionsService::new(&storage, &prompt, "product.dot")
+            let operation = PermissionsService::new(&storage, &prompt, &PRODUCT)
                 .with_temporary_permissions(Arc::clone(&grants));
-            let other_product = PermissionsService::new(&storage, &prompt, "other.dot")
+            let other_product = PermissionsService::new(&storage, &prompt, &OTHER_PRODUCT)
                 .with_temporary_permissions(grants);
-            let other_execution = PermissionsService::new(&storage, &prompt, "product.dot");
+            let other_execution = PermissionsService::new(&storage, &prompt, &PRODUCT);
             let request = remote_domains(&["api.example.com"]);
             let requested = sdk.check_or_prompt_remote(request.clone()).await.unwrap();
             assert_eq!(
@@ -907,7 +961,7 @@ mod tests {
                     vec![],
                     vec![PermissionDecision::Deny, PermissionDecision::AllowOnce],
                 );
-                let service = PermissionsService::new(&storage, &prompt, "product.dot");
+                let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
                 let granted = remote_domains(&["api.example.com"]);
                 service
                     .check_or_prompt_remote(granted.clone())
@@ -952,7 +1006,7 @@ mod tests {
                 vec![],
                 vec![PermissionDecision::Deny, PermissionDecision::AllowOnce],
             );
-            let service = PermissionsService::new(&storage, &prompt, "product.dot");
+            let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
             service
                 .check_or_prompt_remote(remote_domains(&["*.example.com"]))
                 .await
@@ -984,7 +1038,7 @@ mod tests {
                 vec![PermissionDecision::AllowOnce],
                 vec![PermissionDecision::AllowOnce],
             );
-            let service = PermissionsService::new(&storage, &prompt, "product.dot");
+            let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
             let remote = remote_domains(&["api.example.com"]);
             let device = HostDevicePermissionRequest::Camera;
             assert_eq!(
@@ -1011,7 +1065,7 @@ mod tests {
         futures::executor::block_on(async {
             let storage = MemStorage::default();
             let prompt = ScriptedPrompt::new(vec![], vec![]);
-            let service = PermissionsService::new(&storage, &prompt, "product.dot");
+            let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
             for domain in BLESSED_REMOTE_DOMAINS {
                 let request = remote_domains(&[domain]);
                 let granted = service.authorize_remote(request.clone()).await.unwrap();
@@ -1039,7 +1093,7 @@ mod tests {
         futures::executor::block_on(async {
             let storage = MemStorage::default();
             let prompt = ScriptedPrompt::decisions(vec![], vec![PermissionDecision::AllowOnce]);
-            let service = PermissionsService::new(&storage, &prompt, "product.dot");
+            let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
             let wildcard = remote_domains(&["*"]);
             service
                 .check_or_prompt_remote(wildcard.clone())
@@ -1076,7 +1130,7 @@ mod tests {
         futures::executor::block_on(async {
             let storage = MemStorage::default();
             let prompt = ScriptedPrompt::decisions(vec![], vec![PermissionDecision::AllowOnce]);
-            let service = PermissionsService::new(&storage, &prompt, "product.dot");
+            let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
             service
                 .check_or_prompt_remote(remote_domains(&["*.googleapis.com"]))
                 .await
@@ -1109,7 +1163,7 @@ mod tests {
         futures::executor::block_on(async {
             let storage = MemStorage::default();
             let prompt = ScriptedPrompt::decisions(vec![], vec![PermissionDecision::AllowOnce]);
-            let service = PermissionsService::new(&storage, &prompt, "product.dot");
+            let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
             let request = remote_domains(&["api.example.com"]);
             service
                 .check_or_prompt_remote(request.clone())
@@ -1176,6 +1230,7 @@ mod tests {
     impl Permissions for ScriptedPrompt {
         async fn device_permission(
             &self,
+            _product: &ProductContext,
             _request: HostDevicePermissionRequest,
         ) -> Result<PermissionDecision, GenericError> {
             self.device_calls.fetch_add(1, Ordering::SeqCst);
@@ -1190,6 +1245,7 @@ mod tests {
 
         async fn remote_permission(
             &self,
+            _product: &ProductContext,
             request: RemotePermissionRequest,
         ) -> Result<PermissionDecision, GenericError> {
             self.remote_calls.fetch_add(1, Ordering::SeqCst);
@@ -1273,7 +1329,7 @@ mod tests {
     /// successful request does, with no OS status source involved.
     fn grant_stored(storage: &MemStorage, capability: HostDevicePermissionRequest) {
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(storage, &prompt, "product.dot");
+        let service = PermissionsService::new(storage, &prompt, &PRODUCT);
         assert_eq!(
             futures::executor::block_on(service.check_or_prompt_device(capability)).unwrap(),
             PermissionAuthorizationStatus::Authorized,
@@ -1292,7 +1348,7 @@ mod tests {
     fn check_or_prompt_device_caches_grant() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let first = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -1312,7 +1368,7 @@ mod tests {
     fn check_or_prompt_remote_caches_denial() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![false]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let request = RemotePermissionRequest {
             permission: RemotePermission::ChainSubmit,
@@ -1334,7 +1390,7 @@ mod tests {
     fn a_bundle_grant_is_visible_to_a_single_domain_lookup() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let granted = futures::executor::block_on(
             service.check_or_prompt_remote(remote_domains(&["a.example.com", "b.example.com"])),
@@ -1368,7 +1424,7 @@ mod tests {
     fn a_wildcard_grant_covers_descendants_but_not_its_root() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         futures::executor::block_on(
             service.check_or_prompt_remote(remote_domains(&["*.example.com"])),
@@ -1401,7 +1457,7 @@ mod tests {
     fn the_most_specific_stored_decision_wins() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         // Deny the whole wildcard, then allow one host under it explicitly.
         futures::executor::block_on(service.set_authorization_status(
@@ -1455,7 +1511,7 @@ mod tests {
         let storage = MemStorage::default();
         // Answers pop from the end: grant first, then deny.
         let prompt = ScriptedPrompt::new(vec![], vec![false, true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&["a.com"])))
             .unwrap();
@@ -1486,7 +1542,7 @@ mod tests {
         let storage = MemStorage::default();
         // Answers pop from the end: deny the pair, then grant the single domain.
         let prompt = ScriptedPrompt::new(vec![], vec![true, false]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let pair = remote_domains(&["api.coingecko.com", "analytics.vendor.com"]);
         assert_eq!(
@@ -1536,7 +1592,7 @@ mod tests {
     fn unsupported_wildcards_are_rejected_without_prompting_or_storing() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         for domain in ["*.com", "*.dot", "*.127.0.0.1", "*.[::1]"] {
             assert_eq!(
@@ -1560,7 +1616,7 @@ mod tests {
     fn a_grant_covers_every_spelling_of_the_granted_host() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         futures::executor::block_on(
             service.check_or_prompt_remote(remote_domains(&["Bücher.example"])),
@@ -1588,7 +1644,7 @@ mod tests {
     fn a_denied_domain_short_circuits_the_bundle_without_prompting() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![false]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&["a.com"])))
             .unwrap();
@@ -1609,7 +1665,7 @@ mod tests {
     fn an_empty_domain_bundle_is_denied_without_prompting() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         assert_eq!(
             futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&[])))
@@ -1627,7 +1683,7 @@ mod tests {
     fn clearing_a_bundle_clears_each_domain_it_names() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         futures::executor::block_on(
             service.check_or_prompt_remote(remote_domains(&["a.com", "b.com"])),
@@ -1653,7 +1709,7 @@ mod tests {
     fn resetting_a_bundle_clears_a_recorded_denial() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![false]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
         let pair = remote_domains(&["a.com", "b.com"]);
 
         futures::executor::block_on(service.check_or_prompt_remote(pair.clone())).unwrap();
@@ -1674,11 +1730,11 @@ mod tests {
     fn remote_domain_grants_are_scoped_to_one_product() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
         futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&["a.com"])))
             .unwrap();
 
-        let other = PermissionsService::new(&storage, &prompt, "other.dot");
+        let other = PermissionsService::new(&storage, &prompt, &OTHER_PRODUCT);
         assert_eq!(
             futures::executor::block_on(other.peek_remote(&remote_domains(&["a.com"]))).unwrap(),
             PermissionAuthorizationStatus::NotDetermined
@@ -1691,7 +1747,7 @@ mod tests {
         storage: &'a MemStorage,
         prompt: &'a ScriptedPrompt,
     ) -> PermissionsService<'a, MemStorage, ScriptedPrompt> {
-        PermissionsService::new(storage, prompt, "peopl.dot")
+        PermissionsService::new(storage, prompt, &PEOPL)
     }
 
     fn remote(permission: RemotePermission) -> RemotePermissionRequest {
@@ -1874,7 +1930,8 @@ mod tests {
             "dim2.dot",
             "stash.dot",
         ] {
-            let service = PermissionsService::new(&storage, &prompt, product_id);
+            let product = ProductContext::new(product_id.to_string()).expect("product id is valid");
+            let service = PermissionsService::new(&storage, &prompt, &product);
             assert_eq!(
                 futures::executor::block_on(
                     service.peek_remote(&remote(RemotePermission::ChainSubmit))
@@ -1890,7 +1947,7 @@ mod tests {
     fn a_subdomain_of_a_trusted_label_is_not_trusted() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "app.peopl.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PEOPL_APP);
         let request = remote(RemotePermission::ChainSubmit);
 
         assert_eq!(
@@ -1910,7 +1967,8 @@ mod tests {
         let prompt = ScriptedPrompt::new(vec![], vec![true, true]);
 
         for product_id in ["localhost", "localhost:3000"] {
-            let service = PermissionsService::new(&storage, &prompt, product_id);
+            let product = ProductContext::new(product_id.to_string()).expect("product id is valid");
+            let service = PermissionsService::new(&storage, &prompt, &product);
             let request = remote(RemotePermission::ChainSubmit);
             assert_eq!(
                 futures::executor::block_on(service.peek_remote(&request)).unwrap(),
@@ -1926,7 +1984,7 @@ mod tests {
     fn an_untrusted_product_still_prompts_for_every_remote_permission() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true; 5]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         for permission in every_remote_permission() {
             futures::executor::block_on(service.check_or_prompt_remote(remote(permission)))
@@ -2002,7 +2060,7 @@ mod tests {
         // Device denies, remote grants. If the caches collided we'd see the
         // same answer on the second call.
         let prompt = ScriptedPrompt::new(vec![false], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let device = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -2024,7 +2082,7 @@ mod tests {
     fn device_prompt_does_not_invoke_remote_callback() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let _ = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -2038,7 +2096,7 @@ mod tests {
     fn remote_prompt_does_not_invoke_device_callback() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let _ =
             futures::executor::block_on(service.check_or_prompt_remote(RemotePermissionRequest {
@@ -2053,7 +2111,7 @@ mod tests {
     fn peek_returns_not_determined_until_authorized() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let before =
             futures::executor::block_on(service.peek_device(&HostDevicePermissionRequest::Camera))
@@ -2075,7 +2133,7 @@ mod tests {
     fn set_authorization_status_writes_and_clears() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
         let request = PermissionAuthorizationRequest::Device(HostDevicePermissionRequest::Camera);
 
         futures::executor::block_on(
@@ -2102,7 +2160,7 @@ mod tests {
     fn identity_disclosure_authorization_round_trips() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
         let request = PermissionAuthorizationRequest::IdentityDisclosure;
 
         assert_eq!(
@@ -2119,7 +2177,7 @@ mod tests {
             PermissionAuthorizationStatus::Authorized
         );
 
-        let other_product_service = PermissionsService::new(&storage, &prompt, "other.dot");
+        let other_product_service = PermissionsService::new(&storage, &prompt, &OTHER_PRODUCT);
         assert_eq!(
             futures::executor::block_on(other_product_service.authorization_status(&request))
                 .unwrap(),
@@ -2131,7 +2189,7 @@ mod tests {
     fn account_access_authorization_is_scoped_by_requester_and_target() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
         let request = PermissionAuthorizationRequest::AccountAccess {
             target_product_id: "target.dot".to_string(),
         };
@@ -2154,7 +2212,7 @@ mod tests {
             PermissionAuthorizationStatus::NotDetermined
         );
 
-        let other_product_service = PermissionsService::new(&storage, &prompt, "other.dot");
+        let other_product_service = PermissionsService::new(&storage, &prompt, &OTHER_PRODUCT);
         assert_eq!(
             futures::executor::block_on(other_product_service.authorization_status(&request))
                 .unwrap(),
@@ -2170,6 +2228,7 @@ mod tests {
     impl Permissions for FailingPrompt {
         async fn device_permission(
             &self,
+            _product: &ProductContext,
             _request: HostDevicePermissionRequest,
         ) -> Result<PermissionDecision, GenericError> {
             Err(GenericError {
@@ -2179,6 +2238,7 @@ mod tests {
 
         async fn remote_permission(
             &self,
+            _product: &ProductContext,
             _request: RemotePermissionRequest,
         ) -> Result<PermissionDecision, GenericError> {
             Err(GenericError {
@@ -2191,7 +2251,7 @@ mod tests {
     fn prompt_failure_stays_not_determined_without_persisting() {
         let storage = MemStorage::default();
         let prompt = FailingPrompt;
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let device_decision = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -2249,7 +2309,7 @@ mod tests {
         .unwrap();
 
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let peeked =
             futures::executor::block_on(service.peek_device(&HostDevicePermissionRequest::Camera))
@@ -2296,7 +2356,7 @@ mod tests {
     fn storage_read_error_propagates() {
         let storage = FailingStorage;
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT);
 
         let err = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -2315,8 +2375,8 @@ mod tests {
         // the user can be asked about.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&status));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -2335,7 +2395,7 @@ mod tests {
         let denied_prompt = ScriptedPrompt::new(vec![], vec![]);
         let denied = ScriptedStatus::always(DevicePermissionStatus::Denied);
         futures::executor::block_on(
-            PermissionsService::new(&storage, &denied_prompt, "product.dot")
+            PermissionsService::new(&storage, &denied_prompt, &PRODUCT)
                 .with_status_host(Some(&denied))
                 .check_or_prompt_device(HostDevicePermissionRequest::Camera),
         )
@@ -2345,8 +2405,8 @@ mod tests {
         // never theirs to lose, so this resolves without asking them again.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let restored = ScriptedStatus::always(DevicePermissionStatus::Granted);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&restored));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&restored));
 
         assert_eq!(
             futures::executor::block_on(
@@ -2369,8 +2429,8 @@ mod tests {
         // scripted: reaching the prompt at all would panic.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&status));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&status));
 
         // Repeated, because a condition a prompt cannot clear re-fires forever.
         for _ in 0..3 {
@@ -2397,7 +2457,7 @@ mod tests {
         let declining = ScriptedPrompt::new(vec![false], vec![]);
         let reset = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
         futures::executor::block_on(
-            PermissionsService::new(&storage, &declining, "product.dot")
+            PermissionsService::new(&storage, &declining, &PRODUCT)
                 .with_status_host(Some(&reset))
                 .check_or_prompt_device(HostDevicePermissionRequest::Camera),
         )
@@ -2405,8 +2465,8 @@ mod tests {
 
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let restored = ScriptedStatus::always(DevicePermissionStatus::Granted);
-        let after = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&restored));
+        let after =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&restored));
         assert_eq!(
             futures::executor::block_on(
                 after.check_or_prompt_device(HostDevicePermissionRequest::Camera)
@@ -2426,8 +2486,8 @@ mod tests {
         // holds must never be reached through that path.
         let failing = FailingPrompt;
         let reset = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service = PermissionsService::new(&storage, &failing, "product.dot")
-            .with_status_host(Some(&reset));
+        let service =
+            PermissionsService::new(&storage, &failing, &PRODUCT).with_status_host(Some(&reset));
         assert_eq!(
             futures::executor::block_on(
                 service.check_or_prompt_device(HostDevicePermissionRequest::Camera)
@@ -2444,8 +2504,8 @@ mod tests {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&status));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -2462,7 +2522,7 @@ mod tests {
         let storage = MemStorage::default();
         let seed = ScriptedPrompt::new(vec![false], vec![]);
         futures::executor::block_on(
-            PermissionsService::new(&storage, &seed, "product.dot")
+            PermissionsService::new(&storage, &seed, &PRODUCT)
                 .check_or_prompt_device(HostDevicePermissionRequest::Camera),
         )
         .unwrap();
@@ -2471,8 +2531,8 @@ mod tests {
         // its own state is not a reason to put the question again.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&status));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -2493,8 +2553,8 @@ mod tests {
         // channel revoke a capability the OS still allows.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::failing();
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&status));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -2511,8 +2571,8 @@ mod tests {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let denied = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&denied));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&denied));
 
         assert_eq!(
             futures::executor::block_on(
@@ -2525,7 +2585,7 @@ mod tests {
         // Nothing was written, so the product question is still open: once the
         // OS allows it, the user gets asked rather than inheriting a denial
         // they never gave.
-        let peek = PermissionsService::new(&storage, &prompt, "product.dot");
+        let peek = PermissionsService::new(&storage, &prompt, &PRODUCT);
         assert_eq!(
             futures::executor::block_on(peek.peek_device(&HostDevicePermissionRequest::Camera))
                 .unwrap(),
@@ -2549,8 +2609,8 @@ mod tests {
             )],
             DevicePermissionStatus::Granted,
         );
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&status));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -2579,8 +2639,7 @@ mod tests {
     fn a_host_without_the_capability_resolves_from_stored_state_alone() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service =
-            PermissionsService::new(&storage, &prompt, "product.dot").with_status_host(None);
+        let service = PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(None);
 
         let first = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -2604,8 +2663,8 @@ mod tests {
         // TrUAPI-level decision with no OS gate behind it, so it must resolve
         // untouched.
         let status = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&status));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -2626,8 +2685,8 @@ mod tests {
         grant_stored(&storage, HostDevicePermissionRequest::Camera);
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let refusing = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&refusing));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&refusing));
 
         assert_eq!(
             futures::executor::block_on(service.peek_device(&HostDevicePermissionRequest::Camera))
@@ -2643,7 +2702,7 @@ mod tests {
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let refusing = ScriptedStatus::always(DevicePermissionStatus::Denied);
         futures::executor::block_on(
-            PermissionsService::new(&storage, &prompt, "product.dot")
+            PermissionsService::new(&storage, &prompt, &PRODUCT)
                 .with_status_host(Some(&refusing))
                 .peek_device(&HostDevicePermissionRequest::Camera),
         )
@@ -2654,7 +2713,7 @@ mod tests {
         let restored = ScriptedStatus::always(DevicePermissionStatus::Granted);
         assert_eq!(
             futures::executor::block_on(
-                PermissionsService::new(&storage, &prompt, "product.dot")
+                PermissionsService::new(&storage, &prompt, &PRODUCT)
                     .with_status_host(Some(&restored))
                     .peek_device(&HostDevicePermissionRequest::Camera),
             )
@@ -2675,7 +2734,7 @@ mod tests {
         ] {
             assert_eq!(
                 futures::executor::block_on(
-                    PermissionsService::new(&storage, &prompt, "product.dot")
+                    PermissionsService::new(&storage, &prompt, &PRODUCT)
                         .with_status_host(Some(&status))
                         .peek_device(&HostDevicePermissionRequest::Camera),
                 )
@@ -2691,8 +2750,8 @@ mod tests {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
         let refusing = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&refusing));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&refusing));
         futures::executor::block_on(
             service.check_or_prompt_remote(remote_domains(&["example.com"])),
         )
@@ -2714,8 +2773,8 @@ mod tests {
         grant_stored(&storage, HostDevicePermissionRequest::Camera);
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let refusing = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot")
-            .with_status_host(Some(&refusing));
+        let service =
+            PermissionsService::new(&storage, &prompt, &PRODUCT).with_status_host(Some(&refusing));
 
         let requested = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),

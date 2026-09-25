@@ -152,6 +152,7 @@ struct TrUAPIReviewPromptMapperTests {
         let payload = try Data.randomOrError(of: 48)
 
         let request = mapper.makeStatementSignRequest(from: StatementStoreProductSignReview(
+            callingProductId: nil,
             account: TrUAPIHostProductAccountId(
                 dotNsIdentifier: "signer.dot",
                 derivationIndex: .index(0)

@@ -534,7 +534,7 @@ pub async fn find_including_ring(
     entropy: [u8; 32],
     lookback: u32,
 ) -> Result<Option<RingParams>, StatementAllowanceError> {
-    let member = proof::member_key(entropy);
+    let member = proof::member_key(entropy).await?;
     let at = rpc.finalized_head().await?;
     let exponent = ring::read_ring_exponent(rpc, metadata, collection, &at).await?;
     let current = ring::read_current_ring_index_at(rpc, collection, &at).await?;
@@ -709,7 +709,8 @@ pub async fn register_statement_account(
         let message = extension::build_proof_message(metadata, &call, chain_state)?;
         let domain = proof::domain_for_ring_exponent(params.ring.exponent)?;
         let ring_proof =
-            proof::ring_vrf_proof(domain, entropy, &params.ring.members, &context, &message)?;
+            proof::ring_vrf_proof(domain, entropy, &params.ring.members, &context, &message)
+                .await?;
         let as_resources_extra = extrinsic::build_as_resources_extra(
             metadata,
             &ring_proof,
@@ -1069,7 +1070,8 @@ pub async fn claim_long_term_storage(
             extrinsic::build_claim_long_term_storage_call(metadata, period, counter, target)?;
         let message = extension::build_proof_message(metadata, &call, chain_state)?;
         let domain = proof::domain_for_ring_exponent(ring.exponent)?;
-        let ring_proof = proof::ring_vrf_proof(domain, entropy, &ring.members, &context, &message)?;
+        let ring_proof =
+            proof::ring_vrf_proof(domain, entropy, &ring.members, &context, &message).await?;
         let as_resources_extra = extrinsic::build_long_term_storage_extra(
             metadata,
             &ring_proof,
@@ -1655,7 +1657,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![proof::member_key(entropy)],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),
@@ -1698,7 +1700,7 @@ mod tests {
                 entropy,
                 ring: RingParams {
                     collection,
-                    members: vec![proof::member_key(entropy)],
+                    members: vec![proof::member_key_now(entropy)],
                     exponent: 9,
                     ring_index: 0,
                     block_hash: "0xfinal".to_string(),
@@ -2094,7 +2096,10 @@ mod tests {
             entropy: membership.entropy,
         });
         let lite_entropy = candidates[1].entropy;
-        let page = format!(r#""0x04{}""#, hex::encode(proof::member_key(lite_entropy)));
+        let page = format!(
+            r#""0x04{}""#,
+            hex::encode(proof::member_key_now(lite_entropy))
+        );
 
         let responses = [
             // People: a finalized head, then an undecodable Collections value.
@@ -2290,7 +2295,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![proof::member_key(entropy)],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),
@@ -2350,7 +2355,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![proof::member_key(entropy)],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),
@@ -2408,7 +2413,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![proof::member_key(entropy)],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),
@@ -2459,7 +2464,7 @@ mod tests {
         let entropy = [0x11; 32];
         let ring = RingParams {
             collection: PersonhoodCollection::LitePeople,
-            members: vec![proof::member_key(entropy)],
+            members: vec![proof::member_key_now(entropy)],
             exponent: 9,
             ring_index: 0,
             block_hash: "0xfinal".to_string(),

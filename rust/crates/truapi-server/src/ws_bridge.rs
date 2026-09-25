@@ -338,17 +338,88 @@ impl SharedWsBridge {
         };
         join_aborted_connections(aborted);
     }
+
+    /// Rebind the listener on its port, keeping every token and live
+    /// connection. No-op if the listener was never started.
+    ///
+    /// iOS reclaims a suspended app's listening sockets while its products
+    /// keep dialing the port they were given, so hosts call this on each
+    /// return to the foreground. A failed rebind is logged and left for the
+    /// next call to retry.
+    pub fn relisten(&self) {
+        let relistened = {
+            let mut guard = self.inner.lock().expect("shared ws bridge mutex poisoned");
+            match guard.as_mut() {
+                Some(bridge) => bridge.relisten().map(|()| bridge.port),
+                None => return,
+            }
+        };
+        match relistened {
+            Ok(port) => (self.logger)("truapi.ws_bridge.relistened", &format!("port={port}")),
+            Err(err) => (self.logger)("truapi.ws_bridge.relisten_failed", &err.to_string()),
+        }
+    }
 }
 
 /// Running listener owned by [`SharedWsBridge`]. Dropping it stops acceptance
 /// and cancels its connections without stopping the shared executor.
 struct WsBridge {
-    shutdown: Option<oneshot::Sender<()>>,
-    stopped: Option<std::sync::mpsc::Receiver<()>>,
-    accept_task: Option<tokio::task::JoinHandle<()>>,
+    // Absent after a failed relisten.
+    listener: Option<Listener>,
     runtime_id: tokio::runtime::Id,
     registry: Arc<WsBridgeRegistry>,
+    logger: BridgeLogger,
     port: u16,
+}
+
+// Bind synchronously so callers surface bind errors and learn the actual port.
+fn bind_loopback(port: u16) -> io::Result<std::net::TcpListener> {
+    let socket = std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
+    socket.set_nonblocking(true)?;
+    Ok(socket)
+}
+
+// One bound socket's accept loop. Stopping it leaves accepted connections running.
+struct Listener {
+    shutdown: oneshot::Sender<()>,
+    stopped: std::sync::mpsc::Receiver<()>,
+    accept_task: tokio::task::JoinHandle<()>,
+}
+
+impl Listener {
+    fn serve(
+        socket: std::net::TcpListener,
+        handle: &Handle,
+        registry: Arc<WsBridgeRegistry>,
+        logger: BridgeLogger,
+    ) -> io::Result<Self> {
+        // Register with the shared runtime's I/O driver before returning so a
+        // successful start always yields a ready endpoint.
+        let listener = {
+            let _entered = handle.enter();
+            TcpListener::from_std(socket)?
+        };
+        let (shutdown, shutdown_rx) = oneshot::channel::<()>();
+        let (stopped_tx, stopped) = std::sync::mpsc::channel::<()>();
+        let accept_task = handle.spawn(async move {
+            accept_loop(listener, registry, logger, shutdown_rx).await;
+            let _ = stopped_tx.send(());
+        });
+        Ok(Self {
+            shutdown,
+            stopped,
+            accept_task,
+        })
+    }
+
+    // Waiting releases the socket before returning. The accept loop needs a
+    // worker to observe shutdown, so callers on the shared executor must not wait.
+    fn stop(self, wait: bool) {
+        let _ = self.shutdown.send(());
+        if wait && self.stopped.recv().is_err() && !self.accept_task.is_finished() {
+            self.accept_task.abort();
+        }
+    }
 }
 
 impl WsBridge {
@@ -357,23 +428,14 @@ impl WsBridge {
         bind_port: u16,
         logger: BridgeLogger,
     ) -> io::Result<(Self, Vec<(&'static str, String)>)> {
-        // Bind synchronously so we can surface bind errors and discover the
-        // actual port before returning.
-        let std_listener =
-            std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], bind_port)))?;
-        std_listener.set_nonblocking(true)?;
-        let port = std_listener.local_addr()?.port();
+        let socket = bind_loopback(bind_port)?;
+        let port = socket.local_addr()?.port();
 
         let (executor, initialized) = shared_native_executor()?;
         let handle = executor.handle();
         let runtime_id = handle.id();
-
-        // Register the listener with the shared runtime's I/O driver before
-        // returning so a successful start always yields a ready endpoint.
-        let listener = {
-            let _entered = handle.enter();
-            TcpListener::from_std(std_listener)?
-        };
+        let registry = Arc::new(WsBridgeRegistry::default());
+        let listener = Listener::serve(socket, &handle, registry.clone(), logger.clone())?;
 
         // An error return here would lose the executor's one-time startup event.
         let mut pending_logs: Vec<(&'static str, String)> = Vec::new();
@@ -386,16 +448,6 @@ impl WsBridge {
                 ),
             ));
         }
-        let registry = Arc::new(WsBridgeRegistry::default());
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel::<()>();
-        let accept_registry = registry.clone();
-        let accept_logger = logger.clone();
-        let accept_task = handle.spawn(async move {
-            accept_loop(listener, accept_registry, accept_logger, shutdown_rx).await;
-            let _ = stopped_tx.send(());
-        });
-
         pending_logs.push((
             "truapi.ws_bridge.started",
             format!("port={port} runtime_id={runtime_id}"),
@@ -403,15 +455,34 @@ impl WsBridge {
 
         Ok((
             Self {
-                shutdown: Some(shutdown_tx),
-                stopped: Some(stopped_rx),
-                accept_task: Some(accept_task),
+                listener: Some(listener),
                 runtime_id,
                 registry,
+                logger,
                 port,
             },
             pending_logs,
         ))
+    }
+
+    // The old socket must close before its port can be bound again.
+    fn relisten(&mut self) -> io::Result<()> {
+        if let Some(listener) = self.listener.take() {
+            listener.stop(!self.on_shared_executor());
+        }
+        let socket = bind_loopback(self.port)?;
+        let (executor, _) = shared_native_executor()?;
+        self.listener = Some(Listener::serve(
+            socket,
+            &executor.handle(),
+            self.registry.clone(),
+            self.logger.clone(),
+        )?);
+        Ok(())
+    }
+
+    fn on_shared_executor(&self) -> bool {
+        Handle::try_current().is_ok_and(|current| current.id() == self.runtime_id)
     }
 
     fn register(
@@ -432,7 +503,7 @@ impl WsBridge {
     // Joining from this executor could block the worker needed for cancellation.
     fn revoke(&self, token: &str) -> Vec<tokio::task::JoinHandle<()>> {
         let connections = self.registry.revoke(token);
-        if Handle::try_current().is_ok_and(|current| current.id() == self.runtime_id) {
+        if self.on_shared_executor() {
             return Vec::new();
         }
         connections
@@ -441,30 +512,14 @@ impl WsBridge {
     // Off the shared executor, wait for tracked connection tasks to release
     // their sockets. Dispatch tasks are cancelled but not joined.
     fn stop(&mut self) {
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
+        let wait = !self.on_shared_executor();
+        if let Some(listener) = self.listener.take() {
+            listener.stop(wait);
         }
-
-        // The accept loop needs a worker to observe shutdown and cancel tasks.
-        let called_from_shared_executor =
-            Handle::try_current().is_ok_and(|handle| handle.id() == self.runtime_id);
-        let stopped_cleanly = if called_from_shared_executor {
-            drop(self.stopped.take());
-            true
-        } else {
-            self.stopped
-                .take()
-                .is_none_or(|stopped| stopped.recv().is_ok())
-        };
-
-        if let Some(task) = self.accept_task.take()
-            && !stopped_cleanly
-            && !task.is_finished()
-        {
-            task.abort();
+        let connections = self.registry.take_all_handles();
+        if wait {
+            join_aborted_connections(connections);
         }
-        // Cover the non-blocking path or an accept loop that failed to stop.
-        drop(self.registry.take_all_handles());
     }
 }
 
@@ -510,9 +565,6 @@ async fn accept_loop(
                 }
                 for task in setup_tasks {
                     let _ = task.await;
-                }
-                for handle in registry.take_all_handles() {
-                    let _ = handle.await;
                 }
                 break;
             }
@@ -1078,8 +1130,15 @@ mod tests {
     /// socket is dropped without a closing handshake when this returns, which
     /// is how a product's bridge socket dies when its host is suspended.
     async fn feature_supported_round_trip(url: &str, request_id: &str) -> ProtocolMessage {
-        let ids = request_ids("system_feature_supported").expect("known request method");
         let (mut ws, _) = tokio_tungstenite::connect_async(url).await.expect("dial");
+        feature_supported_exchange(&mut ws, request_id).await
+    }
+
+    async fn feature_supported_exchange(
+        ws: &mut WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        request_id: &str,
+    ) -> ProtocolMessage {
+        let ids = request_ids("system_feature_supported").expect("known request method");
         let value = truapi::versioned::system::HostFeatureSupportedRequest::V1(
             v01::HostFeatureSupportedRequest::Chain {
                 genesis_hash: vec![0u8; 32],
@@ -1492,6 +1551,115 @@ mod tests {
 
         shared.revoke(&first.token);
         connect(second.port, &second.token);
+    }
+
+    // Stands in for iOS reclaiming a suspended app's listening socket.
+    fn lose_listener(shared: &SharedWsBridge) {
+        let mut guard = shared
+            .inner
+            .lock()
+            .expect("shared ws bridge mutex poisoned");
+        let bridge = guard.as_mut().expect("listener started");
+        bridge.listener.take().expect("listener running").stop(true);
+    }
+
+    fn recording_logger() -> (BridgeLogger, Arc<Mutex<Vec<String>>>) {
+        let markers = Arc::new(Mutex::new(Vec::new()));
+        let logger: BridgeLogger = Arc::new({
+            let markers = markers.clone();
+            move |marker, _| {
+                markers
+                    .lock()
+                    .expect("markers mutex poisoned")
+                    .push(marker.to_string())
+            }
+        });
+        (logger, markers)
+    }
+
+    /// Products keep the port and token they were given when the host's
+    /// listener is reclaimed, so it has to come back exactly where they dial.
+    #[test]
+    fn relisten_restores_a_lost_listener_on_the_same_port() {
+        let shared = SharedWsBridge::new(no_log());
+        let endpoint = shared
+            .register(0, test_runtime_factory(), no_log())
+            .expect("register");
+        lose_listener(&shared);
+        std::net::TcpStream::connect(("127.0.0.1", endpoint.port))
+            .expect_err("a lost listener refuses connections");
+
+        shared.relisten();
+
+        let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let response = rt.block_on(feature_supported_round_trip(&url, "p:1"));
+        assert_eq!(
+            (response.request_id, response.payload.message_type),
+            ("p:1".to_string(), crate::frame::MESSAGE_TYPE_RESPONSE)
+        );
+    }
+
+    /// The host rebinds on every return to the foreground, including when the
+    /// listener survived, so a relisten must not end a live connection.
+    #[test]
+    fn relisten_keeps_established_connections_serving() {
+        let mut bridge = start_test_bridge();
+        let endpoint = bridge.register(test_runtime_factory(), no_log());
+        let url = format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let (mut established, _) = rt
+            .block_on(tokio_tungstenite::connect_async(&url))
+            .expect("dial before relisten");
+
+        bridge.relisten().expect("relisten");
+
+        let old = rt.block_on(feature_supported_exchange(&mut established, "p:old"));
+        let new = rt.block_on(feature_supported_round_trip(&url, "p:new"));
+        assert_eq!(
+            (old.request_id, new.request_id),
+            ("p:old".to_string(), "p:new".to_string())
+        );
+    }
+
+    /// A rebind can lose the port to another socket; the next return to the
+    /// foreground must still be able to restore it.
+    #[test]
+    fn a_failed_relisten_is_retried_by_the_next_one() {
+        let (logger, markers) = recording_logger();
+        let shared = SharedWsBridge::new(logger);
+        let endpoint = shared
+            .register(0, test_runtime_factory(), no_log())
+            .expect("register");
+        lose_listener(&shared);
+        let squatter =
+            std::net::TcpListener::bind(("127.0.0.1", endpoint.port)).expect("take the port");
+
+        shared.relisten();
+        drop(squatter);
+        shared.relisten();
+
+        connect(endpoint.port, &endpoint.token);
+        let relisten_markers: Vec<String> = markers
+            .lock()
+            .expect("markers mutex poisoned")
+            .iter()
+            .filter(|marker| marker.contains("relisten"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            relisten_markers,
+            [
+                "truapi.ws_bridge.relisten_failed",
+                "truapi.ws_bridge.relistened"
+            ]
+        );
     }
 
     #[test]

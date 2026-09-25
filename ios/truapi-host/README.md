@@ -310,8 +310,10 @@ The bootstrap supplies the execution endpoint to the shared container, which con
 
 The core's `Permissions` platform trait has two methods, and so does `HostCallbacks`:
 
-- `devicePermission(request:)` - product consent for device capabilities (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
-- `remotePermission(request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
+- `devicePermission(product:request:)` - product consent for device capabilities (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
+- `remotePermission(product:request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
+
+`product` is the requesting execution's `ProductExecutionConfig`.
 
 Both return `PermissionDecision`: `.allowOnce`, `.allowAlways`, or `.deny`. Preserve the user’s choice; the core keeps one-use grants in memory and consumes them at the authorized operation. OS refusal after app consent should throw instead of returning `.deny`, which records a product denial. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
@@ -456,13 +458,19 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         DispatchQueue.main.async { /* cancel notification */ }
     }
 
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> PermissionDecision {
+    func devicePermission(
+        product: ProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> PermissionDecision {
         // Awaited by the core: present the prompt and suspend until the user
         // decides. Other TrUAPI traffic keeps flowing while suspended.
         await MainActor.run { /* show prompt for request (.camera, .microphone, ...); */ PermissionDecision.deny }
     }
 
-    func remotePermission(request: RemotePermission) async throws -> PermissionDecision {
+    func remotePermission(
+        product: ProductExecutionConfig,
+        request: RemotePermission
+    ) async throws -> PermissionDecision {
         await MainActor.run { /* show prompt for request (.chainSubmit, .remote(domains:), ...); */ PermissionDecision.deny }
     }
 
@@ -531,6 +539,9 @@ let execution = try runtime.openProductExecution(
         executionKind: .app
     )
 )
+// The endpoint stays valid across backgrounding: iOS reclaims a suspended
+// app's listening socket, and the runtime rebinds it on the same port when
+// the app returns to the foreground.
 let endpoint = try execution.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates

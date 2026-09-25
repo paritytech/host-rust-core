@@ -40,6 +40,7 @@ js-sys = "0.3"
 jsonrpsee = "0.24"
 jsonrpsee-client-transport = "0.24"
 jsonrpsee-core = "0.24"
+libsecp256k1 = { version = "0.7", default-features = false, features = ["lazy-static-context"] }
 log = "0.4"
 merlin = "3"
 nanoid = "0.4"

@@ -40,6 +40,7 @@ final class ChatViewModelFactory {
     let productRepository: AnyDataProviderRepository<Product>
     let productNameCache: ProductNameCaching
     let flowState: SPAFlowState
+    let paymentAssetBranding: PaymentAssetBrandingProviding
     let logger: LoggerProtocol
 
     init(
@@ -52,6 +53,7 @@ final class ChatViewModelFactory {
         productRepository: AnyDataProviderRepository<Product>,
         productNameCache: ProductNameCaching,
         flowState: SPAFlowState,
+        paymentAssetBranding: PaymentAssetBrandingProviding = PaymentAssetBranding.shared,
         logger: LoggerProtocol = Logger.shared
     ) {
         self.timeFormatter = timeFormatter
@@ -62,6 +64,7 @@ final class ChatViewModelFactory {
         self.productRepository = productRepository
         self.productNameCache = productNameCache
         self.flowState = flowState
+        self.paymentAssetBranding = paymentAssetBranding
         self.logger = logger
         customDecodersById = customDecoders.reduce(into: [:]) {
             $0[$1.identifier.rawValue] = $1
@@ -354,8 +357,7 @@ private extension ChatViewModelFactory {
         case let .send(content):
             let claimContent = Chat.LocalMessage.Content.Transfer(
                 totalValue: content.amount,
-                coinKeys: [],
-                status: nil
+                coinKeys: []
             )
             return [
                 transferMessageConfiguration(
@@ -540,7 +542,7 @@ private extension ChatViewModelFactory {
             case let .send(content):
                 // Legacy
                 originalText = transferPreviewText(
-                    content: .init(totalValue: content.amount, coinKeys: [], status: nil),
+                    content: .init(totalValue: content.amount, coinKeys: []),
                     isIncoming: originalMessage.status.isIncoming,
                     peerName: peerMetadata.name
                 )
@@ -719,9 +721,10 @@ private extension ChatViewModelFactory {
         actions: ChatViewModelActions
     ) -> IdentifiableAnyContentConfiguration<ChatViewLayout.ItemIdentifierType> {
         // TODO: fetch info by content.assetId + verify on real transfer
-        let amountString = balanceFactory.amount(from: content.totalValue)
+        let projection = content.bubbleProjection
+        let amountString = balanceFactory.amount(from: projection.displayedValue)
         let tokenSymbol = balanceFactory.symbol
-        let originalAmountString: String? = content.originalTotalValue.flatMap {
+        let originalAmountString: String? = projection.originalValue.flatMap {
             balanceFactory.amount(from: $0)
         }
 
@@ -755,9 +758,10 @@ private extension ChatViewModelFactory {
             configuration = ChatTransferMessageConfiguration.inbox(
                 amount: amountString,
                 tokenSymbol: tokenSymbol,
+                assetIcon: paymentAssetBranding.current.squareIcon,
                 originalAmount: originalAmountString,
                 from: peerMetadata.name,
-                state: content.status?.viewStatus ?? .processing,
+                state: content.incomingViewState,
                 statusConfiguration: statusConfiguration,
                 addReaction: addReaction,
                 messageReaction: messageReaction
@@ -773,8 +777,9 @@ private extension ChatViewModelFactory {
             configuration = ChatTransferMessageConfiguration.outbox(
                 amount: amountString,
                 tokenSymbol: tokenSymbol,
+                assetIcon: paymentAssetBranding.current.squareIcon,
                 originalAmount: originalAmountString,
-                state: content.status?.viewStatus ?? .processing,
+                state: content.outgoingViewState,
                 statusConfiguration: statusConfiguration,
                 addReaction: addReaction,
                 messageReaction: messageReaction

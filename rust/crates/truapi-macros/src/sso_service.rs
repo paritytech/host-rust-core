@@ -149,18 +149,21 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
     item.items.push(syn::parse_quote! {
         /// Answer one wire message with this service.
         ///
-        /// `session` is the signing host's current session; without one every
-        /// request is answered with its error type's `not_connected()`.
+        /// `cx` is the context for `message`, built by the caller around the
+        /// signing host's current session; without one every request is
+        /// answered with its error type's `not_connected()`.
         pub async fn dispatch(
             &self,
-            session: Option<crate::runtime::authority::AuthoritySession>,
+            cx: Option<#runtime::SsoRequestContext>,
             message: crate::host_internal::sso_messages::RemoteMessage,
         ) -> #runtime::Dispatch {
             let crate::host_internal::sso_messages::RemoteMessageData::V1(data) = message.data;
             let message_id = message.message_id;
-            let cx = session.map(|session| #runtime::SsoRequestContext::new(&message_id, session));
             let answer = match data {
                 #message::Disconnected => return #runtime::Dispatch::Disconnected,
+                #message::Cancel(withdrawal) => {
+                    return #runtime::Dispatch::Withdraw(withdrawal.message_id)
+                }
                 #(#arms)*
             };
             #runtime::Dispatch::Response(Box::new(answer))
@@ -175,6 +178,7 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
             pub fn name(&self) -> &'static str {
                 match self {
                     Self::Disconnected => "Disconnected",
+                    Self::Cancel(_) => "Cancel",
                     #(#name_arms,)*
                 }
             }

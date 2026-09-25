@@ -43,7 +43,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::parser::ValueSource;
+use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -57,8 +58,9 @@ use truapi_server::host_logic::dotns_gateway::{
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
-    AnnouncedPairing, PairedSsoPeer, PairingHostConfig, PairingHostRuntime, PairingProposal,
-    ResponderExit, SigningHostConfig, SigningHostRuntime, StatementRenewalTarget,
+    AnnouncedPairing, DebugSink, PairedSsoPeer, PairingHostConfig, PairingHostRuntime,
+    PairingProposal, ResponderExit, SigningHostConfig, SigningHostRuntime, StatementRenewalTarget,
+    WsDebugSink,
 };
 
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
@@ -97,6 +99,14 @@ struct Cli {
     /// `RUST_LOG` takes precedence when set.
     #[arg(long, global = true, value_enum, env = "TRUAPI_HOST_LOG")]
     log_level: Option<LogLevel>,
+    /// Stream every product frame to a wire debugger listening on this loopback
+    /// `ws://` URL, e.g. `ws://127.0.0.1:9231`. The target must be loopback, and
+    /// an unreachable debugger never fails a dispatch. Frames go out whole and
+    /// the debugger decodes all of them, so a tapped signing host puts its
+    /// payloads on that socket: point it at a debugger you run yourself. Only
+    /// `pairing-host`, `dev` and `signing-host` read this.
+    #[arg(long, global = true, env = "TRUAPI_DEBUGGER_URL", value_name = "URL")]
+    debugger: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -505,7 +515,12 @@ async fn main() -> Result<()> {
     // rustls 0.23 panics without a process-level default provider.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    let debugger = cli.debugger.take().map(|url| DebuggerSwitch {
+        url,
+        source: debugger_url_source(&matches),
+    });
     let base_path = command_base_path(&cli.command);
     let (saved_log_level, saved_log_level_error) = match load_log_level(&base_path) {
         Ok(level) => (level, None),
@@ -551,7 +566,7 @@ async fn main() -> Result<()> {
         tokio::spawn(update::run_background_check())
     });
 
-    let outcome = dispatch(cli.command, log_filter, log_controller).await;
+    let outcome = dispatch(cli.command, log_filter, log_controller, debugger).await;
 
     if let Some(check) = check {
         update::finish_background_check(check).await;
@@ -567,13 +582,22 @@ async fn dispatch(
     command: Command,
     log_filter: String,
     log_controller: LogController,
+    debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
+    // The switch is global but resolved per command, by the three arms that build
+    // a frame server and still before they bind a port. `update`,
+    // `identity-check`, `register-name` and `alloc-check` emit no frames, so they
+    // open no sink and cannot be failed by a URL they would never dial - which
+    // matters most when `TRUAPI_DEBUGGER_URL` is exported and every invocation
+    // carries the switch.
     match command {
         Command::Update => update::run_update_command().await,
-        Command::PairingHost(args) => run_pairing_host(args, log_filter, log_controller).await,
-        Command::Dev(args) => run_dev(args, log_filter, log_controller).await,
+        Command::PairingHost(args) => {
+            run_pairing_host(args, log_filter, log_controller, debugger).await
+        }
+        Command::Dev(args) => run_dev(args, log_filter, log_controller, debugger).await,
         Command::SigningHost(args) => {
-            run_signing_host(args, log_filter, log_controller, None).await
+            run_signing_host(args, log_filter, log_controller, None, debugger).await
         }
         Command::IdentityCheck { mnemonic, network } => {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
@@ -691,7 +715,7 @@ async fn run_pgas_check(
         println!(
             "{} member=0x{}",
             candidate.collection,
-            hex::encode(alloc::proof::member_key(candidate.entropy))
+            hex::encode(alloc::proof::member_key(candidate.entropy).await?)
         );
     }
     let memberships =
@@ -848,7 +872,7 @@ async fn run_alloc_check(
         println!(
             "{} member=0x{} current_ring_index={}",
             candidate.collection,
-            hex::encode(alloc::proof::member_key(candidate.entropy)),
+            hex::encode(alloc::proof::member_key(candidate.entropy).await?),
             alloc::ring::read_current_ring_index(&rpc, candidate.collection)
                 .await
                 .map_err(anyhow::Error::msg)?,
@@ -1059,10 +1083,126 @@ fn platform_info() -> PlatformInfo {
     }
 }
 
+/// A `--debugger` switch as clap resolved it: the URL in play, and the spelling
+/// clap took it from.
+struct DebuggerSwitch {
+    url: String,
+    source: &'static str,
+}
+
+/// A resolved `--debugger` switch with its sink, carried so the dial can be
+/// announced after the terminal UI exists.
+struct DebuggerDial {
+    sink: Arc<dyn DebugSink>,
+    switch: DebuggerSwitch,
+}
+
+/// Name the switch clap read `--debugger` from.
+///
+/// §9 requires a host that dials to name the source it read, so a developer
+/// looking at a host that streams knows which spelling to clear. clap folds the
+/// flag and the variable into one value, and `value_source` is the only thing
+/// that still knows which of the two it took.
+fn debugger_url_source(matches: &ArgMatches) -> &'static str {
+    match matches.value_source("debugger") {
+        Some(ValueSource::EnvVariable) => "TRUAPI_DEBUGGER_URL",
+        _ => "--debugger",
+    }
+}
+
+/// Open a wire-debugger sink for `switch`.
+///
+/// A URL that is not a loopback `ws://` target aborts startup rather than
+/// warning. The caller explicitly asked for a debugger, and a host that runs on
+/// without one is indistinguishable, from the debugger's side, from a host that
+/// is simply idle. Success does not mean the debugger is listening: the sink
+/// dials lazily and reconnects, so it can be started either side of the host.
+fn connect_debugger(switch: DebuggerSwitch) -> Result<DebuggerDial> {
+    let DebuggerSwitch { url, source } = &switch;
+    let sink = WsDebugSink::connect(url).with_context(|| {
+        format!("{source} {url} must be a ws:// URL on 127.0.0.1, localhost, or [::1]")
+    })?;
+    Ok(DebuggerDial { sink, switch })
+}
+
+/// Say once whether this host streams frames, and to where.
+///
+/// §9 requires both arms. Silence when no dial is set is the failure the rule
+/// exists for: the debugger's own viewer holds a socket, so its socket count
+/// moves whether or not a host connected, and an empty board is indistinguishable
+/// from a host nobody switched on. Announcing the dial is what makes an ungated
+/// switch acceptable on a released binary (§7) - a host streaming frames is never
+/// quiet about it, so a stale exported variable cannot tap a session unnoticed.
+fn report_debugger(dial: Option<&DebuggerDial>) {
+    match dial {
+        Some(dial) => terminal_ui::output_event(SystemEvent::DebuggerDialling {
+            url: dial.switch.url.clone(),
+            source: dial.switch.source.to_string(),
+        }),
+        None => terminal_ui::output_event(SystemEvent::DebuggerOff),
+    }
+}
+
+/// Wrap `factory` so every product frame it serves also reaches `sink`,
+/// returning it untouched when no debugger was requested.
+fn tap_for_debugger(
+    factory: Arc<dyn frame_server::ProductRuntimeFactory>,
+    sink: Option<Arc<dyn DebugSink>>,
+) -> Arc<dyn frame_server::ProductRuntimeFactory> {
+    match sink {
+        Some(sink) => frame_server::DebugTappedRuntime::new(factory, sink),
+        None => factory,
+    }
+}
+
+#[cfg(test)]
+mod debugger_tap_tests {
+    use super::*;
+    use truapi_server::{DebugEvent, FrameSink, ProductContext, ProductRuntime};
+
+    struct SilentSink;
+
+    impl DebugSink for SilentSink {
+        fn emit(&self, _event: DebugEvent) {}
+    }
+
+    struct UnusedFactory;
+
+    impl frame_server::ProductRuntimeFactory for UnusedFactory {
+        fn product_runtime(
+            &self,
+            _product: ProductContext,
+            _sink: Arc<dyn FrameSink>,
+        ) -> ProductRuntime {
+            panic!("this test observes the wrapping decision only")
+        }
+    }
+
+    /// What `DebugTappedRuntime` does once installed is covered next to it. This
+    /// covers whether it is installed at all: a `tap_for_debugger` that returned
+    /// `factory` in both arms leaves a host that accepts `--debugger`, announces
+    /// the dial, and streams nothing.
+    #[test]
+    fn the_tap_wraps_the_factory_exactly_when_a_sink_was_opened() {
+        let factory: Arc<dyn frame_server::ProductRuntimeFactory> = Arc::new(UnusedFactory);
+        let tapped = tap_for_debugger(factory.clone(), Some(Arc::new(SilentSink)));
+        let untapped = tap_for_debugger(factory.clone(), None);
+
+        assert_eq!(
+            (
+                Arc::ptr_eq(&factory, &tapped),
+                Arc::ptr_eq(&factory, &untapped)
+            ),
+            (false, true)
+        );
+    }
+}
+
 async fn run_pairing_host(
     args: PairingHostArgs,
     initial_log_filter: String,
     log_controller: LogController,
+    debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
     let script_projects = script_project_directory(args.base_path.clone());
     let interactive = args.script.is_none();
@@ -1116,12 +1256,18 @@ async fn run_pairing_host(
         pairing_runtime.set_pocket_platform(pocket);
     }
 
+    // Resolved before the port is bound, so a bad URL still fails on the argument
+    // rather than half-way through startup - but reported below, once the UI
+    // exists. A `tracing` line here goes to a stderr that the alternate screen
+    // covers for the rest of the run, so in interactive mode nobody ever sees it.
+    let debugger = debugger.map(connect_debugger).transpose()?;
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
     terminal_ui::output_event(SystemEvent::FramesListening {
         url: frame_url.clone(),
     });
-    let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> = pairing_runtime.clone();
+    report_debugger(debugger.as_ref());
+    let runtime_for_frames = tap_for_debugger(pairing_runtime.clone(), debugger.map(|d| d.sink));
 
     if let Some(script) = args.script {
         let script_product_id = product_id.clone();
@@ -1167,6 +1313,7 @@ async fn run_signing_host(
     initial_log_filter: String,
     log_controller: LogController,
     dev_command: Option<Vec<String>>,
+    debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
     if let Err(error) = validate_signing_args(&args) {
         invalid_invocation(error);
@@ -1217,6 +1364,11 @@ async fn run_signing_host(
         ui_handle.clone(),
     )
     .await?;
+    // Resolved before the port is bound, so a bad URL still fails on the argument
+    // rather than half-way through startup - but reported below, once the UI
+    // exists. A `tracing` line here goes to a stderr that the alternate screen
+    // covers for the rest of the run, so in interactive mode nobody ever sees it.
+    let debugger = debugger.map(connect_debugger).transpose()?;
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
     terminal_ui::output_event(SystemEvent::FramesListening {
@@ -1225,8 +1377,9 @@ async fn run_signing_host(
     if let Some(url) = bootstrap::bridge_url(&frame_url) {
         terminal_ui::output_event(SystemEvent::BridgeReady { url });
     }
-    let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> =
-        session.runtime_factory.clone();
+    report_debugger(debugger.as_ref());
+    let runtime_for_frames =
+        tap_for_debugger(session.runtime_factory.clone(), debugger.map(|d| d.sink));
 
     if let Some(script) = args.script {
         let product_id = product.current();
@@ -1912,6 +2065,7 @@ async fn run_dev(
     args: DevArgs,
     initial_log_filter: String,
     log_controller: LogController,
+    debugger: Option<DebuggerSwitch>,
 ) -> Result<()> {
     bootstrap::read_container(&bootstrap::container_path())?;
     let product_id = args
@@ -1932,7 +2086,14 @@ async fn run_dev(
         ..Default::default()
     };
     let command = (!args.command.is_empty()).then_some(args.command);
-    run_signing_host(signing, initial_log_filter, log_controller, command).await
+    run_signing_host(
+        signing,
+        initial_log_filter,
+        log_controller,
+        command,
+        debugger,
+    )
+    .await
 }
 
 /// Run the wrapped development command, returning the code to exit with.

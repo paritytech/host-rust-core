@@ -40,6 +40,8 @@ class RootNavigator @Inject constructor(
 
     override fun openProductBotsManagement() = performNavigation(R.id.action_global_to_product_bots_management)
 
+    override fun openPocketFacePreview() = performNavigation(R.id.action_global_to_pocket_face_preview)
+
     override fun openSpaBrowser(payload: SpaBrowserPayload) = performNavigation(
         R.id.action_global_to_spaBrowserFragment,
         args = payload.toPayloadBundle(SpaBrowserPayload::class.java.name),

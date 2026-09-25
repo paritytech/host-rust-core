@@ -59,6 +59,11 @@ mod host_internal {
                 BarRequest(BarRequest),
                 BarResponse(Response<BarResponse>),
                 BazRequest(Box<Request<bool>>),
+                Cancel(Withdrawal),
+            }
+
+            pub struct Withdrawal {
+                pub message_id: String,
             }
         }
     }
