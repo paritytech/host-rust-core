@@ -36,7 +36,7 @@ pub struct ProductAccountTxPayload {
     pub call_data: Vec<u8>,
     /// Transaction extensions supplied by the caller.
     pub extensions: Vec<TxPayloadExtension>,
-    /// Transaction-extension version; 0 lets the host choose V4 or V5.
+    /// Transaction extension version that `extensions` follows.
     pub tx_ext_version: u8,
 }
 
@@ -55,7 +55,7 @@ pub struct LegacyAccountTxPayload {
     pub call_data: Vec<u8>,
     /// Transaction extensions supplied by the caller.
     pub extensions: Vec<TxPayloadExtension>,
-    /// Transaction-extension version; 0 lets the host choose V4 or V5.
+    /// Transaction extension version that `extensions` follows.
     pub tx_ext_version: u8,
 }
 

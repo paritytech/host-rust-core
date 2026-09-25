@@ -29,9 +29,12 @@ pub trait Signing: Send + Sync {
     /// with a proof in a later extension — encodes the given bytes verbatim and
     /// returns an unsigned transaction.
     ///
-    /// The host picks the extrinsic format. With `txExtVersion` 0 it builds V5
-    /// when pipeline 0 declares `VerifyMultiSignature` and V4 otherwise; a
-    /// non-zero value builds V5 on that pipeline.
+    /// `txExtVersion` is the transaction extension version: which of the
+    /// runtime's declared transaction extension sets `extensions` follows. The
+    /// host picks the extrinsic format from it. V4 always follows version 0, so
+    /// a non-zero version builds a V5 general transaction. Version 0 builds V5
+    /// when it includes `VerifyMultiSignature`, and a signed V4 transaction
+    /// otherwise.
     ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();

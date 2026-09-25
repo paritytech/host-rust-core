@@ -293,7 +293,7 @@ where
 /// Why a locally assembled transaction could not be produced.
 #[derive(Debug, derive_more::Display)]
 pub(crate) enum LocalTransactionError {
-    /// A transaction-extension version the runtime does not declare.
+    /// A transaction extension version the runtime does not declare.
     #[display(
         "unsupported tx_ext_version {version}; the runtime declares transaction extension \
          versions {declared:?}"
@@ -351,12 +351,12 @@ pub(crate) async fn build_local_transaction(
     Ok(HostCreateTransactionResponse { transaction })
 }
 
-/// Choose the extrinsic format the way the mobile hosts do, then assemble it.
+/// Choose the extrinsic format for `tx_ext_version`, then assemble it.
 ///
-/// `tx_ext_version` is the transaction-extension version. A non-zero value
-/// asks for V5 on that pipeline. Zero leaves the format to the host: V5 while
-/// pipeline zero declares `VerifyMultiSignature`, since only then can a
-/// general transaction carry a signature, and V4 otherwise.
+/// V4 always follows transaction extension version 0, so a non-zero version
+/// builds V5. Version 0 builds V5 while it includes `VerifyMultiSignature`,
+/// since only then can a general transaction carry a signature, and V4
+/// otherwise.
 pub(crate) fn build_signed_transaction(
     signer: &Sr25519Signer,
     genesis_hash: [u8; 32],
@@ -390,7 +390,7 @@ pub(crate) fn build_signed_transaction(
     )?)
 }
 
-/// Whether the given transaction-extension pipeline has a signature slot.
+/// Whether the given transaction extension version includes `VerifyMultiSignature`.
 fn declares_verify_multi_signature(
     metadata: &ArcMetadata,
     transaction_extension_version: u8,
@@ -1747,7 +1747,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// Version byte and transaction-extension version of an encoded
+    /// Version byte and transaction extension version of an encoded
     /// transaction, read past its length prefix.
     fn envelope(transaction: &[u8]) -> (u8, u8) {
         let mut inner = transaction;
@@ -1755,10 +1755,9 @@ pub(crate) mod tests {
         (inner[0], inner[1])
     }
 
-    /// The mobile hosts read zero as "host picks the format": V5 whenever
-    /// pipeline zero can carry the host's signature.
+    /// Version 0 builds V5 whenever it can carry the host's signature.
     #[test]
-    fn tx_ext_version_zero_builds_v5_when_pipeline_zero_verifies_signatures() {
+    fn tx_ext_version_zero_builds_v5_when_version_zero_verifies_signatures() {
         let metadata = Metadata::decode_from(FIXTURE_METADATA_BYTES).unwrap().arc();
         let allowance_metadata = AllowanceMetadata::decode(FIXTURE_METADATA_BYTES).unwrap();
         let state = fixture_chain_state();
@@ -1776,10 +1775,10 @@ pub(crate) mod tests {
         assert_eq!(envelope(&transaction), (0x45, 0));
     }
 
-    /// Without a signature slot in pipeline zero a V5 transaction could not be
+    /// Without a signature slot in version 0 a V5 transaction could not be
     /// authorized, so zero falls back to a signed V4 transaction.
     #[test]
-    fn tx_ext_version_zero_builds_v4_when_pipeline_zero_has_no_signature_slot() {
+    fn tx_ext_version_zero_builds_v4_when_version_zero_has_no_signature_slot() {
         let state = bulletin_chain_state();
         let extensions = vec![ext("CheckNonce", &[0x00], &[])];
 
@@ -1796,11 +1795,10 @@ pub(crate) mod tests {
         assert_eq!(envelope(&transaction).0, 0x84);
     }
 
-    /// A non-zero value is the transaction-extension version itself, so the
-    /// host encodes exactly the pipeline asked for rather than the runtime's
-    /// own pick.
+    /// The encoded transaction extension version is the one the caller names,
+    /// not the one the runtime would pick for itself.
     #[test]
-    fn tx_ext_version_selects_the_transaction_extension_pipeline() {
+    fn tx_ext_version_is_the_encoded_transaction_extension_version() {
         let allowance_metadata = AllowanceMetadata::decode(FIXTURE_METADATA_BYTES).unwrap();
         let state = fixture_chain_state();
 
@@ -1823,8 +1821,8 @@ pub(crate) mod tests {
         assert_eq!(versions, vec![(0x45, 0), (0x45, 1)]);
     }
 
-    /// Products that sent 5 to mean "V5" name a pipeline no runtime declares;
-    /// they must hear that, not get a transaction built on another pipeline.
+    /// An undeclared version has no extension set to encode against, so it is
+    /// refused rather than built on another version.
     #[test]
     fn tx_ext_version_the_runtime_does_not_declare_is_not_supported() {
         let metadata = Metadata::decode_from(FIXTURE_METADATA_BYTES).unwrap().arc();
