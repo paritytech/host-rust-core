@@ -62,10 +62,9 @@ impl Signing for ProductRuntimeHost {
         if grant == AutoSigningGrant::Absent {
             let confirmed = until_cancelled(
                 cx,
-                self.platform
-                    .confirm_user_action(UserConfirmationReview::SignPayload(
-                        SignPayloadReview::Product(inner.clone()),
-                    )),
+                self.confirm_product_action(UserConfirmationReview::SignPayload(
+                    SignPayloadReview::Product(inner.clone()),
+                )),
             )
             .await
             .map_err(|reason| signing_call_error(HostSignPayloadError::V1, reason))?
@@ -148,10 +147,9 @@ impl Signing for ProductRuntimeHost {
         if grant == AutoSigningGrant::Absent {
             let confirmed = until_cancelled(
                 cx,
-                self.platform
-                    .confirm_user_action(UserConfirmationReview::CreateTransaction(
-                        CreateTransactionReview::Product(inner.clone()),
-                    )),
+                self.confirm_product_action(UserConfirmationReview::CreateTransaction(
+                    CreateTransactionReview::Product(inner.clone()),
+                )),
             )
             .await
             .map_err(|reason| transaction_call_error(HostCreateTransactionError::V1, reason))?
@@ -215,10 +213,9 @@ impl Signing for ProductRuntimeHost {
         .await?;
         let confirmed = until_cancelled(
             cx,
-            self.platform
-                .confirm_user_action(UserConfirmationReview::SignPayload(
-                    SignPayloadReview::LegacyAccount(inner.clone()),
-                )),
+            self.confirm_product_action(UserConfirmationReview::SignPayload(
+                SignPayloadReview::LegacyAccount(inner.clone()),
+            )),
         )
         .await
         .map_err(|reason| signing_call_error(HostSignPayloadWithLegacyAccountError::V1, reason))?
@@ -309,10 +306,9 @@ impl Signing for ProductRuntimeHost {
         .await?;
         let confirmed = until_cancelled(
             cx,
-            self.platform
-                .confirm_user_action(UserConfirmationReview::CreateTransaction(
-                    CreateTransactionReview::LegacyAccount(inner.clone()),
-                )),
+            self.confirm_product_action(UserConfirmationReview::CreateTransaction(
+                CreateTransactionReview::LegacyAccount(inner.clone()),
+            )),
         )
         .await
         .map_err(|reason| {
@@ -363,8 +359,7 @@ impl Signing for ProductRuntimeHost {
 }
 
 impl ProductRuntimeHost {
-    /// Whether an AutoSigning grant waives this product-account call's consent
-    /// prompt.
+    /// Whether the authority permits this product-account call without confirmation.
     ///
     /// Not wrapped in `remote_authority_call`: no authority answers this over
     /// SSO, so there is no remote hop to cancel or time out. That is the same
@@ -406,10 +401,8 @@ impl ProductRuntimeHost {
                 v01::HostSignPayloadError::Rejected,
             )));
         };
-        // The deprecated unwatermarked API is never grant-covered: its
-        // signatures are not domain-separated from transaction signatures, so a
-        // standing grant would waive the prompt on the one surface that can
-        // authorize a transfer.
+        // Ordinary products cannot use an AutoSigning grant for unwatermarked
+        // bytes, which are not separated from transaction signatures.
         let grant = if watermarked {
             self.auto_signing_status(&session, &inner.account)
                 .await
@@ -420,11 +413,12 @@ impl ProductRuntimeHost {
         if grant == AutoSigningGrant::Absent {
             let confirmed = until_cancelled(
                 cx,
-                self.platform
-                    .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product {
+                self.confirm_product_action(UserConfirmationReview::SignRaw(
+                    SignRawReview::Product {
                         request: inner.clone(),
                         watermarked,
-                    })),
+                    },
+                )),
             )
             .await
             .map_err(|reason| signing_call_error(HostSignRawError::V1, reason))?
@@ -480,13 +474,12 @@ impl ProductRuntimeHost {
         .await?;
         let confirmed = until_cancelled(
             cx,
-            self.platform
-                .confirm_user_action(UserConfirmationReview::SignRaw(
-                    SignRawReview::LegacyAccount {
-                        request: inner.clone(),
-                        watermarked,
-                    },
-                )),
+            self.confirm_product_action(UserConfirmationReview::SignRaw(
+                SignRawReview::LegacyAccount {
+                    request: inner.clone(),
+                    watermarked,
+                },
+            )),
         )
         .await
         .map_err(|reason| signing_call_error(HostSignRawWithLegacyAccountError::V1, reason))?

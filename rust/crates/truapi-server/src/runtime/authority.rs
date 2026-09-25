@@ -288,11 +288,10 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     IdentityAccount(LegacyAccountTxPayload),
 }
 
-/// Whether an active AutoSigning grant covers one product-account call.
+/// Whether a product-account call can be signed without a confirmation prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AutoSigningGrant {
-    /// Covered: the matching authority call serves this request from local key
-    /// material and raises no prompt anywhere.
+    /// Covered: the authority already holds the signing keys and raises no prompt.
     Active,
     /// Not covered: the caller must obtain user consent.
     Absent,
@@ -389,18 +388,18 @@ pub(crate) trait ProductAuthority: Send + Sync {
         product_id: &str,
     ) -> bool;
 
-    /// Whether an active AutoSigning grant covers `account` for
-    /// `calling_product_id`.
+    /// Whether `calling_product_id` may sign with `account` without confirmation.
     ///
-    /// Only a product's own accounts are ever covered: the grant material is
-    /// one product subtree secret, so legacy and identity accounts cannot be
-    /// produced from it.
+    /// Only a product's own accounts are covered. Signing hosts trust
+    /// first-party products on the remote-permission allowlist; pairing hosts
+    /// require an explicitly allocated product subtree secret. Neither grants
+    /// access to legacy or identity accounts.
     ///
     /// [`AutoSigningGrant::Active`] is a promise, not a hint: the matching
-    /// `sign_*` call on this authority serves the request from local key
-    /// material, without reaching a paired host and without raising a prompt on
-    /// either side. The capability layer skips its consent gate on that
-    /// promise, so an authority that cannot keep it answers `Absent`.
+    /// `sign_*` call uses keys already held by this authority, without reaching
+    /// a paired host or raising a prompt on either side. The capability layer
+    /// skips its consent gate on that promise, so an authority that cannot keep
+    /// it answers `Absent`.
     ///
     /// `Err` is a hard failure - a broken or foreign grant slot, a stale
     /// session, unreadable core storage - and is propagated rather than

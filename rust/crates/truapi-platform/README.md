@@ -29,13 +29,10 @@ register product names under, one entry per network a host can be pointed at. A
 name ending in one of them is also what navigation resolves back into the host's
 own product surface, so it bypasses the outbound domain grant.
 
-`REMOTE_PERMISSION_TRUSTED_LABELS` lists bare product labels — no TLD, so one
-entry covers every network in `DOTNS_TLDS` — whose products hold every
-`RemotePermission` without a user prompt, tested with
-`has_trusted_remote_permissions`. It covers remote permissions only: device
-permissions, identity disclosure and cross-product account access always prompt.
-A stored decision outranks the list, so a `Denied` written through `CoreAdmin`
-revokes the grant.
+`REMOTE_PERMISSION_TRUSTED_LABELS` lists the blessed product labels across
+all networks in `DOTNS_TLDS`. These products bypass recorded permissions and
+prompt only for device permissions. The runtime grants
+account access, username disclosure, signing and AutoSigning without approval.
 
 ## Host Callback Traits
 

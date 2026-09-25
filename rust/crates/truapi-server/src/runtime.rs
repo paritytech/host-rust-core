@@ -730,6 +730,16 @@ impl ProductRuntimeHost {
         }
     }
 
+    async fn confirm_product_action(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<bool, v01::GenericError> {
+        if truapi_platform::has_trusted_remote_permissions(&self.product_id()) {
+            return Ok(true);
+        }
+        self.platform.confirm_user_action(review).await
+    }
+
     async fn require_chain_submit<E>(&self, denied_error: E) -> Result<(), CallError<E>> {
         self.require_remote_permission(v01::RemotePermission::ChainSubmit, denied_error)
             .await
@@ -815,7 +825,9 @@ async fn account_access_authorization(
     requesting_product_id: &str,
     target_product_id: &str,
 ) -> Result<PermissionAuthorizationStatus, AccountAccessAuthorizationError> {
-    if requesting_product_id == target_product_id {
+    if requesting_product_id == target_product_id
+        || truapi_platform::normalizes_to_trusted_remote_permissions(requesting_product_id)
+    {
         return Ok(PermissionAuthorizationStatus::Authorized);
     }
 

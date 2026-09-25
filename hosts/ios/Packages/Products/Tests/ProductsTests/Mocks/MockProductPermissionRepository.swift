@@ -12,6 +12,8 @@ final class MockProductPermissionRepository: ProductPermissionRepositoryProtocol
     private(set) var grantCalls: [(productId: String, permission: ProductPermission)] = []
     private(set) var denyCalls: [(productId: String, permission: ProductPermission)] = []
     private(set) var grantOneTimeCalls: [(productId: String, permission: ProductPermission)] = []
+    private(set) var accessCount = 0
+    var readError: Error?
 
     // MARK: - Stubbing
 
@@ -49,6 +51,8 @@ final class MockProductPermissionRepository: ProductPermissionRepositoryProtocol
         productId: String,
         permission: ProductPermission
     ) async throws -> ProductPermissionState {
+        accessCount += 1
+        if let readError { throw readError }
         let id = key(productId, permission)
 
         if oneTimeGrants.contains(id) {
@@ -67,7 +71,9 @@ final class MockProductPermissionRepository: ProductPermissionRepositoryProtocol
         typeName: String,
         keys: [String]
     ) async throws -> Bool {
-        keys.contains { key in
+        accessCount += 1
+        if let readError { throw readError }
+        return keys.contains { key in
             guard let permission = ProductPermission.from(typeName: typeName, key: key) else {
                 return false
             }
@@ -77,6 +83,7 @@ final class MockProductPermissionRepository: ProductPermissionRepositoryProtocol
     }
 
     func grant(productId: String, permission: ProductPermission) async throws {
+        accessCount += 1
         grantCalls.append((productId, permission))
         grants[key(productId, permission)] = ProductPermissionGrant(
             productId: productId,
@@ -87,6 +94,7 @@ final class MockProductPermissionRepository: ProductPermissionRepositoryProtocol
     }
 
     func deny(productId: String, permission: ProductPermission) async throws {
+        accessCount += 1
         denyCalls.append((productId, permission))
         let id = key(productId, permission)
         oneTimeGrants.remove(id)
@@ -99,12 +107,14 @@ final class MockProductPermissionRepository: ProductPermissionRepositoryProtocol
     }
 
     func grantOneTime(productId: String, permission: ProductPermission) {
+        accessCount += 1
         grantOneTimeCalls.append((productId, permission))
         oneTimeGrants.insert(key(productId, permission))
     }
 
     func consumeOneTimeGrant(productId: String, permission: ProductPermission) -> Bool {
-        oneTimeGrants.remove(key(productId, permission)) != nil
+        accessCount += 1
+        return oneTimeGrants.remove(key(productId, permission)) != nil
     }
 
     func revoke(productId: String, permission: ProductPermission) async throws {

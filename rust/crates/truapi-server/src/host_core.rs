@@ -1977,7 +1977,7 @@ mod tests {
     }
 
     #[test]
-    fn network_access_trusted_products_still_honor_explicit_denial() {
+    fn network_access_trusted_products_ignore_recorded_denials() {
         futures::executor::block_on(async {
             let platform = Arc::new(StubPlatform::default());
             let (config, _) = runtime_config("peopl.dot");
@@ -2000,7 +2000,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let denied = admin
+            let after_denial = admin
                 .product_runtime
                 .authorize_remote_permission(&cx, permissions::RemotePermissionRequest::V1(request))
                 .await
@@ -2008,7 +2008,7 @@ mod tests {
             assert_eq!(
                 (
                     allowed,
-                    denied,
+                    after_denial,
                     platform.remote_permission_requests.lock().unwrap().clone(),
                 ),
                 (
@@ -2016,7 +2016,7 @@ mod tests {
                         granted: true
                     }),
                     permissions::RemotePermissionResponse::V1(RemotePermissionResponse {
-                        granted: false
+                        granted: true
                     }),
                     vec![],
                 )

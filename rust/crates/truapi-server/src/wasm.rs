@@ -1138,22 +1138,8 @@ impl WasmPairingHostRuntime {
 /// Whether `productId` is a first-party product the host grants every
 /// `RemotePermission` without prompting.
 ///
-/// Pure and stateless: it reads the compiled-in list and nothing else. **A
-/// stored user decision wins over the list**, so this is only the answer for
-/// the branch where the host's own store reads undetermined. Consulting it
-/// first would let a revoked grant keep working.
-///
-/// `permissionAuthorizationStatus` is the stateful answer — it folds the list
-/// and the stored decision together — and a host that can reach a runtime
-/// should ask that instead.
-///
-/// This exists for the path where a host mediates product network access in its
-/// own code — a service worker, a `fetch` shim — and has already found nothing
-/// stored. Without it a first-party product is prompted by the host for access
-/// the core would have granted.
-///
-/// Covers remote permissions only. Device capabilities, identity disclosure and
-/// cross-product account access always prompt, whoever asks.
+/// Blessed products bypass recorded permissions. Only device permissions require
+/// consent. Hosts mediating product network access can use this check before storage.
 ///
 /// Normalizes before matching, and answers `false` for an id that does not
 /// normalize, so an unknown spelling is never read as trusted.

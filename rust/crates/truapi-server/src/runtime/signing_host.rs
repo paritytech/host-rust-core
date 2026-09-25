@@ -699,6 +699,54 @@ impl SigningHost {
             .select_provider(session.public_key, ring, handle)
             .await
     }
+
+    async fn sign_vrf_request(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        calling_product_id: String,
+        request: v01::HostAccountSignVrfRequest,
+        authenticated_caller: bool,
+    ) -> Result<v01::VrfSignature, AuthorityError> {
+        self.require_current_session(session)?;
+        validate_vrf_transcript(&request).map_err(|reason| AuthorityError::Unknown { reason })?;
+        let keypair = self.product_keypair(&request.account)?;
+        let (current, activation_generation) = self.require_current_session(session)?;
+        let granted = authenticated_caller
+            && truapi_platform::normalizes_to_trusted_remote_permissions(&calling_product_id)
+            || self.has_auto_signing_grant(
+                activation_generation,
+                current.public_key,
+                &calling_product_id,
+                &request.account.dot_ns_identifier,
+            );
+        if !granted {
+            let confirmed = super::until_cancelled(
+                cx,
+                self.platform
+                    .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                        calling_product_id,
+                        request: request.clone(),
+                    })),
+            )
+            .await?
+            .map_err(|err| AuthorityError::Unknown {
+                reason: format!("VRF signing confirmation failed: {err:?}"),
+            })?;
+            if !confirmed {
+                return Err(AuthorityError::Rejected);
+            }
+        }
+        let (pre_output, proof) = crate::dynamic_vrf::sign_dynamic_vrf(
+            &keypair,
+            &request.transcript_label,
+            request
+                .items
+                .iter()
+                .map(|item| (item.label.as_slice(), item.value.as_slice())),
+        );
+        Ok(v01::VrfSignature { pre_output, proof })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -829,12 +877,20 @@ impl ProductAuthority for SigningHost {
         // the session's own key, so the session carries the owner a grant can
         // be keyed on and no root derivation is needed to answer this.
         let (current, activation_generation) = self.require_current_session(session)?;
-        if self.has_auto_signing_grant(
-            activation_generation,
-            current.public_key,
-            calling_product_id,
-            &account.dot_ns_identifier,
-        ) {
+        let trusted_product =
+            normalize_product_identifier(calling_product_id).is_ok_and(|caller| {
+                truapi_platform::has_trusted_remote_permissions(&caller)
+                    && normalize_product_identifier(&account.dot_ns_identifier)
+                        .is_ok_and(|owner| owner == caller)
+            });
+        if trusted_product
+            || self.has_auto_signing_grant(
+                activation_generation,
+                current.public_key,
+                calling_product_id,
+                &account.dot_ns_identifier,
+            )
+        {
             Ok(AutoSigningGrant::Active)
         } else {
             Ok(AutoSigningGrant::Absent)
@@ -848,40 +904,8 @@ impl ProductAuthority for SigningHost {
         calling_product_id: String,
         request: v01::HostAccountSignVrfRequest,
     ) -> Result<v01::VrfSignature, AuthorityError> {
-        let (_, activation_generation) = self.require_current_session(session)?;
-        validate_vrf_transcript(&request).map_err(|reason| AuthorityError::Unknown { reason })?;
-        let (owner, keypair) = self.product_keypair_with_owner(&request.account)?;
-        if !self.has_auto_signing_grant(
-            activation_generation,
-            owner,
-            &calling_product_id,
-            &request.account.dot_ns_identifier,
-        ) {
-            let confirmed = super::until_cancelled(
-                cx,
-                self.platform
-                    .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
-                        calling_product_id,
-                        request: request.clone(),
-                    })),
-            )
-            .await?
-            .map_err(|err| AuthorityError::Unknown {
-                reason: format!("VRF signing confirmation failed: {err:?}"),
-            })?;
-            if !confirmed {
-                return Err(AuthorityError::Rejected);
-            }
-        }
-        let (pre_output, proof) = crate::dynamic_vrf::sign_dynamic_vrf(
-            &keypair,
-            &request.transcript_label,
-            request
-                .items
-                .iter()
-                .map(|item| (item.label.as_slice(), item.value.as_slice())),
-        );
-        Ok(v01::VrfSignature { pre_output, proof })
+        self.sign_vrf_request(cx, session, calling_product_id, request, true)
+            .await
     }
 
     async fn sign_payload(
@@ -1029,9 +1053,8 @@ impl ProductAuthority for SigningHost {
         // already authorized, and would leave the two calls disagreeing about
         // what `context` means.
         //
-        // The gate is the same one `create_proof` uses, so a stored refusal
-        // still overrides the grant. Falling through to the prompt keeps the
-        // ungranted case exactly as it was.
+        // The gate is the same one `create_proof` uses, including stored refusals
+        // for ordinary products. Ungranted calls take the account-access path.
         let granted = match self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await
@@ -1440,6 +1463,7 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
 mod tests {
     mod auto_signing;
     mod raw_signing;
+    mod trusted_signing;
 
     use std::sync::Arc;
 
@@ -1790,18 +1814,124 @@ mod tests {
         );
     }
 
-    /// A grant never overrides a refusal the user already gave.
-    ///
-    /// The stored `AccountAccess` decision is read before the manifest, and
-    /// read-only: a grant lookup must not raise the prompt that would settle a
-    /// `NotDetermined` one.
     #[test]
-    fn a_stored_denial_survives_a_context_grant_at_the_authority() {
-        let refusal =
+    fn a_blessed_product_proves_with_a_context_grant_despite_a_stored_denial() {
+        let proof =
             foreign_proof_through_the_authority_with(Some(r#"{"dim2":["context"]}"#), |platform| {
                 deny_account_access(platform, "dim2.dot", "peopl.dot")
             });
-        assert_eq!(refusal.err(), Some(RingVrfError::NotAllowlisted));
+        assert!(
+            proof.is_ok(),
+            "blessed account access ignores the saved denial: {proof:?}"
+        );
+    }
+
+    #[test]
+    fn blessed_context_grants_ignore_saved_decisions_and_permission_storage_errors() {
+        use crate::host_logic::product_manifest::{Granted, bare_product_label};
+        use crate::runtime::product_manifest::{RefusedBecause, scope_grant};
+
+        for (legacy, unreadable) in [(false, false), (true, false), (false, true)] {
+            let platform = Arc::new(StubPlatform {
+                permission_storage_error: unreadable.then_some("keychain locked"),
+                ..StubPlatform::default()
+            });
+            cache_grant(
+                &platform,
+                "owner.dot",
+                r#"{"dim2":["context"],"peopl":["context"],"stash":["context"],"ordinary":["context"]}"#,
+            );
+            let (services, _authority) = signing_runtime_with_platform(platform.clone());
+            let mut outcomes = Vec::new();
+            for caller in [
+                "dim2.dot",
+                "peopl.paseo",
+                "stash.testnet",
+                "ordinary.dot",
+                "app.dim2.dot",
+            ] {
+                if !unreadable {
+                    futures::executor::block_on(
+                        crate::host_logic::permissions::set_account_access_status(
+                            platform.as_ref(),
+                            if legacy {
+                                caller
+                            } else {
+                                bare_product_label(caller)
+                            },
+                            if legacy { "owner.dot" } else { "owner" },
+                            truapi_platform::PermissionAuthorizationStatus::Denied,
+                        ),
+                    )
+                    .unwrap();
+                }
+                outcomes.push(futures::executor::block_on(scope_grant(
+                    &services,
+                    platform.as_ref(),
+                    caller,
+                    "owner.dot",
+                    Granted::Context,
+                )));
+            }
+            let refusal = if unreadable {
+                RefusedBecause::DecisionUnreadable
+            } else {
+                RefusedBecause::UserDenied
+            };
+            assert_eq!(
+                outcomes,
+                vec![Ok(()), Ok(()), Ok(()), Err(refusal), Err(refusal)]
+            );
+        }
+    }
+
+    #[test]
+    fn blessed_context_access_still_requires_the_owners_manifest_and_allowed_context() {
+        use crate::host_logic::product_manifest::Granted;
+        use crate::runtime::product_manifest::{
+            RefusedBecause, require_own_context, ring_vrf_key_access_granted, scope_grant,
+        };
+
+        let platform = Arc::new(StubPlatform {
+            permission_storage_error: Some("keychain locked"),
+            ..StubPlatform::default()
+        });
+        let (services, _authority) = signing_runtime_with_platform(platform.clone());
+        cache_grant(&platform, "peopl.dot", "{}");
+        assert_eq!(
+            futures::executor::block_on(scope_grant(
+                &services,
+                platform.as_ref(),
+                "dim2.dot",
+                "peopl.dot",
+                Granted::Context
+            )),
+            Err(RefusedBecause::NotGranted),
+        );
+        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        let access = futures::executor::block_on(ring_vrf_key_access_granted(
+            &services,
+            platform.as_ref(),
+            "dim2.dot",
+            &full_person_key_handle(),
+        ))
+        .unwrap();
+        let outcomes: Vec<_> = ["dim2.dot", "peopl.dot", "bank.dot"]
+            .into_iter()
+            .map(|context| {
+                require_own_context(
+                    &access,
+                    &v01::ProductProofContext {
+                        product_id: context.to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec![Ok(()), Ok(()), Err(RingVrfError::NotAllowlisted)]
+        );
     }
 
     /// A `context` grant covers the identity read, so the two calls agree.
@@ -1813,8 +1943,8 @@ mod tests {
     /// other, which is not a policy anyone chose. RFC-0024 defines `context` as
     /// reading the account "and the identity that follows from it".
     ///
-    /// A product with no grant still takes the prompt, and a stored refusal
-    /// still overrides the grant.
+    /// An ordinary product with no grant still takes the prompt, and a stored
+    /// refusal still overrides its grant.
     #[test]
     fn a_context_grant_covers_the_identity_read() {
         let platform = Arc::new(StubPlatform::default());
@@ -1861,7 +1991,7 @@ mod tests {
             "a granted read must not raise the prompt the grant already answers"
         );
         assert_eq!(
-            alias_for("stash.dot").err(),
+            alias_for("ordinary.dot").err(),
             Some(RingVrfError::Rejected),
             "a product with no grant still takes the prompt path and is refused"
         );
@@ -2119,11 +2249,11 @@ mod tests {
     fn a_refusal_recorded_before_this_release_still_overrides_a_grant() {
         use crate::host_logic::product_manifest::Granted;
         let platform = Arc::new(StubPlatform::default());
-        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        cache_grant(&platform, "peopl.dot", r#"{"ordinary":["context"]}"#);
         // Written exactly as the previous release wrote it: full ids, both sides.
         futures::executor::block_on(crate::host_logic::permissions::set_account_access_status(
             platform.as_ref(),
-            "dim2.dot",
+            "ordinary.dot",
             "peopl.dot",
             truapi_platform::PermissionAuthorizationStatus::Denied,
         ))
@@ -2135,7 +2265,7 @@ mod tests {
             !futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
                 &services,
                 platform.as_ref(),
-                "dim2.dot",
+                "ordinary.dot",
                 "peopl.dot",
                 Granted::Context,
             )),
@@ -2168,10 +2298,10 @@ mod tests {
             account_access_confirmed: false,
             ..StubPlatform::default()
         });
-        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        cache_grant(&platform, "peopl.dot", r#"{"ordinary":["context"]}"#);
         futures::executor::block_on(crate::runtime::account_access_authorization(
             platform.as_ref(),
-            "dim2.dot",
+            "ordinary.dot",
             "peopl.dot",
         ))
         .expect("the stub records the declined decision");
@@ -2182,7 +2312,7 @@ mod tests {
                 !futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
                     &services,
                     platform.as_ref(),
-                    "dim2.dot",
+                    "ordinary.dot",
                     target,
                     Granted::Context,
                 )),
@@ -2313,8 +2443,8 @@ mod tests {
     fn a_refusal_covers_every_executable_of_the_refused_product() {
         use crate::host_logic::product_manifest::Granted;
         let platform = Arc::new(StubPlatform::default());
-        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
-        deny_account_access(&platform, "dim2.dot", "peopl.dot");
+        cache_grant(&platform, "peopl.dot", r#"{"ordinary":["context"]}"#);
+        deny_account_access(&platform, "ordinary.dot", "peopl.dot");
         let (services, _authority) =
             signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
 
@@ -2327,7 +2457,12 @@ mod tests {
                 Granted::Context,
             ))
         };
-        for spelling in ["dim2.dot", "app.dim2.dot", "worker.dim2.dot", "dim2.paseo"] {
+        for spelling in [
+            "ordinary.dot",
+            "app.ordinary.dot",
+            "worker.ordinary.dot",
+            "ordinary.paseo",
+        ] {
             assert!(
                 !granted(spelling),
                 "{spelling} is the refused product wearing another name"
@@ -2337,14 +2472,14 @@ mod tests {
         // Control: a product the user never refused still holds its own grant,
         // so the assertions above are not passing because nothing is granted.
         let clean = Arc::new(StubPlatform::default());
-        cache_grant(&clean, "peopl.dot", r#"{"dim2":["context"]}"#);
+        cache_grant(&clean, "peopl.dot", r#"{"ordinary":["context"]}"#);
         let (services, _authority) =
             signing_runtime_with_ring_resolver(clean.clone(), full_person_ring_resolver());
         assert!(
             futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
                 &services,
                 clean.as_ref(),
-                "app.dim2.dot",
+                "app.ordinary.dot",
                 "peopl.dot",
                 Granted::Context,
             )),
@@ -2409,7 +2544,7 @@ mod tests {
         );
     }
 
-    /// An unreadable permission store refuses the grant rather than honouring it.
+    /// An unreadable permission store refuses an ordinary product's grant.
     ///
     /// The stored `AccountAccess` decision is the only thing that can override a
     /// publisher's grant. Reading a storage fault as "not refused" would let a
@@ -2427,14 +2562,14 @@ mod tests {
             permission_storage_error: Some("keychain locked"),
             ..StubPlatform::default()
         });
-        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
+        cache_grant(&platform, "peopl.dot", r#"{"ordinary":["context"]}"#);
         let (services, _authority) =
             signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
 
         let granted = futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
             &services,
             platform.as_ref(),
-            "dim2.dot",
+            "ordinary.dot",
             "peopl.dot",
             crate::host_logic::product_manifest::Granted::Context,
         ));
@@ -2447,14 +2582,14 @@ mod tests {
         // Without this the assertion above would also pass if the grant never
         // worked at all.
         let readable = Arc::new(StubPlatform::default());
-        cache_grant(&readable, "peopl.dot", r#"{"dim2":["context"]}"#);
+        cache_grant(&readable, "peopl.dot", r#"{"ordinary":["context"]}"#);
         let (services, _authority) =
             signing_runtime_with_ring_resolver(readable.clone(), full_person_ring_resolver());
         assert!(
             futures::executor::block_on(crate::runtime::product_manifest::grants_scope(
                 &services,
                 readable.as_ref(),
-                "dim2.dot",
+                "ordinary.dot",
                 "peopl.dot",
                 crate::host_logic::product_manifest::Granted::Context,
             )),

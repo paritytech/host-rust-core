@@ -310,8 +310,8 @@ pub(crate) async fn scope_grant(
     if !manifest.grants(bare_product_label(caller_id), scope) {
         return Err(RefusedBecause::NotGranted);
     }
-    // A publisher's grant waives the publisher's own prompt. It does not reach a
-    // refusal the user already gave, so a stored decision still overrides it,
+    // A publisher's grant waives the publisher's own prompt. For ordinary
+    // products, a refusal the user already gave still overrides it,
     // read-only: raising the prompt here would turn a grant into a way to ask
     // again.
     //
@@ -327,7 +327,9 @@ pub(crate) async fn scope_grant(
     // its storage, and keeping it here means the frontend and the authority
     // inherit one implementation. A later scope that also implies account access
     // has to name itself here; it does not inherit this.
-    if scope == Granted::Context {
+    if scope == Granted::Context
+        && !truapi_platform::normalizes_to_trusted_remote_permissions(caller_id)
+    {
         match stored_account_decision(platform, caller_id, target).await {
             StoredDecision::Denied => return Err(RefusedBecause::UserDenied),
             StoredDecision::Unreadable => return Err(RefusedBecause::DecisionUnreadable),
@@ -511,8 +513,8 @@ pub(crate) struct AuthorizedAccess {
 /// by the component that holds the key.
 ///
 /// The caller owns the key, or the owner's published manifest grants the caller
-/// `context` and the user has not already refused, resolved against the chain
-/// here rather than accepted from the request. On a paired host the request
+/// `context`, subject to stored refusals for ordinary products, resolved against
+/// the chain here rather than accepted from the request. On a paired host the request
 /// arrives over the wire, and a verdict relayed by the caller would take the
 /// manifest out of this decision entirely: the peer would reach every handle on
 /// the device by setting one field, instead of only the handles a publisher

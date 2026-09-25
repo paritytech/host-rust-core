@@ -24,13 +24,7 @@ public enum ProductPermission: Equatable, Sendable {
     case statementSubmitAccess
     case userIdentityAccess
 
-    /// Whether this is one of the core's `RemotePermission` cases: a product's
-    /// own outbound access.
-    ///
-    /// The distinction exists because the core grants a first-party product
-    /// every remote permission without prompting, and nothing else. Device
-    /// capabilities, account access, balance and identity disclosure always
-    /// prompt, whoever asks, so they must not ride along on that trust.
+    /// Whether this corresponds to one of the core's `RemotePermission` cases.
     public var isRemoteAccess: Bool {
         switch self {
         case .networkAccess, .webRtcAccess, .chainSubmitAccess, .preimageSubmitAccess,

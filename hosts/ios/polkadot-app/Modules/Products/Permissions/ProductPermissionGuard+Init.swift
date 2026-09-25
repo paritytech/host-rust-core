@@ -1,5 +1,6 @@
 import Foundation
 import Products
+import TrUAPIHost
 
 extension ProductPermissionGuard {
     /// Assembles the guard with all permission handlers wired to one
@@ -36,7 +37,8 @@ extension ProductPermissionGuard {
             deviceHandler: deviceHandler,
             accountHandler: accountHandler,
             repository: repository,
-            requester: requester
+            requester: requester,
+            isTrustedProduct: { hasTrustedRemotePermissions(productId: $0) }
         )
     }
 }

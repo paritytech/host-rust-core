@@ -41,6 +41,7 @@ public final class ProductPermissionGuard: ProductPermissionGuarding, @unchecked
     private let accountHandler: AccountAccessPermissionHandler
     private let repository: ProductPermissionRepositoryProtocol
     private let requester: ProductPermissionRequesting
+    private let isTrustedProduct: @Sendable (String) -> Bool
 
     public init(
         networkHandler: NetworkAccessPermissionHandler,
@@ -48,7 +49,8 @@ public final class ProductPermissionGuard: ProductPermissionGuarding, @unchecked
         deviceHandler: DeviceCapabilityPermissionHandler,
         accountHandler: AccountAccessPermissionHandler,
         repository: ProductPermissionRepositoryProtocol,
-        requester: ProductPermissionRequesting
+        requester: ProductPermissionRequesting,
+        isTrustedProduct: @escaping @Sendable (String) -> Bool = { _ in false }
     ) {
         self.networkHandler = networkHandler
         self.remoteHandler = remoteHandler
@@ -56,13 +58,16 @@ public final class ProductPermissionGuard: ProductPermissionGuarding, @unchecked
         self.accountHandler = accountHandler
         self.repository = repository
         self.requester = requester
+        self.isTrustedProduct = isTrustedProduct
     }
 
     public func requestPermission(
         productId: String,
         permission: ProductPermission
     ) async throws -> Bool {
-        switch permission {
+        if grantsWithoutPrompting(productId: productId, permission: permission) { return true }
+
+        return switch permission {
         case let .networkAccess(domain):
             try await networkHandler.request(productId: productId, domain: domain)
         case let .accountAccess(targetProductId):
@@ -133,6 +138,7 @@ public final class ProductPermissionGuard: ProductPermissionGuarding, @unchecked
     ) async throws -> PermissionDecision {
         var undecided: [ProductPermission] = []
         for permission in permissions.removingDuplicates() {
+            if grantsWithoutPrompting(productId: productId, permission: permission) { continue }
             let state = try await repository.getPermissionState(productId: productId, permission: permission)
             if state != .allowedOnce, try await check(productId: productId, permission: permission) {
                 continue
@@ -147,6 +153,8 @@ public final class ProductPermissionGuard: ProductPermissionGuarding, @unchecked
         productId: String,
         permission: ProductPermission
     ) async throws -> Bool {
+        if grantsWithoutPrompting(productId: productId, permission: permission) { return true }
+
         if try await check(productId: productId, permission: permission) {
             _ = repository.consumeOneTimeGrant(productId: productId, permission: permission)
 
@@ -166,7 +174,9 @@ public final class ProductPermissionGuard: ProductPermissionGuarding, @unchecked
         productId: String,
         permission: ProductPermission
     ) async throws -> Bool {
-        switch permission {
+        if grantsWithoutPrompting(productId: productId, permission: permission) { return true }
+
+        return switch permission {
         case let .networkAccess(domain):
             try await networkHandler.isGranted(productId: productId, domain: domain)
         case let .accountAccess(targetProductId):
@@ -184,6 +194,11 @@ public final class ProductPermissionGuard: ProductPermissionGuarding, @unchecked
              .userIdentityAccess:
             try await remoteHandler.isGranted(productId: productId, permission: permission)
         }
+    }
+
+    private func grantsWithoutPrompting(productId: String, permission: ProductPermission) -> Bool {
+        if case .deviceCapability = permission { return false }
+        return isTrustedProduct(productId)
     }
 }
 

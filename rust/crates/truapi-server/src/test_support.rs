@@ -121,6 +121,8 @@ pub(crate) struct StubPlatform {
     /// Every `StatementStoreProductSign` review passed to `confirm_user_action`, in order.
     pub(crate) statement_store_product_sign_reviews:
         Arc<Mutex<Vec<StatementStoreProductSignReview>>>,
+    pub(crate) preimage_submit_denied: bool,
+    pub(crate) preimage_submit_sizes: Mutex<Vec<u64>>,
     pub(crate) create_transaction_confirmed: bool,
     /// Every `CreateTransaction` review passed to `confirm_user_action`, in
     /// order. Empty proves an AutoSigning grant suppressed the prompt.
@@ -1920,7 +1922,10 @@ impl UserConfirmation for StubPlatform {
                     self.resource_allocation_confirmed,
                 )
             }
-            UserConfirmationReview::PreimageSubmit(_) => (None, true),
+            UserConfirmationReview::PreimageSubmit(review) => {
+                self.preimage_submit_sizes.lock().unwrap().push(review.size);
+                (None, !self.preimage_submit_denied)
+            }
             UserConfirmationReview::ProductSubtree(review) => {
                 self.product_subtree_reviews
                     .lock()

@@ -1,21 +1,7 @@
 import Foundation
 
-/// Grants remote access without prompting to products the host trusts,
-/// and prompts for everything else. Wraps the real requester.
-///
-/// The core already grants a first-party product every `RemotePermission`
-/// without prompting, but only along the path it owns: the request a product
-/// makes through the protocol. This app also mediates product network access in
-/// its own code — the container's `fetch` shim reaches
-/// `NetworkAccessPermissionHandler`, which never enters the core — so without
-/// this the same product is stopped here for access the core would have granted.
-///
-/// Distinct from `AutoAllowProductPermissionRequester`, which grants *every*
-/// permission and is scoped to builds with no Apps settings screen. This one is
-/// narrower on both axes and is not tied to that build flag: it covers remote
-/// access only, and first-party trust does not expire when the settings screen
-/// ships. Device capabilities, account access, balance and identity disclosure
-/// keep prompting for a trusted product, matching the core.
+/// Grants remote requests for trusted products and delegates other requests.
+/// `ProductPermissionGuard` applies trusted policy before reading stored decisions.
 public struct TrustedRemoteProductPermissionRequester: ProductPermissionRequesting {
     private let isTrustedForRemoteAccess: @Sendable (String) -> Bool
     private let wrapped: ProductPermissionRequesting
