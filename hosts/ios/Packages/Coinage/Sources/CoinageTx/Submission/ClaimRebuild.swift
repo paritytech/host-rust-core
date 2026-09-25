@@ -31,7 +31,7 @@ struct ClaimRebuild: CoinageRebuild {
     func resolve(
         _ transactions: [ScheduledDurableTx],
         assets: [CoinageTxId: CoinageTxEntry]
-    ) async -> [CoinageTxId: Claim] {
+    ) async throws -> [CoinageTxId: Claim] {
         transactions.reduce(into: [:]) { resolved, transaction in
             guard let destination = assets[transaction.id]?.outputs.first?.publicKey,
                   let params = try? CoinageSubmissionParams.decodeClaim(transaction.policy.params),

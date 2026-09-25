@@ -233,6 +233,8 @@ public extension CoinageService {
                 coinKeypairFactory: coinKeypairFactory,
                 coinOnChainQuery: coinOnChainQuery,
                 voucherOnChainQuery: voucherOnChainQuery,
+                chainViewFactory: chainViewFactory,
+                chainId: chain.chainId,
                 logger: logger
             ),
             assetStore: RecoveredAssetStore(databaseFactory: databaseFactory),

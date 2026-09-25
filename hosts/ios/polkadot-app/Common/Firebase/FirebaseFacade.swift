@@ -7,6 +7,11 @@ import ChainRegistry
 import FoundationExt
 
 final class FirebaseFacade {
+    private enum RemoteConfigOutcome {
+        case valid(RemoteAppConfig)
+        case invalid
+    }
+
     static let shared = FirebaseFacade()
 
     private let firebaseService = FirebaseApplicationService.shared
@@ -14,7 +19,7 @@ final class FirebaseFacade {
     private let logger: LoggerProtocol?
     private var chainRegistry: ChainRegistryProtocol?
 
-    private let remoteConfigSubject = AsyncCurrentValueSubject<RemoteAppConfig?>(nil)
+    private let remoteConfigSubject = AsyncCurrentValueSubject<RemoteConfigOutcome?>(nil)
 
     private let appStateStreamFactory = ApplicationStateStreamFactory()
     private let foregroundRefreshInterval: TimeInterval = .secondsInHour
@@ -40,7 +45,7 @@ final class FirebaseFacade {
     }
 }
 
-extension FirebaseFacade: RemoteConfigManaging {
+extension FirebaseFacade: RemoteConfigManaging, ChainRegistryConfiguring {
     func fetchRemoteConfigValues() {
         applyCachedConfigIfValid()
         scheduleRemoteFetch()
@@ -71,8 +76,13 @@ extension FirebaseFacade: RemoteConfigManaging {
     }
 
     func asyncWaitRemoteConfig() async throws -> RemoteAppConfig {
-        for await config in remoteConfigSubject.compacted() {
-            return config
+        for await outcome in remoteConfigSubject.compacted() {
+            switch outcome {
+            case let .valid(config):
+                return config
+            case .invalid:
+                throw RemoteConfigError.invalidConfig
+            }
         }
 
         throw CancellationError()
@@ -81,7 +91,14 @@ extension FirebaseFacade: RemoteConfigManaging {
 
 extension FirebaseFacade: RemoteConfigObserving {
     func remoteConfigStream() -> AnyAsyncSequence<RemoteAppConfig> {
-        remoteConfigSubject.compacted().eraseToAnyAsyncSequence()
+        // Invalid outcomes are dropped because they are never applied.
+        remoteConfigSubject
+            .compacted()
+            .compactMap { outcome -> RemoteAppConfig? in
+                guard case let .valid(config) = outcome else { return nil }
+                return config
+            }
+            .eraseToAnyAsyncSequence()
     }
 }
 
@@ -89,9 +106,15 @@ extension FirebaseFacade: RemoteConfigDelegate {
     func remoteConfig(didFinishLoading result: Result<Void, Error>) {
         switch result {
         case .success:
-            applyConfig(firebaseService.syncedAppConfig())
+            let config = firebaseService.syncedAppConfig()
+            if config.isValid {
+                applyConfig(config)
+            } else {
+                remoteConfigSubject.send(.invalid)
+            }
         case let .failure(failure):
             logger?.error(failure.localizedDescription)
+            publishInvalidUnlessApplied()
         }
     }
 
@@ -101,8 +124,20 @@ extension FirebaseFacade: RemoteConfigDelegate {
 private extension FirebaseFacade {
     func applyCachedConfigIfValid() {
         let cached = firebaseService.syncedAppConfig()
-        guard cached.isValid else { return }
+        guard cached.isValid else {
+            // A retry must wait for the new fetch instead of replaying the previous failure.
+            if case .invalid = remoteConfigSubject.value {
+                remoteConfigSubject.send(nil)
+            }
+            return
+        }
         applyConfig(cached)
+    }
+
+    /// A failed fetch keeps an already applied config; without one, waiters would hang until their deadline.
+    func publishInvalidUnlessApplied() {
+        if case .valid = remoteConfigSubject.value { return }
+        remoteConfigSubject.send(.invalid)
     }
 
     func scheduleRemoteFetch() {
@@ -140,7 +175,7 @@ private extension FirebaseFacade {
     func applyConfig(_ config: RemoteAppConfig) {
         appConfigProvider.apply(config)
         chainRegistry?.syncUp()
-        remoteConfigSubject.send(config)
+        remoteConfigSubject.send(.valid(config))
     }
 
     func waitUntilReachable() async throws {

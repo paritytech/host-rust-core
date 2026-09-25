@@ -6,20 +6,49 @@ name: Nightly Simulator Release
 # direct analogue of how `app-nightly.apk` from polkadot-app-android-v2
 # Releases feeds the Android shard.
 #
-# Runs daily on cron and on-demand via workflow_dispatch. Re-runs are idempotent:
-# each run creates a fresh `simulator-YYYYMMDD-HHMM-<sha>` tag + Release.
+# The nightly calls this as a job of its own run, so the bundle and the
+# TestFlight build come from one commit and are announced together. A schedule
+# of its own would only ever be near the nightly's commit, and nothing would
+# report when the two had drifted apart.
+#
+# Re-runs are idempotent: each run creates a fresh
+# `simulator-YYYYMMDD-HHMM-<sha>` tag and release.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ios-nightly-simulator-${{ github.run_id }}
   cancel-in-progress: true
 
 on:
-  schedule:
-    # 03:30 UTC — runs after the nightly Firebase distribution on main
-    # (typically completes by ~01:00 UTC after the day's last merge), so
-    # the simulator artifact reflects the same code that Firebase shipped.
-    - cron: "30 3 * * *"
+  workflow_call:
+    inputs:
+      ref:
+        description: "Ref to build. Defaults to the commit the calling run is for."
+        required: false
+        type: string
+        default: ""
+    outputs:
+      tag:
+        description: "Tag of the release carrying the bundle."
+        value: ${{ jobs.build_simulator.outputs.tag }}
+      download_url:
+        description: "Direct download for the published bundle."
+        value: ${{ jobs.build_simulator.outputs.download_url }}
+    secrets:
+      GOOGLE_SERVICE_INFO_RELEASE_BASE64:
+        required: true
+      MELD_BASIC_AUTH_TOKEN:
+        required: true
+      SENTRY_AUTH_TOKEN:
+        required: true
+      SENTRY_DSN:
+        required: true
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to build. Defaults to the commit this run is for."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -35,8 +64,13 @@ jobs:
     name: Build & publish simulator .app
     runs-on: macos-26
     timeout-minutes: 60
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      download_url: ${{ steps.tag.outputs.download_url }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Setup iOS Environment
         uses: ./hosts/ios/.github/actions/install
@@ -64,17 +98,24 @@ jobs:
         working-directory: hosts/ios
         run: bundle exec fastlane build_app_simulator
 
+      # The commit is read from the checkout rather than from GITHUB_SHA, which
+      # names the commit the run was started for and not the one a caller asked
+      # this job to build.
       - name: Compute release tag + name
         id: tag
+        env:
+          ASSET: polkadot-app-simulator.app.zip
         run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
           DATE_TAG=$(date -u +%Y%m%d-%H%M)
           DATE_NAME=$(date -u +'%d.%m.%Y %H:%M')
-          SHORT_SHA=${GITHUB_SHA:0:7}
-          TAG="simulator-${DATE_TAG}-${SHORT_SHA}"
-          NAME="Nightly Simulator ${DATE_NAME} UTC"
+          TAG="simulator-${DATE_TAG}-${SHA:0:7}"
           {
             echo "tag=${TAG}"
-            echo "name=${NAME}"
+            echo "name=Nightly Simulator ${DATE_NAME} UTC"
+            echo "sha=${SHA}"
+            echo "download_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Zip .app bundle
@@ -122,6 +163,10 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
+          # Without this the tag is created at the default branch, so a build of
+          # any other ref produces a tag naming one commit and pointing at
+          # another, and generated notes computed from the wrong base.
+          target_commitish: ${{ steps.tag.outputs.sha }}
           name: ${{ steps.tag.outputs.name }}
           # GitHub auto-generates a "What's Changed" PR list between this tag
           # and the previous one. softprops/action-gh-release prepends the
@@ -130,7 +175,7 @@ jobs:
           generate_release_notes: true
           body: |
             Ad-hoc-signed arm64-iphonesimulator `.app` bundle built from commit
-            `${{ github.sha }}` on the `${{ env.FASTLANE_CONFIGURATION }}` configuration.
+            `${{ steps.tag.outputs.sha }}` on the `${{ env.FASTLANE_CONFIGURATION }}` configuration.
 
             Install on a booted simulator:
             ```
