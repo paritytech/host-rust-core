@@ -121,7 +121,7 @@ impl CliPlatform {
     /// The URL a genesis routes to, so a test can assert a routing override
     /// rather than assume it.
     #[cfg(test)]
-    pub(crate) fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
+    pub fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
         self.chain.routed_url(genesis_hash)
     }
 
@@ -1207,7 +1207,7 @@ fn save_string_map(path: &Path, values: &HashMap<String, Vec<u8>>) -> Result<(),
     atomic_write(path, text.as_bytes())
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("storage path has no parent: {}", path.display()))?;

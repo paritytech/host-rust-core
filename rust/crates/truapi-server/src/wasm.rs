@@ -1548,7 +1548,7 @@ impl WasmProductRuntime {
                                 let _ = on_update.call1(&JsValue::NULL, &bytes);
                             }
                             Err(error) => {
-                                let reason = crate::subscription::interrupt_reason(error);
+                                let reason = crate::interrupt::interrupt_reason(error);
                                 let _ = on_error.call1(&JsValue::NULL, &JsValue::from_str(&reason));
                                 return;
                             }

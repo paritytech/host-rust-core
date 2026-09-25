@@ -19,7 +19,7 @@ use crate::host_logic::session::SessionInfo;
 ///
 /// A slot that is not exactly 32 bytes reads as a miss, so a truncated or
 /// over-written entry re-asks the wallet rather than deriving a wrong account.
-pub(super) async fn read_product_subtree(
+pub async fn read_product_subtree(
     storage: &(impl CoreStorage + ?Sized),
     session: &SessionInfo,
     product_id: &str,
@@ -32,7 +32,7 @@ pub(super) async fn read_product_subtree(
 }
 
 /// Persist `product_id`'s subtree public key.
-pub(super) async fn write_product_subtree(
+pub async fn write_product_subtree(
     storage: &(impl CoreStorage + ?Sized),
     session: &SessionInfo,
     product_id: &str,
@@ -48,7 +48,7 @@ pub(super) async fn write_product_subtree(
 }
 
 /// Drop `product_id`'s persisted subtree key.
-pub(super) async fn remove_product_subtree(
+pub async fn remove_product_subtree(
     storage: &(impl CoreStorage + ?Sized),
     session: &SessionInfo,
     product_id: &str,

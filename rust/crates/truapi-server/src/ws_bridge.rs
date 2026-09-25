@@ -342,7 +342,7 @@ impl SharedWsBridge {
 
 /// Running listener owned by [`SharedWsBridge`]. Dropping it stops acceptance
 /// and cancels its connections without stopping the shared executor.
-pub(crate) struct WsBridge {
+struct WsBridge {
     shutdown: Option<oneshot::Sender<()>>,
     stopped: Option<std::sync::mpsc::Receiver<()>>,
     accept_task: Option<tokio::task::JoinHandle<()>>,

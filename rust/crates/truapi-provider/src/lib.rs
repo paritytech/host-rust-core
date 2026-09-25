@@ -58,7 +58,7 @@ mod logging_native;
 mod networks;
 mod provider;
 #[cfg(feature = "smoldot")]
-pub mod storage;
+mod storage;
 #[cfg(all(feature = "ws", not(target_arch = "wasm32")))]
 mod ws;
 #[cfg(all(feature = "ws", target_arch = "wasm32"))]

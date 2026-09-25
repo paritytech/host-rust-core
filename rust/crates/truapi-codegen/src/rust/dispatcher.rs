@@ -191,7 +191,7 @@ fn write_host_initiated_callers(
                 r#"
 
                 /// Start the host-initiated `{wire_name}` subscription.
-                pub(crate) fn {wire_name}(
+                pub fn {wire_name}(
                     subscriptions: &HostInitiatedSubscriptionManager,
                     transport: Arc<dyn Transport>,
                     request: {request_path},

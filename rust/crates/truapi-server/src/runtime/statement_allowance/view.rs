@@ -8,6 +8,7 @@ use thiserror::Error;
 use super::StatementAllowanceError;
 use super::extension::Metadata;
 use super::rpc::RpcClient;
+use super::view_cache::MetadataViewCache;
 
 const EXECUTE_VIEW_FUNCTION: &str = "RuntimeViewFunction_execute_view_function";
 
@@ -153,7 +154,7 @@ async fn read_u32(
     Ok(value)
 }
 
-pub(super) async fn read_resource_u32(
+pub async fn read_resource_u32(
     rpc: &RpcClient,
     metadata: &Metadata,
     function: &'static str,
@@ -161,7 +162,7 @@ pub(super) async fn read_resource_u32(
     read_u32(rpc, metadata, "Resources", function).await
 }
 
-pub(super) fn supports_resource_u32(metadata: &Metadata, function: &'static str) -> bool {
+pub fn supports_resource_u32(metadata: &Metadata, function: &'static str) -> bool {
     let Some(definition) = metadata.view_function("Resources", function) else {
         return false;
     };
@@ -245,8 +246,8 @@ fn view_error(error: ViewFunctionFailure) -> StatementAllowanceError {
 mod tests {
     use subxt_rpcs::RpcClient as HostRpcClient;
 
-    use super::super::extension::ViewFunctionDef;
     use super::super::rpc::testing::ScriptedRpc;
+    use super::super::view_cache::ViewFunctionDef;
     use super::*;
 
     const FIXTURE_V16: &[u8] =

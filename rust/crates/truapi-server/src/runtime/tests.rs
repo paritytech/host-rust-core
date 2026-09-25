@@ -70,11 +70,11 @@ use truapi_platform::{
 
 use super::product_manifest::{CachedManifest, MANIFEST_TTL_SECS};
 use super::*;
+use crate::host_internal::product_manifest::test_manifest_json;
+use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, Response, v1};
 use crate::host_logic::product_account::index_bytes;
-use crate::host_logic::product_manifest::test_manifest_json;
-use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
-use crate::host_logic::statement_store::current_unix_secs;
 use crate::test_support::*;
+use crate::unix_time::current_unix_secs;
 
 fn test_product_subtree(product_id: &str) -> [u8; 32] {
     let root = crate::host_logic::product_account::derive_root_keypair_from_entropy(&[0xAB; 16])
@@ -425,7 +425,7 @@ fn a_cache_entry_stamped_in_the_future_is_not_honoured() {
         &platform,
         "wallet.dot",
         r#"{"unknown":["storage"]}"#,
-        crate::host_logic::statement_store::current_unix_secs() + 365 * 24 * 60 * 60,
+        crate::unix_time::current_unix_secs() + 365 * 24 * 60 * 60,
     );
     seed_owner_value(&platform, "wallet.dot");
     let host = ProductRuntimeHost::new_compat(platform, test_spawner());
@@ -2831,7 +2831,7 @@ fn chain_broadcast_requires_remote_permission_before_backend_call() {
 fn preimage_lookup_cache_hit_emits_once_and_stays_open() {
     use futures::FutureExt;
 
-    use crate::host_logic::bulletin::preimage_key;
+    use crate::host_internal::bulletin::preimage_key;
 
     let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
     let value = vec![4, 5, 6, 7];
@@ -2858,7 +2858,7 @@ fn preimage_lookup_cache_hit_emits_once_and_stays_open() {
 
 #[test]
 fn preimage_lookup_forged_host_bytes_downgraded_to_miss() {
-    use crate::host_logic::bulletin::preimage_key;
+    use crate::host_internal::bulletin::preimage_key;
 
     let value = vec![1, 1, 2, 3, 5, 8];
     let key = preimage_key(&value);
@@ -3484,11 +3484,11 @@ fn legacy_create_transaction_accepts_identity_account_then_routes_legacy_request
         create_transaction_confirmed: true,
         sso_response_script: Some(sso_success_response_script(
             &session,
-            crate::host_logic::sso::messages::RemoteMessage {
+            crate::host_internal::sso_messages::RemoteMessage {
                 message_id: "wallet-identity-create-tx-1".to_string(),
-                data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-                    crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionResponse(
-                        crate::host_logic::sso::messages::Response {
+                data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+                    crate::host_internal::sso_messages::v1::RemoteMessage::CreateTransactionResponse(
+                        crate::host_internal::sso_messages::Response {
                             responding_to: "identity-create-tx-1".to_string(),
                             payload: Ok(vec![0xca, 0xfe]),
                         },
@@ -3520,15 +3520,15 @@ fn legacy_create_transaction_accepts_identity_account_then_routes_legacy_request
     let HostCreateTransactionWithLegacyAccountResponse::V1(inner) = response;
     assert_eq!(inner.transaction, vec![0xca, 0xfe]);
     let message = submitted_remote_message(&platform, &session);
-    let crate::host_logic::sso::messages::RemoteMessageData::V1(
-        crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionWithLegacyAccountRequest(
+    let crate::host_internal::sso_messages::RemoteMessageData::V1(
+        crate::host_internal::sso_messages::v1::RemoteMessage::CreateTransactionWithLegacyAccountRequest(
             request,
         ),
     ) = message.data
     else {
         panic!("expected identity transaction request");
     };
-    let crate::host_logic::sso::messages::CreateTransactionLegacyPayload::V1(payload) =
+    let crate::host_internal::sso_messages::CreateTransactionLegacyPayload::V1(payload) =
         request.payload;
     assert_eq!(payload.signer, identity);
 }
@@ -3541,11 +3541,11 @@ fn legacy_create_transaction_accepts_derived_key_then_returns_sso_response() {
         create_transaction_confirmed: true,
         sso_response_script: Some(sso_success_response_script(
             &session,
-            crate::host_logic::sso::messages::RemoteMessage {
+            crate::host_internal::sso_messages::RemoteMessage {
                 message_id: "wallet-legacy-create-tx-1".to_string(),
-                data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-                    crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionResponse(
-                        crate::host_logic::sso::messages::Response {
+                data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+                    crate::host_internal::sso_messages::v1::RemoteMessage::CreateTransactionResponse(
+                        crate::host_internal::sso_messages::Response {
                             responding_to: "legacy-create-tx-1".to_string(),
                             payload: Ok(vec![0xca, 0xfe]),
                         },
@@ -3577,13 +3577,13 @@ fn legacy_create_transaction_accepts_derived_key_then_returns_sso_response() {
     let HostCreateTransactionWithLegacyAccountResponse::V1(inner) = response;
     assert_eq!(inner.transaction, vec![0xca, 0xfe]);
     let message = submitted_remote_message(&platform, &session);
-    let crate::host_logic::sso::messages::RemoteMessageData::V1(
-        crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionRequest(request),
+    let crate::host_internal::sso_messages::RemoteMessageData::V1(
+        crate::host_internal::sso_messages::v1::RemoteMessage::CreateTransactionRequest(request),
     ) = message.data
     else {
         panic!("expected product transaction request");
     };
-    let crate::host_logic::sso::messages::CreateTransactionPayload::V1(payload) = request.payload;
+    let crate::host_internal::sso_messages::CreateTransactionPayload::V1(payload) = request.payload;
     assert_eq!(
         payload.signer,
         v01::ProductAccountId {
@@ -3657,11 +3657,11 @@ fn resource_allocation_respects_a_shorter_call_context_timeout() {
     let mut rpc_responses = sso_success_responses(
         &session,
         message_id,
-        crate::host_logic::sso::messages::RemoteMessage {
+        crate::host_internal::sso_messages::RemoteMessage {
             message_id: "wallet-allocation-timeout".to_string(),
-            data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-                crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationResponse(
-                    crate::host_logic::sso::messages::Response {
+            data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+                crate::host_internal::sso_messages::v1::RemoteMessage::ResourceAllocationResponse(
+                    crate::host_internal::sso_messages::Response {
                         responding_to: message_id.to_string(),
                         payload: Ok(vec![]),
                     },
@@ -3715,20 +3715,20 @@ fn resource_allocation_accepts_confirmation_then_returns_sso_response() {
         resource_allocation_confirmed: true,
         sso_response_script: Some(sso_success_response_script(
             &session,
-            crate::host_logic::sso::messages::RemoteMessage {
+            crate::host_internal::sso_messages::RemoteMessage {
                 message_id: "wallet-alloc-1".to_string(),
-                data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-                    crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationResponse(
-                        crate::host_logic::sso::messages::Response {
+                data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+                    crate::host_internal::sso_messages::v1::RemoteMessage::ResourceAllocationResponse(
+                        crate::host_internal::sso_messages::Response {
                             responding_to: "alloc-1".to_string(),
                             payload: Ok(vec![
-                                crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
-                                    crate::host_logic::sso::messages::SsoAllocatedResource::StatementStoreAllowance {
+                                crate::host_internal::sso_messages::SsoAllocationOutcome::Allocated(
+                                    crate::host_internal::sso_messages::SsoAllocatedResource::StatementStoreAllowance {
                                         slot_account_key,
                                     },
                                 ),
-                                crate::host_logic::sso::messages::SsoAllocationOutcome::Rejected,
-                                crate::host_logic::sso::messages::SsoAllocationOutcome::NotAvailable,
+                                crate::host_internal::sso_messages::SsoAllocationOutcome::Rejected,
+                                crate::host_internal::sso_messages::SsoAllocationOutcome::NotAvailable,
                             ]),
                         },
                     ),
@@ -3758,8 +3758,8 @@ fn resource_allocation_accepts_confirmation_then_returns_sso_response() {
     let message = submitted_remote_message(&platform, &session);
     assert!(matches!(
         message.data,
-        crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationRequest(_)
+        crate::host_internal::sso_messages::RemoteMessageData::V1(
+            crate::host_internal::sso_messages::v1::RemoteMessage::ResourceAllocationRequest(_)
         )
     ));
 }
@@ -3777,11 +3777,11 @@ fn auto_signing_test_platform(session: &SessionInfo, request_id: &str) -> Arc<St
             RemoteMessage {
                 message_id: format!("wallet-{request_id}"),
                 data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
-                    crate::host_logic::sso::messages::Response {
+                    crate::host_internal::sso_messages::Response {
                         responding_to: request_id.to_string(),
                         payload: Ok(vec![
-                            crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
-                                crate::host_logic::sso::messages::SsoAllocatedResource::AutoSigning {
+                            crate::host_internal::sso_messages::SsoAllocationOutcome::Allocated(
+                                crate::host_internal::sso_messages::SsoAllocatedResource::AutoSigning {
                                     product_root_private_key: subtree.secret.to_bytes(),
                                     ring_vrf_domain_entropy:
                                         crate::host_logic::product_account::derive_ring_vrf_domain_entropy(
@@ -3907,7 +3907,7 @@ fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
             .is_empty(),
         "the grant waives the prompt",
     );
-    let (signer, _, call) = crate::host_logic::extrinsic::tests::split_v4(&response.transaction);
+    let (signer, _, call) = crate::host_internal::extrinsic::tests::split_v4(&response.transaction);
     assert_eq!(
         signer,
         granted_keypair().public.to_bytes(),
@@ -3920,7 +3920,7 @@ fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
 fn auto_signing_serves_sign_payload_locally_without_prompt() {
     let (platform, host) = granted_pairing_host();
     let payload = crate::test_support::sign_payload_data();
-    let preimage = crate::host_logic::transaction::extrinsic_payload_preimage(&payload)
+    let preimage = crate::host_internal::transaction::extrinsic_payload_preimage(&payload)
         .expect("preimage builds");
 
     let HostSignPayloadResponse::V1(response) = futures::executor::block_on(host.sign_payload(
@@ -4115,11 +4115,11 @@ fn auto_signing_allocation_persists_and_serves_vrf_without_sso() {
             RemoteMessage {
                 message_id: "wallet-auto-1".to_string(),
                 data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
-                    crate::host_logic::sso::messages::Response {
+                    crate::host_internal::sso_messages::Response {
                         responding_to: "auto-1".to_string(),
                         payload: Ok(vec![
-                            crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
-                                crate::host_logic::sso::messages::SsoAllocatedResource::AutoSigning {
+                            crate::host_internal::sso_messages::SsoAllocationOutcome::Allocated(
+                                crate::host_internal::sso_messages::SsoAllocatedResource::AutoSigning {
                                     product_root_private_key,
                                     ring_vrf_domain_entropy:
                                         crate::host_logic::product_account::derive_ring_vrf_domain_entropy(
@@ -5666,7 +5666,7 @@ fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
         &*pairing_host,
         &CallContext::default(),
         &session,
-        crate::host_logic::sso::messages::ProductRequest {
+        crate::host_internal::sso_messages::ProductRequest {
             calling_product_id: "dim2.dot".to_string(),
             payload: v01::HostAccountCreateProofRequest {
                 key_handle: v01::ProductAccountId {
@@ -5692,7 +5692,7 @@ fn the_pairing_authority_refuses_a_foreign_ring_vrf_key_without_a_grant() {
         &*pairing_host,
         &CallContext::default(),
         &session,
-        crate::host_logic::sso::messages::ProductRequest {
+        crate::host_internal::sso_messages::ProductRequest {
             calling_product_id: "dim2.dot".to_string(),
             payload: v01::HostAccountRingVrfSignRequest {
                 key_handle: v01::ProductAccountId {

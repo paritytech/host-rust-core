@@ -3,7 +3,7 @@ use super::*;
 #[test]
 #[allow(deprecated)] // Exercise the temporary API's paired-host wire routing.
 fn unwatermarked_signing_routes_product_and_legacy_accounts_without_downgrading() {
-    use crate::host_logic::sso::messages::SignRequest;
+    use crate::host_internal::sso_messages::SignRequest;
 
     for legacy in [false, true] {
         let session = sso_session_info();
@@ -92,7 +92,7 @@ fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
             RemoteMessage {
                 message_id: "wallet-vrf-1".to_string(),
                 data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(
-                    crate::host_logic::sso::messages::Response {
+                    crate::host_internal::sso_messages::Response {
                         responding_to: "vrf-1".to_string(),
                         payload: Ok(signature.clone()),
                     },
@@ -151,7 +151,7 @@ fn sign_vrf_rejects_declined_pairing_host_confirmation_before_mobile_sso() {
             RemoteMessage {
                 message_id: "wallet-vrf-declined".to_string(),
                 data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(
-                    crate::host_logic::sso::messages::Response {
+                    crate::host_internal::sso_messages::Response {
                         responding_to: "vrf-declined".to_string(),
                         payload: Ok(v01::VrfSignature {
                             pre_output: [0x11; 32],
@@ -346,9 +346,9 @@ fn sign_raw_accepts_confirmation_then_returns_sso_response() {
     let message = submitted_remote_message(&platform, &session);
     assert!(matches!(
         &message.data,
-        crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(
-                crate::host_logic::sso::messages::SignRequest::Raw(_)
+        crate::host_internal::sso_messages::RemoteMessageData::V1(
+            crate::host_internal::sso_messages::v1::RemoteMessage::SignRequest(
+                crate::host_internal::sso_messages::SignRequest::Raw(_)
             )
         )
     ));
@@ -608,9 +608,9 @@ fn sign_payload_accepts_confirmation_then_returns_sso_response() {
     let message = submitted_remote_message(&platform, &session);
     assert!(matches!(
         &message.data,
-        crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(
-                crate::host_logic::sso::messages::SignRequest::Payload(_)
+        crate::host_internal::sso_messages::RemoteMessageData::V1(
+            crate::host_internal::sso_messages::v1::RemoteMessage::SignRequest(
+                crate::host_internal::sso_messages::SignRequest::Payload(_)
             )
         )
     ));
@@ -623,11 +623,11 @@ fn create_transaction_accepts_confirmation_then_returns_sso_response() {
         create_transaction_confirmed: true,
         sso_response_script: Some(sso_success_response_script(
             &session,
-            crate::host_logic::sso::messages::RemoteMessage {
+            crate::host_internal::sso_messages::RemoteMessage {
                 message_id: "wallet-create-tx-1".to_string(),
-                data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-                    crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionResponse(
-                        crate::host_logic::sso::messages::Response {
+                data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+                    crate::host_internal::sso_messages::v1::RemoteMessage::CreateTransactionResponse(
+                        crate::host_internal::sso_messages::Response {
                             responding_to: "create-tx-1".to_string(),
                             payload: Ok(vec![0xca, 0xfe]),
                         },
@@ -651,8 +651,8 @@ fn create_transaction_accepts_confirmation_then_returns_sso_response() {
     let message = submitted_remote_message(&platform, &session);
     assert!(matches!(
         message.data,
-        crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionRequest(_)
+        crate::host_internal::sso_messages::RemoteMessageData::V1(
+            crate::host_internal::sso_messages::v1::RemoteMessage::CreateTransactionRequest(_)
         )
     ));
 }
@@ -761,13 +761,13 @@ fn legacy_sign_raw_accepts_derived_ss58_then_returns_sso_response() {
     assert_eq!(inner.signature, vec![9, 9]);
     assert_eq!(inner.signed_transaction, None);
     let message = submitted_remote_message(&platform, &session);
-    let crate::host_logic::sso::messages::RemoteMessageData::V1(
-        crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(request),
+    let crate::host_internal::sso_messages::RemoteMessageData::V1(
+        crate::host_internal::sso_messages::v1::RemoteMessage::SignRequest(request),
     ) = message.data
     else {
         panic!("expected product raw signing request");
     };
-    let crate::host_logic::sso::messages::SignRequest::Raw(request) = request else {
+    let crate::host_internal::sso_messages::SignRequest::Raw(request) = request else {
         panic!("expected raw signing payload");
     };
     assert_eq!(
@@ -814,13 +814,13 @@ fn legacy_sign_raw_accepts_derived_hex_then_returns_sso_response() {
     assert_eq!(inner.signature, vec![8, 8]);
 
     let message = submitted_remote_message(&platform, &session);
-    let crate::host_logic::sso::messages::RemoteMessageData::V1(
-        crate::host_logic::sso::messages::v1::RemoteMessage::SignRequest(request),
+    let crate::host_internal::sso_messages::RemoteMessageData::V1(
+        crate::host_internal::sso_messages::v1::RemoteMessage::SignRequest(request),
     ) = message.data
     else {
         panic!("expected product raw signing request");
     };
-    let crate::host_logic::sso::messages::SignRequest::Raw(request) = request else {
+    let crate::host_internal::sso_messages::SignRequest::Raw(request) = request else {
         panic!("expected raw signing payload");
     };
     assert_eq!(

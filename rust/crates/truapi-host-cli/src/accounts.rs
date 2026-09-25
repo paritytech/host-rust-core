@@ -28,7 +28,7 @@ const DEFAULT_USERNAME_PREFIX: &str = "headless";
 ///
 /// This is the judgement "a signer was provisioned here"; the store's filename
 /// stays private to this module.
-pub(crate) fn has_account_store(base_path: &std::path::Path) -> bool {
+pub fn has_account_store(base_path: &std::path::Path) -> bool {
     base_path.join(ACCOUNT_STORE_FILE).is_file()
 }
 
@@ -643,7 +643,7 @@ fn resolved_lite_username(username: &str) -> bool {
 /// dotNS TLD is `network_suffix`, widest slot budget first.
 ///
 /// Both are always offered; membership is settled on chain, not from local state.
-pub(crate) fn collection_candidates(
+pub fn collection_candidates(
     entropy: &[u8],
     network_suffix: &str,
 ) -> Vec<alloc::CollectionCandidate> {

@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 use web_time::{Duration, Instant};
 
 use crate::chain_runtime::{ChainRuntime, RuntimeFailure};
-use crate::host_logic::bulletin::{
+use crate::host_internal::bulletin::{
     STORE_PALLET_NAME, allowance_signer, build_signed_store_transaction, preimage_key,
 };
-use crate::host_logic::extrinsic::Sr25519Signer;
+use crate::host_internal::extrinsic::Sr25519Signer;
 use crate::runtime::BulletinAllowanceKey;
 use futures::{FutureExt, pin_mut};
 use subxt::OnlineClient;
@@ -81,7 +81,7 @@ const ALLOWANCE_REJECTED_MODULE_ERRORS: &[&str] =
 
 /// Where a submission currently is, for retry decisions and timeout reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
-pub(crate) enum SubmissionPhase {
+pub enum SubmissionPhase {
     #[display("connect")]
     Connect,
     #[display("build")]
@@ -110,7 +110,7 @@ enum DryRunStatus {
 /// Typed submission failure driving the retry decision at the runtime call
 /// site. Wire mapping stays `v01::PreimageSubmitError::Unknown { reason }`.
 #[derive(Debug, derive_more::Display, derive_more::Error)]
-pub(crate) enum BulletinSubmitError {
+pub enum BulletinSubmitError {
     /// The host-owned physical connection could not provide a Subxt client.
     #[display("bulletin chain unavailable: {_0}")]
     Host(#[error(source)] RuntimeFailure),
@@ -161,7 +161,7 @@ pub(crate) enum BulletinSubmitError {
 
 /// Which stage rejected the allowance account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display)]
-pub(crate) enum AllowanceRejectionPhase {
+pub enum AllowanceRejectionPhase {
     #[display("dry-run")]
     DryRun,
     #[display("dispatch")]
@@ -216,7 +216,7 @@ impl BulletinSubmitError {
 }
 
 /// Bulletin-chain submission service shared by all product runtimes.
-pub(crate) struct BulletinRpc {
+pub struct BulletinRpc {
     chain: ChainRuntime,
     genesis_hash: [u8; 32],
     /// Serializes submissions: no same-account nonce races between
@@ -233,7 +233,7 @@ pub(crate) struct BulletinRpc {
 
 impl BulletinRpc {
     /// Build a bulletin submission service over the shared chain runtime.
-    pub(crate) fn new(chain: ChainRuntime, genesis_hash: [u8; 32]) -> Self {
+    pub fn new(chain: ChainRuntime, genesis_hash: [u8; 32]) -> Self {
         Self {
             chain,
             genesis_hash,
@@ -245,7 +245,7 @@ impl BulletinRpc {
     }
 
     /// Open a raw RPC client over the configured Bulletin chain.
-    pub(crate) async fn client(
+    pub async fn client(
         &self,
         label: &'static str,
     ) -> Result<subxt_rpcs::RpcClient, RuntimeFailure> {
@@ -276,7 +276,7 @@ impl BulletinRpc {
     /// the preimage key once the transaction is included and its dispatch
     /// succeeded.
     #[instrument(skip_all, fields(runtime.method = "bulletin_rpc.submit_preimage"))]
-    pub(crate) async fn submit_preimage(
+    pub async fn submit_preimage(
         &self,
         cx: &CallContext,
         deadline: Instant,
@@ -762,7 +762,7 @@ fn classify_dispatch_error(error: DispatchError) -> BulletinSubmitError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_logic::extrinsic::tests::bulletin_metadata;
+    use crate::host_internal::extrinsic::tests::bulletin_metadata;
     use subxt::metadata::ArcMetadata;
 
     #[test]
@@ -921,7 +921,7 @@ mod tests {
     mod orchestration {
         use super::*;
         use crate::chain_runtime::{RuntimeChainProvider, RuntimeFailure};
-        use crate::host_logic::extrinsic::tests::BULLETIN_METADATA_BYTES;
+        use crate::host_internal::extrinsic::tests::BULLETIN_METADATA_BYTES;
         use crate::subscription::thread_per_subscription_spawner;
         use async_trait::async_trait;
         use futures::StreamExt;

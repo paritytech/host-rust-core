@@ -25,44 +25,44 @@ use super::{
 /// stub when the host omits the group. The core never reaches them: it
 /// only holds an adapter for a capability whose `has_*` accessor is
 /// true, and answers the rest with `Unsupported`.
-pub(super) struct JsBridge {
-    pub(super) auth_state_changed: Function,
-    pub(super) chain_connect: Function,
-    pub(super) create_chat_room: Function,
-    pub(super) register_chat_bot: Function,
-    pub(super) post_chat_message: Function,
-    pub(super) subscribe_chat_rooms: Function,
-    pub(super) read_core_storage: Function,
-    pub(super) write_core_storage: Function,
-    pub(super) clear_core_storage: Function,
-    pub(super) feature_supported: Function,
-    pub(super) supported_chains: Function,
-    pub(super) subscribe_locale: Function,
-    pub(super) navigate_to: Function,
-    pub(super) push_notification: Function,
-    pub(super) cancel_notification: Function,
-    pub(super) device_permission_status: Function,
-    pub(super) device_permission: Function,
-    pub(super) remote_permission: Function,
-    pub(super) subscribe_pocket_cards: Function,
-    pub(super) remove_pocket_card: Function,
-    pub(super) lookup_preimage: Function,
-    pub(super) begin_operation: Function,
-    pub(super) end_operation: Function,
-    pub(super) read: Function,
-    pub(super) write: Function,
-    pub(super) clear: Function,
-    pub(super) subscribe_storage: Function,
-    pub(super) subscribe_theme: Function,
-    pub(super) confirm_permission: Function,
-    pub(super) confirm_user_action: Function,
-    pub(super) chat_present: bool,
-    pub(super) permission_status_present: bool,
-    pub(super) pocket_present: bool,
+pub struct JsBridge {
+    pub auth_state_changed: Function,
+    pub chain_connect: Function,
+    pub create_chat_room: Function,
+    pub register_chat_bot: Function,
+    pub post_chat_message: Function,
+    pub subscribe_chat_rooms: Function,
+    pub read_core_storage: Function,
+    pub write_core_storage: Function,
+    pub clear_core_storage: Function,
+    pub feature_supported: Function,
+    pub supported_chains: Function,
+    pub subscribe_locale: Function,
+    pub navigate_to: Function,
+    pub push_notification: Function,
+    pub cancel_notification: Function,
+    pub device_permission_status: Function,
+    pub device_permission: Function,
+    pub remote_permission: Function,
+    pub subscribe_pocket_cards: Function,
+    pub remove_pocket_card: Function,
+    pub lookup_preimage: Function,
+    pub begin_operation: Function,
+    pub end_operation: Function,
+    pub read: Function,
+    pub write: Function,
+    pub clear: Function,
+    pub subscribe_storage: Function,
+    pub subscribe_theme: Function,
+    pub confirm_permission: Function,
+    pub confirm_user_action: Function,
+    pub chat_present: bool,
+    pub permission_status_present: bool,
+    pub pocket_present: bool,
 }
 
 impl JsBridge {
-    pub(super) fn from_js(callbacks: &JsValue) -> Result<Self, JsValue> {
+    pub fn from_js(callbacks: &JsValue) -> Result<Self, JsValue> {
         Ok(Self {
             auth_state_changed: get_function(callbacks, "authStateChanged")?,
             chain_connect: get_function(callbacks, "chainConnect")?,
@@ -113,17 +113,17 @@ impl JsBridge {
     }
 
     /// Whether the host supplied every `chat` callback.
-    pub(super) fn has_chat(&self) -> bool {
+    pub fn has_chat(&self) -> bool {
         self.chat_present
     }
 
     /// Whether the host supplied every `permission_status` callback.
-    pub(super) fn has_permission_status(&self) -> bool {
+    pub fn has_permission_status(&self) -> bool {
         self.permission_status_present
     }
 
     /// Whether the host supplied every `pocket` callback.
-    pub(super) fn has_pocket(&self) -> bool {
+    pub fn has_pocket(&self) -> bool {
         self.pocket_present
     }
 }

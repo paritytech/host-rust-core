@@ -165,15 +165,15 @@ fn generate_playground_services_code(
 
 /// Method docs split for the playground UI.
 #[derive(Debug)]
-pub(super) struct PlaygroundDocs {
+pub struct PlaygroundDocs {
     /// Prose shown as the method description.
-    pub(super) description: Option<String>,
+    pub description: Option<String>,
     /// TypeScript snippet extracted from the docs' ```ts fence.
-    pub(super) client_example: Option<String>,
+    pub client_example: Option<String>,
 }
 
 /// Split method docs into playground description text and a TypeScript example.
-pub(super) fn split_playground_docs(docs: Option<&str>) -> Result<PlaygroundDocs> {
+pub fn split_playground_docs(docs: Option<&str>) -> Result<PlaygroundDocs> {
     let Some(docs) = docs else {
         return Ok(PlaygroundDocs {
             description: None,
@@ -214,7 +214,7 @@ pub(super) fn split_playground_docs(docs: Option<&str>) -> Result<PlaygroundDocs
 /// doc comment. Every method renders an EXAMPLE tab in the playground from
 /// the extracted `exampleSource`; a missing or mis-fenced example would
 /// silently leave that tab empty and dump the snippet into the description.
-pub(super) fn validate_method_examples(
+pub fn validate_method_examples(
     api: &ApiDefinition,
     wrappers: &BTreeMap<String, VersionedWrapper>,
     target_version: u32,
@@ -252,7 +252,7 @@ fn validate_example_docs(trait_name: &str, method_name: &str, docs: Option<&str>
 }
 
 /// Strip the generated TypeScript namespace prefix used by playground types.
-pub(super) fn playground_type_name(value: &str) -> String {
+pub fn playground_type_name(value: &str) -> String {
     value.replace("T.", "")
 }
 
@@ -318,7 +318,7 @@ pub fn explorer_type_id_set(
 /// stripping versioned wrappers. Either component is `None` when the return
 /// shape has no corresponding inner type (e.g. a plain `Subscription` has no
 /// error arm).
-pub(super) fn method_response_inner_ts(
+pub fn method_response_inner_ts(
     method: &MethodDef,
     wrappers: &BTreeMap<String, VersionedWrapper>,
     wire_version: Option<u32>,

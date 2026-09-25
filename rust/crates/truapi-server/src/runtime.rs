@@ -8,35 +8,35 @@
 //! `CallError::unavailable()`.
 
 /// Connection-scoped, host-fed action streams.
-pub(crate) mod actions;
+pub mod actions;
 mod allowances;
 /// Core-owned auth/session UI state machine.
-pub(crate) mod auth_state;
+pub mod auth_state;
 mod authority;
 /// In-core Bulletin preimage submission over the shared Subxt client.
-pub(crate) mod bulletin_rpc;
+pub mod bulletin_rpc;
 mod capabilities;
 mod chat;
 mod dotns_lookup;
 mod identity;
-pub(crate) mod login_failure;
+pub mod login_failure;
 mod pairing_host;
-pub(crate) mod product_manifest;
+pub mod product_manifest;
 mod product_subtree;
 mod renderer;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
-pub(crate) mod services;
+pub mod services;
 mod signing_host;
 /// SSO pairing (login) flow over the statement store bootstrap topic.
-pub(crate) mod sso_pairing;
+pub mod sso_pairing;
 /// SSO remote request/response messaging over the statement store.
-pub(crate) mod sso_remote;
-pub(crate) mod sso_service;
+pub mod sso_remote;
+pub mod sso_service;
 /// Statement Store and Bulletin allowance allocation.
 pub mod statement_allowance;
 /// `StatementStore` surface: proofs plus submit and subscribe flows.
-pub(crate) mod statement_store;
+pub mod statement_store;
 mod statement_store_rpc;
 
 use core::future::Future;
@@ -46,21 +46,21 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-pub(crate) use actions::ActionChannel;
+pub use actions::ActionChannel;
 use authority::{AuthorityCancelError, AuthoritySession};
-pub(crate) use authority::{AuthorityError, BulletinAllowanceKey, ProductAuthority};
-pub(crate) use chat::chat_platform_for;
+pub use authority::{AuthorityError, BulletinAllowanceKey, ProductAuthority};
+pub use chat::chat_platform_for;
 use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use pairing_host::PairingHost;
-pub(crate) use pairing_host::PairingHost as PairingHostRole;
-pub(crate) use renderer::renderer_access_for;
-pub(crate) use services::RuntimeServices;
+pub use pairing_host::PairingHost as PairingHostRole;
+pub use renderer::renderer_access_for;
+pub use services::RuntimeServices;
 pub use signing_host::{
     AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
     PairingProposal, PairingProposalMetadata, ResponderExit,
 };
-pub(crate) use signing_host::{
+pub use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, SigningHostSsoService, disconnect_paired_host,
     establish_pairing, notify_pairing_allowance_allocation, notify_pairing_failed,
     respond_to_pairing, resume_pairing,
@@ -100,26 +100,26 @@ use truapi_platform::{
 use web_time::Instant;
 
 use crate::chain_runtime::RuntimeFailure;
-use crate::host_logic::bulletin::preimage_key;
-use crate::host_logic::permissions::{PermissionsService, TemporaryPermissions};
+use crate::host_internal::bulletin::preimage_key;
+use crate::host_internal::permissions::{PermissionsService, TemporaryPermissions};
+use crate::host_internal::product_manifest::Granted;
+use crate::host_internal::sso_messages::RingVrfError;
 use crate::host_logic::product_account::{
     derivation_index_bytes, derive_product_public_key, public_key_from_address,
 };
-use crate::host_logic::product_manifest::Granted;
 use crate::host_logic::session::SessionInfo;
 #[cfg(test)]
 use crate::host_logic::session::SessionState;
-use crate::host_logic::sso::messages::RingVrfError;
 use crate::host_logic::sso::pairing::x25519_public_key;
 #[cfg(test)]
 use crate::subscription::Spawner;
 
 /// Error reason surfaced to products when a permission is not granted.
-pub(super) const PERMISSION_DENIED_REASON: &str = "Permission denied";
+pub const PERMISSION_DENIED_REASON: &str = "Permission denied";
 /// Host-spec B.6.2 recommends timing out unanswered SSO application requests
 /// after 180 seconds:
 /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L303-L307>
-pub(crate) const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
+pub const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 /// After a cancel or deadline, how long a remote authority call is given to
 /// observe the cancellation and unwind (unsubscribing its statement streams)
 /// before it is dropped. A call parked in the statement-store setup, which does
@@ -295,7 +295,7 @@ impl Drop for ProductRuntimeHost {
 impl ProductRuntimeHost {
     /// Build a product-scoped dispatcher target from a long-lived host runtime
     /// and the adapters scoped to this product connection.
-    pub(crate) fn from_services(
+    pub fn from_services(
         services: Arc<RuntimeServices>,
         adapters: crate::host_core::ConnectionAdapters,
         authority: Arc<dyn ProductAuthority>,
@@ -319,7 +319,7 @@ impl ProductRuntimeHost {
     }
 
     /// Role-neutral services shared with the owning host runtime.
-    pub(crate) fn services(&self) -> &Arc<RuntimeServices> {
+    pub fn services(&self) -> &Arc<RuntimeServices> {
         &self.services
     }
 
@@ -339,7 +339,7 @@ impl ProductRuntimeHost {
     }
 
     /// Trusted executable kind attached to this product connection.
-    pub(crate) fn execution_kind(&self) -> truapi_platform::ProductExecutionKind {
+    pub fn execution_kind(&self) -> truapi_platform::ProductExecutionKind {
         self.product.execution_kind
     }
 
@@ -449,13 +449,13 @@ impl ProductRuntimeHost {
 
     /// Test-only access to the shared session-state holder.
     #[cfg(test)]
-    pub(crate) fn test_session_state(&self) -> Arc<SessionState> {
+    pub fn test_session_state(&self) -> Arc<SessionState> {
         self.authority.session_state()
     }
 
     /// Seed the paired Account Holder's hard product subtree for unit tests.
     #[cfg(test)]
-    pub(crate) fn test_cache_product_subtree(
+    pub fn test_cache_product_subtree(
         &self,
         session: &SessionInfo,
         product_id: &str,
@@ -468,7 +468,7 @@ impl ProductRuntimeHost {
     /// Disconnect this runtime from its paired signing host.
     #[cfg(test)]
     #[instrument(skip_all, fields(runtime.method = "account.disconnect"))]
-    pub(crate) async fn disconnect(&self) {
+    pub async fn disconnect(&self) {
         self.authority.disconnect().await;
     }
 
@@ -502,7 +502,7 @@ impl ProductRuntimeHost {
     /// enumeration the denial read was moved after the manifest to avoid,
     /// arriving by another route. Expiry here is indistinguishable from
     /// "granted nothing", like every other refusal on this path.
-    pub(crate) async fn bounded_cross_product_scope_target(
+    pub async fn bounded_cross_product_scope_target(
         &self,
         target: &str,
         scope: Granted,
@@ -536,11 +536,7 @@ impl ProductRuntimeHost {
     /// Returning the id rather than a bare yes keeps one canonical spelling for
     /// the callers that go on to address the target — the grant and whatever it
     /// admits are then decided against the same string.
-    pub(crate) async fn cross_product_scope_target(
-        &self,
-        target: &str,
-        scope: Granted,
-    ) -> Option<String> {
+    pub async fn cross_product_scope_target(&self, target: &str, scope: Granted) -> Option<String> {
         let normalized = normalize_product_identifier(target).ok()?;
         if normalized == self.product_id() {
             return Some(normalized);
@@ -639,7 +635,7 @@ impl ProductRuntimeHost {
     /// OS refusal reads as `Denied` whatever is stored. Remote,
     /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_status"))]
-    pub(crate) async fn permission_authorization_status(
+    pub async fn permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
@@ -654,7 +650,7 @@ impl ProductRuntimeHost {
     /// OS refusal reads as `Denied` whatever is stored. Remote,
     /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_statuses"))]
-    pub(crate) async fn permission_authorization_statuses(
+    pub async fn permission_authorization_statuses(
         &self,
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
@@ -666,7 +662,7 @@ impl ProductRuntimeHost {
     /// Update a stored permission authorization status. `NotDetermined`
     /// clears the stored value so the next product request prompts again.
     #[instrument(skip_all, fields(runtime.method = "permissions.set_authorization_status"))]
-    pub(crate) async fn set_permission_authorization_status(
+    pub async fn set_permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
@@ -691,7 +687,7 @@ impl ProductRuntimeHost {
 
     /// Gate a remote call on `permission`, prompting the user when it is
     /// undetermined. Anything short of `Authorized` fails with `denied_error`.
-    pub(super) async fn require_remote_permission<E>(
+    pub async fn require_remote_permission<E>(
         &self,
         permission: v01::RemotePermission,
         denied_error: E,
@@ -800,7 +796,7 @@ async fn account_access_authorization(
     // the full target would not be found when the grant is resolved for a
     // subname of it.
     let request = PermissionAuthorizationRequest::AccountAccess {
-        target_product_id: crate::host_logic::product_manifest::bare_product_label(
+        target_product_id: crate::host_internal::product_manifest::bare_product_label(
             target_product_id,
         )
         .to_string(),
@@ -815,7 +811,7 @@ async fn account_access_authorization(
     let service = PermissionsService::new(
         platform,
         platform,
-        crate::host_logic::product_manifest::bare_product_label(requesting_product_id),
+        crate::host_internal::product_manifest::bare_product_label(requesting_product_id),
     );
     let cached = service
         .authorization_status(&request)
@@ -1038,7 +1034,7 @@ const PAYMENTS_NOT_IMPLEMENTED: &str = "Payments are not supported in dot.li";
 
 impl ProductRuntimeHost {
     /// Chat access policy for this connection; see [`chat_platform_for`].
-    pub(crate) fn native_chat_platform(
+    pub fn native_chat_platform(
         &self,
     ) -> Result<Arc<dyn truapi_platform::ChatPlatform>, crate::host_core::ProductRuntimeError> {
         chat_platform_for(
@@ -1055,13 +1051,13 @@ impl ProductRuntimeHost {
         })
     }
 
-    pub(crate) fn detach_chat(&self) {
+    pub fn detach_chat(&self) {
         self.chat.detach();
     }
 
     /// Buffer one host-authored Chat action for this connection's product,
     /// behind the same access policy as every other Chat entry point.
-    pub(crate) fn publish_chat_action(
+    pub fn publish_chat_action(
         &self,
         action: truapi::versioned::chat::HostChatActionSubscribeItem,
     ) -> Result<(), crate::host_core::ProductRuntimeError> {
@@ -1070,21 +1066,21 @@ impl ProductRuntimeHost {
     }
 
     /// Renderer access policy for this connection; see [`renderer_access_for`].
-    pub(crate) fn renderer_access(&self) -> Result<(), crate::host_core::ProductRuntimeError> {
+    pub fn renderer_access(&self) -> Result<(), crate::host_core::ProductRuntimeError> {
         renderer_access_for(self.product.execution_kind)
     }
 
     /// Take one core-held reference on this connection's product worker, for
     /// a body the product is drawing. Pair every call with one
     /// [`Self::release_worker_reference`].
-    pub(crate) fn acquire_worker_reference(&self) {
+    pub fn acquire_worker_reference(&self) {
         self.services
             .worker_ledger
             .acquire(&self.product.product_id);
     }
 
     /// Release one core-held reference on this connection's product worker.
-    pub(crate) fn release_worker_reference(&self) {
+    pub fn release_worker_reference(&self) {
         self.services
             .worker_ledger
             .release(&self.product.product_id);
@@ -1098,7 +1094,7 @@ impl ProductRuntimeHost {
     /// core never counted and the product never learned the id of, which
     /// nothing could then end. The call runs to completion either way, and
     /// ends the operation itself when nobody is left to receive it.
-    pub(crate) async fn begin_operation_with_host(
+    pub async fn begin_operation_with_host(
         &self,
         label: String,
     ) -> Result<v01::HostWorkerBeginOperationResponse, v01::HostWorkerOperationError> {
@@ -1120,7 +1116,7 @@ impl ProductRuntimeHost {
 
     /// Record a pending operation and take the worker reference it holds, so
     /// an operation outliving the product's surface still reads as demand.
-    pub(crate) fn hold_worker_for_operation(&self, id: u32) {
+    pub fn hold_worker_for_operation(&self, id: u32) {
         if self
             .open_operations
             .lock()
@@ -1141,7 +1137,7 @@ impl ProductRuntimeHost {
     /// Telling the host runs on the spawner, so a spawner whose runtime is
     /// already gone drops that work. The references are still released, and
     /// the host is shutting down with its own records anyway.
-    pub(crate) fn release_open_operations(&self) {
+    pub fn release_open_operations(&self) {
         let open = core::mem::take(
             &mut *self
                 .open_operations
@@ -1170,7 +1166,7 @@ impl ProductRuntimeHost {
 
     /// Drop the worker reference a pending operation held. An id that is not
     /// open releases nothing, which is what keeps `end_operation` idempotent.
-    pub(crate) fn release_worker_for_operation(&self, id: u32) {
+    pub fn release_worker_for_operation(&self, id: u32) {
         if self
             .open_operations
             .lock()
@@ -1182,12 +1178,12 @@ impl ProductRuntimeHost {
     }
 
     /// End the renderer action stream this connection's product is reading.
-    pub(crate) fn detach_renderer(&self) {
+    pub fn detach_renderer(&self) {
         self.renderer.detach();
     }
 
     /// Buffer one renderer action for this connection's product.
-    pub(crate) fn publish_renderer_action(
+    pub fn publish_renderer_action(
         &self,
         item: HostRendererActionSubscribeItem,
     ) -> Result<(), crate::host_core::ProductRuntimeError> {

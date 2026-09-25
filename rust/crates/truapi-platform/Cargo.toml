@@ -7,15 +7,15 @@ license = "MIT"
 
 [dependencies]
 truapi = { path = "../truapi" }
-async-trait = "0.1"
-derive_more = { version = "2", features = ["debug", "display", "error"] }
-futures = "0.3"
-parity-scale-codec = { version = "3", features = ["derive"] }
-sp-crypto-hashing = { version = "0.1", default-features = false, optional = true }
-unicode-normalization = "0.1"
-url = "2"
+async-trait = { workspace = true }
+derive_more = { workspace = true, features = ["debug", "display", "error"] }
+futures = { workspace = true }
+parity-scale-codec = { workspace = true, features = ["derive"] }
+sp-crypto-hashing = { workspace = true, optional = true }
+unicode-normalization = { workspace = true }
+url = { workspace = true }
 uniffi = { workspace = true, optional = true }
-zeroize = { version = "1", default-features = false, features = ["derive"] }
+zeroize = { workspace = true, features = ["derive"] }
 
 [features]
 # In-memory `MockPlatform` for tests and host simulators.

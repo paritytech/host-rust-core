@@ -22,9 +22,10 @@ use truapi::CallError;
 use crate::frame::{
     IdFactory, MESSAGE_TYPE_INTERRUPT, MESSAGE_TYPE_RECEIVE, MESSAGE_TYPE_START, MESSAGE_TYPE_STOP,
     PROTOCOL_ERROR_KEY, Payload, ProtocolErrorV1, ProtocolMessage, VersionedProtocolError,
-    decode_protocol_error_payload, encode_clean_interrupt,
+    encode_clean_interrupt,
 };
 use crate::generated::wire_table::MethodIds;
+use crate::protocol_error::decode_protocol_error_payload;
 use crate::transport::Transport;
 
 type StopFn = Box<dyn FnOnce() + Send>;
@@ -81,39 +82,6 @@ where
         Ok(item) => SubscriptionOutput::Item(item.encode()),
         Err(interrupt) => SubscriptionOutput::Interrupt(subscription_interrupt(interrupt)),
     }))
-}
-
-/// Render the value a subscription ended with as the diagnostic string a
-/// host-side observer reports. Bridges that hand an interrupt to a native or
-/// JavaScript callback have only a string to give it.
-///
-/// `CallError<GenericError>` is the interrupt type the custom-renderer
-/// bridges that call this declare, and a versioned domain wrapper has no
-/// `Display`, so there is nothing for a generic version to render.
-pub(crate) fn interrupt_reason(error: CallError<truapi::latest::GenericError>) -> String {
-    match error {
-        CallError::Domain(truapi::latest::GenericError { reason }) => reason,
-        CallError::Denied => "denied".to_string(),
-        CallError::Unsupported => "unsupported".to_string(),
-        CallError::MalformedFrame { reason } | CallError::HostFailure { reason } => reason,
-        CallError::Cancelled => "cancelled".to_string(),
-    }
-}
-
-/// Strip a subscription interrupt's versioned envelope, leaving the latest
-/// domain payload. Framework variants carry no version and pass through.
-pub(crate) fn interrupt_into_latest<E>(error: CallError<E>) -> CallError<E::Latest>
-where
-    E: truapi::versioned::IntoLatest,
-{
-    match error {
-        CallError::Domain(domain) => CallError::Domain(domain.into_latest()),
-        CallError::Denied => CallError::Denied,
-        CallError::Unsupported => CallError::Unsupported,
-        CallError::MalformedFrame { reason } => CallError::MalformedFrame { reason },
-        CallError::HostFailure { reason } => CallError::HostFailure { reason },
-        CallError::Cancelled => CallError::Cancelled,
-    }
 }
 
 /// Encode the `Interrupt` payload that ends a subscription with `interrupt`.

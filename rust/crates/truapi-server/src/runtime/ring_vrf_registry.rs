@@ -7,7 +7,7 @@ use parity_scale_codec::{Decode, Encode};
 use truapi::v01::{ProductAccountId, RegisteredRingVrfKey, RingLocation};
 use truapi_platform::{CoreStorageKey, Platform, normalize_product_identifier};
 
-use crate::host_logic::sso::messages::RingVrfError;
+use crate::host_internal::sso_messages::RingVrfError;
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 struct SelectedProvider {
@@ -25,14 +25,14 @@ struct RegistrySnapshot {
 }
 
 /// Shared durable repository used by both account-authority roles.
-pub(super) struct RingVrfRegistryStore {
+pub struct RingVrfRegistryStore {
     platform: Arc<dyn Platform>,
     cache: Mutex<HashMap<[u8; 32], RegistrySnapshot>>,
     storage_guard: futures::lock::Mutex<()>,
 }
 
 impl RingVrfRegistryStore {
-    pub(super) fn new(platform: Arc<dyn Platform>) -> Arc<Self> {
+    pub fn new(platform: Arc<dyn Platform>) -> Arc<Self> {
         Arc::new(Self {
             platform,
             cache: Mutex::new(HashMap::new()),
@@ -40,7 +40,7 @@ impl RingVrfRegistryStore {
         })
     }
 
-    pub(super) async fn entry(
+    pub async fn entry(
         &self,
         root_public_key: [u8; 32],
         handle: &ProductAccountId,
@@ -53,7 +53,7 @@ impl RingVrfRegistryStore {
             .find(|entry| entry.handle == *handle))
     }
 
-    pub(super) async fn complete_owner_entries(
+    pub async fn complete_owner_entries(
         &self,
         root_public_key: [u8; 32],
         owner: &str,
@@ -71,7 +71,7 @@ impl RingVrfRegistryStore {
         ))
     }
 
-    pub(super) async fn owner_entries(
+    pub async fn owner_entries(
         &self,
         root_public_key: [u8; 32],
         owner: &str,
@@ -85,7 +85,7 @@ impl RingVrfRegistryStore {
             .collect())
     }
 
-    pub(super) async fn register(
+    pub async fn register(
         &self,
         root_public_key: [u8; 32],
         handle: ProductAccountId,
@@ -132,7 +132,7 @@ impl RingVrfRegistryStore {
     /// invalidate an entry already accepted by this host. This also prevents a
     /// list response created before a fire-and-forget registration mirror from
     /// removing that local registration.
-    pub(super) async fn reconcile_owner(
+    pub async fn reconcile_owner(
         &self,
         root_public_key: [u8; 32],
         owner: &str,
@@ -196,7 +196,7 @@ impl RingVrfRegistryStore {
         Ok(owner_entries)
     }
 
-    pub(super) async fn selected_provider(
+    pub async fn selected_provider(
         &self,
         root_public_key: [u8; 32],
         ring: &RingLocation,
@@ -210,7 +210,7 @@ impl RingVrfRegistryStore {
             .map(|provider| provider.handle))
     }
 
-    pub(super) async fn providers(
+    pub async fn providers(
         &self,
         root_public_key: [u8; 32],
         ring: &RingLocation,
@@ -226,7 +226,7 @@ impl RingVrfRegistryStore {
     }
 
     /// Persist a user-selected provider after validating its registration.
-    pub(super) async fn select_provider(
+    pub async fn select_provider(
         &self,
         root_public_key: [u8; 32],
         ring: RingLocation,
@@ -383,7 +383,7 @@ fn validate_snapshot(snapshot: &RegistrySnapshot) -> Result<(), RingVrfError> {
     Ok(())
 }
 
-pub(super) fn validate_owner_listing(
+pub fn validate_owner_listing(
     owner: &str,
     entries: &[RegisteredRingVrfKey],
 ) -> Result<(), RingVrfError> {

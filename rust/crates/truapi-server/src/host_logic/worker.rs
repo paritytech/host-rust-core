@@ -113,7 +113,7 @@ impl WorkerLedger {
 
     /// References currently held on a product's worker.
     #[cfg(test)]
-    pub(crate) fn count(&self, product_id: &str) -> usize {
+    pub fn count(&self, product_id: &str) -> usize {
         self.state()
             .references
             .get(product_id)

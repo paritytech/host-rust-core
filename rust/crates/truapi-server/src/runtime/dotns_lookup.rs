@@ -42,7 +42,7 @@ static DOTNS_LOOKUP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// One pinned-block context for a sequence of dotNS reads. It owns the
 /// `chainHead_v1` follow every read and view runs over.
-pub(crate) struct DotnsLookup<'a> {
+pub struct DotnsLookup<'a> {
     chain: &'a ChainRuntime,
     follow: BoxStream<'static, RemoteChainHeadFollowItem>,
     genesis_hash: Vec<u8>,
@@ -55,7 +55,7 @@ impl<'a> DotnsLookup<'a> {
     ///
     /// `label` distinguishes this lookup's follow id from concurrent ones and
     /// appears in chain logs, so it should name what is being resolved.
-    pub(crate) async fn pinned_to_best_block(
+    pub async fn pinned_to_best_block(
         chain: &'a ChainRuntime,
         asset_hub_chain_genesis_hash: [u8; 32],
         label: &str,

@@ -4,7 +4,7 @@ use crate::rustdoc::{
     ApiDefinition, MethodDef, ReturnType, TypeDef, TypeDefKind, TypeRef, VariantFields,
 };
 
-pub(super) fn internal_type_names(api: &ApiDefinition) -> BTreeSet<String> {
+pub fn internal_type_names(api: &ApiDefinition) -> BTreeSet<String> {
     let graph: BTreeMap<_, _> = api
         .types
         .iter()
@@ -64,19 +64,19 @@ fn method_dependencies(method: &MethodDef, names: &mut BTreeSet<String>) {
     }
 }
 
-pub(super) fn type_dependencies(ty: &TypeDef) -> BTreeSet<String> {
+pub fn type_dependencies(ty: &TypeDef) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     visit_fields(ty, &mut |field| collect_names(field, &mut names));
     names
 }
 
-pub(super) fn type_ref_dependencies(ty: &TypeRef) -> BTreeSet<String> {
+pub fn type_ref_dependencies(ty: &TypeRef) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     collect_names(ty, &mut names);
     names
 }
 
-pub(super) fn uses_hex_string(ty: &TypeDef) -> bool {
+pub fn uses_hex_string(ty: &TypeDef) -> bool {
     let mut uses_hex_string = false;
     visit_fields(ty, &mut |field| {
         uses_hex_string |= type_ref_uses_hex_string(field);
@@ -84,7 +84,7 @@ pub(super) fn uses_hex_string(ty: &TypeDef) -> bool {
     uses_hex_string
 }
 
-pub(super) fn type_ref_uses_hex_string(ty: &TypeRef) -> bool {
+pub fn type_ref_uses_hex_string(ty: &TypeRef) -> bool {
     let mut uses_hex_string = false;
     visit_type_ref(ty, &mut |ty| {
         if let TypeRef::Vec(inner) | TypeRef::Array(inner, _) = ty {

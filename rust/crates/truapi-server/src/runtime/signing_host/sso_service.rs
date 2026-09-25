@@ -15,10 +15,7 @@ use super::sso_responder::{
     AllowanceAllocationError, allocate_bulletin_allowance, allocate_smart_contract_allowance,
     allocate_statement_store_allowance,
 };
-use crate::host_logic::product_account::{
-    derive_ring_vrf_domain_entropy, product_public_key_to_address,
-};
-use crate::host_logic::sso::messages::{
+use crate::host_internal::sso_messages::{
     CreateAccountProofResponse, CreateTransactionLegacyPayload, CreateTransactionPayload,
     CreateTransactionRequest, CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest,
     GetAccountAliasResponse, ListRingVrfKeysResponse, OnExistingAllowancePolicy, ProductRequest,
@@ -27,7 +24,10 @@ use crate::host_logic::sso::messages::{
     SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
     SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
 };
-use crate::host_logic::sso::wire::ResponseOutcome;
+use crate::host_internal::sso_wire::ResponseOutcome;
+use crate::host_logic::product_account::{
+    derive_ring_vrf_domain_entropy, product_public_key_to_address,
+};
 use crate::runtime::authority::{
     AuthoritySession, CreateTransactionAuthorityRequest, ProductAuthority,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest,
@@ -35,18 +35,18 @@ use crate::runtime::authority::{
 use crate::runtime::sso_service::{SsoReply, SsoRequestContext};
 
 /// SSO handlers served by a locally activated [`SigningHost`].
-pub(crate) struct SigningHostSsoService {
+pub struct SigningHostSsoService {
     signing_host: Arc<SigningHost>,
 }
 
 impl SigningHostSsoService {
     /// Serve requests and prompt through the signing host's platform.
-    pub(crate) fn new(signing_host: Arc<SigningHost>) -> Self {
+    pub fn new(signing_host: Arc<SigningHost>) -> Self {
         Self { signing_host }
     }
 
     /// The signing session captured before dispatching one request.
-    pub(crate) fn current_session(&self) -> Option<AuthoritySession> {
+    pub fn current_session(&self) -> Option<AuthoritySession> {
         self.signing_host.current_session()
     }
 
@@ -576,7 +576,7 @@ mod tests {
         )
         .finish(
             "allocation-1",
-            crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationResponse,
+            crate::host_internal::sso_messages::v1::RemoteMessage::ResourceAllocationResponse,
         );
 
         assert_eq!(answer.outcome.outcome, "not_available");

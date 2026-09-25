@@ -11,8 +11,7 @@ use super::super::sso_remote::{
 };
 use super::super::statement_store_rpc::{self, StatementStoreRpc};
 use super::PairingHost;
-use crate::host_logic::session::{SessionInfo, SessionState, SsoSessionInfo};
-use crate::host_logic::sso::messages::{
+use crate::host_internal::sso_messages::{
     CreateTransactionLegacyPayload, CreateTransactionPayload, CreateTransactionRequest,
     CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, ProductRequest,
     ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
@@ -20,7 +19,8 @@ use crate::host_logic::sso::messages::{
     SsoAllocationOutcome, SsoSessionStatement, build_outgoing_request_statement,
     decode_sso_session_statement, v1,
 };
-use crate::host_logic::sso::wire::SsoRequest;
+use crate::host_internal::sso_wire::SsoRequest;
+use crate::host_logic::session::{SessionInfo, SessionState, SsoSessionInfo};
 use crate::host_logic::statement_store::parse_new_statements_result;
 
 use futures::FutureExt;
@@ -29,7 +29,7 @@ use tracing::{debug, instrument, warn};
 use truapi::{CallContext, latest};
 
 /// Active peer-disconnect watcher for one SSO session; aborts on drop.
-pub(super) struct SsoDisconnectMonitor {
+pub struct SsoDisconnectMonitor {
     key: SsoSessionKey,
     abort: AbortHandle,
 }
@@ -51,7 +51,7 @@ impl PairingHost {
     /// Watch the session's topics for a peer disconnect statement, replacing
     /// any monitor for a different session. No-op when one is already running
     /// for this session.
-    pub(super) fn start_disconnect_monitor(&self, session: &SessionInfo) {
+    pub fn start_disconnect_monitor(&self, session: &SessionInfo) {
         let Some(sso) = session.sso.clone() else {
             self.stop_disconnect_monitor();
             return;
@@ -101,7 +101,7 @@ impl PairingHost {
 
     /// Stop channel work for a cleared session: wake its in-flight waiters
     /// with a local disconnect, then drop the peer-disconnect monitor.
-    pub(super) fn stop_session_channel(&self, session: Option<&SessionInfo>) {
+    pub fn stop_session_channel(&self, session: Option<&SessionInfo>) {
         if let Some(sso) = session.and_then(|session| session.sso.as_ref()) {
             self.session_disconnects
                 .notify(sso, SSO_LOCAL_DISCONNECT_REASON);
@@ -114,10 +114,7 @@ impl PairingHost {
 
     /// Best-effort `Disconnected` notification to the SSO peer.
     #[instrument(skip_all, fields(runtime.method = "sso.disconnect.submit"))]
-    pub(super) async fn submit_disconnected_message(
-        &self,
-        session: &SessionInfo,
-    ) -> Result<(), String> {
+    pub async fn submit_disconnected_message(&self, session: &SessionInfo) -> Result<(), String> {
         let sso = session
             .sso
             .as_ref()
@@ -234,7 +231,7 @@ impl PairingHost {
 
     /// Resolve a product's hard-subtree public key, asking the Account Holder
     /// only when neither the memory cache nor storage already holds it.
-    pub(super) async fn remote_product_subtree_public_key(
+    pub async fn remote_product_subtree_public_key(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -261,7 +258,7 @@ impl PairingHost {
     }
 
     /// Forward RFC-0023 VRF signing to the paired Account Holder.
-    pub(super) async fn remote_sign_vrf(
+    pub async fn remote_sign_vrf(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -292,7 +289,7 @@ impl PairingHost {
         SignPayloadAuthorityRequest::Product(_) => "product",
         SignPayloadAuthorityRequest::LegacyAccount { .. } => "legacy",
     }))]
-    pub(super) async fn remote_sign_payload(
+    pub async fn remote_sign_payload(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -319,7 +316,7 @@ impl PairingHost {
         SignRawAuthorityRequest::Product(_) => "product",
         SignRawAuthorityRequest::LegacyAccount { .. } => "legacy",
     }))]
-    pub(super) async fn remote_sign_raw(
+    pub async fn remote_sign_raw(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -375,7 +372,7 @@ impl PairingHost {
         CreateTransactionAuthorityRequest::LegacyAccount { .. } => "legacy",
         CreateTransactionAuthorityRequest::IdentityAccount(_) => "identity",
     }))]
-    pub(super) async fn remote_create_transaction(
+    pub async fn remote_create_transaction(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -429,7 +426,7 @@ impl PairingHost {
     }
 
     /// Forward a contextual-alias request to the paired signing host.
-    pub(super) async fn remote_account_alias(
+    pub async fn remote_account_alias(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -441,7 +438,7 @@ impl PairingHost {
     }
 
     /// Forward a ring-VRF proof request to the paired signing host.
-    pub(super) async fn remote_create_proof(
+    pub async fn remote_create_proof(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -453,7 +450,7 @@ impl PairingHost {
     }
 
     /// Forward a ring-VRF key registration request to the paired signing host.
-    pub(super) async fn remote_register_ring_vrf_key(
+    pub async fn remote_register_ring_vrf_key(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -465,7 +462,7 @@ impl PairingHost {
     }
 
     /// Forward a ring-VRF key listing request to the paired signing host.
-    pub(super) async fn remote_list_ring_vrf_keys(
+    pub async fn remote_list_ring_vrf_keys(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -477,7 +474,7 @@ impl PairingHost {
     }
 
     /// Forward a direct ring-VRF signing request to the paired signing host.
-    pub(super) async fn remote_ring_vrf_sign(
+    pub async fn remote_ring_vrf_sign(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -490,7 +487,7 @@ impl PairingHost {
 
     /// Ask the paired signing host to allocate product resources, caching any
     /// returned allowance keys.
-    pub(super) async fn remote_allocate_resources(
+    pub async fn remote_allocate_resources(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -555,7 +552,7 @@ impl PairingHost {
 
     /// Statement-store allowance key for the product, served from the cache
     /// or allocated by the paired signing host.
-    pub(super) async fn remote_statement_store_allowance_key(
+    pub async fn remote_statement_store_allowance_key(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -593,7 +590,7 @@ impl PairingHost {
 
     /// Bulletin allowance key for the product, served from the cache or
     /// allocated by the paired signing host.
-    pub(super) async fn remote_bulletin_allowance_key(
+    pub async fn remote_bulletin_allowance_key(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -618,7 +615,7 @@ impl PairingHost {
 
     /// Evict the cached Bulletin allowance key and allocate a fresh one with
     /// an increased allowance, so a stale or exhausted slot is never reused.
-    pub(super) async fn remote_refresh_bulletin_allowance_key(
+    pub async fn remote_refresh_bulletin_allowance_key(
         &self,
         cx: &CallContext,
         session: &SessionInfo,
@@ -723,7 +720,7 @@ impl PairingHost {
 }
 
 /// True when the current session's SSO channel matches `key`.
-pub(super) fn session_matches_key(session_state: &SessionState, key: SsoSessionKey) -> bool {
+pub fn session_matches_key(session_state: &SessionState, key: SsoSessionKey) -> bool {
     session_state.current().as_ref().is_some_and(|current| {
         current
             .sso

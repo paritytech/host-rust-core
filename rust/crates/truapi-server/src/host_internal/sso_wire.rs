@@ -8,7 +8,7 @@ use core::fmt::Display;
 
 use truapi::latest::HostAccountSignVrfError;
 
-use super::messages::{RemoteMessage, RemoteMessageData, Response, RingVrfError, v1};
+use super::sso_messages::{RemoteMessage, RemoteMessageData, Response, RingVrfError, v1};
 
 /// A request payload and the wire response selected by its handler declaration.
 pub trait SsoRequest: Sized {
@@ -77,7 +77,7 @@ impl ResponseOutcome {
 
 impl RemoteMessage {
     /// Service method name for requests; variant name for other messages.
-    pub(crate) fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         let RemoteMessageData::V1(message) = &self.data;
         message.name()
     }
@@ -94,7 +94,7 @@ impl RemoteMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_logic::sso::messages::{
+    use crate::host_internal::sso_messages::{
         CreateTransactionRequest, CreateTransactionWithLegacyAccountRequest,
         SignRawWithLegacyAccountRequest,
     };

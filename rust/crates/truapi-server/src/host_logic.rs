@@ -5,20 +5,15 @@
 //! iOS, Android, and web hosts share one canonical implementation.
 
 pub mod attestation;
-pub mod bulletin;
 pub mod device_key;
 pub mod dotns;
 pub mod dotns_gateway;
 pub mod entropy;
-pub mod extrinsic;
 pub mod features;
-pub mod permissions;
 pub mod product_account;
-pub mod product_manifest;
 pub mod raw_signing;
 pub mod session;
 pub mod session_store;
 pub mod sso;
 pub mod statement_store;
-pub mod transaction;
 pub mod worker;

@@ -13,7 +13,7 @@ use subxt::utils::{AccountId32, MultiSignature};
 use thiserror::Error;
 use truapi::latest::{HostSignPayloadData, HostSignPayloadResponse, TxPayloadExtension};
 
-use crate::host_logic::extrinsic::build_signed_extrinsic_v4_with_signature;
+use crate::host_internal::extrinsic::build_signed_extrinsic_v4_with_signature;
 use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
 
 /// Preimages longer than this are hashed before signing.
@@ -87,7 +87,7 @@ pub fn sign_extrinsic_payload(
 /// Encode the standard signed extensions in the order declared by the target
 /// runtime. Unknown extensions are rejected because this wire payload has no
 /// field carrying their extra or implicit bytes.
-pub(crate) fn extrinsic_payload_extensions(
+pub fn extrinsic_payload_extensions(
     payload: &HostSignPayloadData,
 ) -> Result<Vec<TxPayloadExtension>, ExtrinsicPayloadError> {
     payload

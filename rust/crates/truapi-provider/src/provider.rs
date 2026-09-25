@@ -71,7 +71,7 @@ impl EmbeddedChainProviderBuilder {
     /// The catalog is the only caller outside tests, so a build without it has
     /// no parachain to register.
     #[cfg(all(feature = "smoldot", any(feature = "networks", test)))]
-    pub(crate) fn parachain(
+    pub fn parachain(
         mut self,
         genesis_hash: [u8; 32],
         source: ChainSource,
@@ -264,13 +264,12 @@ impl EmbeddedChainProvider {
 
     /// Whether the embedded client is running this chain right now, whether a
     /// connection asked for it or a parachain brought it up as its relay.
-    pub(crate) fn is_connected(&self, genesis_hash: [u8; 32]) -> bool {
+    pub fn is_connected(&self, genesis_hash: [u8; 32]) -> bool {
         self.light.is_added(genesis_hash)
     }
 
     /// The relay `genesis_hash` syncs through, from the registry or the
     /// catalog. A chain that is not a parachain has none.
-    #[allow(unused_variables)]
     pub fn relay_of(&self, genesis_hash: [u8; 32]) -> Option<[u8; 32]> {
         if let Some(relay) = self.relays.get(&genesis_hash) {
             return Some(*relay);
@@ -507,7 +506,7 @@ impl EmbeddedChainProvider {
 #[cfg(all(test, feature = "smoldot"))]
 impl EmbeddedChainProvider {
     /// Number of implicit relay chains the shared light client currently holds.
-    pub(crate) fn relay_count(&self) -> usize {
+    pub fn relay_count(&self) -> usize {
         self.light.relay_count()
     }
 }

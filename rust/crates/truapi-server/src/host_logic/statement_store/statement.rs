@@ -4,7 +4,7 @@ use thiserror::Error;
 use truapi::v01;
 
 use super::StatementStoreParseError;
-use crate::host_logic::extrinsic::sr25519_secret_from_bytes;
+use crate::host_internal::extrinsic::sr25519_secret_from_bytes;
 use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
 use crate::host_logic::session::SsoSessionInfo;
 
@@ -145,25 +145,6 @@ pub fn decode_verified_statement_data(
 /// in the past relative to `now_unix_secs`.
 pub fn statement_expiry_elapsed(expiry: u64, now_unix_secs: u64) -> bool {
     (expiry >> 32) < now_unix_secs
-}
-
-/// Current unix time in seconds, used to stamp outgoing statement expiries
-/// and to gate inbound statement freshness. Trusts the local clock on both
-/// native and wasm targets.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn current_unix_secs() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-/// Current unix time in seconds on wasm32, sourced from the JS clock.
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn current_unix_secs() -> u64 {
-    (js_sys::Date::now() / 1000.0) as u64
 }
 
 /// Decode a SCALE signed statement into the public v01 statement shape.

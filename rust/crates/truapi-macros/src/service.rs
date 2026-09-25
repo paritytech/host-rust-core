@@ -25,7 +25,7 @@ impl Parse for ServiceArgs {
 }
 
 /// Parse the macro input and emit generated code or a compiler diagnostic.
-pub(super) fn expand(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn expand(args: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as ServiceArgs);
     let mut item = parse_macro_input!(item as ItemTrait);
     let tag = format!("@service_required_execution={}", args.required_execution);

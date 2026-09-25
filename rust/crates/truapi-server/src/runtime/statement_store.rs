@@ -312,7 +312,7 @@ impl ProductRuntimeHost {
     }
 
     /// `StatementStoreRpc` bound to this runtime's people chain.
-    pub(super) fn statement_store_rpc(&self) -> StatementStoreRpc {
+    pub fn statement_store_rpc(&self) -> StatementStoreRpc {
         self.services.statement_store.clone()
     }
 
@@ -587,15 +587,15 @@ mod tests {
         let platform = Arc::new(StubPlatform {
             sso_response_script: Some(sso_success_response_script(
                 &session,
-                crate::host_logic::sso::messages::RemoteMessage {
+                crate::host_internal::sso_messages::RemoteMessage {
                     message_id: "wallet-proof-auth-1".to_string(),
-                    data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-                        crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationResponse(
-                            crate::host_logic::sso::messages::Response {
+                    data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+                        crate::host_internal::sso_messages::v1::RemoteMessage::ResourceAllocationResponse(
+                            crate::host_internal::sso_messages::Response {
                                 responding_to: "proof-auth-1".to_string(),
                                 payload: Ok(vec![
-                                    crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
-                                        crate::host_logic::sso::messages::SsoAllocatedResource::StatementStoreAllowance {
+                                    crate::host_internal::sso_messages::SsoAllocationOutcome::Allocated(
+                                        crate::host_internal::sso_messages::SsoAllocatedResource::StatementStoreAllowance {
                                             slot_account_key: allowance_secret.to_vec(),
                                         },
                                     ),
@@ -629,8 +629,10 @@ mod tests {
         assert_sr25519_signature(signer, signature, &payload);
 
         let message = submitted_remote_message(&platform, &session);
-        let crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationRequest(request),
+        let crate::host_internal::sso_messages::RemoteMessageData::V1(
+            crate::host_internal::sso_messages::v1::RemoteMessage::ResourceAllocationRequest(
+                request,
+            ),
         ) = message.data
         else {
             panic!("expected resource allocation request");
@@ -638,7 +640,7 @@ mod tests {
         assert_eq!(request.calling_product_id, "myapp.dot");
         assert_eq!(
             request.on_existing,
-            crate::host_logic::sso::messages::OnExistingAllowancePolicy::Ignore
+            crate::host_internal::sso_messages::OnExistingAllowancePolicy::Ignore
         );
         assert_eq!(
             request.resources,

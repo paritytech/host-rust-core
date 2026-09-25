@@ -78,7 +78,7 @@ fn pairing_deadline_reason() -> String {
 }
 
 /// Terminal outcome of [`SsoPairingFlow::request_session`].
-pub(super) enum SsoPairingOutcome {
+pub enum SsoPairingOutcome {
     /// The login was cancelled (host `cancel_login`, `disconnect`, or a
     /// cross-tab session win).
     Cancelled,
@@ -110,13 +110,13 @@ impl Drop for AbandonedPairingGuard {
 }
 
 /// One pairing (login) attempt driven on behalf of a pairing host.
-pub(super) struct SsoPairingFlow<'a> {
+pub struct SsoPairingFlow<'a> {
     host: &'a PairingHost,
 }
 
 impl<'a> SsoPairingFlow<'a> {
     /// Bind a pairing attempt to its host.
-    pub(super) fn new(host: &'a PairingHost) -> Self {
+    pub fn new(host: &'a PairingHost) -> Self {
         Self { host }
     }
 
@@ -124,7 +124,7 @@ impl<'a> SsoPairingFlow<'a> {
     /// to present, then races host cancellation against the wallet handshake
     /// arriving on the statement store; on success it resolves identity,
     /// persists the new session, and returns it to the pairing host.
-    pub(super) async fn request_session(
+    pub async fn request_session(
         &self,
     ) -> Result<SsoPairingOutcome, CallError<HostRequestLoginError>> {
         // Armed here rather than inside the flow because the reads below are

@@ -39,8 +39,10 @@ use super::sso_remote::{
 };
 use super::statement_store_rpc::StatementStoreRpc;
 use crate::chain_runtime::ChainRuntime;
+use crate::host_internal::extrinsic::build_local_transaction;
+use crate::host_internal::sso_messages::{ProductRequest, RingVrfError};
+use crate::host_internal::transaction::sign_extrinsic_payload;
 use crate::host_logic::entropy::derive_product_entropy_from_source;
-use crate::host_logic::extrinsic::build_local_transaction;
 use crate::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_product_keypair_from_subtree_secret,
     derive_ring_vrf_entropy_from_domain,
@@ -48,8 +50,7 @@ use crate::host_logic::product_account::{
 use crate::host_logic::raw_signing::raw_payload_bytes;
 use crate::host_logic::session::{SessionInfo, SessionState, encode_persisted_session};
 use crate::host_logic::session_store::SessionStoreChangeNotifier;
-use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
-use crate::host_logic::transaction::sign_extrinsic_payload;
+use crate::session_usernames::SessionUsernames;
 use crate::subscription::Spawner;
 
 use futures::StreamExt;
@@ -224,25 +225,25 @@ impl SessionStoreSync {
 }
 
 /// Remote account authority for a pairing host.
-pub(crate) struct PairingHost {
+pub struct PairingHost {
     /// Shared runtime services. Held, not just borrowed at construction, so
     /// this role can resolve a product manifest for itself when it adjudicates
     /// a cross-product grant. `RuntimeServices` does not hold the pairing host
     /// back (`host_core` owns both), so this is not a cycle.
     services: Arc<RuntimeServices>,
     /// Host platform backing all syscalls.
-    pub(super) platform: Arc<dyn Platform>,
+    pub platform: Arc<dyn Platform>,
     /// Pairing configuration supplied by the embedding host.
-    pub(super) host_config: PairingHostConfig,
+    pub host_config: PairingHostConfig,
     /// Shared chain runtime, used to resolve session identity.
-    pub(super) chain: ChainRuntime,
+    pub chain: ChainRuntime,
     /// Active inter-host session with a signing host.
     session_state: Arc<SessionState>,
     session_store_changes: Arc<SessionStoreChangeNotifier>,
     /// Core-owned auth-state machine emitting to the host.
-    pub(super) auth_state: AuthStateMachine,
+    pub auth_state: AuthStateMachine,
     /// People-chain statement store RPC client.
-    pub(super) statement_store: StatementStoreRpc,
+    pub statement_store: StatementStoreRpc,
     session_disconnects: Arc<SessionDisconnects>,
     disconnect_monitor: Mutex<Option<SsoDisconnectMonitor>>,
     login_in_flight: Mutex<Option<LoginInFlight>>,
@@ -265,12 +266,12 @@ pub(crate) struct PairingHost {
     /// Self-reference captured by the spawned disconnect-monitor task.
     weak_self: Weak<PairingHost>,
     /// Task spawner for background monitors.
-    pub(super) spawner: Spawner,
+    pub spawner: Spawner,
 }
 
 impl PairingHost {
     /// Build a pairing host over the shared runtime services.
-    pub(crate) fn new(services: Arc<RuntimeServices>, host_config: PairingHostConfig) -> Arc<Self> {
+    pub fn new(services: Arc<RuntimeServices>, host_config: PairingHostConfig) -> Arc<Self> {
         if services.asset_hub_chain_genesis_hash().is_none() {
             // Said once at startup rather than inferred from every grant
             // refusing, matching the signing role. Cross-product refusals are
@@ -318,13 +319,13 @@ impl PairingHost {
     }
 
     /// Shared session holder for connection-status subscriptions.
-    pub(crate) fn session_state(&self) -> Arc<SessionState> {
+    pub fn session_state(&self) -> Arc<SessionState> {
         self.session_state.clone()
     }
 
     /// Signal that the persisted auth session may have changed; the sync task
     /// re-reads it.
-    pub(crate) fn notify_session_store_changed(&self) {
+    pub fn notify_session_store_changed(&self) {
         self.advance_session_lifecycle();
         self.session_store_changes.notify();
     }
@@ -337,37 +338,37 @@ impl PairingHost {
         lifecycle.advance()
     }
 
-    pub(super) fn current_session_lifecycle_epoch(&self) -> u64 {
+    pub fn current_session_lifecycle_epoch(&self) -> u64 {
         self.session_lifecycle
             .lock()
             .expect("session lifecycle mutex poisoned")
             .epoch
     }
 
-    pub(super) fn is_session_lifecycle_current(&self, epoch: u64) -> bool {
+    pub fn is_session_lifecycle_current(&self, epoch: u64) -> bool {
         self.current_session_lifecycle_epoch() == epoch
     }
 
     /// Test hook for [`Self::start_session_store_sync`].
     #[cfg(test)]
-    pub(crate) fn start_session_store_sync_for_tests(self: Arc<Self>, spawner: Spawner) {
+    pub fn start_session_store_sync_for_tests(self: Arc<Self>, spawner: Spawner) {
         self.start_session_store_sync(spawner);
     }
 
     /// Change notifications the sync task has finished reconciling.
     #[cfg(test)]
-    pub(crate) fn session_store_change_ticks_for_tests(&self) -> usize {
+    pub fn session_store_change_ticks_for_tests(&self) -> usize {
         self.session_store_change_ticks.load(Ordering::SeqCst)
     }
 
     /// Test alias for [`Self::start_remote_monitor_for_current_session`].
     #[cfg(test)]
-    pub(crate) fn start_session_supervision_for_current_session(&self) {
+    pub fn start_session_supervision_for_current_session(&self) {
         self.start_remote_monitor_for_current_session();
     }
 
     #[cfg(test)]
-    pub(crate) fn pause_external_session_activation_for_tests(
+    pub fn pause_external_session_activation_for_tests(
         &self,
     ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (entered_tx, entered_rx) = oneshot::channel();
@@ -396,7 +397,7 @@ impl PairingHost {
         self.session_state.current().as_ref().map(authority_session)
     }
 
-    pub(crate) async fn ring_vrf_providers(
+    pub async fn ring_vrf_providers(
         &self,
         ring: &v01::RingLocation,
     ) -> Result<Vec<v01::ProductAccountId>, RingVrfError> {
@@ -408,7 +409,7 @@ impl PairingHost {
             .await
     }
 
-    pub(crate) async fn selected_ring_vrf_provider(
+    pub async fn selected_ring_vrf_provider(
         &self,
         ring: &v01::RingLocation,
     ) -> Result<Option<v01::ProductAccountId>, RingVrfError> {
@@ -420,7 +421,7 @@ impl PairingHost {
             .await
     }
 
-    pub(crate) async fn select_ring_vrf_provider(
+    pub async fn select_ring_vrf_provider(
         &self,
         ring: v01::RingLocation,
         handle: v01::ProductAccountId,
@@ -435,7 +436,7 @@ impl PairingHost {
 
     /// Start the disconnect monitor when a session is already active.
     #[cfg(test)]
-    pub(crate) fn start_remote_monitor_for_current_session(&self) {
+    pub fn start_remote_monitor_for_current_session(&self) {
         if let Some(session) = self.session_state.current() {
             self.start_disconnect_monitor(&session);
         }
@@ -445,7 +446,7 @@ impl PairingHost {
     /// session blob without copying it into core storage. Reports the resulting
     /// auth state to the host, including when the blob failed to decode and the
     /// active session was therefore left alone.
-    pub(crate) async fn activate_external_session(&self, blob: &[u8]) -> Result<(), String> {
+    pub async fn activate_external_session(&self, blob: &[u8]) -> Result<(), String> {
         let installed = self.install_external_session(blob).await;
         self.auth_state.announce_current();
         installed
@@ -472,7 +473,7 @@ impl PairingHost {
     /// returning. Product frames may use the connected session once this
     /// future resolves. Reports the resulting auth state to the host, including
     /// when there was no session to restore.
-    pub(crate) async fn activate_stored_session(&self) -> Result<(), String> {
+    pub async fn activate_stored_session(&self) -> Result<(), String> {
         let restored = self
             .reconcile_stored_session(true, false)
             .await
@@ -572,7 +573,7 @@ impl PairingHost {
     /// announces the outcome, so the host always receives an opening auth
     /// state, then reconciles again on every change notification.
     #[instrument(skip_all, fields(runtime.method = "session_store.sync"))]
-    pub(crate) fn start_session_store_sync(self: Arc<Self>, spawner: Spawner) {
+    pub fn start_session_store_sync(self: Arc<Self>, spawner: Spawner) {
         let pairing_host = Arc::downgrade(&self);
         drop(self);
         spawner(Box::pin(async move {
@@ -696,7 +697,7 @@ impl PairingHost {
 
     /// Disconnect and discard pairing bootstrap material so the next login
     /// generates a new device keypair and topic.
-    pub(crate) async fn logout_and_reset_pairing(&self) -> Result<(), String> {
+    pub async fn logout_and_reset_pairing(&self) -> Result<(), String> {
         self.disconnect().await;
         self.clear_auto_signing_keys().await.map_err(|reason| {
             format!("session disconnected, but AutoSigning reset failed: {reason}")
@@ -723,7 +724,7 @@ impl PairingHost {
 
     /// Clear all capability material owned by one product while preserving the
     /// active session and unrelated products.
-    pub(crate) async fn clear_product_state(&self, product_id: &str) -> Result<(), String> {
+    pub async fn clear_product_state(&self, product_id: &str) -> Result<(), String> {
         let product_id =
             normalize_product_identifier(product_id).map_err(|error| error.to_string())?;
         let session = {
@@ -774,7 +775,7 @@ impl PairingHost {
     /// Clear the canonical local session and all session capabilities without
     /// sending a peer-disconnect statement. Reports the resulting auth state to
     /// the host, including when there was no session to clear.
-    pub(crate) async fn reset_session_state(&self) {
+    pub async fn reset_session_state(&self) {
         self.cancel_login();
         self.clear_disconnected_session(true).await;
         let _storage_guard = self.session_secret_storage.lock().await;
@@ -786,7 +787,7 @@ impl PairingHost {
 
     /// Invalidate in-flight login attempts and emit the cancelled auth state.
     #[instrument(skip_all, fields(runtime.method = "account.cancel_login"))]
-    pub(crate) fn cancel_login(&self) {
+    pub fn cancel_login(&self) {
         self.invalidate_login_attempts();
         self.auth_state.login_cancelled();
     }
@@ -946,12 +947,12 @@ impl PairingHost {
     }
 
     #[cfg(test)]
-    pub(crate) async fn set_connected_session_for_tests(&self, session: SessionInfo) {
+    pub async fn set_connected_session_for_tests(&self, session: SessionInfo) {
         self.set_connected_session(session).await;
     }
 
     #[cfg(test)]
-    pub(crate) async fn has_auto_signing_key_for_tests(
+    pub async fn has_auto_signing_key_for_tests(
         &self,
         session: &SessionInfo,
         product_id: &str,
@@ -962,7 +963,7 @@ impl PairingHost {
     }
 
     #[cfg(test)]
-    pub(crate) async fn remember_auto_signing_key_for_tests(
+    pub async fn remember_auto_signing_key_for_tests(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -983,7 +984,7 @@ impl PairingHost {
     }
 
     #[cfg(test)]
-    pub(crate) async fn register_ring_vrf_key_for_tests(
+    pub async fn register_ring_vrf_key_for_tests(
         &self,
         session: &SessionInfo,
         handle: v01::ProductAccountId,
@@ -996,7 +997,7 @@ impl PairingHost {
     }
 
     #[cfg(test)]
-    pub(crate) fn capability_cache_sizes_for_tests(&self) -> (usize, usize, usize, usize) {
+    pub fn capability_cache_sizes_for_tests(&self) -> (usize, usize, usize, usize) {
         (
             self.statement_store_allowances
                 .lock()
@@ -1079,7 +1080,7 @@ impl PairingHost {
     ///
     /// A stale or missing session resolves as `false` so a broken state falls
     /// through to the resolution's own error rather than a spurious prompt.
-    pub(super) async fn subtree_reaches_account_holder(
+    pub async fn subtree_reaches_account_holder(
         &self,
         session: &AuthoritySession,
         product_id: &str,
@@ -1102,7 +1103,7 @@ impl PairingHost {
     /// This is the consent-free half of the resolution order. Splitting it out
     /// lets a host read what the core already knows without the wire request
     /// that follows a miss, which has no timeout of its own.
-    pub(super) async fn known_product_subtree(
+    pub async fn known_product_subtree(
         &self,
         session: &SessionInfo,
         cache_key: (SsoSessionKey, String),
@@ -1123,7 +1124,7 @@ impl PairingHost {
 
     /// Read a product subtree public key persisted by an earlier launch, and
     /// re-populate the memory cache from it. `None` when nothing is stored.
-    pub(super) async fn stored_product_subtree(
+    pub async fn stored_product_subtree(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -1151,7 +1152,7 @@ impl PairingHost {
     /// and leaves the next launch to re-ask the wallet, which is what happens
     /// today. Losing the pairing mid-write is not, so the storage entry is
     /// rolled back rather than left addressing a session that has gone.
-    pub(super) async fn persist_product_subtree_if_current(
+    pub async fn persist_product_subtree_if_current(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -1187,7 +1188,7 @@ impl PairingHost {
         false
     }
 
-    pub(super) fn cache_product_subtree_if_current(
+    pub fn cache_product_subtree_if_current(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -1287,7 +1288,7 @@ impl PairingHost {
 
     /// Persist and memory-cache a freshly allocated statement-store allowance
     /// key.
-    pub(super) async fn cache_statement_store_allowance_key(
+    pub async fn cache_statement_store_allowance_key(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -1354,7 +1355,7 @@ impl PairingHost {
 
     /// Cached statement-store allowance key for the product, falling back to
     /// persisted storage.
-    pub(super) async fn cached_statement_store_allowance_key(
+    pub async fn cached_statement_store_allowance_key(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -1396,7 +1397,7 @@ impl PairingHost {
     }
 
     /// Persist and memory-cache a freshly allocated Bulletin allowance key.
-    pub(super) async fn cache_bulletin_allowance_key(
+    pub async fn cache_bulletin_allowance_key(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -1462,7 +1463,7 @@ impl PairingHost {
 
     /// Cached Bulletin allowance key for the product, falling back to
     /// persisted storage.
-    pub(super) async fn cached_bulletin_allowance_key(
+    pub async fn cached_bulletin_allowance_key(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -1503,7 +1504,7 @@ impl PairingHost {
     }
 
     /// Drop the cached and persisted Bulletin allowance key for one product.
-    pub(super) async fn evict_bulletin_allowance_key(
+    pub async fn evict_bulletin_allowance_key(
         &self,
         session: &SessionInfo,
         lifecycle_epoch: u64,
@@ -1533,7 +1534,7 @@ impl PairingHost {
 
     /// Drop memory-cached statement-store allowance keys, scoped to `session`
     /// when given, otherwise all.
-    pub(super) fn clear_statement_store_allowance_keys(&self, session: Option<&SessionInfo>) {
+    pub fn clear_statement_store_allowance_keys(&self, session: Option<&SessionInfo>) {
         let mut allowances = self
             .statement_store_allowances
             .lock()
@@ -1551,7 +1552,7 @@ impl PairingHost {
 
     /// Drop memory-cached Bulletin allowance keys, scoped to `session` when
     /// given, otherwise all.
-    pub(super) fn clear_bulletin_allowance_keys(&self, session: Option<&SessionInfo>) {
+    pub fn clear_bulletin_allowance_keys(&self, session: Option<&SessionInfo>) {
         let mut allowances = self
             .bulletin_allowances
             .lock()

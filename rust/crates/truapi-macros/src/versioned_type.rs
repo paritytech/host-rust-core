@@ -94,7 +94,7 @@ fn variant_version(ident: &Ident) -> syn::Result<u8> {
 }
 
 /// Parse the macro input and emit generated code or a compiler diagnostic.
-pub(super) fn expand(item: TokenStream) -> TokenStream {
+pub fn expand(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as VersionedInput);
     match expand_versioned(&input) {
         Ok(tokens) => tokens.into(),

@@ -100,7 +100,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// carried as raw JSON so that a spec written with integers wider than `u64`
 /// survives byte for byte; parsing the whole document into `serde_json::Value`
 /// would round those through `f64` and change the genesis it describes.
-pub(crate) fn tunnel_wss_bootnodes(spec: &str) -> String {
+pub fn tunnel_wss_bootnodes(spec: &str) -> String {
     // Cheap reject before the parse: most specs, and every wasm build, have no
     // `/wss` bootnode at all.
     if !spec.contains("/wss") && !spec.contains("/tls/ws") {

@@ -6,7 +6,7 @@ use syn::ext::IdentExt;
 use syn::{FnArg, ImplItem, ItemImpl, Signature, Type, parse_macro_input};
 
 /// Parse the macro input and emit generated code or a compiler diagnostic.
-pub(super) fn expand(
+pub fn expand(
     args: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
@@ -46,8 +46,8 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
             "SSO handlers require a concrete service type",
         ));
     }
-    let wire = quote!(crate::host_logic::sso::wire);
-    let message = quote!(crate::host_logic::sso::messages::v1::RemoteMessage);
+    let wire = quote!(crate::host_internal::sso_wire);
+    let message = quote!(crate::host_internal::sso_messages::v1::RemoteMessage);
     let runtime = quote!(crate::runtime::sso_service);
     let reply = quote!(#runtime::SsoReply);
     let mut impls = Vec::new();
@@ -90,14 +90,14 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 type Response = #response_ty;
 
                 fn response_into_message(
-                    response: crate::host_logic::sso::messages::Response<Self::Response>,
+                    response: crate::host_internal::sso_messages::Response<Self::Response>,
                 ) -> #message {
                     #message::#response_variant(response)
                 }
 
                 fn response_from_message(
                     message: #message,
-                ) -> Option<crate::host_logic::sso::messages::Response<Self::Response>> {
+                ) -> Option<crate::host_internal::sso_messages::Response<Self::Response>> {
                     match message {
                         #message::#response_variant(response) => Some(response),
                         _ => None,
@@ -151,12 +151,12 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
         ///
         /// `session` is the signing host's current session; without one every
         /// request is answered with its error type's `not_connected()`.
-        pub(crate) async fn dispatch(
+        pub async fn dispatch(
             &self,
             session: Option<crate::runtime::authority::AuthoritySession>,
-            message: crate::host_logic::sso::messages::RemoteMessage,
+            message: crate::host_internal::sso_messages::RemoteMessage,
         ) -> #runtime::Dispatch {
-            let crate::host_logic::sso::messages::RemoteMessageData::V1(data) = message.data;
+            let crate::host_internal::sso_messages::RemoteMessageData::V1(data) = message.data;
             let message_id = message.message_id;
             let cx = session.map(|session| #runtime::SsoRequestContext::new(&message_id, session));
             let answer = match data {
@@ -172,7 +172,7 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
 
         impl #message {
             /// Service method name for requests; variant name for other messages.
-            pub(crate) fn name(&self) -> &'static str {
+            pub fn name(&self) -> &'static str {
                 match self {
                     Self::Disconnected => "Disconnected",
                     #(#name_arms,)*
@@ -180,7 +180,7 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
 
             /// Request id answered by a response; `None` for other messages.
-            pub(crate) fn responding_to(&self) -> Option<&str> {
+            pub fn responding_to(&self) -> Option<&str> {
                 match self {
                     #(#responding_to_arms)*
                     _ => None,
@@ -188,7 +188,7 @@ fn expand_sso_service(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
 
             /// Re-address a response; other messages pass through unchanged.
-            pub(crate) fn with_responding_to(self, responding_to: String) -> Self {
+            pub fn with_responding_to(self, responding_to: String) -> Self {
                 match self {
                     #(#retarget_arms,)*
                     other => other,

@@ -16,7 +16,7 @@ use truapi_platform::{PreimageSubmitReview, UserConfirmationReview};
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
-use crate::host_logic::bulletin::preimage_key;
+use crate::host_internal::bulletin::preimage_key;
 use crate::runtime::bulletin_rpc::BulletinSubmitError;
 use crate::runtime::{
     PERMISSION_DENIED_REASON, PREIMAGE_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, PREIMAGE_SUBMIT_TIMEOUT,

@@ -17,7 +17,6 @@ pub use rpc::{
     SUBSCRIBE_STATEMENT_METHOD, TopicFilterKind, UNSUBSCRIBE_STATEMENT_METHOD,
     parse_new_statements_result,
 };
-pub(crate) use statement::current_unix_secs;
 pub use statement::{
     StatementField, StatementProof, StatementSigningPayloadError, VerifiedStatementData,
     build_signed_session_request_statement, build_signed_statement, decode_signed_statement,

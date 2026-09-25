@@ -110,7 +110,7 @@ fn owner_key(entropy: &[u8]) -> Result<[u8; 32], String> {
 
 /// Renewal coordination state owned by [`SigningHost`].
 #[derive(Default)]
-pub(super) struct RenewalState {
+pub struct RenewalState {
     /// Serializes slot registrations between the renewal pass and on-demand
     /// allocation so both cannot race for the same free slot.
     registration_lock: Mutex<()>,
@@ -127,7 +127,7 @@ pub(super) struct RenewalState {
 }
 
 impl RenewalState {
-    pub(super) fn registration_lock(&self) -> &Mutex<()> {
+    pub fn registration_lock(&self) -> &Mutex<()> {
         &self.registration_lock
     }
 
@@ -144,7 +144,7 @@ impl RenewalState {
 
     /// The most recent pass the loop ran. `None` until one has run, which a host
     /// should read as "not yet" rather than as healthy.
-    pub(super) fn last_report(&self) -> Option<StatementRenewalReport> {
+    pub fn last_report(&self) -> Option<StatementRenewalReport> {
         self.last_report.lock().ok().and_then(|last| last.clone())
     }
 }
@@ -308,7 +308,7 @@ fn resolve_target(
 }
 
 /// Record `targets` in the ledger under the active identity.
-pub(super) async fn track(
+pub async fn track(
     signing_host: &SigningHost,
     targets: Vec<StatementRenewalTarget>,
 ) -> Result<(), String> {
@@ -327,7 +327,7 @@ pub(super) async fn track(
 /// Reads storage alone. A host that has not unlocked an identity still gets
 /// the list, which is the case a scheduled task runs in: it wakes, asks what
 /// its finite slots are spent on, and decides whether to renew at all.
-pub(super) async fn list(
+pub async fn list(
     signing_host: &SigningHost,
 ) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
     list_entries(
@@ -342,13 +342,13 @@ pub(super) async fn list(
 /// Pairs with [`list`], which reports each entry's owner as stored: comparing
 /// the two is how a host tells the entries it will actually renew from the ones
 /// a pass will prune.
-pub(super) fn active_owner_key(signing_host: &SigningHost) -> Result<[u8; 32], String> {
+pub fn active_owner_key(signing_host: &SigningHost) -> Result<[u8; 32], String> {
     let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
     owner_key(&entropy)
 }
 
 /// Stop renewing one fixed statement account for the active identity.
-pub(super) async fn untrack_account_for_signing_host(
+pub async fn untrack_account_for_signing_host(
     signing_host: &SigningHost,
     account_id: &[u8; 32],
 ) -> Result<bool, String> {
@@ -430,7 +430,7 @@ async fn owned_targets(
 
 /// One renewal pass: resolve the ledger against the active session and renew
 /// every target for the current period.
-pub(super) async fn renew_now(
+pub async fn renew_now(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
 ) -> Result<StatementRenewalReport, String> {
@@ -508,7 +508,7 @@ pub(super) async fn renew_now(
 
 /// Spawn the periodic renewal loop; repeated calls are no-ops. The loop holds
 /// only weak references, so it exits when the owning runtime is dropped.
-pub(super) fn start_renewal_loop(services: &Arc<RuntimeServices>, signing_host: &Arc<SigningHost>) {
+pub fn start_renewal_loop(services: &Arc<RuntimeServices>, signing_host: &Arc<SigningHost>) {
     if signing_host
         .renewal
         .loop_started

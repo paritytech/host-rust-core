@@ -14,7 +14,7 @@
 //! shells.
 //!
 //! Host-facing bridges:
-//! - [`ws_bridge`] (feature `ws-bridge`): localhost WebSocket bridge for
+//! - `ws_bridge` (feature `ws-bridge`): localhost WebSocket bridge for
 //!   native WebView hosts (Android/iOS).
 //! - [`bootstrap`]: the JavaScript those hosts inject to reach that bridge.
 //! - [`native`]: UniFFI surface exposing the native host runtime + callbacks.
@@ -23,34 +23,40 @@
 //!   streams tapped frames to the `@parity/truapi-debugger` app.
 
 pub mod bootstrap;
-pub(crate) mod chain_runtime;
-pub mod core;
-pub(crate) mod dispatcher;
+mod chain_runtime;
+mod core;
+mod dispatcher;
+mod dotns_views;
 mod dynamic_vrf;
 pub mod frame;
-pub(crate) mod host_core;
+mod host_core;
+mod host_internal;
 pub mod host_logic;
-pub(crate) mod host_rpc_client;
+mod host_rpc_client;
+mod interrupt;
 pub mod logging;
-pub(crate) mod runtime;
+mod protocol_error;
+mod runtime;
+mod session_usernames;
 pub mod subscription;
 pub mod transport;
 
 #[cfg(test)]
-pub(crate) mod test_support;
+mod test_support;
+mod unix_time;
 
 // Dispatch must keep serving deprecated APIs while clients migrate.
 #[allow(deprecated)]
 pub mod generated;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
-pub mod ws_bridge;
+mod ws_bridge;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub mod native_renderer;
+mod native_renderer;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -58,6 +64,7 @@ pub mod wasm;
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
 pub mod native_debug;
 
+pub use core::TrUApiCore;
 pub use host_core::{
     ChannelId, DebugEvent, DebugSink, FrameDirection, FrameSink, HostAdmin, PairingHostRuntime,
     ProductRuntime, ProductRuntimeControl, ProductRuntimeError, SigningHostRuntime,
@@ -83,16 +90,20 @@ pub use truapi_platform::{
 };
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
-pub use ws_bridge::*;
+pub use ws_bridge::{WsBridgeEndpoint, WsBridgeStartError};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::*;
+pub use native_renderer::{NativeRendererObserver, NativeRendererSubscription};
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use native_renderer::*;
-
+#[cfg(all(target_arch = "wasm32", feature = "wasm-signing-host"))]
+pub use wasm::WasmSigningHostRuntime;
 #[cfg(target_arch = "wasm32")]
-pub use wasm::*;
+pub use wasm::{
+    WasmPairingHostRuntime, WasmProductRuntime, WasmRendererSubscription,
+    derive_product_account_public_key, describe_core_storage_key_for_wasm,
+    has_trusted_remote_permissions_for_wasm, product_account_address, set_log_level,
+    wire_schema_hash,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 uniffi::setup_scaffolding!();

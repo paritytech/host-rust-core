@@ -5,20 +5,20 @@ use core::fmt::Display;
 use truapi::{CallContext, RequestId};
 
 use super::authority::AuthoritySession;
-use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
-use crate::host_logic::sso::wire::ResponseOutcome;
+use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, Response, v1};
+use crate::host_internal::sso_wire::ResponseOutcome;
 
 /// Per-request context handed to every service method.
-pub(crate) struct SsoRequestContext {
+pub struct SsoRequestContext {
     /// Call context correlated to the request's `message_id`.
-    pub(crate) call: CallContext,
+    pub call: CallContext,
     /// Signing session resolved once for the request.
-    pub(crate) session: AuthoritySession,
+    pub session: AuthoritySession,
 }
 
 impl SsoRequestContext {
     /// Context for the request sent as `message_id`.
-    pub(crate) fn new(message_id: &str, session: AuthoritySession) -> Self {
+    pub fn new(message_id: &str, session: AuthoritySession) -> Self {
         Self {
             call: CallContext::with_request_id(RequestId::from(message_id)),
             session,
@@ -28,7 +28,7 @@ impl SsoRequestContext {
 
 /// What the service dispatcher produced for one wire message.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Dispatch {
+pub enum Dispatch {
     /// Response to post back, with its transcript outcome.
     Response(Box<Answer>),
     /// The peer ended the session.
@@ -39,15 +39,15 @@ pub(crate) enum Dispatch {
 
 /// A served request: the response envelope and how the transcript reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Answer {
+pub struct Answer {
     /// Response envelope, `message_id` suffixed with `:response`.
-    pub(crate) message: RemoteMessage,
+    pub message: RemoteMessage,
     /// Transcript classification of the payload.
-    pub(crate) outcome: ResponseOutcome,
+    pub outcome: ResponseOutcome,
 }
 
 /// A handler's payload and optional transcript outcome, before wire wrapping.
-pub(crate) struct SsoReply<P> {
+pub struct SsoReply<P> {
     payload: P,
     outcome: Option<ResponseOutcome>,
 }
@@ -63,7 +63,7 @@ impl<P> From<P> for SsoReply<P> {
 
 impl<P> SsoReply<P> {
     /// Supply a transcript outcome when the payload alone does not describe the result.
-    pub(crate) fn with_outcome(mut self, outcome: ResponseOutcome) -> Self {
+    pub fn with_outcome(mut self, outcome: ResponseOutcome) -> Self {
         self.outcome = Some(outcome);
         self
     }
@@ -71,7 +71,7 @@ impl<P> SsoReply<P> {
 
 impl<T, E: Display> SsoReply<Result<T, E>> {
     /// Address the reply and wrap it in the response variant selected by the request.
-    pub(crate) fn finish(
+    pub fn finish(
         self,
         message_id: &str,
         wrap: impl FnOnce(Response<Result<T, E>>) -> v1::RemoteMessage,
@@ -95,8 +95,8 @@ impl<T, E: Display> SsoReply<Result<T, E>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_logic::sso::messages::{ProductSubtreeRequest, ProductSubtreeResponse};
-    use crate::host_logic::sso::wire::SsoRequest;
+    use crate::host_internal::sso_messages::{ProductSubtreeRequest, ProductSubtreeResponse};
+    use crate::host_internal::sso_wire::SsoRequest;
 
     #[test]
     fn finish_addresses_the_response_to_the_request() {

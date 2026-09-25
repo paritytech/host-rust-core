@@ -75,7 +75,7 @@ pub fn wire_trait(args: TokenStream, item: TokenStream) -> TokenStream {
 /// The enum and every variant receive generated doc comments; a variant keeps
 /// its own doc attributes when the declaration provides them.
 ///
-/// The declared visibility (`pub`, `pub(crate)`, or none) carries through to the
+/// The declared visibility (`pub`, or none) carries through to the
 /// generated enum.
 ///
 /// The generated impls name `crate::versioned::*` traits, so invoke this from
