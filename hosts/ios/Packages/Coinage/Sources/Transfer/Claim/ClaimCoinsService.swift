@@ -149,6 +149,12 @@ private extension ClaimCoinsService {
             // Each coin is registered once: rebuilding a claim that failed is its submission policy's
             // job, into the coin that claim recorded. A second claim here would mint into a coin
             // nothing would ever wait on.
+            //
+            // `receivedPublicKeys()` counts terminal entries too, so a coin whose policy has already
+            // given up reads as registered and is not re-registered here. That is deliberate — see the
+            // note on `CoinageClaimSubmitting` — and it means no layer retries such a coin: the policy
+            // is dead and this loop treats it as handled. It stays on chain, claimable by nobody, until
+            // the sender-side reclaim UI exists.
             let unregistered = coins.subtracting(settled.receivedPublicKeys())
             if unregistered.isEmpty {
                 logger?.debug("Every coin has a claim group=\(groupId)")

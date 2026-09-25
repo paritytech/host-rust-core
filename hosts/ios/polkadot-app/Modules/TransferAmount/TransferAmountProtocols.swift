@@ -26,7 +26,7 @@ protocol TransferAmountViewProtocol: ControllerBackedProtocol, ValidationResultP
     func didStartLoading()
     func didStopLoading()
 
-    func didReceive(transferStatus: ClaimStatus)
+    func didReceive(transferState: OutgoingTransferState)
     func didUnlockNavigation()
 
     #if TESTNET_FEATURE
@@ -53,7 +53,7 @@ protocol TransferAmountInteractorInputProtocol: AnyObject {
     func setup()
     func retrySetup()
 
-    func lifecycleStream() -> AnyAsyncSequence<ClaimStatus>
+    func lifecycleStream() -> AnyAsyncSequence<OutgoingTransferState>
     func previewTransfer(for amount: Decimal) async throws -> TransferPreviewValidation
     func confirmTransfer(validation: TransferPreviewValidation) async throws
     func saveRecentContact()

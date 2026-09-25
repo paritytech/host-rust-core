@@ -294,7 +294,7 @@ private extension ChatPresenter {
                 case let .send(content):
                     // Legacy
                     viewModelFactory.transferPreviewText(
-                        content: .init(totalValue: content.amount, coinKeys: [], status: nil),
+                        content: .init(totalValue: content.amount, coinKeys: []),
                         isIncoming: message.status.isIncoming,
                         peerName: metadata.peerName
                     )
