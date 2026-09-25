@@ -244,7 +244,7 @@ class RealProductSessionController @Inject constructor(
                 persist(this)
             }
 
-            scope.launch { webView.value = provider.getWebView() }
+            provider.webViews().onEach { webView.value = it }.launchIn(scope)
             provider.loadProgress.onEach { loadProgress.value = it }.launchIn(scope)
 
             url.mapNotNull { rawUrl ->

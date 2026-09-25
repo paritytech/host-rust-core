@@ -242,7 +242,7 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         chains: TrUAPIChains,
         navigationPolicy: NavigationPolicy,
         kind: ProductExecutionKind,
-        onReadyToInject: (bootstrap: String) -> Unit,
+        onReadyToInject: suspend (bootstrap: String) -> Unit,
     ): Result<TrUAPIProductExecution> {
         execution?.let {
             Timber.w("truapi.attach: already attached to %s, ignoring", productId.value)

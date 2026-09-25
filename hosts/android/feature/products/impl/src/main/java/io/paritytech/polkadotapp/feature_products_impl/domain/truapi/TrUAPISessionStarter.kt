@@ -59,11 +59,13 @@ class TrUAPISessionStarter @Inject constructor(
         // product's own origin only. A wildcard would hand the bridge endpoint to any page the
         // WebView is ever pointed at.
         val installBootstrap = runCatching {
-            bootstrapInstaller.installerFor(provider.getWebView(), setOf(productUrl.toUri().origin()))
+            bootstrapInstaller.installerFor(setOf(productUrl.toUri().origin()))
         }.getOrElse { return Result.failure(it) }
 
         return bridge
-            .attach(runtime, productId, chainDirectory.resolve(), navigation, ProductExecutionKind.APP, installBootstrap)
+            .attach(runtime, productId, chainDirectory.resolve(), navigation, ProductExecutionKind.APP) { bootstrap ->
+                provider.addWebViewSetup(installBootstrap(bootstrap))
+            }
             .mapCatching { execution ->
                 provider.useTrUAPIPermissions(productId, execution)
                 provider.loadInitialContent()
