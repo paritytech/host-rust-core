@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -36,7 +37,7 @@ class CoreDatabaseTest {
         directory.mkdirs()
         val runtime = TrUAPIHostRuntime(InertBridge(), config(directory.absolutePath))
 
-        val status = runtime.use { it.coreDatabaseStatus() }
+        val status = runtime.use { runBlocking { it.coreDatabaseStatus() } }
 
         val file = File(directory, "core.sqlite3")
         assertEquals(file.canonicalPath to 0u, status.path to status.schemaVersion)

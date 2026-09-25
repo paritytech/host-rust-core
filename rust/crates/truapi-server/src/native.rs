@@ -1229,10 +1229,14 @@ impl NativeTrUApiHostRuntime {
     }
 
     /// Opens the core database if needed and reports its SQLite version,
-    /// schema version and file path. Blocks the calling thread while the file
-    /// opens, so call it off the main thread.
-    pub fn core_database_status(&self) -> Result<crate::store::DbStatus, NativeCoreDatabaseError> {
-        futures::executor::block_on(self.runtime.core_database_status()).map_err(Into::into)
+    /// schema version and file path.
+    pub async fn core_database_status(
+        &self,
+    ) -> Result<crate::store::DbStatus, NativeCoreDatabaseError> {
+        self.runtime
+            .core_database_status()
+            .await
+            .map_err(Into::into)
     }
 
     /// Open a connection-scoped execution with immutable trusted context.
@@ -4880,8 +4884,7 @@ mod tests {
         )
         .expect("host runtime config should be valid");
 
-        let status = host
-            .core_database_status()
+        let status = futures::executor::block_on(host.core_database_status())
             .expect("the core database opens");
 
         let file = dir
@@ -4904,7 +4907,7 @@ mod tests {
         .expect("host runtime config should be valid");
 
         assert!(matches!(
-            host.core_database_status(),
+            futures::executor::block_on(host.core_database_status()),
             Err(NativeCoreDatabaseError::NotConfigured)
         ));
     }
