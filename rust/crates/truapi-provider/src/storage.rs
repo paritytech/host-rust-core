@@ -134,13 +134,19 @@ pub fn carries_chain_information(blob: &str) -> bool {
     blob.contains("\"chain\":{")
 }
 
-// Bridged for the native bindings the way `truapi` bridges its own 32-byte
-// values: uniffi has no fixed-size array type, so the hash crosses as bytes.
-#[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
-use truapi::Bytes32;
+/// Genesis hash of the chain a blob belongs to.
+pub type GenesisHash = [u8; 32];
 
+// Bridged for the native bindings the way `truapi` bridges its own 32-byte
+// values: uniffi has no fixed-size array type, so the hash crosses as bytes and
+// converts back here. Lowering only, since the provider validates the length
+// before a store ever sees one.
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
-uniffi::use_remote_type!(truapi::Bytes32);
+uniffi::custom_type!(GenesisHash, Vec<u8>, {
+    remote,
+    lower: |hash| hash.to_vec(),
+    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
+});
 
 #[cfg(test)]
 mod tests {
