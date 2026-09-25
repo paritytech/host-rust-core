@@ -54,6 +54,8 @@ import uniffi.truapi.HostLocalStorageReadError
 import uniffi.truapi.HostNavigateToError
 import uniffi.truapi_platform.AuthState
 import uniffi.truapi_platform.HostChainSet
+import uniffi.truapi_platform.HostContactLookup
+import uniffi.truapi_platform.HostContactMatches
 import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.PermissionDecision
@@ -62,6 +64,8 @@ import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatBotRegistrationStatus
 import uniffi.truapi_server.NativeChatCallbacks
 import uniffi.truapi_server.NativeChatRoomRegistrationStatus
+import uniffi.truapi_server.NativeContactPick
+import uniffi.truapi_server.NativeContactsCallbacks
 import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativePocketRemoval
 import uniffi.truapi_server.NativeRendererObserver
@@ -726,6 +730,49 @@ private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeCh
  * Adapter from the public [PocketHostBridge] surface to the generated UniFFI
  * [NativePocketCallbacks] interface.
  */
+/**
+ * Native contacts surface: the user's contact list, and the picker drawn over
+ * it. Install with [TrUAPIHostRuntime.setContacts], once, because the list
+ * belongs to the host and not to any one product. A runtime without one
+ * answers `contacts.pick` with `Unsupported`.
+ *
+ * Nothing here reaches a product, and the list never reaches the core: it
+ * asks only about the handles a transaction names, and the picker returns the
+ * one person the user chose. Omit the contacts the user has blocked, from both.
+ */
+interface ContactsHostBridge {
+    /**
+     * Resolve [HostContactLookup.handles] to contacts: one entry per handle, in
+     * order, `null` where none matches. A contact's handle is BLAKE2b-256 keyed
+     * with [HostContactLookup.handleKey] over its 32-byte account. Runs inline,
+     * so answer from what is already in hand.
+     */
+    @Throws(HostRejection::class)
+    fun contacts(lookup: HostContactLookup): HostContactMatches
+
+    /**
+     * Present the picker on behalf of [productId] and report what the user
+     * did. With no contacts, answer [NativeContactPick.NoContacts] instead of
+     * drawing an empty overlay.
+     */
+    @Throws(HostRejection::class)
+    suspend fun pickContact(productId: String): NativeContactPick
+}
+
+private class ContactsCallbackAdapter(private val bridge: ContactsHostBridge) : NativeContactsCallbacks {
+    override fun contacts(lookup: HostContactLookup): HostContactMatches =
+        withHostRejection { bridge.contacts(lookup) }
+
+    override suspend fun pickContact(productId: String): NativeContactPick =
+        try {
+            bridge.pickContact(productId)
+        } catch (error: HostRejection) {
+            throw error
+        } catch (error: Throwable) {
+            throw HostRejection.Rejected(hostRejectionReason(error))
+        }
+}
+
 private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : NativePocketCallbacks {
     override fun listCards(): List<PocketCard> = withHostRejection { bridge.listCards() }
 
@@ -765,6 +812,31 @@ class TrUAPIHostRuntime private constructor(
     private val callbackRetainer: HostCallbacks = HostCallbackAdapter(bridge)
     private val inner: NativeTrUApiHostRuntime =
         NativeTrUApiHostRuntime.withRuntimeConfig(callbackRetainer, runtimeConfig)
+
+    // Co-owns the contacts adapter for as long as the runtime holds it.
+    private var contactsRetainer: NativeContactsCallbacks? = null
+
+    /**
+     * Install the host's contacts adapter, which owns the contact list and
+     * draws the picker.
+     *
+     * Set-once, so the picker cannot change hands under a running product.
+     * Returns whether this call installed it. Call it before opening any
+     * product execution.
+     */
+    fun setContacts(contacts: ContactsHostBridge): Boolean {
+        val adapter = ContactsCallbackAdapter(contacts)
+        contactsRetainer = adapter
+        return inner.setContactsCallbacks(adapter)
+    }
+
+    /**
+     * Tell the core the host's contacts changed. Call it whenever a contact is
+     * removed or blocked, so a contact handle the core cached stops resolving.
+     */
+    fun notifyContactsChanged() {
+        inner.notifyContactsChanged()
+    }
 
     /**
      * Open one executable connection with a host-assigned immutable context.

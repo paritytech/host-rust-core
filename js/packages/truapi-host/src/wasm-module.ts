@@ -14,6 +14,8 @@ export interface WorkerRendererSubscription {
 /** One product-scoped core inside the worker. */
 export interface WorkerProductRuntime {
   receiveFrame(frame: Uint8Array): Promise<void>;
+  /** Drop cached contact handles after a contact is removed or blocked. */
+  notifyContactsChanged(): void;
   dispose(): void;
   free(): void;
   /** Throws when the connection may not reach Chat. */
@@ -52,6 +54,7 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   disconnectSession(): Promise<void>;
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
+  notifyContactsChanged(): void;
   sessionChatIdentityKey(): Uint8Array | undefined;
   deviceStatementKey(): Uint8Array | undefined;
   deviceEncryptionKey(): Promise<Uint8Array>;

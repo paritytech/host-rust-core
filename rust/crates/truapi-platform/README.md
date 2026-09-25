@@ -73,6 +73,20 @@ state alone, which is what a host with no OS permission model does anyway.
 Serving it gates both halves of the surface: a device permission request and a
 status read through `CoreAdmin` resolve the same two gates, so a settings
 screen never reports a capability as usable when the OS refuses it.
+- `ContactsPlatform`: resolve the handles a transaction names to contacts, and
+  render the picker that selects one. `contacts` is the only required method; `pick_contact`
+  defaults to `Unsupported`, so a host serving no picker says so rather than
+  looking like a user who declined. The host owns the UI, so the list never
+  reaches the product — only a handle for the selection does. The core caches
+  resolved handles; a host calls `notify_contacts_changed` on its runtime when
+  a contact is removed or blocked.
+
+`Platform` is a blanket-implemented supertrait that combines the capability
+traits above except `ChatPlatform` and `ContactsPlatform`, which
+`OptionalPlatform` lists instead: a host supplies each only when it serves that
+capability, and the core answers the corresponding calls `Unsupported`
+otherwise. Codegen reads `OptionalPlatform` to emit each listed capability as an
+optional group on the host-callback surface.
 
 ## Core-Owned Admin API
 

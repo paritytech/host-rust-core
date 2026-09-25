@@ -468,6 +468,7 @@ impl SigningHostSsoService {
         request: CreateTransactionRequest,
     ) -> CreateTransactionResponse {
         let CreateTransactionPayload::V1(payload) = request.payload;
+        let payload = payload.into_product_payload();
         self.serve_create_transaction(
             cx,
             CreateTransactionReview::Product(payload.clone()),

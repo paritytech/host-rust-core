@@ -35,8 +35,8 @@ use truapi::Bytes32;
 pub mod mock;
 
 use truapi::latest::{
-    AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
-    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
+    AccountId, AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage,
+    ChatFile, ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
     HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
     HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
@@ -3314,6 +3314,106 @@ pub trait ProductOperations: Send + Sync {
     ) -> Result<(), HostWorkerOperationError>;
 }
 
+/// Contact handles the core needs turned back into accounts, and the key they
+/// were minted under.
+///
+/// A handle is `BLAKE2b-256(key = handle_key, message = account)`, the account
+/// being its 32 raw bytes. The host holds the accounts, so it is the one that
+/// can match: hash each contact's account under `handle_key`, or keep that hash
+/// as an indexed column for the session, and look the handles up.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostContactLookup {
+    /// The key every handle here was minted under. Per session, and never
+    /// given to a product.
+    pub handle_key: Bytes32,
+    /// The handles to resolve, in the order the answer must follow.
+    pub handles: Vec<Bytes32>,
+}
+
+/// The host's answer to a [`HostContactLookup`].
+///
+/// A named wrapper because the callback emitter cannot return a bare `Vec`.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostContactMatches {
+    /// One entry per requested handle, in order: the contact's account, or
+    /// `None` when no current contact hashes to it.
+    pub accounts: Vec<Option<AccountId>>,
+}
+
+/// How a host's contact picker ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum HostContactPick {
+    /// The user chose this account.
+    ///
+    /// Consumed by the core to mint the product-facing handle and never
+    /// forwarded to a product: it is the person's real account, and the handle
+    /// exists precisely so a product does not receive it.
+    Picked {
+        /// The chosen contact's account.
+        account: AccountId,
+    },
+    /// The user closed the picker without choosing.
+    Dismissed,
+    /// The user has no contacts, so the host drew nothing.
+    NoContacts,
+    /// This host resolves contacts but cannot present a picker. The core
+    /// answers the product `Unsupported`, so it can tell "try again later"
+    /// apart from "this host will never pick".
+    Unsupported,
+}
+
+/// Host-owned contact picker, drawn from the chat lists the host's chat
+/// extensions hold.
+///
+/// Optional, and listed on [`OptionalPlatform`] as [`ChatPlatform`] is.
+///
+/// The host owns the UI and the list. It draws the names, so nothing it renders
+/// reaches the product, and the list never crosses to the core either: the core
+/// asks only about the handles a transaction names. A host omits contacts the
+/// user has blocked, from the picker and from lookups alike.
+#[async_trait]
+pub trait ContactsPlatform: Send + Sync {
+    /// Resolve `lookup.handles` to the contacts they name.
+    ///
+    /// The one method a host has to write. Answer one entry per handle, in
+    /// order, with `None` for a handle no current contact hashes to — a
+    /// removed or blocked contact, or a handle a product made up. The core
+    /// re-hashes every account returned and refuses one that does not match
+    /// its handle, so a wrong answer is caught rather than trusted.
+    async fn contacts(
+        &self,
+        lookup: &HostContactLookup,
+    ) -> Result<HostContactMatches, GenericError>;
+
+    /// Present the contact picker on behalf of `product` and return the user's
+    /// choice.
+    ///
+    /// Defaults to [`HostContactPick::Unsupported`], so a Rust host that
+    /// implements [`Self::contacts`] alone still compiles and its products get
+    /// a truthful answer rather than a dismissal they would retry forever.
+    ///
+    /// A JS host reaches the same answer by another route: the generated
+    /// surface types this method optional, but a capability group counts as
+    /// served only when every callback in it is present, so omitting this one
+    /// makes the whole group absent and `contacts.pick` answers `Unsupported`
+    /// before any of it is reached.
+    ///
+    /// The core cannot draw UI, so a selection has to come from the host; the
+    /// whole point is that the host renders the names rather than shipping
+    /// them to the product. `product` is passed so the host can say who is
+    /// asking; it is not a filter. A host with no contacts answers
+    /// [`HostContactPick::NoContacts`] instead of drawing an empty overlay.
+    async fn pick_contact(
+        &self,
+        _product: &ProductContext,
+    ) -> Result<HostContactPick, GenericError> {
+        Ok(HostContactPick::Unsupported)
+    }
+}
+
 /// Combined platform interface. A host must provide every capability trait
 /// listed here. Members marked optional may be omitted; the core answers their
 /// product calls with `Unsupported`. See [`OptionalPlatform`].
@@ -3355,6 +3455,12 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+pub trait OptionalPlatform:
+    ChatPlatform + ContactsPlatform + PermissionStatusHost + PocketPlatform
+{
+}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+impl<T> OptionalPlatform for T where
+    T: ChatPlatform + ContactsPlatform + PermissionStatusHost + PocketPlatform
+{
+}

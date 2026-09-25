@@ -32,6 +32,8 @@ pub(super) struct JsBridge {
     pub(super) register_chat_bot: Function,
     pub(super) post_chat_message: Function,
     pub(super) subscribe_chat_rooms: Function,
+    pub(super) contacts: Function,
+    pub(super) pick_contact: Function,
     pub(super) read_core_storage: Function,
     pub(super) write_core_storage: Function,
     pub(super) clear_core_storage: Function,
@@ -57,6 +59,7 @@ pub(super) struct JsBridge {
     pub(super) confirm_permission: Function,
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
+    pub(super) contacts_present: bool,
     pub(super) permission_status_present: bool,
     pub(super) pocket_present: bool,
 }
@@ -74,6 +77,10 @@ impl JsBridge {
                 .unwrap_or_else(|| missing_callback("postChatMessage")),
             subscribe_chat_rooms: get_optional_function(callbacks, "subscribeChatRooms")?
                 .unwrap_or_else(|| missing_callback("subscribeChatRooms")),
+            contacts: get_optional_function(callbacks, "contacts")?
+                .unwrap_or_else(|| missing_callback("contacts")),
+            pick_contact: get_optional_function(callbacks, "pickContact")?
+                .unwrap_or_else(|| missing_callback("pickContact")),
             read_core_storage: get_function(callbacks, "readCoreStorage")?,
             write_core_storage: get_function(callbacks, "writeCoreStorage")?,
             clear_core_storage: get_function(callbacks, "clearCoreStorage")?,
@@ -105,6 +112,8 @@ impl JsBridge {
                 && get_optional_function(callbacks, "registerChatBot")?.is_some()
                 && get_optional_function(callbacks, "postChatMessage")?.is_some()
                 && get_optional_function(callbacks, "subscribeChatRooms")?.is_some(),
+            contacts_present: get_optional_function(callbacks, "contacts")?.is_some()
+                && get_optional_function(callbacks, "pickContact")?.is_some(),
             permission_status_present: get_optional_function(callbacks, "devicePermissionStatus")?
                 .is_some(),
             pocket_present: get_optional_function(callbacks, "subscribePocketCards")?.is_some()
@@ -115,6 +124,11 @@ impl JsBridge {
     /// Whether the host supplied every `chat` callback.
     pub(super) fn has_chat(&self) -> bool {
         self.chat_present
+    }
+
+    /// Whether the host supplied every `contacts` callback.
+    pub(super) fn has_contacts(&self) -> bool {
+        self.contacts_present
     }
 
     /// Whether the host supplied every `permission_status` callback.
@@ -213,6 +227,43 @@ impl truapi_platform::ChatPlatform for WasmPlatform {
             Some(Uint8Array::from(product.encode().as_slice()).into()),
             parse_host_chat_list_subscribe_item_item,
         )
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::ContactsPlatform for WasmPlatform {
+    async fn contacts(
+        &self,
+        lookup: &truapi_platform::HostContactLookup,
+    ) -> Result<truapi_platform::HostContactMatches, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.contacts,
+            vec![Uint8Array::from(lookup.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::HostContactMatches>(
+            bytes,
+            "contacts response did not decode",
+        )
+        .map_err(generic)
+    }
+
+    async fn pick_contact(
+        &self,
+        _product: &truapi_platform::ProductContext,
+    ) -> Result<truapi_platform::HostContactPick, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.pick_contact,
+            vec![Uint8Array::from(_product.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::HostContactPick>(
+            bytes,
+            "pickContact response did not decode",
+        )
+        .map_err(generic)
     }
 }
 

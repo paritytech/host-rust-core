@@ -56,21 +56,21 @@ pub mod latest {
         BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction,
         ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
         ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoom, ChatRoomParticipation,
-        ChatRoomRegistrationStatus, ColorToken, ColumnProps, ContentAlignment, ContextualAlias,
-        DerivationIndex, Dimensions, Effect, EffectProps, GenericError, HorizontalAlignment,
-        HostAccountCreateProofRequest, HostAccountGetAliasRequest,
-        HostAccountListRingVrfKeysRequest, HostAccountRegisterRingVrfKeyRequest,
-        HostAccountRingVrfSignRequest, HostAccountSignVrfError, HostAccountSignVrfRequest,
-        HostPlatform, HostSignPayloadData, HostWorkerOperationError, ImageFit, ImageProps,
-        ImageSource, Modifier, NotificationId, OperationId, OperationStartedResult, PocketCard,
-        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
-        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
-        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
-        RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
-        RingLocationJunction, RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi,
-        RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement, StatementProof,
-        StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps, TextProps,
-        ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
+        ChatRoomRegistrationStatus, ColorToken, ColumnProps, ContactHandle, ContactPickOutcome,
+        ContentAlignment, ContextualAlias, DerivationIndex, Dimensions, Effect, EffectProps,
+        GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
+        HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
+        HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
+        HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
+        HostWorkerOperationError, ImageFit, ImageProps, ImageSource, Modifier, NotificationId,
+        OperationId, OperationStartedResult, PocketCard, ProductAccountId, ProductProofContext,
+        RawPayload, RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
+        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
+        RendererNode, RingLocation, RingLocationJunction, RingVrfKeyDisclosure, RingVrfPublicKey,
+        RowProps, RuntimeApi, RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement,
+        StatementProof, StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps,
+        TextProps, ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
         VrfSignature,
     };
 
@@ -110,6 +110,12 @@ pub mod latest {
         LatestOf<versioned::renderer::ProductRendererRenderRequest>;
     /// Product-to-host renderer tree.
     pub type ProductRendererRenderItem = LatestOf<versioned::renderer::ProductRendererRenderItem>;
+    /// Contact picker request.
+    pub type HostContactsPickRequest = LatestOf<versioned::contacts::HostContactsPickRequest>;
+    /// Contact picker outcome.
+    pub type HostContactsPickResponse = LatestOf<versioned::contacts::HostContactsPickResponse>;
+    /// Contact picker failure.
+    pub type HostContactsPickError = LatestOf<versioned::contacts::HostContactsPickError>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;

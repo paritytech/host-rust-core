@@ -27,7 +27,7 @@ use truapi::v01;
 #[cfg(feature = "wasm-signing-host")]
 use truapi_platform::SigningHostConfig;
 use truapi_platform::{
-    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
+    ChainProvider, ChatPlatform, ContactsPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
     PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
     RuntimeConfigValidationError,
 };
@@ -839,6 +839,7 @@ struct WasmCoreInner {
 struct WasmPlatformAdapters {
     platform: Arc<WasmPlatform>,
     chat_platform: Option<Arc<dyn ChatPlatform>>,
+    contacts_platform: Option<Arc<dyn ContactsPlatform>>,
     status_host: Option<Arc<dyn PermissionStatusHost>>,
     pocket_platform: Option<Arc<dyn PocketPlatform>>,
 }
@@ -846,15 +847,18 @@ struct WasmPlatformAdapters {
 /// Build the platform and the optional capability adapters supplied by the host.
 fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     let has_chat = bridge.has_chat();
+    let has_contacts = bridge.has_contacts();
     let has_permission_status = bridge.has_permission_status();
     let has_pocket = bridge.has_pocket();
     let platform = Arc::new(WasmPlatform::new(bridge));
     let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
+    let contacts = has_contacts.then(|| platform.clone() as Arc<dyn ContactsPlatform>);
     let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
     let pocket = has_pocket.then(|| platform.clone() as Arc<dyn PocketPlatform>);
     WasmPlatformAdapters {
         platform,
         chat_platform: chat,
+        contacts_platform: contacts,
         status_host: status,
         pocket_platform: pocket,
     }
@@ -917,6 +921,7 @@ impl WasmPairingHostRuntime {
         let WasmPlatformAdapters {
             platform,
             chat_platform,
+            contacts_platform,
             status_host,
             pocket_platform,
         } = wasm_platform(bridge);
@@ -924,8 +929,13 @@ impl WasmPairingHostRuntime {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = pairing_host_config_from_js(&host_config)?;
-        let runtime =
-            PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        let runtime = PairingHostRuntime::with_platforms(
+            platform,
+            host_config,
+            spawner,
+            chat_platform,
+            contacts_platform,
+        );
         if let Some(status_host) = status_host {
             runtime.set_permission_status_host(status_host);
         }
@@ -1042,6 +1052,13 @@ impl WasmPairingHostRuntime {
     #[wasm_bindgen(js_name = notifySessionStoreChanged)]
     pub fn notify_session_store_changed(&self) {
         self.runtime.notify_session_store_changed();
+    }
+
+    /// Notify the runtime that the host's contacts changed, so cached contact
+    /// handles are dropped and the next resolution reads the list.
+    #[wasm_bindgen(js_name = notifyContactsChanged)]
+    pub fn notify_contacts_changed(&self) {
+        self.runtime.notify_contacts_changed();
     }
 
     /// Read a permission authorization status for a product.
@@ -1399,6 +1416,7 @@ impl WasmProductRuntime {
         let WasmPlatformAdapters {
             platform,
             chat_platform,
+            contacts_platform,
             status_host,
             pocket_platform,
         } = wasm_platform(bridge);
@@ -1416,9 +1434,19 @@ impl WasmProductRuntime {
         if let Some(pocket_platform) = pocket_platform {
             pairing.set_pocket_platform(pocket_platform);
         }
+        if let Some(contacts_platform) = contacts_platform {
+            pairing.set_contacts_platform(contacts_platform);
+        }
         install_worker_demand_observer(pairing.worker_ledger(), &callbacks)?;
         let core = pairing.product_runtime(product, frame_sink);
         Ok(Self::from_parts(core, channel.dispose))
+    }
+
+    /// Notify the runtime that the host's contacts changed, so cached contact
+    /// handles are dropped and the next resolution asks the host.
+    #[wasm_bindgen(js_name = notifyContactsChanged)]
+    pub fn notify_contacts_changed(&self) {
+        self.inner.core.notify_contacts_changed();
     }
 
     /// Push a SCALE-encoded protocol frame into the dispatcher. Responses

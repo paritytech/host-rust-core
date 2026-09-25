@@ -359,6 +359,7 @@ describe("createWasmRawCallbacks", () => {
               callData: "0x0506",
               extensions: [],
               txExtVersion: 0,
+              contacts: [],
             },
           },
         }),

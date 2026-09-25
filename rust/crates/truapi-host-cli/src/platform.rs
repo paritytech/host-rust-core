@@ -374,7 +374,7 @@ impl CliPlatform {
         persist_current_pairing_user(&scope.bootstrap_dir, user_id)
     }
 
-    async fn decide(&self, action: &str, detail: String) -> bool {
+    pub(crate) async fn decide(&self, action: &str, detail: String) -> bool {
         self.decide_with(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
     }
 

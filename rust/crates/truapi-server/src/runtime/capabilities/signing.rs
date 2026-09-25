@@ -21,9 +21,10 @@ use crate::runtime::authority::{
     SignPayloadAuthorityRequest, SignRawAuthorityRequest,
 };
 use crate::runtime::{
-    LEGACY_ACCOUNT_UNAVAILABLE_REASON, LEGACY_PRODUCT_ACCOUNT_MISMATCH_REASON, LegacySigner,
-    ProductRuntimeHost, remote_authority_call, remote_authority_context, signing_call_error,
-    transaction_call_error, until_cancelled,
+    ContactResolutionError, LEGACY_ACCOUNT_UNAVAILABLE_REASON,
+    LEGACY_PRODUCT_ACCOUNT_MISMATCH_REASON, LegacySigner, ProductRuntimeHost,
+    remote_authority_call, remote_authority_context, signing_call_error, transaction_call_error,
+    until_cancelled,
 };
 
 #[truapi::async_trait]
@@ -141,11 +142,38 @@ impl Signing for ProductRuntimeHost {
                 v01::HostCreateTransactionError::Rejected,
             )));
         };
+        let names_contacts = !inner.contacts.is_empty();
+        inner.call_data = self
+            .substitute_declared_contacts(inner.call_data, &inner.contacts)
+            .await
+            .map_err(|error| {
+                let error = match error {
+                    ContactResolutionError::Unsupported => {
+                        v01::HostCreateTransactionError::NotSupported {
+                            reason: "this host resolves no contacts".to_string(),
+                        }
+                    }
+                    ContactResolutionError::NotConnected => {
+                        v01::HostCreateTransactionError::PermissionDenied
+                    }
+                    ContactResolutionError::Host(reason) => {
+                        v01::HostCreateTransactionError::Unknown { reason }
+                    }
+                    ContactResolutionError::UnknownContact => {
+                        v01::HostCreateTransactionError::UnknownContact
+                    }
+                };
+                CallError::Domain(HostCreateTransactionError::V1(error))
+            })?;
         let grant = self
             .auto_signing_status(&session, &inner.signer)
             .await
             .map_err(|reason| transaction_call_error(HostCreateTransactionError::V1, reason))?;
-        if grant == AutoSigningGrant::Absent {
+        // The signed call goes back to the product with each contact's real
+        // account in it, so naming a contact always asks the user: an
+        // auto-signing grant must not let a product read accounts out of
+        // handles unseen.
+        if grant == AutoSigningGrant::Absent || names_contacts {
             let confirmed = until_cancelled(
                 cx,
                 self.platform

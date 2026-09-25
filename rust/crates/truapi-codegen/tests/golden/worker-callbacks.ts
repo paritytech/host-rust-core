@@ -15,6 +15,8 @@ export const CALLBACK_NAMES = [
   "createChatRoom",
   "registerChatBot",
   "postChatMessage",
+  "contacts",
+  "pickContact",
   "readCoreStorage",
   "writeCoreStorage",
   "clearCoreStorage",
@@ -219,6 +221,21 @@ function chatRawCallbacks(
   };
 }
 
+function contactsRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "contacts" | "pickContact">> {
+  return {
+    contacts: (lookup) =>
+      bridge.callbackRequest("contacts", [lookup]) as ReturnType<
+        Required<RawCallbacks>["contacts"]
+      >,
+    pickContact: (product) =>
+      bridge.callbackRequest("pickContact", [product]) as ReturnType<
+        Required<RawCallbacks>["pickContact"]
+      >,
+  };
+}
+
 function permissionStatusRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<Pick<RawCallbacks, "devicePermissionStatus">> {
@@ -258,6 +275,8 @@ export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   chat?: boolean;
   /** Whether the host serves this capability. */
+  contacts?: boolean;
+  /** Whether the host serves this capability. */
   permissionStatus?: boolean;
   /** Whether the host serves this capability. */
   pocket?: boolean;
@@ -273,6 +292,8 @@ export function createWorkerRawCallbacks(
     chainConnect: bridge.chainConnect,
   };
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
+  if (capabilities.contacts)
+    Object.assign(callbacks, contactsRawCallbacks(bridge));
   if (capabilities.permissionStatus)
     Object.assign(callbacks, permissionStatusRawCallbacks(bridge));
   if (capabilities.pocket) Object.assign(callbacks, pocketRawCallbacks(bridge));

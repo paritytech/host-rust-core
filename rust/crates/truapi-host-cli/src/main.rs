@@ -17,6 +17,7 @@ mod attestation;
 mod bootstrap;
 mod chain;
 mod chat;
+mod contacts;
 mod dotns_read;
 mod frame_server;
 mod network;
@@ -1255,6 +1256,9 @@ async fn run_pairing_host(
     if let Some(pocket) = pocket_host {
         pairing_runtime.set_pocket_platform(pocket);
     }
+    pairing_runtime.set_contacts_platform(contacts::CliContactsHost::from_env(
+        storage_platform.clone(),
+    ));
 
     // Resolved before the port is bound, so a bad URL still fails on the argument
     // rather than half-way through startup - but reported below, once the UI
