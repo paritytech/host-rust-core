@@ -500,17 +500,36 @@ impl ProductRuntimeHost {
         self.authority.disconnect().await;
     }
 
-    fn is_product_account_valid_for_caller(&self, dot_ns_identifier: &str) -> bool {
-        let Ok(dot_ns_identifier) = normalize_product_identifier(dot_ns_identifier) else {
-            return false;
-        };
+    /// The product account id the caller may act with, or `None` when it may
+    /// not.
+    ///
+    /// Its own account needs no grant and reaches nothing to find that out.
+    /// Any other product's account needs that product to name this caller in
+    /// its manifest's `trustedProducts` with `context` or `all`. That is the
+    /// same grant a cross-product alias needs, because a signature and an
+    /// alias both act as the account and the identity behind it.
+    ///
+    /// Returns the canonical spelling rather than a bare yes, so the grant and
+    /// the key derivation that follows are decided against one string.
+    pub(crate) async fn authorized_product_account(
+        &self,
+        dot_ns_identifier: &str,
+        cx: &CallContext,
+    ) -> Option<String> {
         let product_id = self.product_id();
         // Localhost products are development-only wildcards once a host admits
         // them. Production hosts must reject localhost products before creating
         // the product runtime.
-        product_id == "localhost"
-            || product_id.starts_with("localhost:")
-            || dot_ns_identifier == product_id
+        if truapi_platform::is_localhost_product_identifier(&product_id) {
+            return normalize_product_identifier(dot_ns_identifier).ok();
+        }
+        // Bounded here rather than left to the lookup: it can reach dotNS on
+        // the Asset Hub, and a caller's own deadline is what decides how long
+        // that may take. Expiry answers the same refusal as a target that
+        // granted nothing, so the wait cannot be read as an answer.
+        let cx = remote_authority_context(cx);
+        self.bounded_cross_product_scope_target(dot_ns_identifier, Granted::Context, &cx)
+            .await
     }
 
     /// Resolve the grant under the caller's deadline and cancellation, answering

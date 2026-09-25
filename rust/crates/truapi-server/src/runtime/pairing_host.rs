@@ -2068,9 +2068,9 @@ impl PairingHost {
     /// for it.
     ///
     /// A caller may name an account belonging to another product —
-    /// `is_product_account_valid_for_caller` admits that for a `localhost`
-    /// caller — and the grant covers the owning product's subtree, not the
-    /// caller's. Serving one locally would sign with a key the caller was
+    /// `authorized_product_account` admits that for a `localhost` caller, and
+    /// for one the owner granted `context` — and the grant covers the owning
+    /// product's subtree, not the caller's. Serving one locally would sign with a key the caller was
     /// never granted and skip the confirmation the signing host raises for a
     /// relayed request, so the binding is checked here rather than only at the
     /// gate.
