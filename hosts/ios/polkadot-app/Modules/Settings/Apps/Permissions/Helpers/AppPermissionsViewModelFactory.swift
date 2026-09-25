@@ -96,6 +96,7 @@ private extension AppPermissionsViewModelFactory {
         case .clipboard: String(localized: .Products.appPermissionCapabilityClipboard)
         case .openUrl: String(localized: .Products.appPermissionCapabilityOpenUrl)
         case .biometrics: String(localized: .Products.appPermissionCapabilityBiometrics)
+        case .alarm: String(localized: .Products.appPermissionCapabilityAlarm)
         }
     }
 
@@ -110,6 +111,7 @@ private extension AppPermissionsViewModelFactory {
         case .clipboard: String(localized: .Products.permissionCapabilityDescriptionClipboard)
         case .openUrl: String(localized: .Products.permissionCapabilityDescriptionOpenUrl)
         case .biometrics: String(localized: .Products.permissionCapabilityDescriptionBiometrics)
+        case .alarm: String(localized: .Products.permissionCapabilityDescriptionAlarm)
         }
     }
 }

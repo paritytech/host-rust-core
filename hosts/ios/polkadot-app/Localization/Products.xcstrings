@@ -122,6 +122,17 @@
         }
       }
     },
+    "app.permission.capability.alarm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alarms"
+          }
+        }
+      }
+    },
     "app.permission.capability.biometrics": {
       "extractionState": "manual",
       "localizations": {
@@ -485,6 +496,17 @@
         }
       }
     },
+    "permission.capability.alarm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alarms"
+          }
+        }
+      }
+    },
     "permission.capability.biometrics": {
       "extractionState": "manual",
       "localizations": {
@@ -525,6 +547,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "the clipboard"
+          }
+        }
+      }
+    },
+    "permission.capability.description.alarm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alarm access is required to ring an alarm when a game you registered for starts."
           }
         }
       }

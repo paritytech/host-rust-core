@@ -212,6 +212,7 @@ private extension ProductPermissionPromptViewFactory {
         case .clipboard: String(localized: .Products.permissionCapabilityClipboard)
         case .openUrl: String(localized: .Products.permissionCapabilityOpenUrl)
         case .biometrics: String(localized: .Products.permissionCapabilityBiometrics)
+        case .alarm: String(localized: .Products.permissionCapabilityAlarm)
         }
     }
 
@@ -226,6 +227,7 @@ private extension ProductPermissionPromptViewFactory {
         case .clipboard: String(localized: .Products.permissionCapabilityDescriptionClipboard)
         case .openUrl: String(localized: .Products.permissionCapabilityDescriptionOpenUrl)
         case .biometrics: String(localized: .Products.permissionCapabilityDescriptionBiometrics)
+        case .alarm: String(localized: .Products.permissionCapabilityDescriptionAlarm)
         }
     }
 
@@ -241,6 +243,7 @@ private extension ProductPermissionPromptViewFactory {
             case .clipboard: "doc.on.clipboard.fill"
             case .openUrl: "safari.fill"
             case .biometrics: "faceid"
+            case .alarm: "alarm.fill"
             }
         return makeIcon(systemName: name)
     }

@@ -283,6 +283,35 @@ struct DeviceCapabilityPermissionHandlerTests {
         #expect(osAsker.requestCalls.isEmpty)
     }
 
+    @Test(
+        "requestDecision with OS allowed requests the OS only for alarm",
+        arguments: [
+            (DeviceCapabilityType.alarm, [DeviceCapabilityType.alarm]),
+            (.notifications, [])
+        ]
+    )
+    func requestDecisionOsAllowedRequestsOnlyAlarm(
+        capability: DeviceCapabilityType,
+        expectedRequests: [DeviceCapabilityType]
+    ) async throws {
+        let (handler, _, _, osAsker) = makeSUT(osStatus: .allowed, promptDecision: .allowAlways)
+
+        let result = try await handler.requestDecision(productId: productId, capability: capability)
+
+        #expect(result == .allowAlways)
+        #expect(osAsker.requestCalls == expectedRequests)
+    }
+
+    @Test("request for alarm with OS denied does not request the OS")
+    func requestAlarmOsDenied() async throws {
+        let (handler, _, _, osAsker) = makeSUT(osStatus: .denied)
+
+        let result = try await handler.request(productId: productId, capability: .alarm)
+
+        #expect(!result)
+        #expect(osAsker.requestCalls.isEmpty)
+    }
+
     @Test("request returns false when OS request denied after app allow")
     func requestOsRequestDenied() async throws {
         let (handler, _, _, _) = makeSUT(

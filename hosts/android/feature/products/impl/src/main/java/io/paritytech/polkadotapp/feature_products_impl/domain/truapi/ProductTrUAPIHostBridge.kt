@@ -356,6 +356,7 @@ private fun HostDevicePermissionRequest.toCapability(): DeviceCapabilityType = w
     HostDevicePermissionRequest.CLIPBOARD -> DeviceCapabilityType.Clipboard
     HostDevicePermissionRequest.OPEN_URL -> DeviceCapabilityType.OpenUrl
     HostDevicePermissionRequest.BIOMETRICS -> DeviceCapabilityType.Biometrics
+    HostDevicePermissionRequest.ALARM -> DeviceCapabilityType.Alarm
 }
 
 private fun RemotePermission.toDomain(): RemotePermissionRequest = when (this) {

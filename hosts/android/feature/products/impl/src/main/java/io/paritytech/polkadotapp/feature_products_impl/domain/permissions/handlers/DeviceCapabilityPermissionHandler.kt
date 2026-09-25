@@ -59,7 +59,8 @@ class DeviceCapabilityPermissionHandler @Inject constructor(
             null
         }
         DeviceCapabilityType.Location -> Manifest.permission.ACCESS_FINE_LOCATION
-        DeviceCapabilityType.Notifications -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        DeviceCapabilityType.Notifications,
+        DeviceCapabilityType.Alarm -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             Manifest.permission.POST_NOTIFICATIONS
         } else {
             null
