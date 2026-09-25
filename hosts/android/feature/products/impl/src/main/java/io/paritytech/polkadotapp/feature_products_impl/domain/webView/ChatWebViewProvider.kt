@@ -78,8 +78,8 @@ class ChatWebViewProvider @AssistedInject constructor(
                     notifyOnPageStarted(url)
                 }
 
-                override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-                    if (view != null) discardDeadWebView(view)
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail?): Boolean {
+                    discardDeadWebView(view)
                     return true
                 }
 

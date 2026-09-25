@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.mock
 
@@ -28,7 +29,8 @@ class WebViewProviderTest {
 
     // Android never revives a WebView whose renderer died. The page only comes back in a fresh
     // WebView that carries the same setup (for a product, the bootstrap with its endpoint), and the
-    // screen has to drop the dead one and show the fresh one.
+    // screen has to drop the dead one and show the fresh one, on the route the
+    // product was on rather than the one it started from.
     @Test
     fun `a WebView whose renderer died is replaced by one set up the same way`() = runTest {
         val first = webView("first")
@@ -44,7 +46,7 @@ class WebViewProviderTest {
 
         assertEquals(
             Recovery(
-                events = listOf("set up first", "detach first", "destroy first", "set up second", "load second $PAGE"),
+                events = listOf("set up first", "detach first", "destroy first", "set up second", "load second $ROUTE"),
                 shown = listOf(first, null, second),
             ),
             Recovery(events, shown),
@@ -53,8 +55,9 @@ class WebViewProviderTest {
 
     private fun webView(name: String): WebView = mock(WebView::class.java).also { view ->
         whenever(view.parent).thenReturn(host)
+        whenever(view.url).thenReturn(ROUTE)
         doAnswer { events += "destroy $name" }.`when`(view).destroy()
-        doAnswer { events += "load $name ${it.getArgument<String>(0)}" }.`when`(view).loadUrl(PAGE)
+        doAnswer { events += "load $name ${it.getArgument<String>(0)}" }.`when`(view).loadUrl(anyString())
         doAnswer { events += "detach $name" }.`when`(host).removeView(view)
         names[view] = name
     }
@@ -71,10 +74,11 @@ class WebViewProviderTest {
 
         override suspend fun loadInitialContent() = Unit
 
-        fun loseRenderer(dead: WebView, scope: CoroutineScope) = replaceDeadWebView(dead, scope, PAGE)
+        fun loseRenderer(dead: WebView, scope: CoroutineScope) = replaceDeadWebView(dead, scope, INITIAL_URL)
     }
 
     private companion object {
-        const val PAGE = "https://product.paseo/tab"
+        const val INITIAL_URL = "https://product.paseo/"
+        const val ROUTE = "https://product.paseo/tab"
     }
 }

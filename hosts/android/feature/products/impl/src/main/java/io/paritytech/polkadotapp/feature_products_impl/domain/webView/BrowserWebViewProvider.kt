@@ -73,7 +73,6 @@ class BrowserWebViewProvider @AssistedInject constructor(
     val loadProgress: Flow<DotNsLoadProgress> = contentLoader.loadProgress
 
     private val permissionClient = webViewPermissionClientFactory.create(callingProductIdProvider, firstPartyOrigin = null)
-    private var lastPageUrl: String? = null
     private val chromeClient = productWebChromeClientFactory.create(
         logPrefix = "Browser: $initialUrl",
         callingProductIdProvider = callingProductIdProvider,
@@ -142,7 +141,6 @@ class BrowserWebViewProvider @AssistedInject constructor(
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             permissionClient.onPageStarted(view, url, favicon)
             innerClient.onPageStarted(view, url, favicon)
-            lastPageUrl = url
             notifyOnPageStarted(url)
         }
 
@@ -151,8 +149,8 @@ class BrowserWebViewProvider @AssistedInject constructor(
             notifyOnPageFinished()
         }
 
-        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-            if (view != null) replaceDeadWebView(view, scope, lastPageUrl ?: initialUrl)
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail?): Boolean {
+            replaceDeadWebView(view, scope, initialUrl)
             return true
         }
     }

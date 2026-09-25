@@ -92,8 +92,12 @@ abstract class WebViewProvider(
         onWebViewDestroyedListeners.forEach { it.invoke() }
     }
 
-    /** Discards [dead] and loads [url] in a fresh WebView, which every setup has run on again. */
-    protected fun replaceDeadWebView(dead: WebView, scope: CoroutineScope, url: String) {
+    /**
+     * Discards [dead] and loads the page it showed, or [fallbackUrl], in a fresh WebView that every
+     * setup has run on again.
+     */
+    protected fun replaceDeadWebView(dead: WebView, scope: CoroutineScope, fallbackUrl: String) {
+        val url = dead.url ?: fallbackUrl
         discardDeadWebView(dead)
         scope.launch { accessWebView { it.loadUrl(url) } }
     }
