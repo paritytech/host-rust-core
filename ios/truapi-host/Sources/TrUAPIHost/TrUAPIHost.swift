@@ -1025,6 +1025,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
     ) async throws -> PermissionAuthorizationStatus
+    func authorizeDevicePermission(_ request: HostDevicePermissionRequest) async throws -> Bool
     func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
@@ -1099,6 +1100,12 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         request: PermissionAuthorizationRequest
     ) async throws -> PermissionAuthorizationStatus {
         try await inner.permissionAuthorizationStatus(request: request)
+    }
+
+    /// Resolves a capability the web view gates itself through the product's
+    /// saved, one-use, or prompted decision.
+    public func authorizeDevicePermission(_ request: HostDevicePermissionRequest) async throws -> Bool {
+        try await inner.authorizeDevicePermission(request: request)
     }
 
     /// Updates the product decision used by subsequent permission checks.

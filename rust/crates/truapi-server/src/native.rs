@@ -1610,6 +1610,40 @@ impl NativeProductExecution {
         Ok(response.into_latest().granted)
     }
 
+    /// Authorize one device capability that the host's web view gates itself,
+    /// such as WebKit's motion request, using this execution's saved and
+    /// one-use permissions.
+    pub async fn authorize_device_permission(
+        &self,
+        request: truapi::latest::HostDevicePermissionRequest,
+    ) -> Result<bool, HostRejection> {
+        use truapi::api::Permissions;
+        use truapi::versioned::IntoLatest;
+
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostRejection::Rejected {
+                reason: "product execution is closed".to_string(),
+            });
+        }
+        let response = self
+            .admin()
+            .product_runtime()
+            .authorize_device_permission(
+                &truapi::CallContext::default(),
+                truapi::versioned::permissions::HostDevicePermissionRequest::V1(request),
+            )
+            .await
+            .map_err(|error| HostRejection::Rejected {
+                reason: format!("{error:?}"),
+            })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(HostRejection::Rejected {
+                reason: "product execution is closed".to_string(),
+            });
+        }
+        Ok(response.into_latest().granted)
+    }
+
     /// Read a product-scoped permission authorization without prompting.
     ///
     /// A device capability resolves the host application's OS gate as well as
@@ -3948,6 +3982,7 @@ mod tests {
             v01::HostDevicePermissionRequest::Clipboard,
             v01::HostDevicePermissionRequest::OpenUrl,
             v01::HostDevicePermissionRequest::Biometrics,
+            v01::HostDevicePermissionRequest::Motion,
         ];
         let remote_cases = [
             v01::RemotePermission::Remote {
@@ -5792,6 +5827,43 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn native_execution_authorizes_device_permission_from_stored_decision() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            native_host_runtime_config(),
+        )
+        .unwrap();
+        let execution = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("stash.dot", ProductExecutionKind::App),
+            )
+            .unwrap();
+        let motion = truapi::latest::HostDevicePermissionRequest::Motion;
+        let permission = PermissionAuthorizationRequest::Device(motion);
+        let authorize =
+            || futures::executor::block_on(execution.authorize_device_permission(motion));
+        let prompted = authorize().unwrap();
+        execution
+            .set_permission_authorization_status(
+                permission.clone(),
+                PermissionAuthorizationStatus::Authorized,
+            )
+            .unwrap();
+        let saved = authorize().unwrap();
+        execution
+            .set_permission_authorization_status(permission, PermissionAuthorizationStatus::Denied)
+            .unwrap();
+        let denied = authorize().unwrap();
+        execution.shutdown();
+        assert_eq!((prompted, saved, denied), (false, true, false));
+        assert!(matches!(authorize(), Err(HostRejection::Rejected { .. })));
     }
 
     #[test]
