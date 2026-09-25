@@ -11,6 +11,8 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
     "-Oz",
+    "--one-caller-inline-max-function-size",
+    "0",
     "--enable-bulk-memory",
     "--enable-nontrapping-float-to-int",
     "--enable-reference-types",
