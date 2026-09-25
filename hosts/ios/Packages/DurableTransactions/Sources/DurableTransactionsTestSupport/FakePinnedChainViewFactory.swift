@@ -46,8 +46,15 @@ public final class FakePinnedChainViewFactory<State: FakeChainState>: PinnedChai
     /// The chain ids pins were asked for, in order.
     public private(set) var pinnedChainIds: [ChainId] = []
 
+    // Never finishes on its own, like the production stream.
+    private let finalizedHeadTicks = AsyncPassthroughSubject<BlockNumber>()
+
     public init(chain: FakeChain<State>) {
         self.chain = chain
+    }
+
+    public func emitFinalizedHead(_ number: BlockNumber) {
+        finalizedHeadTicks.send(number)
     }
 
     public func pin(chainId: ChainId) async throws -> any PinnedChainViewProtocol {
@@ -73,7 +80,7 @@ public final class FakePinnedChainViewFactory<State: FakeChainState>: PinnedChai
     }
 
     public func finalizedHeads(chainId _: ChainId) -> AnyAsyncSequence<BlockNumber> {
-        AsyncStream<BlockNumber> { $0.finish() }.eraseToAnyAsyncSequence()
+        finalizedHeadTicks.eraseToAnyAsyncSequence()
     }
 
     public func bestHeads(chainId _: ChainId) -> AnyAsyncSequence<BlockNumber> {

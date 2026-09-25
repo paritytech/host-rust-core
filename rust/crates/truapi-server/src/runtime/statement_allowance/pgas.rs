@@ -258,7 +258,8 @@ pub async fn claim_pgas(
             AS_PGAS,
         )?;
         let domain = proof::domain_for_ring_exponent(ring.exponent)?;
-        let ring_proof = proof::ring_vrf_proof(domain, entropy, &ring.members, &context, &message)?;
+        let ring_proof =
+            proof::ring_vrf_proof(domain, entropy, &ring.members, &context, &message).await?;
         let extra = extrinsic::build_as_pgas_extra(
             asset_hub_metadata,
             &ring_proof,

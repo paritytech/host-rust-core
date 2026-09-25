@@ -95,6 +95,7 @@ rust/crates/
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
   truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
+  truapi-verifiable/     Ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
@@ -159,6 +160,8 @@ outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 The container publishes the shared client and a temporary MessagePort adapter for
 older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
 CLI and iframe MessagePort transports remain supported.
+The [container permission boundary](js/container/README.md) documents the protected
+operations and the built-ins that remain mutable for product compatibility.
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
 On iOS, a wallet host that manages its own statement-store SSO session can call
@@ -355,8 +358,10 @@ where each tree came from and at which revision.
 ```bash
 scripts/refresh-host-import.sh status ios     # how far behind, and what differs
 scripts/refresh-host-import.sh refresh ios    # take the new tree, re-apply adaptations
-scripts/refresh-host-import.sh backport ios   # what this tree owes the source
 ```
+
+Changes move one way, from the source into this tree. A change made here is not
+sent back: the source is upstream of this repository, not a peer.
 
 `refresh` replaces the tree with the source's, re-applies this repository's
 adaptations on top as a three-way patch, then compares every path against the
@@ -367,14 +372,10 @@ did not apply or has been adopted upstream.
 A clean apply is staged for review. A conflicted one is left unmerged, so git
 refuses to commit it until someone decides which side is right.
 
-`refresh` moves changes one way, from the source into this tree. `backport`
-answers the other direction: of everything this tree has changed, which is app
-code the source does not have. The rest, the CI actions and the manifests that
-resolve the core from here, exists because the tree lives in this repository,
-and is listed per host in `hosts/imports.json` under `infrastructure`.
-
-`--patch <file>` writes the owed changes with the `hosts/<host>/` prefix
-stripped, so they apply at the root of the source repository.
+Drift is picked up on a schedule. `.github/workflows/backport-host.yml` opens a
+pull request carrying a single `BACKPORT-<host>.md`, which names the range, the
+pull requests in it, and what has to be done to finish the work. Completing that
+pull request means running the command above and deleting the file.
 
 ### Working on the iOS host
 

@@ -138,12 +138,17 @@ enum CoinageBreakdownFactory {
     }
 }
 
-/// The figures shown above the summary bar. The last two partition available now and gaining
-/// privacy figures, and are the two buckets the bar draws.
+/// The amounts shown above the summary bar. The bar draws two of them: available now and gaining
+/// privacy. Pending is money that has not arrived yet and cannot be spent.
 struct CoinageAmounts: Equatable {
     let total: Decimal
     let availableNow: Decimal
     let gainingPrivacy: Decimal
+    let pending: Decimal
 
-    static let zero = CoinageAmounts(total: 0, availableNow: 0, gainingPrivacy: 0)
+    static let zero = CoinageAmounts(total: 0, availableNow: 0, gainingPrivacy: 0, pending: 0)
+
+    var hasFundsNotReady: Bool {
+        gainingPrivacy > 0 || pending > 0
+    }
 }

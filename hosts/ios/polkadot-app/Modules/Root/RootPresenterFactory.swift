@@ -86,13 +86,16 @@ enum RootPresenterFactory: RootPresenterFactoryProtocol {
             logger: Logger.shared,
             resolver: resolver,
             tokenManager: JWTTokenManager.shared,
-            productPrewarmer: productPrewarmer
+            remoteConfigManager: FirebaseFacade.shared,
+            chainRegistryConfigurator: FirebaseFacade.shared,
+            productPrewarmer: productPrewarmer,
+            observer: RootSetupObserver(pathMonitor: NetworkPathMonitor())
         )
 
         let presenter = RootPresenter(
             wireframe: wireframe,
             interactor: interactor,
-            viewModelFactory: RootInitViewModelFactory()
+            viewModelFactory: RootViewModelFactory()
         )
 
         interactor.presenter = presenter
@@ -104,7 +107,7 @@ enum RootPresenterFactory: RootPresenterFactoryProtocol {
             )
         #endif
 
-        let initViewController = RootInitViewController()
+        let initViewController = RootViewController(presenter: presenter)
         presenter.view = initViewController
         window.rootViewController = initViewController
 

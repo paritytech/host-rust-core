@@ -340,28 +340,28 @@ jobs:
     continue-on-error: true
     timeout-minutes: 10
     # Narrower than the workflow default, which this job has no use for.
+    # actions: read is what lets the step below find the run this one follows.
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     steps:
-      # Time mode, not the diff against a release branch the iOS nightly uses,
-      # because this one builds the default branch directly and has nothing to
-      # compare against.
-      #
-      # The window is anchored to when this step runs rather than to the commit
-      # that was built, so it drifts by however long the build took: a pull
-      # request merged during the build is listed against a binary that predates
-      # it, and a night that builds faster than the last one can repeat entries.
-      # A diff against the previous nightly tag would fix both, and the weekend
-      # gap with them.
+      # The action below is held in this repository, so it has to be on disk.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The range between this build and the one the last successful night
+      # produced, which is the set of changes a tester receives with this APK.
       - name: Collect merged PRs
         id: collect_prs
-        uses: novasamatech/github-actions/collect-prs@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
+        uses: ./.github/actions/collect-prs-since-last-build
         with:
           github_token: ${{ github.token }}
-          dst_ref: ${{ github.event.repository.default_branch }}
-          hours: "24"
-          release_notes_format: markdown
+          # This job runs on the schedule alone, so a dispatched run announces
+          # nothing. Anchoring on one would drop everything merged before it
+          # from the next night's list, and nothing would ever report it.
+          event: schedule
 
       - name: Send nightly release notification
         uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
@@ -369,7 +369,7 @@ jobs:
           platform: Android
           # The template renders the heading either way, so a quiet night says
           # so rather than showing an empty list.
-          pr_list: ${{ steps.collect_prs.outputs.should_build == 'true'
+          pr_list: ${{ steps.collect_prs.outputs.release_notes != ''
             && steps.collect_prs.outputs.release_notes
             || '- No pull requests merged since the last nightly.' }}
           # What App Distribution shows a tester: the versionName the APK was
