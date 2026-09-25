@@ -4,7 +4,7 @@ use core::fmt::Display;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
-use truapi::{CallContext, CancellationToken, RequestId};
+use truapi::{CallContext, CancellationToken};
 
 use super::authority::AuthoritySession;
 use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, Response, v1};
@@ -23,7 +23,7 @@ impl SsoRequestContext {
     /// withdraws by firing `cancel`.
     pub fn new(message_id: &str, session: AuthoritySession, cancel: CancellationToken) -> Self {
         Self {
-            call: CallContext::with_parts(RequestId::from(message_id), cancel),
+            call: CallContext::with_parts(String::from(message_id), cancel),
             session,
         }
     }

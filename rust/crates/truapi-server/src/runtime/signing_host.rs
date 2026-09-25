@@ -1166,7 +1166,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRegisterRingVrfKeyRequest>,
-    ) -> Result<v01::RingVrfPublicKey, RingVrfError> {
+    ) -> Result<[u8; 32], RingVrfError> {
         self.require_current_session(session)?;
         self.ring_resolver.validate(&request.payload.ring).await?;
 

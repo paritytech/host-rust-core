@@ -1,9 +1,6 @@
 use derive_more::Display;
 use parity_scale_codec::{Decode, Encode};
 
-/// Opaque host-assigned pending-operation identifier, unique per product.
-pub type OperationId = u32;
-
 /// Request to begin a pending operation.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostWorkerBeginOperationRequest {
@@ -15,14 +12,14 @@ pub struct HostWorkerBeginOperationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostWorkerBeginOperationResponse {
     /// Id to pass to `end_operation`.
-    pub id: OperationId,
+    pub id: u32,
 }
 
 /// Request to end a pending operation.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostWorkerEndOperationRequest {
     /// Id returned by `begin_operation`.
-    pub id: OperationId,
+    pub id: u32,
 }
 
 /// Pending-operation error.

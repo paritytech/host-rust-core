@@ -161,9 +161,9 @@ pub struct StubPlatform {
     /// shape a peer answering on a different SSO envelope presents: subscribed
     /// to the topic, with no statement this host can open ever arriving.
     pub pairing_silent_after_subscribe: bool,
-    pub notification_id: v01::NotificationId,
+    pub notification_id: u32,
     pub pushed_notifications: Arc<Mutex<Vec<v01::HostPushNotificationRequest>>>,
-    pub cancelled_notifications: Arc<Mutex<Vec<v01::NotificationId>>>,
+    pub cancelled_notifications: Arc<Mutex<Vec<u32>>>,
     pub sent_rpc: Arc<Mutex<Vec<String>>>,
     pub rpc_responses: Vec<String>,
     /// Responses keyed by JSON-RPC method, answered as each request arrives with

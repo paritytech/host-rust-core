@@ -13,7 +13,7 @@ truapi_macros::versioned_type! {
     pub enum HostAccountCreateProofResponse { V1 => v01::HostAccountCreateProofResponse }
     pub enum HostAccountCreateProofError { V1 => v01::HostAccountCreateProofError }
     pub enum HostAccountRegisterRingVrfKeyRequest { V1 => v01::HostAccountRegisterRingVrfKeyRequest }
-    pub enum HostAccountRegisterRingVrfKeyResponse { V1 => v01::RingVrfPublicKey }
+    pub enum HostAccountRegisterRingVrfKeyResponse { V1 => [u8; 32] }
     pub enum HostAccountRegisterRingVrfKeyError { V1 => v01::HostAccountRegisterRingVrfKeyError }
     pub enum HostAccountListRingVrfKeysRequest { V1 => v01::HostAccountListRingVrfKeysRequest }
     pub enum HostAccountListRingVrfKeysResponse { V1 => Vec<v01::RegisteredRingVrfKey> }

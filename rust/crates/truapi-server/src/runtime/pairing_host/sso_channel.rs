@@ -542,7 +542,7 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         request: ProductRequest<latest::HostAccountRegisterRingVrfKeyRequest>,
-    ) -> Result<latest::RingVrfPublicKey, RingVrfError> {
+    ) -> Result<[u8; 32], RingVrfError> {
         self.call(cx, session, request)
             .await
             .map_err(ring_vrf_transport_error)?

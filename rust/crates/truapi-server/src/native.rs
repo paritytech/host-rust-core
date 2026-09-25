@@ -154,7 +154,7 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for HostNavigateRejection {
 }
 
 /// FFI projection of the canonical
-/// [`SsoRequestOutcome`](crate::host_internal::sso_messages::SsoRequestOutcome),
+/// `SsoRequestOutcome` in `host_internal::sso_messages`,
 /// concrete because UniFFI cannot export generics.
 ///
 /// Variants carry SCALE-encoded wire bytes rather than decoded Rust types because

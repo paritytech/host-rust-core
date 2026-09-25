@@ -266,7 +266,7 @@ pub struct MockPlatform {
     preimages: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     navigations: Arc<Mutex<Vec<String>>>,
     notifications: Arc<Mutex<Vec<latest::HostPushNotificationRequest>>>,
-    cancelled_notifications: Arc<Mutex<Vec<latest::NotificationId>>>,
+    cancelled_notifications: Arc<Mutex<Vec<u32>>>,
     reviews: Arc<Mutex<Vec<UserConfirmationReview>>>,
     auth_states: Arc<Mutex<Vec<AuthState>>>,
     sent_rpc: Arc<Mutex<Vec<String>>>,
@@ -361,7 +361,7 @@ impl MockPlatform {
     }
 
     /// Notification ids the core asked the host to cancel, in order.
-    pub fn cancelled_notifications(&self) -> Vec<latest::NotificationId> {
+    pub fn cancelled_notifications(&self) -> Vec<u32> {
         self.cancelled_notifications
             .lock()
             .expect("cancellations poisoned")
@@ -980,10 +980,7 @@ impl Notifications for MockPlatform {
         Ok(latest::HostPushNotificationResponse { id })
     }
 
-    async fn cancel_notification(
-        &self,
-        id: latest::NotificationId,
-    ) -> Result<(), latest::GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), latest::GenericError> {
         self.cancelled_notifications
             .lock()
             .expect("cancellations poisoned")

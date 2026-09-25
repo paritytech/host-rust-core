@@ -24,7 +24,7 @@ use core::fmt;
 
 use parity_scale_codec::{Decode, Encode};
 use truapi::latest::{
-    AccountId, AllocatableResource, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
+    AllocatableResource, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
     HostAccountSignVrfError, HostSignPayloadRequest, HostSignPayloadResponse, HostSignRawRequest,
     LegacyAccountTxPayload, ProductAccountTxPayload, RawPayload, RegisteredRingVrfKey,
     VrfSignature,
@@ -151,7 +151,7 @@ pub enum SignRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SignRawWithLegacyAccountRequest {
     /// Legacy account that signs the payload.
-    pub account: AccountId,
+    pub account: [u8; 32],
     /// Raw bytes or string message to sign.
     pub data: RawPayload,
 }

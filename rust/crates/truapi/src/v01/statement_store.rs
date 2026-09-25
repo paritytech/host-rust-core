@@ -94,16 +94,13 @@ pub enum RemoteStatementStoreCreateProofError {
     },
 }
 
-/// 32-byte statement topic.
-pub type Topic = [u8; 32];
-
 /// Request to subscribe to statements via a topic filter (RFC 0008).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum RemoteStatementStoreSubscribeRequest {
     /// AND: statement must contain every listed topic.
-    MatchAll(Vec<Topic>),
+    MatchAll(Vec<[u8; 32]>),
     /// OR: statement must contain at least one listed topic.
-    MatchAny(Vec<Topic>),
+    MatchAny(Vec<[u8; 32]>),
 }
 
 /// Page of signed statements delivered by the statement store subscription

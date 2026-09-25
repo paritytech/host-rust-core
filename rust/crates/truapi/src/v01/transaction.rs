@@ -2,12 +2,6 @@ use parity_scale_codec::{Decode, Encode};
 
 use super::ProductAccountId;
 
-/// A 32-byte chain genesis hash used to identify the target chain.
-pub type GenesisHash = [u8; 32];
-
-/// A 32-byte raw account identifier used for legacy (non-product) accounts.
-pub type AccountId = [u8; 32];
-
 /// A signed extension for a transaction payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -31,7 +25,7 @@ pub struct ProductAccountTxPayload {
     /// Product account that will sign the transaction.
     pub signer: ProductAccountId,
     /// Chain where the transaction will execute.
-    pub genesis_hash: GenesisHash,
+    pub genesis_hash: [u8; 32],
     /// SCALE-encoded Call data.
     pub call_data: Vec<u8>,
     /// Transaction extensions supplied by the caller.
@@ -43,14 +37,14 @@ pub struct ProductAccountTxPayload {
 /// Transaction payload for a legacy (non-product) account.
 ///
 /// Identical to [`ProductAccountTxPayload`] except the signer is a raw
-/// 32-byte [`AccountId`].
+/// 32-byte account identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct LegacyAccountTxPayload {
     /// Raw 32-byte public key of the legacy account.
-    pub signer: AccountId,
+    pub signer: [u8; 32],
     /// Chain where the transaction will execute.
-    pub genesis_hash: GenesisHash,
+    pub genesis_hash: [u8; 32],
     /// SCALE-encoded Call data.
     pub call_data: Vec<u8>,
     /// Transaction extensions supplied by the caller.

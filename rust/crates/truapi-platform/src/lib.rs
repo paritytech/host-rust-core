@@ -46,9 +46,8 @@ use truapi::latest::{
     HostPocketRemoveCardRequest, HostPushNotificationRequest, HostPushNotificationResponse,
     HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, HostWorkerBeginOperationResponse,
-    HostWorkerOperationError, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
-    RingLocation,
+    HostWorkerOperationError, LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RemotePermission, RemotePermissionRequest, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -1163,7 +1162,7 @@ pub trait Notifications: Send + Sync {
 
     /// Cancel a notification by id. Idempotent: cancelling an already-fired or
     /// unknown id still returns `Ok(())`.
-    async fn cancel_notification(&self, id: NotificationId) -> Result<(), GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), GenericError> {
         let _ = id;
         Ok(())
     }

@@ -26,7 +26,7 @@ import {
   HostWorkerBeginOperationResponse,
   RemotePermissionRequest,
 } from "@parity/truapi";
-import type { GenericError, NotificationId } from "@parity/truapi";
+import type { GenericError } from "@parity/truapi";
 import {
   AuthState,
   CoreStorageKey,
@@ -77,7 +77,7 @@ export interface RawCallbacks {
   ): (() => void) | void;
   navigateTo(url: string): Promise<void>;
   pushNotification(notification: Uint8Array): Promise<Uint8Array>;
-  cancelNotification(id: NotificationId): Promise<void>;
+  cancelNotification(id: number): Promise<void>;
   devicePermissionStatus?(request: Uint8Array): Promise<Uint8Array>;
   devicePermission(
     product: Uint8Array,

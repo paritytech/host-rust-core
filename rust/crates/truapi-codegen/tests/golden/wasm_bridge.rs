@@ -331,7 +331,7 @@ impl truapi_platform::Notifications for WasmPlatform {
         .map_err(generic)
     }
 
-    async fn cancel_notification(&self, id: v01::NotificationId) -> Result<(), v01::GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), v01::GenericError> {
         invoke_unit(
             &self.bridge.cancel_notification,
             vec![JsValue::from_f64(f64::from(id))],

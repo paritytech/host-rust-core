@@ -2360,7 +2360,7 @@ impl PairingHost {
         cx: &CallContext,
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRegisterRingVrfKeyRequest>,
-    ) -> Result<v01::RingVrfPublicKey, RingVrfError> {
+    ) -> Result<[u8; 32], RingVrfError> {
         let private_session = self.current_private_session(session)?;
         let handle = v01::ProductAccountId {
             dot_ns_identifier: normalize_product_identifier(&request.calling_product_id).map_err(
@@ -2728,7 +2728,7 @@ impl ProductAuthority for PairingHost {
         cx: &CallContext,
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRegisterRingVrfKeyRequest>,
-    ) -> Result<v01::RingVrfPublicKey, RingVrfError> {
+    ) -> Result<[u8; 32], RingVrfError> {
         PairingHost::register_ring_vrf_key(self, cx, session, request).await
     }
 

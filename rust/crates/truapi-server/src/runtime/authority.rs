@@ -9,8 +9,8 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use truapi::latest::{
-    AccountId, HostAccountCreateProofRequest, HostAccountCreateProofResponse,
-    HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountListRingVrfKeysRequest,
+    HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasRequest,
+    HostAccountGetAliasResponse, HostAccountListRingVrfKeysRequest,
     HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyRequest,
     HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignRequest,
     HostAccountRingVrfSignResponse, HostAccountSignVrfError, HostAccountSignVrfRequest,
@@ -266,7 +266,7 @@ pub enum SignRawAuthorityRequest {
     /// Sign raw data through the legacy-account API.
     LegacyAccount {
         /// Account selected by the product and validated against the session.
-        account: AccountId,
+        account: [u8; 32],
         /// Original legacy-account request.
         request: HostSignRawWithLegacyAccountRequest,
     },

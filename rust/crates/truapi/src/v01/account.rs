@@ -1,4 +1,3 @@
-use crate::v01::transaction::GenesisHash;
 use parity_scale_codec::{Decode, Encode};
 
 /// Account selector within a product subtree. Encodes as
@@ -73,7 +72,7 @@ pub enum RingLocationJunction {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RingLocation {
     /// Genesis hash of the chain hosting the ring.
-    pub chain_id: GenesisHash,
+    pub chain_id: [u8; 32],
     /// Path addressing the ring within the chain.
     pub junctions: Vec<RingLocationJunction>,
 }
@@ -106,9 +105,6 @@ pub struct HostAccountCreateProofRequest {
     pub message: Vec<u8>,
 }
 
-/// Ring-VRF member public key.
-pub type RingVrfPublicKey = [u8; 32];
-
 /// A registered ring-VRF key entry.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RegisteredRingVrfKey {
@@ -117,7 +113,7 @@ pub struct RegisteredRingVrfKey {
     /// Rings the owning product declared this key for.
     pub rings: Vec<RingLocation>,
     /// Present when the caller owns the key or requested/granted disclosure.
-    pub public_key: Option<RingVrfPublicKey>,
+    pub public_key: Option<[u8; 32]>,
 }
 
 /// How much of a registry entry the caller asks for.

@@ -105,8 +105,7 @@ pub struct CliPlatform {
     pairing_scope: Option<PairingStorageScope>,
     preimages: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     next_notification_id: AtomicU32,
-    scheduled_notifications:
-        Arc<Mutex<HashMap<api::NotificationId, api::HostPushNotificationRequest>>>,
+    scheduled_notifications: Arc<Mutex<HashMap<u32, api::HostPushNotificationRequest>>>,
     approval: Mutex<ApprovalPolicy>,
     /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
     /// `<approved|denied> <action>` line per decided confirmation.
@@ -689,7 +688,7 @@ impl Notifications for CliPlatform {
         Ok(api::HostPushNotificationResponse { id })
     }
 
-    async fn cancel_notification(&self, id: api::NotificationId) -> Result<(), api::GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), api::GenericError> {
         if self
             .scheduled_notifications
             .lock()
