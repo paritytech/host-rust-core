@@ -20,7 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::lock::Mutex;
-#[cfg(any(test, not(target_arch = "wasm32")))]
 use parity_scale_codec::{Decode, Encode};
 #[cfg(not(target_arch = "wasm32"))]
 use tracing::debug;
@@ -29,9 +28,9 @@ use tracing::info;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use tracing::warn;
 #[cfg(any(test, not(target_arch = "wasm32")))]
-use truapi_platform::{CoreStorage, CoreStorageKey};
+use truapi_platform::CoreStorage;
+use truapi_platform::CoreStorageKey;
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
 use super::SigningHost;
 #[cfg(not(target_arch = "wasm32"))]
 use super::sso_responder::current_unix_secs;
@@ -63,7 +62,6 @@ const CLOCK_FAILURE_TICK_DELAY: Duration = Duration::from_secs(3_600);
 /// Entropy-derived variants are recipes, not raw account ids, so the ledger
 /// survives root-entropy rotation (the CLI rotates auto-managed accounts on
 /// slot exhaustion).
-#[cfg(any(test, not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 pub enum StatementRenewalTarget {
     /// `//allowance//statement-store//{product_id}` from the active root entropy.
@@ -102,7 +100,6 @@ impl StatementRenewalTarget {
 /// not re-derive, so it records the root public key that promised it and is
 /// ignored under any other identity: without that, a later account would spend
 /// its own slot-table capacity keeping a previous account's peer allowed.
-#[cfg(any(test, not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
 struct LedgerEntry {
     target: StatementRenewalTarget,
@@ -159,7 +156,6 @@ pub(super) struct RenewalState {
     registration_lock: Mutex<()>,
     /// Serializes read-modify-write cycles on the ledger so a concurrent
     /// allocation cannot drop another's entry.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
     ledger_lock: Mutex<()>,
     #[cfg(not(target_arch = "wasm32"))]
     loop_started: AtomicBool,
@@ -177,7 +173,6 @@ impl RenewalState {
         &self.registration_lock
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn ledger_lock(&self) -> &Mutex<()> {
         &self.ledger_lock
     }
@@ -311,7 +306,6 @@ async fn write_entries(
         .map_err(|err| format!("renewal ledger write failed: {}", err.reason))
 }
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
 fn decode_entries(blob: &[u8]) -> Result<Vec<LedgerEntry>, String> {
     let mut input = blob;
     let entries = Vec::<LedgerEntry>::decode(&mut input)
