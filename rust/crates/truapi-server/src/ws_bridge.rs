@@ -57,10 +57,11 @@ const MAX_WS_MESSAGE_BYTES: usize = 8 << 20;
 // Stalled handshakes must eventually release their sockets.
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-// A listener that keeps failing, for example with no descriptors left, must not
-// rebind in a tight loop; a successful accept resets the pause.
+// A rebind that keeps failing, for example once another socket holds the port,
+// must not retry in a tight loop; a successful rebind resets the pause.
 const RELISTEN_PAUSE_MIN: std::time::Duration = std::time::Duration::from_millis(50);
 const RELISTEN_PAUSE_MAX: std::time::Duration = std::time::Duration::from_secs(5);
+const ACCEPT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Per-session descriptor returned to the host: product uses `port + token`
 /// to build its WebSocket URL (e.g. `ws://127.0.0.1:<port>/?t=<token>`).
@@ -554,15 +555,13 @@ fn join_aborted_connections(handles: Vec<tokio::task::JoinHandle<()>>) {
     let _ = done_rx.recv();
 }
 
-// These fail one pending connection; any other error means the listener itself
-// is unusable.
-fn is_connection_error(err: &io::Error) -> bool {
+// Only these mean the listening socket itself is gone, as when Android destroys
+// it (EINVAL). Any other error fails one pending connection or is a shortage
+// that passes, so the listener keeps its port.
+fn is_listener_gone(err: &io::Error) -> bool {
     matches!(
-        err.kind(),
-        io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::Interrupted
-            | io::ErrorKind::WouldBlock
+        err.raw_os_error(),
+        Some(libc::EINVAL | libc::EBADF | libc::ENOTSOCK)
     )
 }
 
@@ -600,18 +599,19 @@ async fn accept_loop(
             } => {
                 let (stream, peer) = match accepted {
                     Ok(pair) => pair,
-                    Err(err) if is_connection_error(&err) => {
-                        logger("truapi.ws_bridge.accept_error", &err.to_string());
-                        continue;
-                    }
-                    Err(err) => {
+                    Err(err) if is_listener_gone(&err) => {
                         // Dropping the socket frees its port for the rebind.
                         logger("truapi.ws_bridge.listener_lost", &err.to_string());
                         listener = None;
                         continue;
                     }
+                    Err(err) => {
+                        logger("truapi.ws_bridge.accept_error", &err.to_string());
+                        // A shortage such as EMFILE fails every accept until it passes.
+                        tokio::time::sleep(ACCEPT_RETRY_PAUSE).await;
+                        continue;
+                    }
                 };
-                relisten_pause = RELISTEN_PAUSE_MIN;
                 setup_tasks.retain(|task| !task.is_finished());
                 // Evict the oldest pending handshake so stalled peers cannot
                 // reserve the entire backlog until their timeouts expire.
@@ -632,10 +632,13 @@ async fn accept_loop(
                     Ok(rebound) => {
                         logger("truapi.ws_bridge.relistened", &format!("port={port}"));
                         listener = Some(rebound);
+                        relisten_pause = RELISTEN_PAUSE_MIN;
                     }
-                    Err(err) => logger("truapi.ws_bridge.relisten_failed", &err.to_string()),
+                    Err(err) => {
+                        logger("truapi.ws_bridge.relisten_failed", &err.to_string());
+                        relisten_pause = (relisten_pause * 2).min(RELISTEN_PAUSE_MAX);
+                    }
                 }
-                relisten_pause = (relisten_pause * 2).min(RELISTEN_PAUSE_MAX);
             }
         }
     }
@@ -1671,6 +1674,29 @@ mod tests {
         assert_eq!(
             (old.request_id, new.request_id),
             ("p:old".to_string(), "p:new".to_string())
+        );
+    }
+
+    /// Products hold the endpoint they were given, so only a listening socket
+    /// that is itself gone may give up its port. One pending connection failing
+    /// or a passing shortage of descriptors or buffers must keep it.
+    #[test]
+    fn only_a_listener_that_is_gone_gives_up_its_port() {
+        let gone = |code| is_listener_gone(&io::Error::from_raw_os_error(code));
+        assert_eq!(
+            [
+                libc::EINVAL,
+                libc::EBADF,
+                libc::ENOTSOCK,
+                libc::EMFILE,
+                libc::ENFILE,
+                libc::ENOBUFS,
+                libc::ECONNABORTED,
+                libc::EPROTO,
+                libc::ENETUNREACH,
+            ]
+            .map(gone),
+            [true, true, true, false, false, false, false, false, false],
         );
     }
 

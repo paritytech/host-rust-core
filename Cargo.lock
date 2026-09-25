@@ -5575,6 +5575,7 @@ dependencies = [
  "hex",
  "hkdf",
  "js-sys",
+ "libc",
  "merlin",
  "nanoid",
  "parity-scale-codec",
