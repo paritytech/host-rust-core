@@ -57,6 +57,20 @@ class EncryptedTrUAPIStorageTest {
         assertArrayEquals(byteArrayOf(7), EncryptedHostStorage(prefs, "oracle.paseo").read(key))
     }
 
+    /** Only reads follow the owner in the key, so another product's store can never be written or cleared. */
+    @Test
+    fun `writes and clears stay in the caller's namespace`() {
+        val key = "truapi:product-storage:v1:13:counter.paseo:count"
+        val owner = EncryptedHostStorage(prefs, "counter.paseo")
+        val other = EncryptedHostStorage(prefs, "oracle.paseo")
+        owner.write(key, byteArrayOf(1))
+
+        other.write(key, byteArrayOf(2))
+        other.clear(key)
+
+        assertArrayEquals(byteArrayOf(1), owner.read(key))
+    }
+
     @Test
     fun `own keys keep their physical key`() {
         val key = "truapi:product-storage:v1:13:counter.paseo:count"

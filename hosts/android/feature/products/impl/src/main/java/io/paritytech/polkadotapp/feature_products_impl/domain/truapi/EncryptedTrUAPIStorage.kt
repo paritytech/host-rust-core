@@ -11,8 +11,9 @@ import java.text.Normalizer
 /**
  * Product-scoped storage for the Rust core, encrypted at rest.
  *
- * Each key is filed under the product the core named as its owner, which is
- * another product on a granted foreign read. Own keys use [productId] as given.
+ * Reads go to the product the core named as the key's owner, which is another
+ * product on a granted foreign read. Writes and clears stay in [productId]'s
+ * namespace.
  */
 class EncryptedHostStorage(
     private val preferences: EncryptedPreferences,
@@ -20,7 +21,7 @@ class EncryptedHostStorage(
 ) : HostStorage {
     private val normalizedProductId = normalizeProductId(productId)
 
-    override fun read(key: String): ByteArray? = readValue(preferences, qualify(key))
+    override fun read(key: String): ByteArray? = readValue(preferences, "${productStorageNamespace(ownerOf(key))}/$key")
 
     override fun write(key: String, value: ByteArray) {
         writeValue(preferences, qualify(key), value)
@@ -32,7 +33,7 @@ class EncryptedHostStorage(
             .getOrElse { throw storageFailure("failed to clear product storage key: ${it.message}") }
     }
 
-    private fun qualify(key: String) = "${productStorageNamespace(ownerOf(key))}/$key"
+    private fun qualify(key: String) = "${productStorageNamespace(productId)}/$key"
 
     private fun ownerOf(key: String): String =
         productStorageKeyOwner(key)?.takeUnless { it == normalizedProductId } ?: productId

@@ -14,29 +14,36 @@ final class TrUAPILocalStorage: TrUAPILocalStoring, @unchecked Sendable {
     private static let productKeyPrefix = "io.polkadotapp.truapi.product.store"
     private static let coreKeyPrefix = "io.polkadotapp.truapi.core"
 
-    private let keyPrefix: @Sendable (String) -> String
+    private let keyPrefix: String
+    private let readPrefix: @Sendable (String) -> String
     private let defaults: UserDefaults
 
-    init(keyPrefix: String, defaults: UserDefaults) {
-        self.keyPrefix = { _ in keyPrefix }
-        self.defaults = defaults
+    convenience init(keyPrefix: String, defaults: UserDefaults) {
+        self.init(keyPrefix: keyPrefix, defaults: defaults) { _ in keyPrefix }
     }
 
-    private init(defaults: UserDefaults, keyPrefix: @escaping @Sendable (String) -> String) {
+    private init(
+        keyPrefix: String,
+        defaults: UserDefaults,
+        readPrefix: @escaping @Sendable (String) -> String
+    ) {
         self.keyPrefix = keyPrefix
+        self.readPrefix = readPrefix
         self.defaults = defaults
     }
 
-    /// Files each key under the product the core named as its owner, which is
-    /// another product on a granted foreign read. Own keys use `productId` as given.
+    /// Reads go to the product the core named as the key's owner, which is
+    /// another product on a granted foreign read. Writes and clears stay in
+    /// `productId`'s store.
     static func createProductLocalStorage(
         productId: String,
         defaults: UserDefaults = .standard
     ) -> TrUAPILocalStorage {
+        let ownPrefix = "\(productKeyPrefix).\(productId)"
         let ownId = ProductStorageKey.normalize(productId)
-        return TrUAPILocalStorage(defaults: defaults) { key in
-            let owner = ProductStorageKey.owner(of: key).flatMap { $0 == ownId ? nil : $0 }
-            return "\(productKeyPrefix).\(owner ?? productId)"
+        return TrUAPILocalStorage(keyPrefix: ownPrefix, defaults: defaults) { key in
+            guard let owner = ProductStorageKey.owner(of: key), owner != ownId else { return ownPrefix }
+            return "\(productKeyPrefix).\(owner)"
         }
     }
 
@@ -47,7 +54,7 @@ final class TrUAPILocalStorage: TrUAPILocalStoring, @unchecked Sendable {
     }
 
     func read(key: String) throws -> Data? {
-        defaults.data(forKey: storageKey(key))
+        defaults.data(forKey: "\(readPrefix(key)).\(key)")
     }
 
     func write(key: String, value: Data) throws {
@@ -61,7 +68,7 @@ final class TrUAPILocalStorage: TrUAPILocalStoring, @unchecked Sendable {
 
 private extension TrUAPILocalStorage {
     func storageKey(_ key: String) -> String {
-        "\(keyPrefix(key)).\(key)"
+        "\(keyPrefix).\(key)"
     }
 }
 
@@ -75,7 +82,8 @@ enum ProductStorageKey {
         guard key.hasPrefix(prefix) else { return nil }
         let rest = key.utf8.dropFirst(prefix.utf8.count)
         guard let colon = rest.firstIndex(of: UInt8(ascii: ":")),
-              let length = Int(String(decoding: rest[..<colon], as: UTF8.self)),
+              let lengthText = String(bytes: rest[..<colon], encoding: .utf8),
+              let length = Int(lengthText),
               length > 0
         else { return nil }
         let start = rest.index(after: colon)

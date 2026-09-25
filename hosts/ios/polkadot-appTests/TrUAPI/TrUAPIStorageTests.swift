@@ -52,6 +52,20 @@ final class TrUAPIStorageTests {
         #expect(try reader.read(key: key) == Data([0x07]))
     }
 
+    /// Only reads follow the owner in the key, so a write or clear addressed at
+    /// another product can never land in that product's store.
+    @Test func writesAndClearsStayInTheCallersStore() throws {
+        let owner = TrUAPILocalStorage.createProductLocalStorage(productId: "counter.paseo", defaults: defaults)
+        let other = TrUAPILocalStorage.createProductLocalStorage(productId: "oracle.paseo", defaults: defaults)
+        let key = "truapi:product-storage:v1:13:counter.paseo:count"
+        try owner.write(key: key, value: Data([0x01]))
+
+        try other.write(key: key, value: Data([0x02]))
+        try other.clear(key: key)
+
+        #expect(try owner.read(key: key) == Data([0x01]))
+    }
+
     @Test func ownKeysKeepTheirPhysicalKey() throws {
         let storage = TrUAPILocalStorage.createProductLocalStorage(productId: "counter.paseo", defaults: defaults)
         let key = "truapi:product-storage:v1:13:counter.paseo:count"
