@@ -164,7 +164,7 @@ pub struct PgasClaim<'a> {
 }
 
 /// `Assets.Account[(asset_id, who)]` storage key on Asset Hub.
-fn pgas_balance_key(asset_id: u32, who: &[u8; 32]) -> Vec<u8> {
+pub(super) fn pgas_balance_key(asset_id: u32, who: &[u8; 32]) -> Vec<u8> {
     [
         twox_128(b"Assets").as_slice(),
         twox_128(b"Account").as_slice(),

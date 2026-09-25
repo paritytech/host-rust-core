@@ -25,7 +25,9 @@ The shipped WASM includes `WasmSigningHostRuntime`. Its configuration requires `
 TLD (`dot`, `paseo`, or `testnet`) matching the People chain and the wallet's onboarding configuration.
 `scripts/build-wasm.mjs` builds two WASM bundles, both `--no-default-features`. `wasm/web` is the production browser
 host and excludes `WasmSigningHostRuntime`; `wasm/testing` adds the Rust `wasm-signing-host` and `test-host` features,
-which is what lets the test host hold keys and answer resource allocation as granted without allocating anything.
+which is what lets the test host hold keys and answer resource allocation as granted without allocating anything. A real
+browser wallet instead needs a web bundle built with `--no-default-features --features wasm-signing-host`, without
+`test-host`. That enables native signing and wallet administration without the testing-only allocation shortcuts.
 `ProductRuntimeConfig` configures the pairing host and requires no network suffix. The signing constructor's
 configuration requires `runtimeConfig.networkSuffix` in addition: the bare TLD (`dot`, `paseo`, or `testnet`) matching
 the People chain and the wallet's onboarding configuration.
@@ -68,11 +70,36 @@ The optional callback receives `LocalIdentityProgress` (exported from `@parity/t
 elapsed-time estimates. `confirming` means the backend accepted the request, not that the username is owned yet; only
 the resolved promise confirms ownership. A retry does not submit another registration. Observer exceptions do not
 interrupt the operation, and settled or disposed requests receive no further progress.
-
 Both methods return `LocalIdentity` (exported from `@parity/truapi-host/web`): the canonical lowercase `0x`-prefixed
 `identityAccountId` and an optional verified `liteUsername`. The backend must allow the worker's origin, or the host
 must provide an approved same-origin proxy. Secret material stays in the signing runtime. Disconnecting or replacing the
 local activation invalidates an in-flight identity operation; concurrent identity operations are rejected.
+
+### Read-only wallet allowance inspection
+
+After activating a local signing session, trusted shell code can call:
+
+```ts
+const snapshot = await runtime.getWalletAllowanceSnapshot(["example.paseo"]);
+```
+
+The result is a `WalletAllowanceSnapshot` exported from `@parity/truapi-host/web`. It reports Statement Store publishing
+slots, PGAS claim capacity and balances, and Bulletin claim capacity and storage quotas. This is a signing-host admin
+API, not a product protocol method. A bare local identity can inspect it without registering or refreshing a username.
+Inspection never allocates, renews, signs, or changes wallet storage.
+
+Pass at most 32 unique canonical product IDs from trusted shell state. An empty list still inspects wallet-wide slots
+and claims. PGAS balances cover each requested product's `Index(0)` account; Bulletin quotas use its distinct storage
+allowance account. Other products, derivations, spending and historical attribution are outside this snapshot.
+
+Each section is independently available or unavailable. Available values carry finalized chain provenance and chain
+time, with exact integer amounts and runtime-defined limits. PGAS claims also carry `membershipObservation` for the
+separate People membership source. Missing metadata stays unknown, and a nonmember's policy limit is not presented as
+usable capacity.
+
+Activation changes, disconnect, disposal and worker failure invalidate pending reads. The worker API rejects after 30
+seconds rather than leaving the caller pending; native read work may finish later, but cannot populate a replaced
+wallet. Shells must additionally fence their selected network/product context.
 
 ## Bundler requirements
 
