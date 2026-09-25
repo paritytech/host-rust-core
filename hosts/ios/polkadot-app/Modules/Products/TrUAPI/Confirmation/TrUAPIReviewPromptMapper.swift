@@ -102,7 +102,7 @@ struct TrUAPIReviewPromptMapper: TrUAPIReviewPromptMapping {
         from review: StatementStoreProductSignReview
     ) -> StatementSignConfirmationRequest {
         StatementSignConfirmationRequest(
-            productId: review.callingProductId ?? review.account.dotNsIdentifier,
+            productId: review.account.dotNsIdentifier,
             payload: review.payload
         )
     }

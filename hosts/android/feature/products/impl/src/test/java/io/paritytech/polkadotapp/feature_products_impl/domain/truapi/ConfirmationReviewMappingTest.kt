@@ -260,22 +260,19 @@ class ConfirmationReviewMappingTest {
     )
 
     @Test
-    fun `statement store sign uses caller with signing account fallback`() {
-        val confirmations = listOf(caller, null).map { callingProductId ->
-            val review = UserConfirmationReview.StatementStoreProductSign(
-                StatementStoreProductSignReview(
-                    callingProductId = callingProductId,
-                    account = nativeAccount(),
-                    payload = byteArrayOf(1, 2, 3),
-                ),
-            )
+    fun `statement store sign maps to a statement confirmation`() {
+        val review = UserConfirmationReview.StatementStoreProductSign(
+            StatementStoreProductSignReview(
+                callingProductId = caller,
+                account = nativeAccount(),
+                payload = byteArrayOf(1, 2, 3),
+            ),
+        )
 
-            val confirmation = review.toConfirmation("host") as TrUAPIConfirmation.StatementSign
+        val confirmation = review.toConfirmation(caller) as TrUAPIConfirmation.StatementSign
 
-            confirmation.requesterProductId to confirmation.payloadSize
-        }
-
-        assertEquals(listOf(caller to 3, "demo-product.dot" to 3), confirmations)
+        assertEquals("demo-product.dot", confirmation.requesterProductId)
+        assertEquals(3, confirmation.payloadSize)
     }
 
     @Test

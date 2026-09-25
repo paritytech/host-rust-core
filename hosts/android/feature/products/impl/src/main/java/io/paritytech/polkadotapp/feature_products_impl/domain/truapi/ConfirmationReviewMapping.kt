@@ -45,7 +45,7 @@ fun UserConfirmationReview.toConfirmation(callingProductId: String): TrUAPIConfi
 
     is UserConfirmationReview.StatementStoreProductSign ->
         TrUAPIConfirmation.StatementSign(
-            requesterProductId = v1.callingProductId ?: v1.account.dotNsIdentifier,
+            requesterProductId = v1.account.dotNsIdentifier,
             payloadSize = v1.payload.size,
         )
 

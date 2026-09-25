@@ -2,4 +2,4 @@
 "@parity/truapi-host": patch
 ---
 
-Blessed products ask only for device permissions. All other product operations bypass permission prompts and recorded decisions in the iOS, Android and CLI hosts.
+The shared Rust core asks blessed products only for device permissions. Other product operations bypass permission prompts and recorded decisions.
