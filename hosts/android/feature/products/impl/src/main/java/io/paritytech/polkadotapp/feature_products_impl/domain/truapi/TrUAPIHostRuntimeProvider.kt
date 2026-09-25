@@ -71,6 +71,7 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
     @param:TrUAPIChainHttpClient private val chainHttpClient: OkHttpClient,
     private val confirmationLauncher: TrUAPIConfirmationLauncher,
     private val appLifecycleObserver: AppLifecycleObserver,
+    private val contactsBridge: AppContactsHostBridge,
     // Lazy: the supervisor boots workers on this runtime, and reports back through this bridge.
     private val workerSupervisor: Lazy<TrUAPIWorkerSupervisor>,
     dispatchers: CoroutineDispatchers,
@@ -116,6 +117,10 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
     }
 
     private fun wire(runtime: TrUAPIHostRuntime) {
+        // Before any product execution opens, so a product never sees the
+        // window where the host lists no contacts.
+        runtime.setContacts(contactsBridge)
+        observeContactRemovals(runtime)
         chainProvider.attach(
             onResponse = runtime::notifyChainResponse,
             onClosed = runtime::notifyChainClosed,
@@ -152,6 +157,14 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
             localSessionSecret = localSession?.secret,
             localSessionLiteUsername = localSession?.liteUsername,
         )
+    }
+
+    // The core caches the contact handles it resolves; a removed or blocked
+    // contact has to reach it, or their handle keeps resolving.
+    private fun observeContactRemovals(runtime: TrUAPIHostRuntime) {
+        scope.launch {
+            contactsBridge.contactRemovals().collect { runtime.notifyContactsChanged() }
+        }
     }
 
     // The session is derived from the wallet's entropy, so a wallet switch
