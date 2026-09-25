@@ -2,7 +2,6 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.bot.e2e
 
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
-import io.paritytech.polkadotapp.feature_products_impl.BuildConfig
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWorker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -26,8 +25,6 @@ class E2EPendingChatMessages(private val scope: CoroutineScope) {
     private val attached = mutableMapOf<ProductId, ProductWorker>()
 
     fun queue(productId: ProductId, roomId: String?, text: String) {
-        if (!BuildConfig.DEBUG) return
-
         val message = PendingMessage(roomId, text)
         val worker = synchronized(lock) {
             attached[productId].also { if (it == null) pending[productId] = message }
