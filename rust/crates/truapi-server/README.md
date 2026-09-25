@@ -223,8 +223,9 @@ automatically check that the configured suffix matches the chain.
 
 Native signing hosts (iOS, Android, the CLI) can give the core a directory for
 its own SQLite database (`store` module, bundled SQLite through `rusqlite` and
-`async-sqlite`). The directory must exist and be writable, or the runtime fails
-to start; the file itself, `core.sqlite3`, opens on first use. Keep it out of
+`async-sqlite`). The directory must exist, or the runtime fails to start; the
+file itself, `core.sqlite3`, opens on first use, and an unwritable directory is
+reported then. Keep it out of
 device backups: it holds durable-transaction state that must not be restored
 onto another device. `NativeHostRuntimeConfig.database_directory` sets it on
 native hosts, `SigningHostRuntime::set_core_db` on any embedder, and

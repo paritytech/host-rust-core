@@ -322,10 +322,10 @@ pub enum NativeRuntimeConfigError {
         /// Normalized length, in bytes.
         actual: u64,
     },
-    /// The database directory does not exist or cannot be written.
+    /// The database directory does not exist.
     ///
     /// Appended for the same reason as the variants above.
-    #[error("database_directory {path:?} is not a writable directory: {reason}")]
+    #[error("database_directory {path:?} is not a directory: {reason}")]
     InvalidDatabaseDirectory {
         /// Configured directory.
         path: String,
@@ -399,7 +399,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
         )?;
         let database_directory = config
             .database_directory
-            .map(|directory| writable_directory(&directory))
+            .map(|directory| existing_directory(&directory))
             .transpose()?;
         Ok(Self {
             signing,
@@ -410,20 +410,16 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     }
 }
 
-/// Checks that `directory` exists and accepts new files, by creating and
-/// removing a probe file.
-fn writable_directory(directory: &str) -> Result<PathBuf, NativeRuntimeConfigError> {
-    let invalid = |reason: String| NativeRuntimeConfigError::InvalidDatabaseDirectory {
-        path: directory.to_owned(),
-        reason,
-    };
+/// Checks that `directory` exists. Whether it can be written only shows when
+/// the database first opens.
+fn existing_directory(directory: &str) -> Result<PathBuf, NativeRuntimeConfigError> {
     let path = PathBuf::from(directory);
     if !path.is_dir() {
-        return Err(invalid("not an existing directory".to_owned()));
+        return Err(NativeRuntimeConfigError::InvalidDatabaseDirectory {
+            path: directory.to_owned(),
+            reason: "not an existing directory".to_owned(),
+        });
     }
-    let probe = path.join(".truapi-write-probe");
-    std::fs::write(&probe, []).map_err(|err| invalid(err.to_string()))?;
-    std::fs::remove_file(&probe).map_err(|err| invalid(err.to_string()))?;
     Ok(path)
 }
 
