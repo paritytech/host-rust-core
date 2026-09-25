@@ -801,20 +801,22 @@ object LocalhostBridgeBootstrap {
  * connections from this object and share its authentication and core services.
  */
 class TrUAPIHostRuntime private constructor(
-    bridge: HostBridge,
-    runtimeConfig: UniFfiNativeHostRuntimeConfig,
-) : AutoCloseable {
-    @Throws(NativeRuntimeConfigException::class)
-    constructor(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) : this(
-        bridge,
-        runtimeConfig.toNative(),
-    )
-
     // Co-owns the adapter alongside the generated FfiConverter handle map,
     // which is what actually keeps the callback object alive for the runtime.
-    private val callbackRetainer: HostCallbacks = HostCallbackAdapter(bridge)
-    private val inner: NativeTrUApiHostRuntime =
-        NativeTrUApiHostRuntime.withRuntimeConfig(callbackRetainer, runtimeConfig)
+    private val callbackRetainer: HostCallbacks,
+    private val inner: NativeTrUApiHostRuntime,
+) : AutoCloseable {
+    companion object {
+        /** Build the runtime, activating the configured local session if there is one. */
+        @Throws(NativeRuntimeConfigException::class)
+        suspend fun create(bridge: HostBridge, runtimeConfig: HostRuntimeConfig): TrUAPIHostRuntime {
+            val callbacks = HostCallbackAdapter(bridge)
+            return TrUAPIHostRuntime(
+                callbacks,
+                NativeTrUApiHostRuntime.withRuntimeConfig(callbacks, runtimeConfig.toNative()),
+            )
+        }
+    }
 
     // Co-owns the contacts adapter for as long as the runtime holds it.
     private var contactsRetainer: NativeContactsCallbacks? = null
@@ -960,13 +962,13 @@ class TrUAPIHostRuntime private constructor(
     }
 
     /** Core-owned logout for the process-wide authentication session. */
-    fun disconnect() {
+    suspend fun disconnect() {
         inner.disconnect()
     }
 
     /** Activate or replace the process-wide local signing session. */
     @Throws(HostRejection::class)
-    fun activateLocalSession(secret: ByteArray, liteUsername: String? = null) {
+    suspend fun activateLocalSession(secret: ByteArray, liteUsername: String? = null) {
         inner.activateLocalSession(secret, liteUsername)
     }
 
@@ -990,7 +992,7 @@ class TrUAPIHostRuntime private constructor(
      * whenever the active identity changes.
      */
     @Throws(NativeRenewalTargetException::class)
-    fun trackStatementRenewalTargets(targets: List<NativeStatementRenewalTarget>) {
+    suspend fun trackStatementRenewalTargets(targets: List<NativeStatementRenewalTarget>) {
         inner.trackStatementRenewalTargets(targets)
     }
 
@@ -1000,7 +1002,7 @@ class TrUAPIHostRuntime private constructor(
      * whether a pass is worth running.
      */
     @Throws(NativeRenewalTargetException::class)
-    fun statementRenewalTargets(): List<NativeTrackedStatementRenewalTarget> =
+    suspend fun statementRenewalTargets(): List<NativeTrackedStatementRenewalTarget> =
         inner.statementRenewalTargets()
 
     /**
@@ -1017,16 +1019,16 @@ class TrUAPIHostRuntime private constructor(
      * another identity promised.
      */
     @Throws(NativeRenewalTargetException::class)
-    fun untrackStatementRenewalAccount(accountId: ByteArray): Boolean =
+    suspend fun untrackStatementRenewalAccount(accountId: ByteArray): Boolean =
         inner.untrackStatementRenewalAccount(accountId)
 
     /**
      * Run one renewal pass now, reporting what each tracked target got. Submits
-     * extrinsics and blocks until they are included, so call it from a
-     * WorkManager worker rather than the main thread.
+     * extrinsics and resumes once they are included; drive it from a
+     * WorkManager worker so the pass survives the app leaving the foreground.
      */
     @Throws(HostRejection::class)
-    fun renewStatementAllowances(): StatementRenewalReport = inner.renewStatementAllowances()
+    suspend fun renewStatementAllowances(): StatementRenewalReport = inner.renewStatementAllowances()
 
     /**
      * Start the in-process renewal loop, for a host that stays resident. A
@@ -1153,7 +1155,7 @@ class TrUAPIProductExecution internal constructor(
 
     /** Read the active session's X25519 chat identity private key, if any. */
     @Throws(HostRejection::class)
-    fun sessionChatIdentityKey(): ByteArray? = inner.sessionChatIdentityKey()
+    suspend fun sessionChatIdentityKey(): ByteArray? = inner.sessionChatIdentityKey()
 
     /**
      * Read a permission authorization status without prompting.
@@ -1177,7 +1179,7 @@ class TrUAPIProductExecution internal constructor(
      * clears the stored value so the next product request prompts again.
      */
     @Throws(HostRejection::class)
-    fun setPermissionAuthorizationStatus(
+    suspend fun setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) {

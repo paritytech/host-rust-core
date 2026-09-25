@@ -84,7 +84,7 @@ private extension ProductBotFactory {
     /// off the shared runtime. The local session lives on the shared runtime;
     /// a transient provider failure only fails this create.
     func createRustRuntime(product: Product, source: ProductWorkerSource) throws -> ChatRuntimeProtocol {
-        let runtime = try runtimeProvider.sharedRuntime()
+        let runtime = try runtimeProvider.sharedRuntimeWaitingIfNeeded()
 
         let rustEnvironment = RustRuntimeEnvironment(
             runtime: runtime,

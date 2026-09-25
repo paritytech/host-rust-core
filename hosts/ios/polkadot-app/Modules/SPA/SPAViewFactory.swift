@@ -180,7 +180,7 @@ extension SPAViewFactory {
 
         let runtime: TrUAPIHostRuntime
         do {
-            runtime = try runtimeProvider.sharedRuntime()
+            runtime = try runtimeProvider.sharedRuntimeWaitingIfNeeded()
         } catch {
             Logger.shared.error("Rust SPA unavailable: \(error)")
             return nil

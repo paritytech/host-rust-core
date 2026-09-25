@@ -42,6 +42,7 @@ use crate::host_logic::sso::messages::{
     decode_remote_message, v1,
 };
 use crate::host_logic::worker::WorkerTransition;
+use crate::native_executor::run_on_core;
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeRendererObserver, NativeRendererSubscription};
@@ -277,6 +278,12 @@ pub enum NativeRuntimeConfigError {
     InvalidDeeplinkScheme {
         /// Actual deeplink scheme value.
         scheme: String,
+    },
+    /// The core runtime's worker threads could not be started.
+    #[error("core runtime unavailable: {reason}")]
+    RuntimeUnavailable {
+        /// Why the runtime failed to start.
+        reason: String,
     },
     /// Network suffix was not a supported dotNS TLD.
     #[error("network_suffix must be a supported dotNS TLD, got {network_suffix:?}")]
@@ -956,6 +963,8 @@ impl truapi_platform::ContactsPlatform for ContactsCallbackPlatform {
 pub struct NativeTrUApiHostRuntime {
     runtime: Arc<SigningHostRuntime>,
     events: Arc<NativeEventBus>,
+    /// Runtime every host-called entry point runs its work on.
+    core: tokio::runtime::Handle,
     #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
     #[cfg(feature = "ws-bridge")]
@@ -965,7 +974,7 @@ pub struct NativeTrUApiHostRuntime {
 }
 
 impl NativeTrUApiHostRuntime {
-    fn from_resolved(
+    async fn from_resolved(
         callbacks: Arc<dyn HostCallbacks>,
         runtime_config: NativeResolvedHostRuntimeConfig,
         log_marker: &str,
@@ -973,13 +982,30 @@ impl NativeTrUApiHostRuntime {
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         crate::logging::init();
         callbacks.on_core_log(log_marker.to_string(), log_detail.to_string());
+        let (executor, initialized) =
+            crate::native_executor::shared_native_executor().map_err(|err| {
+                NativeRuntimeConfigError::RuntimeUnavailable {
+                    reason: err.to_string(),
+                }
+            })?;
+        let core = executor.handle();
+        if initialized {
+            callbacks.on_core_log(
+                "truapi.native.executor.started".to_string(),
+                format!(
+                    "runtime_id={} worker_threads={}",
+                    core.id(),
+                    executor.worker_threads()
+                ),
+            );
+        }
         let events = Arc::new(NativeEventBus::default());
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
             storage_events: events.clone(),
         });
-        let spawner = native_spawner(&callbacks);
+        let spawner = native_spawner(&core);
         let runtime = Arc::new(SigningHostRuntime::new(
             platform.clone(),
             runtime_config.signing,
@@ -996,10 +1022,14 @@ impl NativeTrUApiHostRuntime {
             "a freshly built runtime installs its device pairing observer once"
         );
         if let Some(secret) = runtime_config.local_session_secret {
-            futures::executor::block_on(runtime.activate_local_session_with_identity(
-                secret,
-                runtime_config.local_session_lite_username,
-            ))
+            let runtime = runtime.clone();
+            let lite_username = runtime_config.local_session_lite_username;
+            run_on_core(&core, async move {
+                runtime
+                    .activate_local_session_with_identity(secret, lite_username)
+                    .await
+            })
+            .await
             .map_err(|err| NativeRuntimeConfigError::LocalSessionActivation {
                 reason: err.reason,
             })?;
@@ -1007,6 +1037,7 @@ impl NativeTrUApiHostRuntime {
         Ok(Arc::new(Self {
             runtime,
             events,
+            core,
             #[cfg(feature = "ws-bridge")]
             spawner,
             #[cfg(feature = "ws-bridge")]
@@ -1049,6 +1080,7 @@ impl NativeTrUApiHostRuntime {
             });
         let execution = Arc::new(NativeProductExecution {
             runtime: self.runtime.clone(),
+            core: self.core.clone(),
             product: product.clone(),
             platform,
             chat,
@@ -1253,7 +1285,7 @@ impl From<crate::runtime::TrackedStatementRenewalTarget> for NativeTrackedStatem
 impl NativeTrUApiHostRuntime {
     /// Construct one host-level runtime and optionally activate its local session.
     #[uniffi::constructor]
-    pub fn with_runtime_config(
+    pub async fn with_runtime_config(
         callbacks: Arc<dyn HostCallbacks>,
         runtime_config: NativeHostRuntimeConfig,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
@@ -1264,6 +1296,7 @@ impl NativeTrUApiHostRuntime {
             "truapi.native.host_runtime.boot",
             "host runtime ready",
         )
+        .await
     }
 
     /// Install the host's contacts adapter, which owns the contact list and
@@ -1339,11 +1372,15 @@ impl NativeTrUApiHostRuntime {
         deeplink: String,
     ) -> Result<Arc<NativeAnnouncedPairing>, NativePairingError> {
         reject_undecodable_deeplink(&deeplink)?;
-        self.runtime
-            .notify_pairing_allowance_allocation(&deeplink)
-            .await
-            .map(|inner| Arc::new(NativeAnnouncedPairing { inner }))
-            .map_err(NativePairingError::from)
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime
+                .notify_pairing_allowance_allocation(&deeplink)
+                .await
+                .map(|inner| Arc::new(NativeAnnouncedPairing { inner }))
+                .map_err(NativePairingError::from)
+        })
+        .await
     }
 
     /// Tell a pairing host that already dropped its QR why pairing stopped.
@@ -1356,10 +1393,14 @@ impl NativeTrUApiHostRuntime {
         announced: Arc<NativeAnnouncedPairing>,
         reason: String,
     ) -> Result<(), NativePairingError> {
-        self.runtime
-            .notify_pairing_failed(&announced.inner, reason)
-            .await
-            .map_err(NativePairingError::from)
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime
+                .notify_pairing_failed(&announced.inner, reason)
+                .await
+                .map_err(NativePairingError::from)
+        })
+        .await
     }
 
     /// Answer a pairing host's handshake deeplink, without serving the session
@@ -1383,10 +1424,14 @@ impl NativeTrUApiHostRuntime {
     /// persisted.
     pub async fn establish_pairing(&self, deeplink: String) -> Result<(), NativePairingError> {
         reject_undecodable_deeplink(&deeplink)?;
-        self.runtime
-            .establish_pairing(&deeplink)
-            .await
-            .map_err(NativePairingError::from)
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime
+                .establish_pairing(&deeplink)
+                .await
+                .map_err(NativePairingError::from)
+        })
+        .await
     }
 
     /// Serve a paired host's SSO session until it ends.
@@ -1399,10 +1444,14 @@ impl NativeTrUApiHostRuntime {
         &self,
         peer: PairedSsoPeer,
     ) -> Result<ResponderExit, NativePairingError> {
-        self.runtime
-            .resume_pairing(peer)
-            .await
-            .map_err(NativePairingError::from)
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime
+                .resume_pairing(peer)
+                .await
+                .map_err(NativePairingError::from)
+        })
+        .await
     }
 
     /// Tell a paired host this signing host is ending their SSO session.
@@ -1417,22 +1466,31 @@ impl NativeTrUApiHostRuntime {
         &self,
         peer: PairedSsoPeer,
     ) -> Result<(), NativePairingError> {
-        self.runtime
-            .disconnect_paired_host(peer)
-            .await
-            .map_err(NativePairingError::from)
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime
+                .disconnect_paired_host(peer)
+                .await
+                .map_err(NativePairingError::from)
+        })
+        .await
     }
 
     /// Core-owned logout for the process-wide authentication session.
-    pub fn disconnect(&self) {
-        futures::executor::block_on(self.runtime.disconnect_session());
+    pub async fn disconnect(&self) {
+        let runtime = self.runtime.clone();
+        run_on_core(
+            &self.core,
+            async move { runtime.disconnect_session().await },
+        )
+        .await
     }
 
     /// Record the accounts a renewal pass should keep allowed. The ledger
     /// persists, so this only has to be called when the set changes, not on
     /// every launch. Renewal has nothing to do until at least one target is
     /// tracked.
-    pub fn track_statement_renewal_targets(
+    pub async fn track_statement_renewal_targets(
         &self,
         targets: Vec<NativeStatementRenewalTarget>,
     ) -> Result<(), NativeRenewalTargetError> {
@@ -1440,8 +1498,12 @@ impl NativeTrUApiHostRuntime {
             .into_iter()
             .map(TryInto::try_into)
             .collect::<Result<Vec<_>, _>>()?;
-        futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
-            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime.track_statement_renewal_targets(targets).await
+        })
+        .await
+        .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
 
     /// Every account the ledger tracks, in the order it was tracked.
@@ -1449,12 +1511,16 @@ impl NativeTrUApiHostRuntime {
     /// Needs no active session. Slots per period are finite, so a host that
     /// tracked a wrong or stale account can see it here and drop it with
     /// [`Self::untrack_statement_renewal_account`].
-    pub fn statement_renewal_targets(
+    pub async fn statement_renewal_targets(
         &self,
     ) -> Result<Vec<NativeTrackedStatementRenewalTarget>, NativeRenewalTargetError> {
-        futures::executor::block_on(self.runtime.statement_renewal_targets())
-            .map(|entries| entries.into_iter().map(Into::into).collect())
-            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime.statement_renewal_targets().await
+        })
+        .await
+        .map(|entries| entries.into_iter().map(Into::into).collect())
+        .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
 
     /// Root public key the active identity records its fixed entries under.
@@ -1474,7 +1540,7 @@ impl NativeTrUApiHostRuntime {
     ///
     /// Scoped to the active identity, so it never removes an entry another
     /// identity promised. Needs an active session to resolve that identity.
-    pub fn untrack_statement_renewal_account(
+    pub async fn untrack_statement_renewal_account(
         &self,
         account_id: Vec<u8>,
     ) -> Result<bool, NativeRenewalTargetError> {
@@ -1483,8 +1549,12 @@ impl NativeTrUApiHostRuntime {
                 actual: account_id.len() as u64,
             }
         })?;
-        futures::executor::block_on(self.runtime.untrack_statement_renewal_account(&account_id))
-            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime.untrack_statement_renewal_account(&account_id).await
+        })
+        .await
+        .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
 
     /// Run one renewal pass now and report what each tracked target got.
@@ -1492,7 +1562,7 @@ impl NativeTrUApiHostRuntime {
     /// This is the entry point for hosts whose process cannot stay alive
     /// between periods: drive it from WorkManager or BGTaskScheduler rather
     /// than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
-    /// and blocks until they are included, so call it from a background thread.
+    /// and completes once they are included.
     ///
     /// Needs an active session, which is the whole difficulty of the scheduled
     /// case: an OS-woken cold start has none until the host restores one, and
@@ -1500,11 +1570,15 @@ impl NativeTrUApiHostRuntime {
     /// session before calling, and treat that reason as "not ready" rather than
     /// as a renewal failure. [`Self::start_statement_allowance_renewal`] does
     /// not need this care; its loop skips a tick with no session and retries.
-    pub fn renew_statement_allowances(
+    pub async fn renew_statement_allowances(
         &self,
     ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
-        futures::executor::block_on(self.runtime.renew_statement_allowances())
-            .map_err(HostRejection::from)
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime.renew_statement_allowances().await
+        })
+        .await
+        .map_err(HostRejection::from)
     }
 
     /// Start the in-process renewal loop, for hosts that stay resident. Mobile
@@ -1542,15 +1616,18 @@ impl NativeTrUApiHostRuntime {
     }
 
     /// Activate or replace the process-wide local signing session.
-    pub fn activate_local_session(
+    pub async fn activate_local_session(
         &self,
         secret: Vec<u8>,
         lite_username: Option<String>,
     ) -> Result<(), HostRejection> {
-        futures::executor::block_on(
-            self.runtime
-                .activate_local_session_with_identity(secret, lite_username),
-        )
+        let runtime = self.runtime.clone();
+        run_on_core(&self.core, async move {
+            runtime
+                .activate_local_session_with_identity(secret, lite_username)
+                .await
+        })
+        .await
         .map_err(Into::into)
     }
 
@@ -1574,7 +1651,12 @@ impl NativeTrUApiHostRuntime {
     ) -> Result<SsoRequestOutcome, HostRejection> {
         let message =
             decode_remote_message(&message).map_err(|reason| HostRejection::Rejected { reason })?;
-        Ok(match self.runtime.answer_sso_request(message).await {
+        let runtime = self.runtime.clone();
+        let outcome = run_on_core(&self.core, async move {
+            runtime.answer_sso_request(message).await
+        })
+        .await;
+        Ok(match outcome {
             CoreSsoRequestOutcome::Response(response) => SsoRequestOutcome::Response {
                 message: response.encode(),
             },
@@ -1611,6 +1693,8 @@ impl NativeTrUApiHostRuntime {
 #[derive(uniffi::Object)]
 pub struct NativeProductExecution {
     runtime: Arc<SigningHostRuntime>,
+    /// Runtime every host-called entry point runs its work on.
+    core: tokio::runtime::Handle,
     product: ProductContext,
     platform: Arc<dyn truapi_platform::Platform>,
     chat: Option<Arc<dyn truapi_platform::ChatPlatform>>,
@@ -1717,17 +1801,20 @@ impl NativeProductExecution {
                 reason: "product execution is closed".to_string(),
             });
         }
-        let response = self
-            .admin()
-            .product_runtime()
-            .authorize_remote_permission(
-                &truapi::CallContext::default(),
-                truapi::versioned::permissions::RemotePermissionRequest::V1(request),
-            )
-            .await
-            .map_err(|error| HostRejection::Rejected {
-                reason: format!("{error:?}"),
-            })?;
+        let admin = self.admin();
+        let response = run_on_core(&self.core, async move {
+            admin
+                .product_runtime()
+                .authorize_remote_permission(
+                    &truapi::CallContext::default(),
+                    truapi::versioned::permissions::RemotePermissionRequest::V1(request),
+                )
+                .await
+        })
+        .await
+        .map_err(|error| HostRejection::Rejected {
+            reason: format!("{error:?}"),
+        })?;
         if self.closed.load(Ordering::Acquire) {
             return Err(HostRejection::Rejected {
                 reason: "product execution is closed".to_string(),
@@ -1746,54 +1833,65 @@ impl NativeProductExecution {
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, HostRejection> {
-        Ok(self
-            .admin()
-            .permission_authorization_status(request)
-            .await?)
+        let admin = self.admin();
+        Ok(run_on_core(&self.core, async move {
+            admin.permission_authorization_status(request).await
+        })
+        .await?)
     }
 
     /// Update a product-scoped permission authorization.
-    pub fn set_permission_authorization_status(
+    pub async fn set_permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
-        futures::executor::block_on(
-            self.admin()
-                .set_permission_authorization_status(request, status),
-        )?;
+        let admin = self.admin();
+        run_on_core(&self.core, async move {
+            admin
+                .set_permission_authorization_status(request, status)
+                .await
+        })
+        .await?;
         Ok(())
     }
 
     /// Read the active session's X25519 chat identity private key, or `None`
     /// when no session is active.
-    pub fn session_chat_identity_key(&self) -> Result<Option<Bytes32>, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin().get_session_chat_identity_key(),
-        )?)
+    pub async fn session_chat_identity_key(&self) -> Result<Option<Bytes32>, HostRejection> {
+        let admin = self.admin();
+        Ok(run_on_core(&self.core, async move {
+            admin.get_session_chat_identity_key().await
+        })
+        .await?)
     }
 
     /// Read this device's X25519 encryption secret, for device sync against a
     /// peer's `deviceEncPublicKey`. Generated and persisted on first read.
-    pub fn device_encryption_key(&self) -> Result<Bytes32, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin().get_device_encryption_key(),
-        )?)
+    pub async fn device_encryption_key(&self) -> Result<Bytes32, HostRejection> {
+        let admin = self.admin();
+        Ok(run_on_core(&self.core, async move {
+            admin.get_device_encryption_key().await
+        })
+        .await?)
     }
 
     /// Resolve a product's hard-subtree public key for hosts naming the account
     /// a review will sign with. Answers from the cache, the persisted slot, or
     /// the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
     /// an error; `None` means no active session.
-    pub fn product_subtree_public_key(
+    pub async fn product_subtree_public_key(
         &self,
         product_id: String,
         timeout_ms: Option<u32>,
     ) -> Result<Option<Bytes32>, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin()
-                .get_product_subtree_public_key(product_id, timeout_ms),
-        )?)
+        let admin = self.admin();
+        Ok(run_on_core(&self.core, async move {
+            admin
+                .get_product_subtree_public_key(product_id, timeout_ms)
+                .await
+        })
+        .await?)
     }
 
     /// Push a host theme replacement to this execution's subscriptions.
@@ -1986,35 +2084,12 @@ pub fn set_log_level(level: String) {
 }
 
 /// Build a [`Spawner`] that runs core tasks on the shared native runtime, the
-/// same one the WebSocket bridge serves connections on. Falls back to a
-/// thread-per-subscription spawner if the runtime fails to build, which only
-/// ever happens if the host has no available threads at all.
-fn native_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
-    match crate::native_executor::shared_native_executor() {
-        Ok((executor, initialized)) => {
-            let handle = executor.handle();
-            if initialized {
-                callbacks.on_core_log(
-                    "truapi.native.executor.started".to_string(),
-                    format!(
-                        "runtime_id={} worker_threads={}",
-                        handle.id(),
-                        executor.worker_threads()
-                    ),
-                );
-            }
-            Arc::new(move |fut: BoxFuture<'static, ()>| {
-                handle.spawn(fut);
-            })
-        }
-        Err(err) => {
-            callbacks.on_core_log(
-                "truapi.native.core.subscription.runtime_unavailable".to_string(),
-                format!("{err}; falling back to thread-per-subscription"),
-            );
-            crate::subscription::thread_per_subscription_spawner()
-        }
-    }
+/// same one the WebSocket bridge serves connections on.
+fn native_spawner(core: &tokio::runtime::Handle) -> Spawner {
+    let core = core.clone();
+    Arc::new(move |fut: BoxFuture<'static, ()>| {
+        core.spawn(fut);
+    })
 }
 
 struct CallbackPlatform {
@@ -2856,8 +2931,8 @@ mod tests {
     /// `Drop` on one would issue it.
     #[test]
     fn native_spawner_runs_core_work_on_the_shared_tokio_runtime() {
-        let callbacks: Arc<dyn HostCallbacks> = Arc::new(EventCallbacks::new());
-        let spawner = native_spawner(&callbacks);
+        let (shared, _) = crate::native_executor::shared_native_executor().unwrap();
+        let spawner = native_spawner(&shared.handle());
         let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
 
         spawner(
@@ -2871,7 +2946,6 @@ mod tests {
         let ran_on = runtime_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("spawned core work never ran");
-        let (shared, _) = crate::native_executor::shared_native_executor().unwrap();
         assert_eq!(ran_on, Some(shared.handle().id()));
     }
 
@@ -3196,6 +3270,8 @@ mod tests {
             >,
         >,
         core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+        /// The runtime each core storage write arrived from, if any.
+        core_storage_write_runtimes: Mutex<Vec<Option<tokio::runtime::Id>>>,
         /// Disclosure consent is distinct from boolean action confirmation.
         permission_confirmation_result: NativePermissionDecision,
         /// Counts prompts across the execution's separate connections.
@@ -3244,6 +3320,7 @@ mod tests {
                 remote_permission_result: Ok(NativePermissionDecision::Deny),
                 remote_permission_reply: Mutex::new(None),
                 core_storage: Mutex::default(),
+                core_storage_write_runtimes: Mutex::default(),
                 permission_confirmation_result: NativePermissionDecision::Deny,
                 remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
                 remote_permission_products: Mutex::new(Vec::new()),
@@ -3328,6 +3405,11 @@ mod tests {
             key: Vec<u8>,
             value: Vec<u8>,
         ) -> Result<(), HostRejection> {
+            self.core_storage_write_runtimes.lock().unwrap().push(
+                tokio::runtime::Handle::try_current()
+                    .ok()
+                    .map(|handle| handle.id()),
+            );
             self.core_storage.lock().unwrap().insert(key, value);
             Ok(())
         }
@@ -3585,8 +3667,11 @@ mod tests {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
         config.local_session_lite_username = None;
-        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
-            .expect("host runtime config should be valid");
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            config,
+        ))
+        .expect("host runtime config should be valid");
         let screen = host
             .open_product_execution(
                 callbacks.clone(),
@@ -3630,8 +3715,11 @@ mod tests {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
         config.local_session_lite_username = None;
-        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
-            .expect("host runtime config should be valid");
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            config,
+        ))
+        .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
                 callbacks.clone(),
@@ -3695,8 +3783,11 @@ mod tests {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
         config.local_session_lite_username = None;
-        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
-            .expect("host runtime config should be valid");
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            config,
+        ))
+        .expect("host runtime config should be valid");
         host.open_product_execution(
             callbacks,
             None,
@@ -3920,10 +4011,10 @@ mod tests {
             fn device_paired(&self, _device: PairedSsoPeer) {}
         }
 
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
 
         assert!(!host.runtime.set_device_pairing_observer(Arc::new(Inert)));
@@ -3932,10 +4023,10 @@ mod tests {
     #[test]
     fn process_runtime_counts_worker_references_per_product() {
         let callbacks = Arc::new(EventCallbacks::new());
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             callbacks.clone(),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let product = || "shared.dot".to_string();
 
@@ -3958,10 +4049,10 @@ mod tests {
 
     #[test]
     fn process_runtime_shares_authority_and_replaces_one_chat_execution_per_product() {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let app = host
             .open_product_execution(
@@ -4123,9 +4214,11 @@ mod tests {
     fn native_chat_entrypoint_is_unsupported_without_an_adapter() {
         let mut config = native_host_runtime_config();
         config.local_session_secret = Some(vec![7; 32]);
-        let host =
-            NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
-                .expect("host runtime config should be valid");
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            config,
+        ))
+        .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
@@ -4546,10 +4639,10 @@ mod tests {
     fn a_renderer_action_reaches_the_product_that_rendered_it() {
         // The channel is execution-scoped, so the admin handle built from this
         // execution reads what the execution published.
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
@@ -4953,10 +5046,10 @@ mod tests {
 
     #[test]
     fn product_execution_routes_chain_events_to_shared_and_scoped_services() {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
@@ -5623,10 +5716,10 @@ mod tests {
             Arc::new(EventCallbacks::new()),
             Arc::new(EventCallbacks::new()),
         ];
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             callbacks[0].clone(),
             native_host_runtime_config(),
-        )
+        ))
         .expect("create host");
         let executions = [(1, "first.dot"), (2, "second.dot")].map(|(index, product_id)| {
             host.open_product_execution(
@@ -5703,10 +5796,10 @@ mod tests {
 
         use crate::frame::{Payload, ProtocolMessage, request_ids};
 
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let app = host
             .open_product_execution(
@@ -5831,8 +5924,11 @@ mod tests {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
         config.local_session_lite_username = None;
-        NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
-            .expect("host runtime config should be valid")
+        futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            config,
+        ))
+        .expect("host runtime config should be valid")
     }
 
     #[test]
@@ -5866,10 +5962,10 @@ mod tests {
         use parity_scale_codec::{Decode, Encode};
         // The default test config carries a local session secret, so the
         // runtime is activated at construction.
-        let runtime = NativeTrUApiHostRuntime::with_runtime_config(
+        let runtime = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let request = RemoteMessage {
             message_id: "m9".to_string(),
@@ -5969,10 +6065,10 @@ mod tests {
                 false,
             ),
         ] {
-            let host = NativeTrUApiHostRuntime::with_runtime_config(
+            let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
                 Arc::new(EventCallbacks::new()),
                 native_host_runtime_config(),
-            )
+            ))
             .unwrap();
             let callbacks = Arc::new(EventCallbacks {
                 remote_permission_result: answer,
@@ -6047,10 +6143,10 @@ mod tests {
             remote_permission_result: Ok(NativePermissionDecision::AllowOnce),
             ..EventCallbacks::new()
         });
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             callbacks.clone(),
             native_host_runtime_config(),
-        )
+        ))
         .unwrap();
         let open = || {
             host.open_product_execution(
@@ -6146,10 +6242,10 @@ mod tests {
                 remote_permission_result: Ok(decision),
                 ..EventCallbacks::new()
             });
-            let host = NativeTrUApiHostRuntime::with_runtime_config(
+            let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
                 callbacks.clone(),
                 native_host_runtime_config(),
-            )
+            ))
             .unwrap();
             let open = |product_id| {
                 host.open_product_execution(
@@ -6204,10 +6300,10 @@ mod tests {
                 remote_permission_reply: Mutex::new(Some(response)),
                 ..EventCallbacks::new()
             });
-            let host = NativeTrUApiHostRuntime::with_runtime_config(
+            let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
                 callbacks.clone(),
                 native_host_runtime_config(),
-            )
+            ))
             .unwrap();
             let execution = host
                 .open_product_execution(
@@ -6250,12 +6346,56 @@ mod tests {
     /// permission service. Nothing else covers that path, and the adapter is
     /// per execution rather than per host runtime, so a host-level installer
     /// would silently answer from the wrong object.
+    /// A host may call from its main thread, so the call must only wait there:
+    /// the core work it starts, down to the host's own storage callback, runs
+    /// on the core runtime.
     #[test]
-    fn a_native_status_read_follows_the_os_gate() {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+    fn a_host_call_from_a_plain_thread_runs_its_core_work_on_the_core_runtime() {
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
+        .expect("host runtime config should be valid");
+        let callbacks = Arc::new(EventCallbacks::new());
+        let execution = host
+            .open_product_execution(
+                callbacks.clone(),
+                None,
+                None,
+                native_execution_config("stored.dot", ProductExecutionKind::App),
+            )
+            .expect("execution should open");
+
+        futures::executor::block_on(execution.set_permission_authorization_status(
+            PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Camera),
+            PermissionAuthorizationStatus::Authorized,
+        ))
+        .expect("status write");
+
+        let (shared, _) = crate::native_executor::shared_native_executor().unwrap();
+        let runtimes = callbacks
+            .core_storage_write_runtimes
+            .lock()
+            .unwrap()
+            .clone();
+        assert!(
+            !runtimes.is_empty(),
+            "the status write never reached host storage"
+        );
+        assert!(
+            runtimes
+                .iter()
+                .all(|runtime| *runtime == Some(shared.handle().id())),
+            "storage writes arrived from {runtimes:?}"
+        );
+    }
+
+    #[test]
+    fn a_native_status_read_follows_the_os_gate() {
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        ))
         .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(

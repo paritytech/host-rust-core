@@ -7,7 +7,7 @@ struct TrUAPIWsBridgeTests {
     @Test(.timeLimit(.minutes(1)))
     func testFeatureSupportedRoundTripOverWsBridge() async throws {
         let bridge = StubHostBridge()
-        let runtime = try TrUAPIHostRuntime(
+        let runtime = try await TrUAPIHostRuntime(
             bridge: bridge,
             runtimeConfig: Self.makeHostRuntimeConfig()
         )
@@ -44,7 +44,7 @@ struct TrUAPIWsBridgeTests {
     @Test(.timeLimit(.minutes(1)))
     func testHostInfoReportsTheIosPlatform() async throws {
         let bridge = StubHostBridge()
-        let runtime = try TrUAPIHostRuntime(
+        let runtime = try await TrUAPIHostRuntime(
             bridge: bridge,
             runtimeConfig: Self.makeHostRuntimeConfig()
         )
@@ -81,7 +81,7 @@ struct TrUAPIWsBridgeTests {
     func testReturningToTheForegroundRebindsTheBridgeOnItsPort() async throws {
         let bridge = StubHostBridge()
         let notifications = NotificationCenter()
-        let runtime = try TrUAPIHostRuntime(
+        let runtime = try await TrUAPIHostRuntime(
             bridge: bridge,
             runtimeConfig: Self.makeHostRuntimeConfig(),
             notificationCenter: notifications

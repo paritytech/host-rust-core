@@ -1,11 +1,13 @@
 //! The one tokio runtime every native core task runs on: subscriptions and
 //! background loops spawned through the core's [`Spawner`](crate::subscription::Spawner),
-//! and the WebSocket bridge's connections.
+//! the work behind every host-called entry point, and the WebSocket bridge's
+//! connections.
 
 use std::io;
 use std::sync::{Mutex, OnceLock};
 
 use tokio::runtime::{Handle, Runtime};
+use tokio::task::JoinHandle;
 
 /// Process-wide executor shared by every native host runtime and product bridge.
 ///
@@ -65,6 +67,34 @@ pub(crate) fn shared_native_executor() -> io::Result<(&'static SharedNativeExecu
     Ok((executor, initialized))
 }
 
+/// Start `work` on the core runtime and return a future for its output that
+/// any executor can poll, so a host thread only waits and never runs core
+/// code. Dropping the returned future aborts the task, as dropping the work
+/// itself would. A panic in `work` resumes in the caller.
+pub(crate) fn run_on_core<T: Send + 'static>(
+    core: &Handle,
+    work: impl Future<Output = T> + Send + 'static,
+) -> impl Future<Output = T> + Send + 'static {
+    let mut task = AbortOnDrop(core.spawn(work));
+    async move {
+        match (&mut task.0).await {
+            Ok(output) => output,
+            Err(error) => match error.try_into_panic() {
+                Ok(panic) => std::panic::resume_unwind(panic),
+                Err(error) => panic!("core task ended without an answer: {error}"),
+            },
+        }
+    }
+}
+
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +139,67 @@ mod tests {
             first.expect("first dispatch task"),
             second.expect("second dispatch task"),
         );
+    }
+
+    fn core() -> Handle {
+        shared_native_executor()
+            .expect("shared native executor")
+            .0
+            .handle()
+    }
+
+    #[test]
+    fn run_on_core_runs_the_work_on_the_core_runtime_for_a_host_thread_caller() {
+        let ran_on = futures::executor::block_on(run_on_core(&core(), async {
+            Handle::try_current().map(|handle| handle.id()).ok()
+        }));
+
+        assert_eq!(ran_on, Some(core().id()));
+    }
+
+    /// Hosts stop long-running calls such as serving a paired session by
+    /// cancelling the task awaiting them, so the core task must stop too.
+    #[test]
+    fn dropping_the_call_aborts_the_core_task() {
+        struct SignalOnDrop(std::sync::mpsc::Sender<()>);
+        impl Drop for SignalOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+        let mut call = Box::pin(run_on_core(&core(), async move {
+            let _guard = SignalOnDrop(dropped_tx);
+            started_tx.send(()).unwrap();
+            futures::future::pending::<()>().await;
+        }));
+        let waker = futures::task::noop_waker();
+        assert!(
+            call.as_mut()
+                .poll(&mut core::task::Context::from_waker(&waker))
+                .is_pending()
+        );
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("core task never started");
+
+        drop(call);
+
+        dropped_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("core task kept running after its caller went away");
+    }
+
+    #[test]
+    fn a_panic_in_the_core_task_resumes_in_the_caller() {
+        let outcome = std::panic::catch_unwind(|| {
+            futures::executor::block_on(run_on_core(&core(), async { panic!("core failure") }))
+        });
+
+        let panic = outcome.expect_err("the caller must see the panic");
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"core failure"));
     }
 
     #[test]

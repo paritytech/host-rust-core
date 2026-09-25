@@ -112,7 +112,7 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
     private suspend fun build(): Result<TrUAPIHostRuntime> = runCatching {
         val config = buildRuntimeConfig()
         cachedChains.set(chainDirectory.resolve())
-        TrUAPIHostRuntime(HostRuntimeBridge(), config)
+        TrUAPIHostRuntime.create(HostRuntimeBridge(), config)
     }
 
     private fun wire(runtime: TrUAPIHostRuntime) {

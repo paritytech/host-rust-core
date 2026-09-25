@@ -27,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -68,7 +69,7 @@ class MediaPermissionIntegrationTest {
             assetHubChainGenesisHash = ByteArray(32),
             networkSuffix = "paseo",
         )
-        TrUAPIHostRuntime(bridge, config).use { runtime ->
+        runBlocking { TrUAPIHostRuntime.create(bridge, config) }.use { runtime ->
             runtime.openProductExecution(bridge, ProductExecutionConfig("media.paseo", ProductExecutionKind.APP)).use { execution ->
                 val endpoint = execution.startWsBridge()
                 lateinit var webView: WebView
@@ -111,9 +112,11 @@ class MediaPermissionIntegrationTest {
                         call("capture('$name')", "NotAllowedError")
                         assertEquals(listOf("prompt:$capability"), bridge.events.toList())
 
-                        execution.setPermissionAuthorizationStatus(
-                            PermissionAuthorizationRequest.Device(capability), PermissionAuthorizationStatus.NOT_DETERMINED,
-                        )
+                        runBlocking {
+                            execution.setPermissionAuthorizationStatus(
+                                PermissionAuthorizationRequest.Device(capability), PermissionAuthorizationStatus.NOT_DETERMINED,
+                            )
+                        }
                         bridge.decisions.add(PermissionDecision.ALLOW_ONCE)
                         call(
                             "window.__HOST_API_CLIENT__.client.permissions.requestDevicePermission('$name')" +

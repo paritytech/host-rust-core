@@ -152,7 +152,7 @@ final class MyChatBridge: ChatHostBridge, @unchecked Sendable {
     func listRooms() throws -> [ChatRoom] { store.rooms() }
 }
 
-let runtime = try TrUAPIHostRuntime(
+let runtime = try await TrUAPIHostRuntime(
     bridge: bridge,
     runtimeConfig: HostRuntimeConfig(
         hostName: "My Chat Host",
@@ -163,7 +163,7 @@ let runtime = try TrUAPIHostRuntime(
     )
 )
 // Chat needs an active session; without one every Chat call answers denied.
-try runtime.activateLocalSession(secret: secret)
+try await runtime.activateLocalSession(secret: secret)
 
 let execution = try runtime.openProductExecution(
     bridge: bridge,
@@ -349,7 +349,7 @@ Statement-store allowances are granted per period, so a host has to re-register 
 Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
 
 ```swift
-try runtime.trackStatementRenewalTargets([
+try await runtime.trackStatementRenewalTargets([
     .walletSso,
     .account(accountId: deviceStatementKey, label: "device"),
 ])
@@ -363,10 +363,10 @@ The ledger persists across launches, and an entry is dropped when the identity t
 
 Only `.account` can be untracked. `.walletSso` and `.productStatementAllowance` are recipes with no removal path, so a product you no longer run keeps being resolved and renewed until the promising identity changes.
 
-Then run a pass from a background task, off the main thread. It needs an active session too, which is the whole difficulty here: a `BGTaskScheduler` wake on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
+Then run a pass from a background task. It needs an active session too, which is the whole difficulty here: a `BGTaskScheduler` wake on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 
 ```swift
-let report = try runtime.renewStatementAllowances()
+let report = try await runtime.renewStatementAllowances()
 for outcome in report.outcomes {
     log("\(outcome.label): \(outcome.status)")
 }
@@ -530,8 +530,8 @@ let runtimeConfig = HostRuntimeConfig(
     assetHubChainGenesisHash: Data(repeating: 1, count: 32),
     networkSuffix: "dot"
 )
-let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
-try runtime.activateLocalSession(secret: entropyBytes, liteUsername: nil)
+let runtime = try await TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
+try await runtime.activateLocalSession(secret: entropyBytes, liteUsername: nil)
 let execution = try runtime.openProductExecution(
     bridge: bridge,
     configuration: ProductExecutionConfig(
@@ -564,7 +564,7 @@ try TrUAPIHost.installProductScripts(
 webView.load(URLRequest(url: productURL))
 
 // Settings changes apply to subsequent permission-checked operations.
-try execution.setPermissionAuthorizationStatus(
+try await execution.setPermissionAuthorizationStatus(
     request: .remote(RemotePermissionRequest(permission: .remote(domains: ["api.example.com"]))),
     status: .denied
 )
@@ -574,7 +574,7 @@ webView.stopLoading()
 execution.close()
 
 // On logout:
-runtime.disconnect()
+await runtime.disconnect()
 ```
 
 The updated `@parity/truapi` SDK keeps the same client across connection loss. The SDK replaces the socket; interrupted operations fail with `ConnectionResetError` and are never replayed. Recreate read/watch subscriptions in the provider that owns them. SDKs 0.16.0 and 0.18.0 can still start through the minimal `__HOST_API_PORT__` adapter, but require a page reload after a disconnect. Remove that adapter once deployed products adopt the injected client.

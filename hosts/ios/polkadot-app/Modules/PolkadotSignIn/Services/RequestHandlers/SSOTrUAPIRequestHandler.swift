@@ -39,7 +39,7 @@ final class SSOTrUAPIRequestHandler: SSORequestHandling {
 
         let runtime: any SSOTruAPIRuntimeHandling
         do {
-            runtime = try runtimeProvider.sharedRuntime()
+            runtime = try await runtimeProvider.sharedRuntime()
         } catch {
             logger.error("sharedRuntime unavailable (pre-onboarding?); dropping \(messageId): \(error)")
             return

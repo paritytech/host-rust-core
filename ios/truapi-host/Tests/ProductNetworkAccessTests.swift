@@ -24,7 +24,7 @@ struct ProductNetworkAccessTests {
             });
             """])
         defer { product.close() }
-        try product.execution.setPermissionAuthorizationStatus(
+        try await product.execution.setPermissionAuthorizationStatus(
             request: .remote(RemotePermissionRequest(permission: .remote(domains: ["127.0.0.1"]))),
             status: .authorized
         )
@@ -75,7 +75,7 @@ struct ProductNetworkAccessTests {
         let permission = PermissionAuthorizationRequest.remote(
             RemotePermissionRequest(permission: .remote(domains: ["127.0.0.1"]))
         )
-        try product.execution.setPermissionAuthorizationStatus(request: permission, status: .authorized)
+        try await product.execution.setPermissionAuthorizationStatus(request: permission, status: .authorized)
         #expect(try await fetch(product.webView, remote) == "allowed")
         #expect(product.server.requests(path: "/allowed") == 1)
 
@@ -83,7 +83,7 @@ struct ProductNetworkAccessTests {
         #expect(try await fetch(product.webView, redirect) == "allowed")
         #expect(product.server.requests(path: "/blocked") == 1)
 
-        try product.execution.setPermissionAuthorizationStatus(request: permission, status: .denied)
+        try await product.execution.setPermissionAuthorizationStatus(request: permission, status: .denied)
         #expect(try await fetch(product.webView, remote) == "denied")
         #expect(product.server.requests(path: "/allowed") == 1)
     }
@@ -269,7 +269,7 @@ private struct NetworkTestProduct {
     ) async throws -> NetworkTestProduct {
         let server = try await NetworkTestServer.start()
         do {
-            let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: HostRuntimeConfig(
+            let runtime = try await TrUAPIHostRuntime(bridge: bridge, runtimeConfig: HostRuntimeConfig(
                 hostName: "network-tests", peopleChainGenesisHash: Data(repeating: 0, count: 32),
                 bulletinChainGenesisHash: Data(repeating: 0, count: 32),
                 assetHubChainGenesisHash: Data(repeating: 1, count: 32), networkSuffix: "paseo"

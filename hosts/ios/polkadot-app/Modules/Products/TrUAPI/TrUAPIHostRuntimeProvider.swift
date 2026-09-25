@@ -18,18 +18,26 @@ enum TrUAPIRuntimeConfigError: Error {
 /// shared across every SPA and chat product.
 protocol TrUAPIHostRuntimeProviding: AnyObject, Sendable {
     /// Return the shared runtime, building and activating its local session on
-    /// first use. Subsequent calls return the cached instance.
-    func sharedRuntime() throws -> TrUAPIHostRuntime
+    /// first use. Concurrent first calls share one build, later calls return
+    /// the built instance, and a failed build is forgotten so the next call
+    /// retries.
+    func sharedRuntime() async throws -> TrUAPIHostRuntime
+
+    /// ``sharedRuntime()`` for synchronous callers such as view factories.
+    /// Returns at once when the runtime is built, and otherwise blocks the
+    /// calling thread until the build finishes.
+    func sharedRuntimeWaitingIfNeeded() throws -> TrUAPIHostRuntime
 
     /// Anchor the host's core confirmations (signing, permission prompts) to
     /// the given view. Until it is attached, host-level prompts deny.
     @MainActor func setPresentationView(_ view: ControllerBackedProtocol)
 }
 
-/// Lazily builds one ``TrUAPIHostRuntime`` from host identity + people/bulletin
-/// genesis hashes + the local session secret, activates the local session
-/// once, and caches it. Lazy so startup is not blocked and the runtime is only
-/// assembled once chains are synced and a session secret exists.
+/// Builds one ``TrUAPIHostRuntime`` from host identity + people/bulletin
+/// genesis hashes + the local session secret, which activates the local
+/// session, and caches it. The build runs off the caller's thread, is started
+/// at launch and retried on demand, so it can wait until chains are synced
+/// and a session secret exists.
 final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Sendable {
     private let chainRegistry: ChainRegistryProtocol
     private let entropyManager: RootEntropyManaging
@@ -40,7 +48,8 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
     private let logger: LoggerProtocol
 
     private let lock = NSLock()
-    private var cachedRuntime: TrUAPIHostRuntime?
+    private var boot: Task<TrUAPIHostRuntime, Error>?
+    private var builtRuntime: TrUAPIHostRuntime?
 
     init(
         chainRegistry: ChainRegistryProtocol,
@@ -65,14 +74,57 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
         confirmationRouterFacade.setPresentationView(view)
     }
 
-    func sharedRuntime() throws -> TrUAPIHostRuntime {
-        lock.lock()
-        defer { lock.unlock() }
+    func sharedRuntime() async throws -> TrUAPIHostRuntime {
+        let boot = currentBoot()
+        do {
+            let runtime = try await boot.value
+            lock.withLock { builtRuntime = runtime }
+            return runtime
+        } catch {
+            lock.withLock {
+                if self.boot == boot {
+                    self.boot = nil
+                }
+            }
+            throw error
+        }
+    }
 
-        if let cachedRuntime {
-            return cachedRuntime
+    func sharedRuntimeWaitingIfNeeded() throws -> TrUAPIHostRuntime {
+        if let runtime = lock.withLock({ builtRuntime }) {
+            return runtime
         }
 
+        let outcome = BootOutcome()
+        let finished = DispatchSemaphore(value: 0)
+        Task.detached { [self] in
+            do {
+                outcome.result = .success(try await sharedRuntime())
+            } catch {
+                outcome.result = .failure(error)
+            }
+            finished.signal()
+        }
+        finished.wait()
+        return try outcome.result!.get()
+    }
+}
+
+private extension TrUAPIHostRuntimeProvider {
+    /// Detached so a main-thread caller blocked in
+    /// ``sharedRuntimeWaitingIfNeeded()`` never waits on work queued behind it.
+    func currentBoot() -> Task<TrUAPIHostRuntime, Error> {
+        lock.withLock {
+            if let boot {
+                return boot
+            }
+            let boot = Task.detached { [self] in try await buildRuntime() }
+            self.boot = boot
+            return boot
+        }
+    }
+
+    func buildRuntime() async throws -> TrUAPIHostRuntime {
         let secret = try entropyManager.fetchRootEntropy()
         let networkSuffix = try tldProvider.currentTldOrError()
         let runtimeConfig = try Self.makeRuntimeConfig(
@@ -99,13 +151,14 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
             logger: logger
         )
 
-        let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
+        let runtime = try await TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
         bridge.attach(runtime)
-        try runtime.activateLocalSession(secret: secret, liteUsername: settingsManager.string(for: .username))
-
-        cachedRuntime = runtime
         return runtime
     }
+}
+
+private final class BootOutcome: @unchecked Sendable {
+    var result: Result<TrUAPIHostRuntime, Error>?
 }
 
 extension TrUAPIHostRuntimeProvider {
