@@ -749,13 +749,16 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         )
         self.inner = inner
         self.notificationCenter = notificationCenter
-        // iOS reclaims a suspended app's listening sockets.
+        // iOS reclaims a suspended app's listening sockets. Rebinding waits on
+        // the Rust runtime's threads, so it runs off the main thread and at their QoS.
         foregroundObserver = notificationCenter.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil,
             queue: nil
         ) { _ in
-            inner.relistenWsBridge()
+            DispatchQueue.global().async(flags: .noQoS) {
+                inner.relistenWsBridge()
+            }
         }
     }
 

@@ -100,7 +100,12 @@ struct TrUAPIWsBridgeTests {
             notifications.post(name: UIApplication.willEnterForegroundNotification, object: nil)
         }
 
-        #expect(bridge.coreLogs.contains("truapi.ws_bridge.relistened port=\(endpoint.port)"))
+        let rebound = "truapi.ws_bridge.relistened port=\(endpoint.port)"
+        let deadline = Date().addingTimeInterval(5)
+        while !bridge.coreLogs.contains(rebound), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(bridge.coreLogs.contains(rebound))
         let url = try #require(URL(string: "ws://127.0.0.1:\(endpoint.port)/?t=\(endpoint.token)"))
         let task = URLSession.shared.webSocketTask(with: url)
         task.resume()
