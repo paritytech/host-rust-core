@@ -1,0 +1,5 @@
+error: a #[dao] method takes no type or const parameters; use concrete types
+ --> tests/ui/dao/fail/generic_method.rs:6:14
+  |
+6 |     fn count<T>(&self, amount: T) -> rusqlite::Result<i64>;
+  |              ^

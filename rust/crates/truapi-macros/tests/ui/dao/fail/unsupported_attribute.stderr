@@ -1,0 +1,5 @@
+error: a #[dao] method supports only `doc`, `cfg` and `allow` attributes
+ --> tests/ui/dao/fail/unsupported_attribute.rs:5:5
+  |
+5 |     #[inline]
+  |     ^

@@ -1,0 +1,5 @@
+error: `Vec<u8>` would read one byte per row; for a blob column return a row struct with `#[serde(with = "serde_bytes")]`, or `Vec<Vec<u8>>` for many
+ --> tests/ui/dao/fail/qualified_vec_u8.rs:6:52
+  |
+6 |     fn payload(&self, id: i64) -> rusqlite::Result<std::vec::Vec<core::primitive::u8>>;
+  |                                                    ^^^

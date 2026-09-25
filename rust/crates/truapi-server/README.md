@@ -230,7 +230,9 @@ device backups: it holds durable-transaction state that must not be restored
 onto another device. `NativeHostRuntimeConfig.database_directory` sets it on
 native hosts, `SigningHostRuntime::set_core_db` on any embedder, and
 `core_database_status()` opens it and reports the SQLite version, schema
-version and path. Web hosts do not compile the store.
+version and path. Web hosts do not compile the store. Tables are read and
+written through `#[dao]` traits (see `truapi-macros`), whose statements a test
+prepares against the migrated schema with `store::prepare_all`.
 
 ### The two roles
 

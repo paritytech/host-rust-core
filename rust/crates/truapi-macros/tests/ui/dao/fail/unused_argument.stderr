@@ -1,0 +1,5 @@
+error: argument `min` is not used in the SQL
+ --> tests/ui/dao/fail/unused_argument.rs:6:19
+  |
+6 |     fn all(&self, min: i64) -> rusqlite::Result<Vec<String>>;
+  |                   ^^^

@@ -3,12 +3,66 @@
 //! Each macro's implementation lives in its own module. Rust requires the
 //! public proc-macro entry points to be defined at the crate root.
 
+mod dao;
 mod service;
 mod sso_service;
 mod versioned_type;
 mod wire;
 
 use proc_macro::TokenStream;
+
+/// Turn a trait of SQL-annotated methods into a data-access object over the
+/// core `store::Db` (`truapi-server` only).
+///
+/// ```ignore
+/// #[dao]
+/// pub(crate) trait LedgerDao {
+///     #[query("SELECT id, note FROM ledger WHERE note = :note")]
+///     fn find(&self, note: &str) -> rusqlite::Result<Option<Entry>>;
+///
+///     #[execute("INSERT INTO ledger (note) VALUES (:note) RETURNING id")]
+///     fn insert(&self, note: &str) -> rusqlite::Result<i64>;
+///
+///     #[execute("UPDATE ledger SET amount = :amount WHERE id = :id")]
+///     fn set_amount(&self, id: i64, amount: i64) -> rusqlite::Result<usize>;
+///
+///     #[transaction]
+///     fn reset(&self, id: i64) -> rusqlite::Result<()> {
+///         self.set_amount(id, 0).map(|_| ())
+///     }
+/// }
+/// ```
+///
+/// Generates, from one declaration:
+///
+/// - The trait with its `#[query]` and `#[execute]` methods, implemented for
+///   `rusqlite::Connection`, so the methods compose inside one caller-owned
+///   `Db::write`. A `Transaction` dereferences to a `Connection`, so
+///   `tx.find(…)` works there.
+/// - `LedgerDaoTransactions` with the `#[transaction]` methods, implemented
+///   only for `rusqlite::Transaction`: they rely on the caller's transaction,
+///   so a bare connection cannot call them.
+/// - `LedgerDaoDb`, whose async methods take a connection from the database
+///   themselves: `#[query]` on a read-only reader, `#[execute]` and
+///   `#[transaction]` on the writer, one transaction per call.
+///   `LedgerDaoDb::QUERIES` lists every statement, and whether it must only
+///   read, for a test that prepares them against the migrated schema.
+///
+/// SQL binds `:name` parameters from the method's arguments by name; an unbound
+/// parameter, an unused argument or another parameter form (`?`, `@`, `$`,
+/// `#`) is a compile error. Arguments are owned values, `&T` or `Option<&T>`.
+/// Every method returns `rusqlite::Result<T>`. A `#[query]` returns `Vec<T>`
+/// (every row), `Option<T>` (the first row, if any) or `T` (the first row,
+/// which must exist); a nullable column in an optional row is
+/// `Option<Option<T>>`. Rows are deserialized with `serde_rusqlite` into
+/// structs, not tuples or arrays, and `Vec<u8>` is rejected because it would
+/// read one byte per row. An `#[execute]` returns `usize` (rows changed), `()`,
+/// or rows from its `RETURNING` clause in the same shapes as a query. A method
+/// may carry `doc`, `cfg` and `allow` attributes.
+#[proc_macro_attribute]
+pub fn dao(args: TokenStream, item: TokenStream) -> TokenStream {
+    dao::expand(args, item)
+}
 
 /// Declare connection-scoped middleware required by a TrUAPI service trait.
 ///

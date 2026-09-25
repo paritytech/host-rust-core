@@ -1,0 +1,5 @@
+error: mark each #[dao] method with #[query("…")], #[execute("…")] or #[transaction]
+ --> tests/ui/dao/fail/unmarked_method.rs:5:8
+  |
+5 |     fn count(&self) -> rusqlite::Result<i64>;
+  |        ^^^^^

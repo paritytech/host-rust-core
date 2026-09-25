@@ -1,0 +1,5 @@
+error: a RETURNING clause returns rows; declare the row type (`T`, `Option<T>` or `Vec<T>`) as the result
+ --> tests/ui/dao/fail/returning_without_rows.rs:5:15
+  |
+5 |     #[execute("INSERT INTO ledger (note) VALUES (:note) RETURNING id")]
+  |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
