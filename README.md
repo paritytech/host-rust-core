@@ -325,6 +325,8 @@ A visible page retries a failed reconnect after 250 ms, 1 s and 4 s; after that,
 call or return to a visible page tries again.
 On iOS the host rebinds its localhost listener on the same port each time the app
 returns to the foreground, since the system reclaims a suspended app's listening socket.
+On every platform the bridge also rebinds the port itself when its listening socket is destroyed,
+pausing between failed attempts instead of retrying in a tight loop; other accept errors keep the port.
 When WebKit loses its networking process, every MessagePort a page already holds stops
 delivering; the container detects this after a disconnect and reloads the page.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
