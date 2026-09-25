@@ -899,11 +899,10 @@ class TrUAPIHostRuntime private constructor(
 
     /**
      * Open the core database if needed and report its SQLite version, schema
-     * version and file path. Blocks while the file opens; call it off the main
-     * thread.
+     * version and file path.
      */
     @Throws(NativeCoreDatabaseException::class)
-    fun coreDatabaseStatus(): DbStatus = inner.coreDatabaseStatus()
+    suspend fun coreDatabaseStatus(): DbStatus = inner.coreDatabaseStatus()
 
     /** Activate or replace the process-wide local signing session. */
     @Throws(HostRejection::class)

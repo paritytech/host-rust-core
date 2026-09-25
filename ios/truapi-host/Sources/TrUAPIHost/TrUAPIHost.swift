@@ -862,10 +862,9 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     }
 
     /// Opens the core database if needed and reports its SQLite version,
-    /// schema version and file path. Blocks while the file opens, so call it
-    /// off the main thread.
-    public func coreDatabaseStatus() throws -> DbStatus {
-        try inner.coreDatabaseStatus()
+    /// schema version and file path.
+    public func coreDatabaseStatus() async throws -> DbStatus {
+        try await inner.coreDatabaseStatus()
     }
 
     public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
