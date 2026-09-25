@@ -41,6 +41,7 @@ mod statement_store_rpc;
 mod vrf;
 
 use core::future::Future;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -127,7 +128,8 @@ pub(crate) const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration:
 /// observe the cancellation and unwind (unsubscribing its statement streams)
 /// before it is dropped. A call parked in the statement-store setup, which does
 /// not watch the cancel token, would otherwise outlive its deadline, so this
-/// caps the wait. A normal unwind completes in well under this.
+/// caps the wait. A normal unwind completes in well under this. A disposed
+/// product runtime gives its withdrawn calls the same grace before aborting.
 pub(crate) const AUTHORITY_CANCEL_UNWIND_GRACE: Duration = Duration::from_secs(2);
 /// Resource allocation may include a People -> Bulletin cross-chain
 /// propagation before the signing host can truthfully report `Allocated`.
@@ -308,6 +310,9 @@ pub struct ProductRuntimeHost {
     /// operations is the host's call, made in `begin_operation`, since the
     /// host is what the operations keep running.
     open_operations: Mutex<HashSet<u32>>,
+    /// Set once the connection is disposed. An operation the host answers
+    /// after that is ended rather than held, and a broadcast keeps running.
+    closed: AtomicBool,
 }
 
 /// A connection that goes away without ending its operations still owes the
@@ -342,6 +347,7 @@ impl ProductRuntimeHost {
             renderer: adapters.renderer,
             pocket_platform: adapters.pocket_platform,
             open_operations: Mutex::new(HashSet::new()),
+            closed: AtomicBool::new(false),
         }
     }
 
@@ -471,6 +477,7 @@ impl ProductRuntimeHost {
             renderer,
             pocket_platform: None,
             open_operations: Mutex::new(HashSet::new()),
+            closed: AtomicBool::new(false),
         };
         (host, pairing_host)
     }
@@ -1134,14 +1141,27 @@ impl ProductRuntimeHost {
     /// Record a pending operation and take the worker reference it holds, so
     /// an operation outliving the product's surface still reads as demand.
     pub(crate) fn hold_worker_for_operation(&self, id: u32) {
-        if self
+        let mut open = self
             .open_operations
             .lock()
-            .expect("open operations mutex poisoned")
-            .insert(id)
-        {
+            .expect("open operations mutex poisoned");
+        if self.is_closed() {
+            drop(open);
+            let platform = self.platform.clone();
+            let product = self.product.clone();
+            (self.services.spawner)(Box::pin(async move {
+                let _ = platform.end_operation(&product, id).await;
+            }));
+            return;
+        }
+        if open.insert(id) {
             self.acquire_worker_reference();
         }
+    }
+
+    /// Whether this connection has been disposed.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     /// Drop every worker reference this connection's open operations hold.
@@ -1155,6 +1175,7 @@ impl ProductRuntimeHost {
     /// already gone drops that work. The references are still released, and
     /// the host is shutting down with its own records anyway.
     pub(crate) fn release_open_operations(&self) {
+        self.closed.store(true, Ordering::Release);
         let open = core::mem::take(
             &mut *self
                 .open_operations

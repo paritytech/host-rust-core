@@ -733,7 +733,7 @@ async fn connection_lifecycle(
     // handler cannot stall the read loop and independent frames can run on
     // different executor workers. Responses may interleave; the wire protocol
     // matches them by request id, and `WsFrameSink::emit_frame` is thread-safe.
-    let mut in_flight = tokio::task::JoinSet::new();
+    let mut in_flight = DetachOnDrop(tokio::task::JoinSet::new());
     {
         let writer = async {
             while let Some(bytes) = out_rx.recv().await {
@@ -751,10 +751,10 @@ async fn connection_lifecycle(
             };
             match frame {
                 Some(Ok(WsMessage::Binary(bytes))) => {
-                    while in_flight.try_join_next().is_some() {}
+                    while in_flight.0.try_join_next().is_some() {}
                     let product_runtime = product_runtime.clone();
                     let frame_logger = logger.clone();
-                    in_flight.spawn(async move {
+                    in_flight.0.spawn(async move {
                         if let Err(err) = product_runtime.receive_frame(bytes.to_vec()).await {
                             frame_logger("truapi.ws_bridge.frame_error", &err.to_string());
                         }
@@ -778,6 +778,18 @@ async fn connection_lifecycle(
     drop(in_flight);
     drop(dispose_guard);
     logger("truapi.ws_bridge.connection_closed", &peer.to_string());
+}
+
+/// In-flight frame tasks that keep running when the connection is dropped.
+///
+/// Disposal withdraws their calls and aborts them after its grace. Aborting
+/// here would drop a call before it could tell a paired host to stop.
+struct DetachOnDrop(tokio::task::JoinSet<()>);
+
+impl Drop for DetachOnDrop {
+    fn drop(&mut self) {
+        self.0.detach_all();
+    }
 }
 
 // Scan duplicate `t=` parameters too, so their order cannot expose an early match.
@@ -914,6 +926,36 @@ mod tests {
         assert!(path_token_matches(Some("/?t=wrong&t=abc"), "abc"));
         assert!(path_token_matches(Some("/?t=abc&t=wrong"), "abc"));
         assert!(!path_token_matches(Some("/?t=wrong&t=alsowrong"), "abc"));
+    }
+
+    /// A closed connection's frame tasks must outlive it: disposal withdraws
+    /// their calls, and a call aborted with the connection would never get to
+    /// tell a paired host to stop.
+    #[test]
+    fn dropping_the_in_flight_set_leaves_its_frames_running() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let (release, released) = tokio::sync::oneshot::channel::<()>();
+            let (finished, done) = tokio::sync::oneshot::channel::<()>();
+            let mut in_flight = DetachOnDrop(tokio::task::JoinSet::new());
+            in_flight.0.spawn(async move {
+                let _ = released.await;
+                let _ = finished.send(());
+            });
+
+            drop(in_flight);
+            let _ = release.send(());
+
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(1), done)
+                    .await
+                    .map(|finished| finished.is_ok()),
+                Ok(true)
+            );
+        });
     }
 
     #[test]

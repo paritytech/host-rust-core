@@ -1541,7 +1541,9 @@ impl ProductRuntime {
     /// Dispose this host core. Idempotent.
     ///
     /// Disposal suppresses future outgoing frames, withdraws in-flight calls
-    /// and aborts them after a grace, and cancels active subscriptions.
+    /// and aborts them after a grace, and cancels active subscriptions. It
+    /// returns before that abort, so a handler that ignores its token can run
+    /// for up to the grace after the product has gone.
     ///
     /// Withdrawing first lets a call that is waiting on a paired host tell it
     /// to stop, which an abort alone would drop before it could.
@@ -3202,6 +3204,18 @@ mod tests {
             test_spawner(),
             Arc::new(RecordingSink::default()),
         ));
+        // The boot reconcile clears the session it finds empty, so install
+        // this one only after it has run.
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "the boot reconcile did not report the empty session store",
+        );
         runtime
             .admin
             .product_runtime()
@@ -3283,6 +3297,46 @@ mod tests {
             host.services().worker_ledger.count("myapp.dot"),
             0,
             "disposing a connection drops the demand its open operations held"
+        );
+    }
+
+    /// Disposal withdraws a `begin_operation` rather than dropping it, so the
+    /// host can still answer it. An operation it answers for a connection
+    /// already gone must be ended, not held open on a worker nobody uses.
+    #[test]
+    fn an_operation_the_host_answers_after_dispose_is_ended_not_held() {
+        let platform = Arc::new(StubPlatform::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+        let host = runtime.admin.product_runtime().clone();
+        runtime.dispose();
+
+        futures::executor::block_on(truapi::api::Worker::begin_operation(
+            host.as_ref(),
+            &truapi::CallContext::default(),
+            truapi::versioned::worker::HostWorkerBeginOperationRequest::V1(
+                truapi::v01::HostWorkerBeginOperationRequest { label: None },
+            ),
+        ))
+        .expect("begin operation");
+
+        let ended = || {
+            platform
+                .ended_operations
+                .lock()
+                .expect("ended operations mutex poisoned")
+                .clone()
+        };
+        wait_until(|| !ended().is_empty(), "the late operation was not ended");
+        assert_eq!(
+            (host.services().worker_ledger.count("myapp.dot"), ended()),
+            (0, vec![("myapp.dot".to_string(), 1)])
         );
     }
 

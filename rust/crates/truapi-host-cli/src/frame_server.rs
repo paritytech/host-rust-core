@@ -55,6 +55,10 @@ const HEAD_TERMINATOR: &[u8] = b"\r\n\r\n";
 /// connection is dropped, so a peer that connects and says nothing cannot pin a
 /// task forever.
 const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a closed connection waits for its in-flight frames before
+/// aborting them: past the product runtime's own disposal grace, so a call
+/// has time to tell a paired host to stop.
+const IN_FLIGHT_DRAIN: Duration = Duration::from_secs(3);
 
 /// Process-local product selection shared by the command loop and frame server.
 pub struct ProductSelection {
@@ -723,8 +727,14 @@ where
     }
 
     product_runtime.dispose();
-    in_flight.abort_all();
-    while in_flight.join_next().await.is_some() {}
+    let drained = tokio::time::timeout(IN_FLIGHT_DRAIN, async {
+        while in_flight.join_next().await.is_some() {}
+    })
+    .await;
+    if drained.is_err() {
+        in_flight.abort_all();
+        while in_flight.join_next().await.is_some() {}
+    }
     drop(product_runtime);
     drop(outbound_tx);
     let _ = writer.await;
@@ -1027,6 +1037,68 @@ mod tests {
         Ok(())
     }
 
+    /// A runtime whose disposal releases the call it is running, the way a
+    /// product runtime's withdrawal does.
+    #[derive(Default)]
+    struct WithdrawingRuntime {
+        dispatch_started: Notify,
+        withdrawn: Notify,
+        finished_after_withdrawal: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl ConnectionRuntime for WithdrawingRuntime {
+        async fn receive_frame(&self, _frame: Vec<u8>) -> Result<(), ProductRuntimeError> {
+            self.dispatch_started.notify_one();
+            self.withdrawn.notified().await;
+            self.finished_after_withdrawal.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn dispose(&self) {
+            self.withdrawn.notify_one();
+        }
+    }
+
+    /// A withdrawn call has to run once more to tell a paired host to stop.
+    /// Aborting the frame tasks as soon as the connection closes drops it
+    /// before it can.
+    #[tokio::test]
+    async fn disconnect_lets_a_withdrawn_dispatch_finish() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let runtime = Arc::new(WithdrawingRuntime::default());
+        let server_runtime = runtime.clone();
+        let product = ProductSelection::new("localhost:3000".into(), ProductExecutionKind::App)?;
+        let product_updates = product.subscribe();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let websocket = accept_async(stream).await?;
+            let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+            let result = drive_connection(
+                websocket,
+                server_runtime,
+                None,
+                product_updates,
+                outbound_tx,
+                outbound_rx,
+            )
+            .await;
+            drop(product);
+            result
+        });
+
+        let stream = TcpStream::connect(address).await?;
+        let (mut websocket, _) = client_async("ws://localhost/", stream).await?;
+        websocket.send(Message::Binary(vec![0])).await?;
+        tokio::time::timeout(Duration::from_secs(1), runtime.dispatch_started.notified()).await?;
+        drop(websocket);
+
+        tokio::time::timeout(IN_FLIGHT_DRAIN + Duration::from_secs(1), server).await???;
+        assert!(runtime.finished_after_withdrawal.load(Ordering::SeqCst));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn disconnect_cancels_pending_dispatch_and_disposes_runtime() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -1064,7 +1136,7 @@ mod tests {
         .await?;
         drop(websocket);
 
-        tokio::time::timeout(Duration::from_secs(1), server).await???;
+        tokio::time::timeout(IN_FLIGHT_DRAIN + Duration::from_secs(1), server).await???;
         assert_eq!(
             (
                 runtime.dispose_calls.load(Ordering::SeqCst),

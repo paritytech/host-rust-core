@@ -407,8 +407,8 @@ impl Dispatcher {
         self.subscriptions.cancel_all();
     }
 
-    /// Withdraw every request in flight, and every one that arrives later, as
-    /// if a `Cancel` frame had named each.
+    /// Withdraw every request in flight, and every one that reaches dispatch
+    /// later, as if a `Cancel` frame had named each.
     ///
     /// For a connection going away: each running handler sees a withdrawal,
     /// not a runtime timeout, and can act on it before it is dropped.
@@ -470,8 +470,8 @@ impl Dispatcher {
         Reservation::Start(cancel)
     }
 
-    /// Drop `request_id`'s entry. Returns whether a `Cancel` frame withdrew
-    /// this call while it ran.
+    /// Drop `request_id`'s entry. Returns whether a `Cancel` frame or
+    /// `withdraw_requests` withdrew this call while it ran.
     fn release_request(&self, request_id: &str) -> bool {
         let mut registry = self
             .requests

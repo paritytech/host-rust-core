@@ -272,7 +272,9 @@ impl Chain for ProductRuntimeHost {
         // A withdrawn call answers `Cancelled`, so the product never learns
         // the id it would stop this broadcast with. Any other cancellation
         // still answers with the id, and stopping would strand the product.
+        // A product that closed did not withdraw its broadcast.
         if cx.cancel().reason() == Some(CancellationReason::Cancelled)
+            && !self.is_closed()
             && let Some(operation_id) = response.operation_id.clone()
         {
             self.stop_withdrawn_broadcast(genesis_hash, operation_id)

@@ -68,6 +68,13 @@ payload types: `Err(CallError::Cancelled)` is the `Result`'s `Err` tag followed 
 carries nothing, so the same two bytes are a valid response leg for every request method. The client already uses that
 trick to decline a host-initiated subscription with a fixed `HostFailure` frame.
 
+Tearing down an execution withdraws every call first, as if a `Cancel` had named each, and refuses any that reaches
+dispatch later. A handler waiting on a paired host then tells it to stop, which an abort alone would drop before it
+could. The dispatch futures are aborted once the unwind grace has passed, and the hosts that run each frame as a task
+wait for them rather than abort them first. The registry entries of futures aborted that way are not released, since
+the release runs after the handler returns. They cost a slot each until the registry itself is dropped with the
+connection, and a monotonic id is never presented again, so nothing is left reachable.
+
 ### Why this rides no codec bump
 
 `CallError` gains `Cancelled` as its last variant, so every existing discriminant keeps its index. Two things then keep
@@ -104,12 +111,6 @@ rejection the host never heard about. A signal already aborted when the call is 
 own deadline sends `Cancel` before it rejects, which is the leak it closes: today that deadline drops the pending entry
 and rejects without telling anyone.
 
-Tearing down an execution withdraws every call first, as if a `Cancel` had named each, and refuses any that arrives
-later. A handler waiting on a paired host then tells it to stop, which an abort alone would drop before it could. The
-dispatch futures are aborted once the unwind grace has passed. The registry entries of futures aborted that way are not
-released, since the release runs after the handler returns. They cost a slot each until the registry itself is dropped
-with the connection, and a monotonic id is never presented again, so nothing is left reachable.
-
 ### What a withdrawn call stops
 
 A handler stops at the next point where going on would ask a person, or would act or send a request on the product's
@@ -129,8 +130,8 @@ left to finish. Per site:
   ends with that call's unwind grace, so its answer is not recorded.
 - **Paired-host requests stop at this host.** A request whose call was withdrawn before it was published is never
   published, including a withdrawal that lands while the request is still subscribing. One already published ends the
-  local wait by the path a timeout already takes, and the paired host is not told, because the SSO protocol has no
-  cancel message. See the open question.
+  local wait and sends the paired host a `Cancel` naming it, while it is still the newest request on the session's
+  channel; see [SSO request cancellation][sso].
 - **A local signing host starts no further allocation.** When this host holds the keys, `resourceAllocation.request`
   allocates each resource in turn, and a withdrawal stops it before the next one. An allocation already under way
   runs until the unwind grace ends.
@@ -165,27 +166,10 @@ Each handler returns its method's own error. For a call a `Cancel` frame withdre
 
 ## Open questions
 
-1. Does the SSO protocol need a cancel message? It does for resource allocation and not for signing, and a message
-   alone would not reach the prompt it is meant to stop.
-
-   What the paired host does once the person approves decides whether the missing cancel matters. A signing request, a
-   `createTransaction` included, only returns bytes. The phone broadcasts nothing, and a response nobody is waiting for
-   is skipped by the next call's reply matcher, so a withdrawn signature costs a stale prompt. A resource allocation
-   spends. After approval the responder registers a statement-store or bulletin allowance on chain, or claims one of the
-   day's PGAS slots, depending on what was asked for, and records a renewal target, so a withdrawal that stops at this
-   host still lets the phone spend on the product's behalf.
-
-   A `Cancel` variant would not be enough to stop that. The responder serves one request at a time. It awaits each
-   request, prompt included, before it reads the next statement, so a cancel queued behind the prompt it targets is read
-   only after that prompt has been answered. `Disconnected` already has the same limit. And `confirm_user_action` has
-   no way to withdraw a prompt it has shown. Honouring a cancel on the paired host needs all three of these:
-
-   - a request variant naming the withdrawn message id;
-   - a responder that reads control messages while a request is running;
-   - a platform prompt that can be dismissed, with a check between allocation steps.
-
-   The last one lands in every native SSO stack, not only in the Rust responder. That is a change of its own, not a
-   follow-on to this one.
+1. Does the SSO protocol need a cancel message? Yes: resource allocation spends on the phone after approval, and a
+   message alone does not reach a prompt the paired host is still serving. [SSO request cancellation][sso] specifies
+   it.
 
 [0028]: 0028-wire-message-type-byte.md
+[sso]: sso-request-cancellation.md
 [478]: https://github.com/paritytech/truapi/issues/478

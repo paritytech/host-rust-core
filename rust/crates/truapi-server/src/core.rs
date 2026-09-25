@@ -150,7 +150,7 @@ impl TrUApiCore {
         self.dispatcher.cancel_subscriptions();
     }
 
-    /// Withdraw every request in flight and every one that arrives later.
+    /// Withdraw every request in flight and every one that reaches dispatch later.
     pub fn withdraw_requests(&self) {
         self.dispatcher.withdraw_requests();
     }
