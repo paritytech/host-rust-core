@@ -36,6 +36,10 @@ interface Connection {
   checking?: Promise<void>;
 }
 
+// A host can refuse a reconnect for a moment while it rebinds its listener. A
+// visible page redials after these pauses, then waits for its next call.
+const VISIBLE_RETRY_DELAYS_MS = [250, 1_000, 4_000];
+
 /** Creates a client whose interrupted operations fail and whose later calls reconnect. */
 export function createHostConnection(
   url: string,
@@ -51,6 +55,7 @@ export function createHostConnection(
   let legacy: { receive(frame: Uint8Array): void; close(): void } | undefined;
   let legacyPort: MessagePort | undefined;
   let status: ConnectionStatus = "disconnected";
+  let retries = 0;
   const listeners = new Set<(status: ConnectionStatus) => void>();
 
   function setStatus(next: ConnectionStatus): void {
@@ -79,7 +84,13 @@ export function createHostConnection(
     }
     connection.provider.dispose();
     if (!current) setStatus("disconnected");
-    if (connection.verified && !stopped) setTimeout(activate, 0);
+    if (stopped) return;
+    const delay = VISIBLE_RETRY_DELAYS_MS[retries];
+    if (connection.verified) setTimeout(activate, 0);
+    else if (delay !== undefined && page?.visibilityState === "visible") {
+      retries += 1;
+      setTimeout(activate, delay);
+    }
   }
 
   function open(): Connection {
@@ -119,6 +130,7 @@ export function createHostConnection(
         if (current !== connection) throw new ConnectionResetError();
         connection.verified = true;
         connection.checkedAt = now();
+        retries = 0;
         setStatus("connected");
       })
       .catch((error) => {
@@ -140,7 +152,9 @@ export function createHostConnection(
 
   const page = typeof document === "undefined" ? undefined : document;
   const onVisibilityChange = () => {
-    if (page?.visibilityState === "visible") activate();
+    if (page?.visibilityState !== "visible") return;
+    retries = 0;
+    activate();
   };
   page?.addEventListener("visibilitychange", onVisibilityChange);
 

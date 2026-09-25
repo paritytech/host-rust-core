@@ -296,7 +296,8 @@ runs. Keep the tag before application scripts, without `async` or `defer`.
 SDK calls and permission checks share one connection. Updated SDKs reuse the
 injected client across reconnects; older SDKs can still start through the
 MessagePort adapter but require a page reload after a disconnect.
-After a failed reconnect, the next API call or return to a visible page tries again.
+A visible page retries a failed reconnect after 250 ms, 1 s and 4 s; after that, the next API
+call or return to a visible page tries again.
 On iOS the host rebinds its localhost listener on the same port each time the app
 returns to the foreground, since the system reclaims a suspended app's listening socket.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
