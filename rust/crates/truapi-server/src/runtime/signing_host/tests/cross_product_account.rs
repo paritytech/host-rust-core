@@ -140,11 +140,11 @@ fn a_blessed_product_signs_with_another_products_account_only_when_granted() {
                 v01::HostSignPayloadError::PermissionDenied,
             ))),
         ),
-        (r#"{"jollity":["context"]}"#, Ok(())),
+        (r#"{"stash":["context"]}"#, Ok(())),
     ] {
         let platform = Arc::new(StubPlatform::default());
         cache_grant(&platform, "dim2.paseo", trusted);
-        let result = sign_as(platform.clone(), "jollity.paseo").map(|_| ());
+        let result = sign_as(platform.clone(), "stash.paseo").map(|_| ());
         assert_eq!(
             (result, platform.sign_payload_reviews.lock().unwrap().len()),
             (expected, 0),

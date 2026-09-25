@@ -321,7 +321,7 @@ pub fn has_dotns_tld(normalized: &str) -> bool {
 /// Blessed product labels across every network in [`DOTNS_TLDS`].
 ///
 /// These products bypass recorded permissions and prompt only for device access.
-pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", "dim2", "jollity", "stash"];
+pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", "dim2", "stash"];
 
 /// Hosts available to every product unless a stored permission decision blocks them.
 pub const BLESSED_REMOTE_DOMAINS: &[&str] = &["fonts.googleapis.com", "fonts.gstatic.com"];
@@ -2372,9 +2372,8 @@ mod tests {
             "peopl.paseo",
             "peopl.testnet",
             "dim2.dot",
-            "jollity.dot",
-            "jollity.paseo",
-            "jollity.testnet",
+            "dim2.paseo",
+            "dim2.testnet",
             "stash.dot",
         ] {
             assert!(
@@ -2385,9 +2384,9 @@ mod tests {
         for product_id in [
             "app.peopl.dot",
             "sub.dim2.paseo",
-            "app.jollity.testnet",
-            "jollity.com",
-            "notjollity.dot",
+            "app.dim2.testnet",
+            "dim2.com",
+            "notdim2.dot",
             "peopl",
             "peopl.com",
             "peoplx.dot",
@@ -2442,7 +2441,7 @@ mod tests {
             "PEOPL.DOT",
             "  peopl.dot  ",
             "dim2.paseo",
-            " JOLLITY.TESTNET ",
+            " DIM2.TESTNET ",
             "stash.dot",
         ] {
             assert!(
