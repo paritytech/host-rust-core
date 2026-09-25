@@ -218,6 +218,9 @@ impl EmbeddedChainProvider {
         // Taken, not cloned: a chain consumes a blob only on its first add, so
         // keeping it would retain megabytes for the life of the provider and
         // make every later connect re-clone a string smoldot then discards.
+        // Irrefutable only in the native-bindings build, where ChainSource
+        // has no ws variant.
+        #[allow(irrefutable_let_patterns)]
         if let ChainSource::LightClient {
             database_content, ..
         } = &mut source

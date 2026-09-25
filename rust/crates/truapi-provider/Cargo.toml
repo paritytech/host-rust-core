@@ -63,7 +63,7 @@ smoldot = [
 js = ["ws", "dep:wasm-bindgen-futures", "dep:tracing-subscriber"]
 networks = ["smoldot"]
 # Swift/UniFFI bindings for native hosts (iOS, macOS, ...).
-uniffi = ["smoldot", "networks", "dep:async-trait", "dep:uniffi"]
+uniffi = ["smoldot", "networks", "dep:async-trait", "dep:uniffi", "truapi/uniffi"]
 # Builds the uniffi-bindgen binary (implies uniffi).
 cli = ["uniffi", "uniffi/cli"]
 
