@@ -363,7 +363,7 @@ impl SharedWsBridge {
 
 /// Running listener owned by [`SharedWsBridge`]. Dropping it stops acceptance
 /// and cancels its connections without stopping the shared executor.
-pub(crate) struct WsBridge {
+struct WsBridge {
     // Absent after a failed relisten.
     listener: Option<Listener>,
     runtime_id: tokio::runtime::Id,

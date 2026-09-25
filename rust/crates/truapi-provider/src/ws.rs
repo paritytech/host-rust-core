@@ -29,7 +29,7 @@ const REQUEST_BUFFER: usize = 1024;
 ///
 /// Requires an ambient tokio runtime; both the handshake and the spawned
 /// writer task run on it.
-pub(crate) async fn connect(url: Url) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
+pub async fn connect(url: Url) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
     if tokio::runtime::Handle::try_current().is_err() {
         return Err(ProviderError::MissingRuntime);
     }

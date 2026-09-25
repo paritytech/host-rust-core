@@ -43,7 +43,6 @@ import type {
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
   HostWorkerBeginOperationResponse,
-  NotificationId,
   Result,
 } from "@parity/truapi";
 
@@ -1302,7 +1301,7 @@ export interface Notifications {
    * Cancel a notification by id. Idempotent: cancelling an already-fired or
    * unknown id still returns `success`.
    */
-  cancelNotification?(id: NotificationId): Promise<void>;
+  cancelNotification?(id: number): Promise<void>;
 }
 
 /**

@@ -7,12 +7,13 @@
 
 use parity_scale_codec::{Compact, Decode};
 use scale_decode::DecodeAsType;
-use sp_crypto_hashing::{blake2_128, twox_64, twox_128};
+use sp_crypto_hashing::twox_128;
 use thiserror::Error;
 
 use super::StatementAllowanceError;
 use super::collection::PersonhoodCollection;
 use super::extension::{Metadata, MetadataError};
+use super::key_hash::{blake2_128_concat, twox_64_concat};
 use super::rpc::RpcClient;
 
 /// Error while reading or decoding ring storage.
@@ -191,16 +192,6 @@ fn subscriber_exponent_key(collection: PersonhoodCollection) -> Vec<u8> {
         &blake2_128_concat(collection.identifier()),
     ]
     .concat()
-}
-
-/// `Blake2_128Concat(x)` = `blake2_128(x) ‖ x`.
-pub(super) fn blake2_128_concat(x: &[u8]) -> Vec<u8> {
-    [blake2_128(x).as_slice(), x].concat()
-}
-
-/// `Twox64Concat(x)` = `twox_64(x) ‖ x`.
-pub(super) fn twox_64_concat(x: &[u8]) -> Vec<u8> {
-    [twox_64(x).as_slice(), x].concat()
 }
 
 /// Read the current ring index for `collection` at the current best block

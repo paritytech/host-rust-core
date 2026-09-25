@@ -52,26 +52,25 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode,
-        BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction,
-        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
-        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoom, ChatRoomParticipation,
+        AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode, BorderStyle,
+        BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction, ChatActionLayout,
+        ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile, ChatMedia,
+        ChatMessageContent, ChatReaction, ChatRichText, ChatRoom, ChatRoomParticipation,
         ChatRoomRegistrationStatus, ColorToken, ColumnProps, ContentAlignment, ContextualAlias,
         DerivationIndex, Dimensions, Effect, EffectProps, GenericError, HorizontalAlignment,
         HostAccountCreateProofRequest, HostAccountGetAliasRequest,
         HostAccountListRingVrfKeysRequest, HostAccountRegisterRingVrfKeyRequest,
         HostAccountRingVrfSignRequest, HostAccountSignVrfError, HostAccountSignVrfRequest,
         HostPlatform, HostSignPayloadData, HostWorkerOperationError, ImageFit, ImageProps,
-        ImageSource, Modifier, NotificationId, OperationId, OperationStartedResult, PocketCard,
-        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
+        ImageSource, Modifier, OperationStartedResult, PocketCard, ProductAccountId,
+        ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
         RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
         RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
         RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
-        RingLocationJunction, RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi,
-        RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement, StatementProof,
-        StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps, TextProps,
-        ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
-        VrfSignature,
+        RingLocationJunction, RingVrfKeyDisclosure, RowProps, RuntimeApi, RuntimeSpec, RuntimeType,
+        Shape, SignedStatement, Size, Statement, StatementProof, StorageQueryItem,
+        StorageQueryType, StorageResultItem, TextFieldProps, TextProps, ThemeName, ThemeVariant,
+        TxPayloadExtension, TypographyStyle, VerticalAlignment, VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -230,9 +229,6 @@ pub use truapi_macros::{service, wire, wire_trait};
 /// codegen stamps it into the generated clients, so every peer derives it
 /// from here.
 pub const WIRE_CODEC_VERSION: u8 = 3;
-
-/// Per-message id carried from the transport frame.
-pub type RequestId = String;
 
 /// Framework-level outcomes shared by API methods.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -423,14 +419,14 @@ impl Drop for CancellationFuture {
 /// Ambient context passed to every trait method.
 #[derive(Clone, Default)]
 pub struct CallContext {
-    request_id: RequestId,
+    request_id: String,
     cancel: CancellationToken,
     timeout: Option<Duration>,
 }
 
 impl CallContext {
     /// Construct a context bound to the given `request_id` with a fresh cancellation token.
-    pub fn with_request_id(request_id: RequestId) -> Self {
+    pub fn with_request_id(request_id: String) -> Self {
         Self {
             request_id,
             cancel: CancellationToken::default(),
@@ -439,7 +435,7 @@ impl CallContext {
     }
 
     /// Construct a context from explicit `request_id` and `cancel` parts.
-    pub fn with_parts(request_id: RequestId, cancel: CancellationToken) -> Self {
+    pub fn with_parts(request_id: String, cancel: CancellationToken) -> Self {
         Self {
             request_id,
             cancel,

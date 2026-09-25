@@ -4,6 +4,7 @@
 use std::sync::LazyLock;
 
 use super::extension::Metadata;
+use super::view_cache::MetadataViewCache;
 
 /// `MembersSubscriber.RingRoots[(LitePeople, 5)]` captured alongside the
 /// metadata, at block
@@ -11,7 +12,7 @@ use super::extension::Metadata;
 ///
 /// Ring 5 is the one whose window skips a revision, holding `[105, 106, 108]`
 /// where every other lite-people ring is contiguous.
-pub(crate) const ASSET_HUB_RING_5_ROOTS: &[u8] =
+pub const ASSET_HUB_RING_5_ROOTS: &[u8] =
     include_bytes!("../../../tests/fixtures/paseo-next-asset-hub-ring-5-roots.scale");
 
 /// Asset Hub metadata captured from paseo Asset Hub Next at spec 3000000.
@@ -26,7 +27,7 @@ static ASSET_HUB: LazyLock<Metadata> = LazyLock::new(|| {
 });
 
 /// Borrow the decoded Asset Hub fixture.
-pub(crate) fn asset_hub() -> &'static Metadata {
+pub fn asset_hub() -> &'static Metadata {
     &ASSET_HUB
 }
 
@@ -60,7 +61,7 @@ static PEOPLE: LazyLock<Metadata> = LazyLock::new(|| {
 });
 
 /// Borrow the decoded People fixture.
-pub(crate) fn people() -> &'static Metadata {
+pub fn people() -> &'static Metadata {
     &PEOPLE
 }
 

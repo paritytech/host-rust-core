@@ -1,7 +1,6 @@
 //! Inter-host SSO with the paired wallet: `pairing` bootstraps the
-//! QR/deeplink handshake, `messages` carries the session-channel payloads
-//! exchanged afterwards, `wire` types the request/response pairing.
+//! QR/deeplink handshake. The session-channel payloads (`messages`) and the
+//! request/response typing (`wire`) are crate-internal and live in
+//! `crate::host_internal`.
 
-pub mod messages;
 pub mod pairing;
-pub mod wire;

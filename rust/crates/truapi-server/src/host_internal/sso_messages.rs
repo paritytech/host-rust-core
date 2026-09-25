@@ -24,22 +24,24 @@ use core::fmt;
 
 use parity_scale_codec::{Decode, Encode};
 use truapi::latest::{
-    AccountId, AllocatableResource, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
+    AllocatableResource, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
     HostAccountSignVrfError, HostSignPayloadRequest, HostSignPayloadResponse, HostSignRawRequest,
     LegacyAccountTxPayload, ProductAccountTxPayload, RawPayload, RegisteredRingVrfKey,
     VrfSignature,
 };
 
 use crate::host_logic::session::SsoSessionInfo;
+#[cfg(test)]
+use crate::host_logic::sso::pairing::{AEAD_NONCE_LEN, encrypt_session_statement_data_with_nonce};
 use crate::host_logic::sso::pairing::{
-    AEAD_NONCE_LEN, SsoStatementData, decrypt_session_statement_data,
-    encrypt_session_statement_data, encrypt_session_statement_data_with_nonce,
+    SsoStatementData, decrypt_session_statement_data, encrypt_session_statement_data,
     peer_response_channel,
 };
 use crate::host_logic::statement_store::{
-    build_signed_session_request_statement, build_signed_statement, current_unix_secs,
-    decode_verified_statement_data, statement_expiry_elapsed,
+    build_signed_session_request_statement, build_signed_statement, decode_verified_statement_data,
+    statement_expiry_elapsed,
 };
+use crate::unix_time::current_unix_secs;
 
 pub mod v1;
 
@@ -149,7 +151,7 @@ pub enum SignRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SignRawWithLegacyAccountRequest {
     /// Legacy account that signs the payload.
-    pub account: AccountId,
+    pub account: [u8; 32],
     /// Raw bytes or string message to sign.
     pub data: RawPayload,
 }
@@ -272,7 +274,7 @@ pub enum SsoAllocatedResource {
 
 impl SsoAllocatedResource {
     /// Stable, non-secret resource discriminant suitable for errors and logs.
-    pub(crate) const fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> &'static str {
         match self {
             Self::StatementStoreAllowance { .. } => "statement-store-allowance",
             Self::BulletinAllowance { .. } => "bulletin-allowance",
@@ -492,7 +494,7 @@ pub fn decode_incoming_sso_request(
     }
 }
 
-pub(crate) fn decode_remote_message(message: &[u8]) -> Result<RemoteMessage, String> {
+pub fn decode_remote_message(message: &[u8]) -> Result<RemoteMessage, String> {
     let mut input = message;
     let decoded = RemoteMessage::decode(&mut input)
         .map_err(|error| format!("invalid SSO remote message: {error}"))?;
@@ -537,6 +539,7 @@ pub fn build_outgoing_request_statement(
 }
 
 /// Build a signed outbound SSO request statement with a caller-supplied nonce.
+#[cfg(test)]
 pub fn build_outgoing_request_statement_with_nonce(
     session: &SsoSessionInfo,
     statement_request_id: String,
@@ -560,6 +563,7 @@ fn encrypt_outgoing_request_data(
     )
 }
 
+#[cfg(test)]
 fn encrypt_outgoing_request_data_with_nonce(
     session: &SsoSessionInfo,
     statement_request_id: String,
@@ -589,8 +593,8 @@ fn outgoing_request_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_internal::sso_wire::SsoRequest;
     use crate::host_logic::sso::pairing::decrypt_session_statement_data;
-    use crate::host_logic::sso::wire::SsoRequest;
     use crate::host_logic::statement_store::{
         StatementField, build_signed_statement, decode_statement_data,
     };

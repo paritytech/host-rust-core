@@ -168,12 +168,12 @@ struct AddedChain {
 }
 
 /// Lazily-started shared smoldot client owned by a provider.
-pub(crate) struct LightState {
+pub struct LightState {
     inner: OnceLock<Arc<Mutex<LightInner>>>,
 }
 
 impl LightState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         LightState {
             inner: OnceLock::new(),
         }
@@ -191,7 +191,7 @@ impl LightState {
 
     /// Number of implicit relay chains currently held.
     #[cfg(test)]
-    pub(crate) fn relay_count(&self) -> usize {
+    pub fn relay_count(&self) -> usize {
         lock(self.inner())
             .added
             .values()
@@ -205,7 +205,7 @@ impl LightState {
     /// Answered from the bookkeeping the client keeps rather than from a count of
     /// handed-out connections, because a relay behind a parachain has no
     /// connection and is exactly the chain a stored blob most needs to cover.
-    pub(crate) fn is_added(&self, genesis_hash: [u8; 32]) -> bool {
+    pub fn is_added(&self, genesis_hash: [u8; 32]) -> bool {
         self.inner
             .get()
             .is_some_and(|inner| lock(inner).added.contains_key(&genesis_hash))
@@ -216,7 +216,7 @@ impl LightState {
     ///
     /// Specs pass through [`dialable_spec`] first, so a `/wss`-only bootnode set
     /// is reachable on native targets.
-    pub(crate) async fn connect(
+    pub async fn connect(
         &self,
         genesis_hash: [u8; 32],
         source: &ChainSource,

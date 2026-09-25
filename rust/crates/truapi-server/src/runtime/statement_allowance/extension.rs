@@ -25,6 +25,7 @@ use thiserror::Error;
 
 use super::StatementAllowanceError;
 use super::collection::PersonhoodCollection;
+use super::view_cache::{MetadataViewCache, ViewFunctionDef};
 
 /// Signed-extension identifier that carries the `AsPgas` authorization on Asset Hub.
 pub const AS_PGAS: &str = "AsPgas";
@@ -206,11 +207,33 @@ pub struct Metadata {
     view_values: Mutex<HashMap<[u8; 32], u32>>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ViewFunctionDef {
-    pub(super) id: [u8; 32],
-    pub(super) inputs: usize,
-    pub(super) output_type: u32,
+impl MetadataViewCache for Metadata {
+    fn view_function(&self, pallet: &str, function: &str) -> Option<ViewFunctionDef> {
+        self.view_functions
+            .get(&(pallet.to_string(), function.to_string()))
+            .copied()
+    }
+
+    #[cfg(test)]
+    fn insert_view_function(&mut self, pallet: &str, function: &str, definition: ViewFunctionDef) {
+        self.view_functions
+            .insert((pallet.to_string(), function.to_string()), definition);
+    }
+
+    fn cached_view_u32(&self, id: &[u8; 32]) -> Option<u32> {
+        self.view_values
+            .lock()
+            .expect("view function cache mutex poisoned")
+            .get(id)
+            .copied()
+    }
+
+    fn cache_view_u32(&self, id: [u8; 32], value: u32) {
+        self.view_values
+            .lock()
+            .expect("view function cache mutex poisoned")
+            .insert(id, value);
+    }
 }
 
 /// The transaction-extension version to encode with: the highest the runtime
@@ -433,38 +456,6 @@ impl Metadata {
         self.constants
             .get(&(pallet.to_string(), name.to_string()))
             .map(Vec::as_slice)
-    }
-
-    pub(super) fn view_function(&self, pallet: &str, function: &str) -> Option<ViewFunctionDef> {
-        self.view_functions
-            .get(&(pallet.to_string(), function.to_string()))
-            .copied()
-    }
-
-    #[cfg(test)]
-    pub(super) fn insert_view_function(
-        &mut self,
-        pallet: &str,
-        function: &str,
-        definition: ViewFunctionDef,
-    ) {
-        self.view_functions
-            .insert((pallet.to_string(), function.to_string()), definition);
-    }
-
-    pub(super) fn cached_view_u32(&self, id: &[u8; 32]) -> Option<u32> {
-        self.view_values
-            .lock()
-            .expect("view function cache mutex poisoned")
-            .get(id)
-            .copied()
-    }
-
-    pub(super) fn cache_view_u32(&self, id: [u8; 32], value: u32) {
-        self.view_values
-            .lock()
-            .expect("view function cache mutex poisoned")
-            .insert(id, value);
     }
 
     /// Resolve `pallet::call` by name to its `[pallet_index, call_index]`

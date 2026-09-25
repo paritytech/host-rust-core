@@ -27,14 +27,14 @@ const PREIMAGE_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const STATEMENT_CACHE_MAX_ENTRIES: usize = 64;
 
 /// Infrastructure shared by all product runtimes created from one host role.
-pub(crate) struct RuntimeServices {
+pub struct RuntimeServices {
     /// Host platform backing all syscalls.
-    pub(crate) platform: Arc<dyn Platform>,
+    pub platform: Arc<dyn Platform>,
     /// Host identity reported to products via `System::host_info`.
-    pub(crate) host_info: HostInfo,
+    pub host_info: HostInfo,
     /// Host chat adapter, when the host serves the Chat capability. `None`
     /// makes every product chat call resolve as `Unsupported`.
-    pub(crate) chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    pub chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     /// Host adapter reporting live OS permission state, installed once at
     /// startup by a host that can read it. Unset leaves device grants
     /// resolving from stored state alone.
@@ -49,16 +49,16 @@ pub(crate) struct RuntimeServices {
     /// has none, which leaves every manifest unresolvable.
     asset_hub_chain_genesis_hash: [u8; 32],
     /// Reference counts per product worker.
-    pub(crate) worker_ledger: WorkerLedger,
+    pub worker_ledger: WorkerLedger,
     /// Shared chainHead-v1 runtime behind the Chain surface.
-    pub(crate) chain: ChainRuntime,
+    pub chain: ChainRuntime,
     /// People-chain statement store RPC client.
-    pub(crate) statement_store: StatementStoreRpc,
+    pub statement_store: StatementStoreRpc,
     /// In-core Bulletin submission over the configured Bulletin chain.
-    pub(crate) bulletin: BulletinRpc,
+    pub bulletin: BulletinRpc,
     /// Runtime metadata and chain state shared by the native allowance
     /// paths, per chain.
-    pub(crate) chain_context: crate::runtime::statement_allowance::ChainContextCache,
+    pub chain_context: crate::runtime::statement_allowance::ChainContextCache,
     /// Values from confirmed in-core submissions, served to `lookup_subscribe`
     /// until the host's content backend has them. Byte-bounded, oldest-first.
     preimage_cache: Mutex<PreimageCache>,
@@ -66,7 +66,7 @@ pub(crate) struct RuntimeServices {
     /// Statement Store reports them.
     statement_cache: Mutex<StatementCache>,
     /// Task spawner for background runtime work.
-    pub(crate) spawner: Spawner,
+    pub spawner: Spawner,
     /// Serializes the read-or-create of the persisted device encryption key.
     /// Concurrent first-time readers would otherwise each generate a secret and
     /// persist it, leaving peers addressing an overwritten key.
@@ -83,7 +83,7 @@ impl RuntimeServices {
     ///
     /// The three genesis hashes are adjacent and same-typed, so a transposition
     /// compiles. Each call site is pinned by its own test.
-    pub(crate) fn new(
+    pub fn new(
         platform: Arc<dyn Platform>,
         host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
@@ -120,7 +120,7 @@ impl RuntimeServices {
     }
 
     /// Same as [`Self::new`], with the host's chat adapter installed.
-    pub(crate) fn with_chat_platform(
+    pub fn with_chat_platform(
         platform: Arc<dyn Platform>,
         host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
@@ -150,10 +150,7 @@ impl RuntimeServices {
     ///
     /// Set-once, so a capability cannot be swapped out from under a running
     /// product. Returns whether this call installed it.
-    pub(crate) fn install_permission_status_host(
-        &self,
-        host: Arc<dyn PermissionStatusHost>,
-    ) -> bool {
+    pub fn install_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
         self.permission_status.set(host).is_ok()
     }
 
@@ -169,12 +166,12 @@ impl RuntimeServices {
     ///
     /// An all-zero hash is how a host says it has no Asset Hub. `None` fails
     /// every manifest lookup closed: grants are refused rather than assumed.
-    pub(crate) fn asset_hub_chain_genesis_hash(&self) -> Option<[u8; 32]> {
+    pub fn asset_hub_chain_genesis_hash(&self) -> Option<[u8; 32]> {
         Some(self.asset_hub_chain_genesis_hash).filter(|hash| *hash != [0u8; 32])
     }
 
     /// The host's live OS permission-status adapter, when one is installed.
-    pub(crate) fn permission_status_host(&self) -> Option<Arc<dyn PermissionStatusHost>> {
+    pub fn permission_status_host(&self) -> Option<Arc<dyn PermissionStatusHost>> {
         self.permission_status.get().cloned()
     }
 
@@ -183,7 +180,7 @@ impl RuntimeServices {
     /// Set-once, like every optional capability, so the card collection cannot
     /// change hands under a running product. Returns whether this call
     /// installed it.
-    pub(crate) fn install_pocket_platform(
+    pub fn install_pocket_platform(
         &self,
         platform: Arc<dyn truapi_platform::PocketPlatform>,
     ) -> bool {
@@ -191,7 +188,7 @@ impl RuntimeServices {
     }
 
     /// The host's Pocket adapter, when one is installed.
-    pub(crate) fn pocket_platform(&self) -> Option<Arc<dyn truapi_platform::PocketPlatform>> {
+    pub fn pocket_platform(&self) -> Option<Arc<dyn truapi_platform::PocketPlatform>> {
         self.pocket_platform.get().cloned()
     }
 
@@ -200,7 +197,7 @@ impl RuntimeServices {
     /// Set-once, like every optional capability, so the surface that announces
     /// a new device cannot change hands between two pairings. Returns whether
     /// this call installed it.
-    pub(crate) fn install_device_pairing_observer(
+    pub fn install_device_pairing_observer(
         &self,
         observer: Arc<dyn DevicePairingObserver>,
     ) -> bool {
@@ -208,7 +205,7 @@ impl RuntimeServices {
     }
 
     /// The host's device-pairing observer, when one is installed.
-    pub(crate) fn device_pairing_observer(&self) -> Option<Arc<dyn DevicePairingObserver>> {
+    pub fn device_pairing_observer(&self) -> Option<Arc<dyn DevicePairingObserver>> {
         self.device_pairing_observer.get().cloned()
     }
 
@@ -217,7 +214,7 @@ impl RuntimeServices {
     /// The only supported way to reach the key: it bundles the serialization
     /// guard with the read, so no caller can race another into generating a
     /// second secret and overwriting the one peers were told to address.
-    pub(crate) async fn device_encryption_secret(&self) -> Result<[u8; 32], String> {
+    pub async fn device_encryption_secret(&self) -> Result<[u8; 32], String> {
         let _guard = self.device_encryption_key.lock().await;
         crate::host_logic::device_key::read_or_create_device_encryption_secret(
             self.platform.as_ref(),
@@ -227,12 +224,12 @@ impl RuntimeServices {
 
     /// Allocate the next per-product-runtime id, used to scope chain follow
     /// operation ids within the shared host runtime.
-    pub(crate) fn next_core_instance(&self) -> u64 {
+    pub fn next_core_instance(&self) -> u64 {
         self.next_core_instance.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Store a preimage value under its key for later lookup hits.
-    pub(crate) fn cache_preimage(&self, key: [u8; 32], value: Vec<u8>) {
+    pub fn cache_preimage(&self, key: [u8; 32], value: Vec<u8>) {
         self.preimage_cache
             .lock()
             .expect("preimage cache mutex poisoned")
@@ -240,7 +237,7 @@ impl RuntimeServices {
     }
 
     /// Return a cached preimage value for `key`, if present.
-    pub(crate) fn cached_preimage(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
+    pub fn cached_preimage(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
         self.preimage_cache
             .lock()
             .expect("preimage cache mutex poisoned")
@@ -248,7 +245,7 @@ impl RuntimeServices {
     }
 
     /// Retain a remotely accepted statement for read-after-write consistency.
-    pub(crate) fn cache_statement(&self, statement: latest::SignedStatement) {
+    pub fn cache_statement(&self, statement: latest::SignedStatement) {
         self.statement_cache
             .lock()
             .expect("statement cache mutex poisoned")
@@ -256,7 +253,7 @@ impl RuntimeServices {
     }
 
     /// Return accepted statements matching a Statement Store topic filter.
-    pub(crate) fn cached_statements(
+    pub fn cached_statements(
         &self,
         kind: crate::host_logic::statement_store::TopicFilterKind,
         topics: &[[u8; 32]],
@@ -268,7 +265,7 @@ impl RuntimeServices {
     }
 
     /// Drop bridge entries once a remote subscription reports them.
-    pub(crate) fn mark_statements_visible(&self, statements: &[latest::SignedStatement]) {
+    pub fn mark_statements_visible(&self, statements: &[latest::SignedStatement]) {
         self.statement_cache
             .lock()
             .expect("statement cache mutex poisoned")

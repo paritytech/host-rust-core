@@ -16,14 +16,14 @@ const MAX_FINDER_INTERSECTIONS: usize = 65_536;
 const MAX_FINDER_CLUSTERS: usize = 512;
 const MAX_GRID_FINDERS: usize = 64;
 
-pub(super) struct RgbaFrame {
+pub struct RgbaFrame {
     width: usize,
     height: usize,
     pixels: Vec<u8>,
 }
 
 impl RgbaFrame {
-    pub(super) fn new(width: usize, height: usize, pixels: Vec<u8>) -> AnyResult<Self> {
+    pub fn new(width: usize, height: usize, pixels: Vec<u8>) -> AnyResult<Self> {
         validate_rgba_frame(width, height, &pixels)?;
         Ok(Self {
             width,
@@ -79,7 +79,7 @@ struct Finder {
     matches: usize,
 }
 
-pub(super) fn decode_path(path: &Path) -> AnyResult<String> {
+pub fn decode_path(path: &Path) -> AnyResult<String> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("read image metadata from {}", path.display()))?;
     ensure!(
@@ -113,7 +113,7 @@ pub(super) fn decode_path(path: &Path) -> AnyResult<String> {
     decode(&frame)
 }
 
-pub(super) fn decode(frame: &RgbaFrame) -> AnyResult<String> {
+pub fn decode(frame: &RgbaFrame) -> AnyResult<String> {
     decode_rgba_frame(frame.width, frame.height, &frame.pixels)?.pairing_deeplink()
 }
 

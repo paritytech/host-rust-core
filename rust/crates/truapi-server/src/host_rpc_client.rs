@@ -28,7 +28,7 @@ const MAX_BUFFERED_SUBSCRIPTIONS: usize = 64;
 const MAX_BUFFERED_ITEMS_PER_SUBSCRIPTION: usize = 256;
 
 /// JSON-RPC client backed by a host-owned [`JsonRpcConnection`].
-pub(crate) struct HostRpcClient {
+pub struct HostRpcClient {
     inner: Arc<HostRpcClientInner>,
 }
 
@@ -212,7 +212,7 @@ where
 
 impl HostRpcClient {
     /// Wrap `connection` and start the response pump on `spawner`.
-    pub(crate) fn new(connection: Arc<dyn JsonRpcConnection>, spawner: Spawner) -> Self {
+    pub fn new(connection: Arc<dyn JsonRpcConnection>, spawner: Spawner) -> Self {
         let (stop_response_tx, stop_response_rx) = oneshot::channel();
         let client = Self {
             inner: Arc::new(HostRpcClientInner {
@@ -230,7 +230,7 @@ impl HostRpcClient {
     }
 
     /// Whether the underlying response stream has ended or failed.
-    pub(crate) fn is_closed(&self) -> bool {
+    pub fn is_closed(&self) -> bool {
         self.inner.closed.load(Ordering::Relaxed)
     }
 
@@ -238,7 +238,7 @@ impl HostRpcClient {
     ///
     /// Used by best-effort notifications where the caller must not block on
     /// the remote endpoint acknowledging the request.
-    pub(crate) fn send_fire_and_forget(
+    pub fn send_fire_and_forget(
         &self,
         method: &str,
         params: Option<Box<RawValue>>,

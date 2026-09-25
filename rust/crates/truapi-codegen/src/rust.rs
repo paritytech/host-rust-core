@@ -92,14 +92,14 @@ fn module_for_trait(trait_name: &str) -> String {
 /// `{trait_snake}_{method}` so collisions between sibling traits (e.g.
 /// `StatementStore::submit` and `Preimage::submit`) become distinct keys
 /// (`statement_store_submit`, `preimage_submit`).
-pub(crate) fn wire_method_name(trait_name: &str, method_name: &str) -> String {
+pub fn wire_method_name(trait_name: &str, method_name: &str) -> String {
     format!("{}_{}", snake_case(trait_name), method_name)
 }
 
 /// The `SCREAMING_SNAKE_CASE` const name holding a wire method's ids.
 /// Routed through [`convert_case::Case::UpperSnake`] so it follows the same
 /// casing rules as the TS wire-table emitter (`ts.rs`).
-pub(crate) fn const_name(wire_method: &str) -> String {
+pub fn const_name(wire_method: &str) -> String {
     wire_method.to_case(Case::UpperSnake)
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn const_name(wire_method: &str) -> String {
 /// (single-capital PascalCase trait, snake_case method) surface the two
 /// generated const names agree.
 #[cfg(test)]
-pub(crate) fn wire_const_name(trait_name: &str, method_name: &str) -> String {
+pub fn wire_const_name(trait_name: &str, method_name: &str) -> String {
     const_name(&wire_method_name(trait_name, method_name))
 }
 

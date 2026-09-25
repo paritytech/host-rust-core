@@ -30,7 +30,7 @@ const SSO_NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// Error opening a statement-store RPC client over the host platform.
 #[derive(Debug, Error)]
-pub(crate) enum StatementStoreRpcClientError {
+pub enum StatementStoreRpcClientError {
     /// The host failed to open a People-chain JSON-RPC connection.
     #[error("{label} connect failed: {error:?}")]
     Connect {
@@ -43,7 +43,7 @@ pub(crate) enum StatementStoreRpcClientError {
 
 /// People-chain statement-store RPC client factory.
 #[derive(Clone)]
-pub(crate) struct StatementStoreRpc {
+pub struct StatementStoreRpc {
     platform: Arc<dyn Platform>,
     people_chain_genesis_hash: [u8; 32],
     spawner: Spawner,
@@ -51,7 +51,7 @@ pub(crate) struct StatementStoreRpc {
 
 impl StatementStoreRpc {
     /// Build a helper backed by the platform-owned chain provider.
-    pub(super) fn new(
+    pub fn new(
         platform: Arc<dyn Platform>,
         people_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
@@ -65,7 +65,7 @@ impl StatementStoreRpc {
 
     /// Open a People-chain RPC client already scoped to its genesis hash, for
     /// the native allowance paths that key the chain-context cache by it.
-    pub(crate) async fn chain_client(
+    pub async fn chain_client(
         &self,
         label: &'static str,
     ) -> Result<crate::runtime::statement_allowance::ChainClient, StatementStoreRpcClientError>
@@ -78,7 +78,7 @@ impl StatementStoreRpc {
 
     /// Open a statement-store RPC client over the host-provided People-chain
     /// connection.
-    pub(super) async fn client(
+    pub async fn client(
         &self,
         label: &'static str,
     ) -> Result<RpcClient, StatementStoreRpcClientError> {
@@ -90,11 +90,7 @@ impl StatementStoreRpc {
     }
 
     /// Submit a SCALE-encoded statement and wait for the JSON-RPC ack.
-    pub(super) async fn submit(
-        &self,
-        statement: Vec<u8>,
-        label: &'static str,
-    ) -> Result<(), String> {
+    pub async fn submit(&self, statement: Vec<u8>, label: &'static str) -> Result<(), String> {
         let rpc_client = self.client(label).await.map_err(|err| err.to_string())?;
         submit(&rpc_client, statement).await
     }
@@ -102,17 +98,13 @@ impl StatementStoreRpc {
     /// Submit an SSO statement, tolerating the short propagation window after
     /// an allowance registration is included but not yet visible to the
     /// Statement Store RPC backend.
-    pub(super) async fn submit_sso(
-        &self,
-        statement: Vec<u8>,
-        label: &'static str,
-    ) -> Result<(), String> {
+    pub async fn submit_sso(&self, statement: Vec<u8>, label: &'static str) -> Result<(), String> {
         let rpc_client = self.client(label).await.map_err(|err| err.to_string())?;
         submit_sso(&rpc_client, statement, label).await
     }
 
     /// Submit a SCALE-encoded statement without waiting for the JSON-RPC ack.
-    pub(super) async fn submit_fire_and_forget(
+    pub async fn submit_fire_and_forget(
         &self,
         statement: Vec<u8>,
         label: &'static str,
@@ -139,7 +131,7 @@ impl StatementStoreRpc {
 }
 
 /// Subscribe to statements matching the requested topic filter.
-pub(super) async fn subscribe(
+pub async fn subscribe(
     rpc_client: &RpcClient,
     kind: TopicFilterKind,
     topics: &[[u8; 32]],
@@ -154,7 +146,7 @@ pub(super) async fn subscribe(
 }
 
 /// Subscribe to statements matching every topic.
-pub(super) async fn subscribe_match_all(
+pub async fn subscribe_match_all(
     rpc_client: &RpcClient,
     topics: &[[u8; 32]],
 ) -> Result<RpcSubscription<Value>, subxt_rpcs::Error> {
@@ -167,7 +159,7 @@ pub(super) async fn subscribe_match_all(
 /// rejected or invalid statement (e.g. `NoAllowance`, `BadProof`) comes back as
 /// `Ok(SubmitResult)`. Treat only `new`/`known` as success, so allowance/proof
 /// rejections surface instead of being silently dropped.
-pub(super) async fn submit(rpc_client: &RpcClient, statement: Vec<u8>) -> Result<(), String> {
+pub async fn submit(rpc_client: &RpcClient, statement: Vec<u8>) -> Result<(), String> {
     let result = rpc_client
         .request::<Value>(
             SUBMIT_STATEMENT_METHOD,
@@ -181,7 +173,7 @@ pub(super) async fn submit(rpc_client: &RpcClient, statement: Vec<u8>) -> Result
     }
 }
 
-pub(super) async fn submit_sso(
+pub async fn submit_sso(
     rpc_client: &RpcClient,
     statement: Vec<u8>,
     label: &'static str,
@@ -212,7 +204,7 @@ fn is_transient_no_allowance(reason: &str) -> bool {
 }
 
 /// Statement-store topic filter encoded as JSON-RPC params.
-pub(super) fn filter(kind: TopicFilterKind, topics: &[[u8; 32]]) -> Value {
+pub fn filter(kind: TopicFilterKind, topics: &[[u8; 32]]) -> Value {
     let topics = topics.iter().map(hex_topic).collect::<Vec<_>>();
     match kind {
         TopicFilterKind::MatchAll => json!({ "matchAll": topics }),
@@ -222,7 +214,7 @@ pub(super) fn filter(kind: TopicFilterKind, topics: &[[u8; 32]]) -> Value {
 
 /// Human-readable JSON-RPC error message, preserving user error text when
 /// provided by the remote endpoint.
-pub(super) fn rpc_error_message(error: subxt_rpcs::Error) -> String {
+pub fn rpc_error_message(error: subxt_rpcs::Error) -> String {
     match error {
         subxt_rpcs::Error::User(error) => error.message,
         other => other.to_string(),

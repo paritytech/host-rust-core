@@ -9,6 +9,7 @@
 pub mod collection;
 pub mod extension;
 pub mod extrinsic;
+mod key_hash;
 pub mod pgas;
 pub mod proof;
 pub mod renewal;
@@ -16,8 +17,11 @@ pub mod ring;
 pub mod rpc;
 pub mod slot;
 #[cfg(test)]
-pub(crate) mod test_fixtures;
-pub mod view;
+mod test_fixtures;
+mod view;
+mod view_cache;
+
+pub use view::ViewFunctionError;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -1180,7 +1184,7 @@ fn bulletin_authorization_key(target: &[u8; 32]) -> Vec<u8> {
     [
         twox_128(b"TransactionStorage").as_slice(),
         twox_128(b"Authorizations").as_slice(),
-        &ring::blake2_128_concat(&scope),
+        &key_hash::blake2_128_concat(&scope),
     ]
     .concat()
 }

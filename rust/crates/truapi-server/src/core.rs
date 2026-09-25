@@ -70,7 +70,7 @@ impl TrUApiCore {
 
     /// Build a product-facing core from shared services and authority.
     #[instrument(skip_all, fields(runtime.method = "core.from_runtime_parts"))]
-    pub(crate) fn from_runtime_parts(
+    fn from_runtime_parts(
         services: Arc<RuntimeServices>,
         authority: Arc<dyn ProductAuthority>,
         product: ProductContext,
@@ -86,7 +86,7 @@ impl TrUApiCore {
 
     /// Build a dispatcher core around an already-created product runtime.
     #[instrument(skip_all, fields(runtime.method = "core.from_product_runtime"))]
-    pub(crate) fn from_product_runtime(
+    pub fn from_product_runtime(
         runtime: Arc<ProductRuntimeHost>,
         spawner: Spawner,
         session_state: Arc<SessionState>,

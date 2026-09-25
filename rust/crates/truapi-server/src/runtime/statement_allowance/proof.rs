@@ -8,7 +8,7 @@
 use thiserror::Error;
 
 use super::StatementAllowanceError;
-use crate::host_logic::sso::messages::RingVrfError;
+use crate::host_internal::sso_messages::RingVrfError;
 use crate::runtime::vrf;
 
 /// A single-context ring-VRF signature is exactly 785 bytes.
@@ -56,7 +56,7 @@ pub async fn member_key(entropy: [u8; 32]) -> Result<[u8; 32], StatementAllowanc
 
 /// [`member_key`], blocking on the load.
 #[cfg(test)]
-pub(super) fn member_key_now(entropy: [u8; 32]) -> [u8; 32] {
+pub fn member_key_now(entropy: [u8; 32]) -> [u8; 32] {
     futures::executor::block_on(member_key(entropy)).expect("the ring member derives")
 }
 
@@ -88,7 +88,7 @@ pub async fn ring_vrf_proof(
 }
 
 /// A failed ring-VRF operation, or a module that did not load.
-pub(super) fn vrf_error(error: RingVrfError) -> ProofError {
+pub fn vrf_error(error: RingVrfError) -> ProofError {
     ProofError::Vrf(error.to_string())
 }
 

@@ -1,8 +1,5 @@
 use parity_scale_codec::{Decode, Encode};
 
-/// Opaque identifier for a push notification, unique per product.
-pub type NotificationId = u32;
-
 /// Push notification payload.
 ///
 /// When `scheduled_at` is `Some`, the notification is deferred to the given
@@ -26,7 +23,7 @@ pub struct HostPushNotificationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPushNotificationResponse {
     /// Host-assigned notification identifier.
-    pub id: NotificationId,
+    pub id: u32,
 }
 
 /// Push notification error.
@@ -45,5 +42,5 @@ pub enum HostPushNotificationError {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPushNotificationCancelRequest {
     /// The notification identifier returned by [`HostPushNotificationResponse`].
-    pub id: NotificationId,
+    pub id: u32,
 }

@@ -17,7 +17,7 @@
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 mod allowance_renewal;
 mod local_activation;
-pub(super) mod ring_vrf;
+pub mod ring_vrf;
 mod sso_replay;
 mod sso_responder;
 mod sso_service;
@@ -33,16 +33,16 @@ use truapi::latest::{
 pub use allowance_renewal::StatementRenewalTarget;
 #[cfg(not(target_arch = "wasm32"))]
 pub use allowance_renewal::TrackedStatementRenewalTarget;
-pub(crate) use local_activation::LocalActivation;
+pub use local_activation::LocalActivation;
 pub use sso_responder::{
     AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
     PairingProposal, PairingProposalMetadata, ResponderExit,
 };
-pub(crate) use sso_responder::{
+pub use sso_responder::{
     disconnect_paired_host, establish_pairing, notify_pairing_allowance_allocation,
     notify_pairing_failed, respond_to_pairing, resume_pairing,
 };
-pub(crate) use sso_service::SigningHostSsoService;
+pub use sso_service::SigningHostSsoService;
 
 use super::authority::{
     AuthorityError, AuthoritySession, AutoSigningGrant, BulletinAllowanceKey,
@@ -51,8 +51,10 @@ use super::authority::{
 };
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
+use crate::host_internal::extrinsic::build_local_transaction;
+use crate::host_internal::sso_messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
+use crate::host_internal::transaction::sign_extrinsic_payload;
 use crate::host_logic::entropy::derive_product_entropy;
-use crate::host_logic::extrinsic::build_local_transaction;
 use crate::host_logic::features::genesis_for;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
@@ -64,8 +66,6 @@ use crate::host_logic::product_account::{
 };
 use crate::host_logic::raw_signing::raw_payload_bytes;
 use crate::host_logic::session::{SessionInfo, SessionState};
-use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
-use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
 use crate::runtime::sso_service::SsoWithdrawals;
 use crate::runtime::statement_allowance::CollectionCandidate;
@@ -116,7 +116,7 @@ impl LocalGrantState {
 }
 
 /// Wallet-local account authority for a signing host.
-pub(crate) struct SigningHost {
+pub struct SigningHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     /// The dotNS TLD of the network this wallet serves, from
@@ -153,7 +153,7 @@ pub(crate) struct SigningHost {
 impl SigningHost {
     /// Build a signing host with no active session, serving the network whose
     /// dotNS TLD is `network_suffix`.
-    pub(crate) fn new(services: Arc<RuntimeServices>, network_suffix: String) -> Arc<Self> {
+    pub fn new(services: Arc<RuntimeServices>, network_suffix: String) -> Arc<Self> {
         let platform = services.platform.clone();
         let ring_resolver = ChainRingResolver::new(services.chain.clone());
         Arc::new(Self {
@@ -176,14 +176,14 @@ impl SigningHost {
 
     /// Whether allocation is answered as granted without performing it.
     #[cfg(feature = "test-host")]
-    pub(crate) fn grants_allowances_unchecked(&self) -> bool {
+    pub fn grants_allowances_unchecked(&self) -> bool {
         self.grant_allowances_unchecked
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Answer resource allocation as granted without performing it.
     #[cfg(feature = "test-host")]
-    pub(crate) fn set_grant_allowances_unchecked(&self, granted: bool) {
+    pub fn set_grant_allowances_unchecked(&self, granted: bool) {
         self.grant_allowances_unchecked
             .store(granted, std::sync::atomic::Ordering::Relaxed);
     }
@@ -241,13 +241,13 @@ impl SigningHost {
     }
 
     /// Shared session holder for connection-status subscriptions.
-    pub(super) fn session_state(&self) -> Arc<SessionState> {
+    pub fn session_state(&self) -> Arc<SessionState> {
         self.session_state.clone()
     }
 
     /// The dotNS TLD of the network this wallet serves: the suffix of every
     /// reserved identity it derives.
-    pub(super) fn network_suffix(&self) -> &str {
+    pub fn network_suffix(&self) -> &str {
         &self.network_suffix
     }
 
@@ -341,7 +341,7 @@ impl SigningHost {
 
     /// Fence in-flight grant work and revoke this product's grants from the
     /// current local activation while preserving unrelated products.
-    pub(crate) fn clear_product_state(&self, product_id: &str) -> Result<(), AuthorityError> {
+    pub fn clear_product_state(&self, product_id: &str) -> Result<(), AuthorityError> {
         let product_id = normalize_product_identifier(product_id).map_err(|error| {
             AuthorityError::Unavailable {
                 reason: error.to_string(),
@@ -663,7 +663,7 @@ impl SigningHost {
         ))
     }
 
-    pub(crate) async fn ring_vrf_providers(
+    pub async fn ring_vrf_providers(
         &self,
         ring: &v01::RingLocation,
     ) -> Result<Vec<v01::ProductAccountId>, RingVrfError> {
@@ -675,7 +675,7 @@ impl SigningHost {
             .await
     }
 
-    pub(crate) async fn selected_ring_vrf_provider(
+    pub async fn selected_ring_vrf_provider(
         &self,
         ring: &v01::RingLocation,
     ) -> Result<Option<v01::ProductAccountId>, RingVrfError> {
@@ -687,7 +687,7 @@ impl SigningHost {
             .await
     }
 
-    pub(crate) async fn select_ring_vrf_provider(
+    pub async fn select_ring_vrf_provider(
         &self,
         ring: v01::RingLocation,
         handle: v01::ProductAccountId,
@@ -704,7 +704,7 @@ impl SigningHost {
 #[cfg(not(target_arch = "wasm32"))]
 impl SigningHost {
     /// Record statement-store accounts to keep renewed across periods.
-    pub(crate) async fn track_statement_renewal_targets(
+    pub async fn track_statement_renewal_targets(
         &self,
         targets: Vec<StatementRenewalTarget>,
     ) -> Result<(), String> {
@@ -712,19 +712,19 @@ impl SigningHost {
     }
 
     /// Every statement account the ledger currently tracks.
-    pub(crate) async fn statement_renewal_targets(
+    pub async fn statement_renewal_targets(
         &self,
     ) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
         allowance_renewal::list(self).await
     }
 
     /// Root public key the active identity records its fixed entries under.
-    pub(crate) fn statement_renewal_owner_key(&self) -> Result<[u8; 32], String> {
+    pub fn statement_renewal_owner_key(&self) -> Result<[u8; 32], String> {
         allowance_renewal::active_owner_key(self)
     }
 
     /// Stop renewing one fixed statement account.
-    pub(crate) async fn untrack_statement_renewal_account(
+    pub async fn untrack_statement_renewal_account(
         &self,
         account_id: &[u8; 32],
     ) -> Result<bool, String> {
@@ -732,7 +732,7 @@ impl SigningHost {
     }
 
     /// Run one statement-store renewal pass over the tracked targets.
-    pub(crate) async fn renew_statement_allowances(
+    pub async fn renew_statement_allowances(
         &self,
     ) -> Result<crate::runtime::statement_allowance::renewal::StatementRenewalReport, String> {
         allowance_renewal::renew_now(&self.services, self).await
@@ -742,14 +742,14 @@ impl SigningHost {
     ///
     /// A direct call to [`Self::renew_statement_allowances`] returns its own
     /// report, so only the loop needs somewhere to leave one.
-    pub(crate) fn last_statement_renewal_report(
+    pub fn last_statement_renewal_report(
         &self,
     ) -> Option<crate::runtime::statement_allowance::renewal::StatementRenewalReport> {
         self.renewal.last_report()
     }
 
     /// Start the periodic statement-store renewal loop. Idempotent.
-    pub(crate) fn start_statement_allowance_renewal(self: &Arc<Self>) {
+    pub fn start_statement_allowance_renewal(self: &Arc<Self>) {
         allowance_renewal::start_renewal_loop(&self.services, self);
     }
 }
@@ -1166,7 +1166,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRegisterRingVrfKeyRequest>,
-    ) -> Result<v01::RingVrfPublicKey, RingVrfError> {
+    ) -> Result<[u8; 32], RingVrfError> {
         self.require_current_session(session)?;
         self.ring_resolver.validate(&request.payload.ring).await?;
 
@@ -1452,14 +1452,14 @@ mod tests {
     use super::TEST_NETWORK_SUFFIX;
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver};
     use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
-    use crate::host_logic::extrinsic::tests::split_v4;
+    use crate::host_internal::extrinsic::tests::split_v4;
+    use crate::host_internal::sso_messages::ProductRequest;
+    use crate::host_internal::transaction::{
+        extrinsic_payload_extensions, extrinsic_payload_preimage,
+    };
     use crate::host_logic::product_account::{
         derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
         derive_root_keypair_from_entropy, index_bytes,
-    };
-    use crate::host_logic::sso::messages::ProductRequest;
-    use crate::host_logic::transaction::{
-        extrinsic_payload_extensions, extrinsic_payload_preimage,
     };
     use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::test_support::{StubPlatform, test_spawner};
@@ -1537,7 +1537,7 @@ mod tests {
             platform.as_ref(),
             "dim2.dot",
             "peopl.dot",
-            crate::host_logic::product_manifest::Granted::Context,
+            crate::host_internal::product_manifest::Granted::Context,
         ));
         // Documentation, not a guard, and labelled so nobody reads it as one:
         // with no cached manifest and no reachable chain this is false whether
@@ -1668,7 +1668,7 @@ mod tests {
                  "icon":{{"cid":"c","format":"png"}},"trustedProducts":{trusted_products}}}"#
         );
         let entry = crate::runtime::product_manifest::CachedManifest {
-            fetched_at_secs: crate::host_logic::statement_store::current_unix_secs(),
+            fetched_at_secs: crate::unix_time::current_unix_secs(),
             json: Some(json),
         };
         futures::executor::block_on(
@@ -1686,10 +1686,10 @@ mod tests {
         futures::executor::block_on(
             // Bare-labelled on both sides, as `account_access_authorization`
             // writes it in production.
-            crate::host_logic::permissions::set_account_access_status(
+            crate::host_internal::permissions::set_account_access_status(
                 platform,
-                crate::host_logic::product_manifest::bare_product_label(caller),
-                crate::host_logic::product_manifest::bare_product_label(target),
+                crate::host_internal::product_manifest::bare_product_label(caller),
+                crate::host_internal::product_manifest::bare_product_label(target),
                 truapi_platform::PermissionAuthorizationStatus::Denied,
             ),
         )
@@ -2118,16 +2118,18 @@ mod tests {
     /// A user's "no" would become a "yes" on upgrade.
     #[test]
     fn a_refusal_recorded_before_this_release_still_overrides_a_grant() {
-        use crate::host_logic::product_manifest::Granted;
+        use crate::host_internal::product_manifest::Granted;
         let platform = Arc::new(StubPlatform::default());
         cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
         // Written exactly as the previous release wrote it: full ids, both sides.
-        futures::executor::block_on(crate::host_logic::permissions::set_account_access_status(
-            platform.as_ref(),
-            "dim2.dot",
-            "peopl.dot",
-            truapi_platform::PermissionAuthorizationStatus::Denied,
-        ))
+        futures::executor::block_on(
+            crate::host_internal::permissions::set_account_access_status(
+                platform.as_ref(),
+                "dim2.dot",
+                "peopl.dot",
+                truapi_platform::PermissionAuthorizationStatus::Denied,
+            ),
+        )
         .expect("stub core storage accepts the decision");
         let (services, _authority) =
             signing_runtime_with_ring_resolver(platform.clone(), full_person_ring_resolver());
@@ -2161,7 +2163,7 @@ mod tests {
     /// applies unchanged to the grantor.
     #[test]
     fn a_refusal_covers_every_executable_of_the_refused_target() {
-        use crate::host_logic::product_manifest::Granted;
+        use crate::host_internal::product_manifest::Granted;
         let platform = Arc::new(StubPlatform {
             // The user declines, so the refusal is written by the production
             // path rather than by a test helper: this has to pin where
@@ -2312,7 +2314,7 @@ mod tests {
     /// owns and the override was gone. Both halves now key by the bare label.
     #[test]
     fn a_refusal_covers_every_executable_of_the_refused_product() {
-        use crate::host_logic::product_manifest::Granted;
+        use crate::host_internal::product_manifest::Granted;
         let platform = Arc::new(StubPlatform::default());
         cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
         deny_account_access(&platform, "dim2.dot", "peopl.dot");
@@ -2437,7 +2439,7 @@ mod tests {
             platform.as_ref(),
             "dim2.dot",
             "peopl.dot",
-            crate::host_logic::product_manifest::Granted::Context,
+            crate::host_internal::product_manifest::Granted::Context,
         ));
         assert!(
             !granted,
@@ -2457,7 +2459,7 @@ mod tests {
                 readable.as_ref(),
                 "dim2.dot",
                 "peopl.dot",
-                crate::host_logic::product_manifest::Granted::Context,
+                crate::host_internal::product_manifest::Granted::Context,
             )),
             "control: the same grant must be honoured when the store reads cleanly"
         );
@@ -2488,7 +2490,7 @@ mod tests {
             platform.as_ref(),
             "dim2.dot",
             "peopl.dot",
-            crate::host_logic::product_manifest::Granted::Context,
+            crate::host_internal::product_manifest::Granted::Context,
         ));
         assert!(
             !granted,

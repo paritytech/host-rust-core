@@ -30,7 +30,7 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
-use crate::host_logic::sso::messages::{RemoteMessage, SsoRequestOutcome};
+use crate::host_internal::sso_messages::{RemoteMessage, SsoRequestOutcome};
 use crate::host_logic::worker::WorkerLedger;
 use crate::runtime::sso_service::Dispatch;
 use crate::runtime::{
@@ -635,7 +635,7 @@ impl SigningHostRuntime {
     /// Build one product connection with adapters scoped to one native
     /// executable while sharing this runtime's authentication and services.
     #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
-    pub(crate) fn product_runtime_with(
+    pub fn product_runtime_with(
         &self,
         product: ProductContext,
         adapters: ConnectionAdapters,
@@ -664,7 +664,7 @@ impl SigningHostRuntime {
     /// Build a product administration handle with adapters scoped to one
     /// native executable connection.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn product_admin_with(
+    pub fn product_admin_with(
         &self,
         product: ProductContext,
         adapters: ConnectionAdapters,
@@ -976,25 +976,24 @@ impl SigningHostRuntime {
 /// `pocket_platform` is the same kind of optional adapter for the card
 /// collection.
 #[derive(Clone)]
-pub(crate) struct ConnectionAdapters {
-    pub(crate) platform: Arc<dyn Platform>,
-    pub(crate) chat_platform: Option<Arc<dyn ChatPlatform>>,
+pub struct ConnectionAdapters {
+    pub platform: Arc<dyn Platform>,
+    pub chat_platform: Option<Arc<dyn ChatPlatform>>,
     /// Live OS permission state for this connection. It travels here rather
     /// than on the host runtime because a native host builds one platform per
     /// product execution, so the object that reports OS state has to be the
     /// same one that presents the prompt.
-    pub(crate) permission_status: Option<Arc<dyn PermissionStatusHost>>,
+    pub permission_status: Option<Arc<dyn PermissionStatusHost>>,
     /// SDK and internal network connections must share an execution's one-use grants.
-    pub(crate) permission_grants: Arc<crate::host_logic::permissions::TemporaryPermissions>,
-    pub(crate) chat: Arc<ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
-    pub(crate) renderer:
-        Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
-    pub(crate) pocket_platform: Option<Arc<dyn PocketPlatform>>,
+    pub permission_grants: Arc<crate::host_internal::permissions::TemporaryPermissions>,
+    pub chat: Arc<ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
+    pub renderer: Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
+    pub pocket_platform: Option<Arc<dyn PocketPlatform>>,
 }
 
 impl ConnectionAdapters {
     /// Default adapters for a connection without native scoping.
-    pub(crate) fn from_services(services: &RuntimeServices) -> Self {
+    pub fn from_services(services: &RuntimeServices) -> Self {
         Self {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
@@ -1008,11 +1007,11 @@ impl ConnectionAdapters {
 }
 
 fn ring_vrf_admin_error(
-    error: crate::host_logic::sso::messages::RingVrfError,
+    error: crate::host_internal::sso_messages::RingVrfError,
 ) -> v01::GenericError {
     v01::GenericError {
         reason: match error {
-            crate::host_logic::sso::messages::RingVrfError::Unknown { reason } => reason,
+            crate::host_internal::sso_messages::RingVrfError::Unknown { reason } => reason,
             other => format!("{other:?}"),
         },
     }
@@ -1030,14 +1029,14 @@ pub struct HostAdmin {
 impl HostAdmin {
     /// Access the execution's product-facing capabilities and permission grants.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    pub(crate) fn product_runtime(&self) -> &Arc<ProductRuntimeHost> {
+    pub fn product_runtime(&self) -> &Arc<ProductRuntimeHost> {
         &self.product_runtime
     }
 
     /// Build an admin handle from a long-lived host runtime and the adapters
     /// scoped to one product connection.
     #[instrument(skip_all, fields(runtime.method = "host_admin.new"))]
-    pub(crate) fn new(
+    pub fn new(
         services: Arc<RuntimeServices>,
         authority: Arc<dyn ProductAuthority>,
         product: ProductContext,
@@ -1309,7 +1308,7 @@ impl ProductRuntimeControl {
                         Some((Ok(node), (stream, reference)))
                     }
                     Err(interrupt) => Some((
-                        Err(crate::subscription::interrupt_into_latest(interrupt)),
+                        Err(crate::interrupt::interrupt_into_latest(interrupt)),
                         (stream, None),
                     )),
                 }
@@ -1375,7 +1374,7 @@ impl ProductRuntime {
 
     /// Build a product-facing runtime from shared services and an authority.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.new"))]
-    pub(crate) fn new(
+    pub fn new(
         services: Arc<RuntimeServices>,
         authority: Arc<dyn ProductAuthority>,
         product: ProductContext,
@@ -1683,10 +1682,10 @@ impl Transport for SinkTransport {
 mod tests {
     use super::*;
     use crate::frame::{Payload, ProtocolMessage, request_ids, subscription_ids};
-    use crate::host_logic::product_account::derive_identity_keypair;
-    use crate::host_logic::sso::messages::{
+    use crate::host_internal::sso_messages::{
         RemoteMessage, RemoteMessageData, decode_incoming_sso_request, v1,
     };
+    use crate::host_logic::product_account::derive_identity_keypair;
     use crate::host_logic::sso::pairing::{
         PairingBootstrap, derive_x25519_keypair_from_entropy, establish_sso_session_info,
         x25519_public_key,
@@ -3327,7 +3326,7 @@ mod tests {
 
     #[test]
     fn answer_sso_request_distinguishes_disconnect_from_ignorable_messages() {
-        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
+        use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, Response, v1};
         use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         const ENTROPY: [u8; 32] = [0xab; 32];
@@ -3373,7 +3372,7 @@ mod tests {
 
     #[test]
     fn answer_sso_request_returns_a_correlated_response() {
-        use crate::host_logic::sso::messages::{
+        use crate::host_internal::sso_messages::{
             ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
         };
         use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};

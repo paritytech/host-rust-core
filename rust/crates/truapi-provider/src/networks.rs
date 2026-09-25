@@ -141,7 +141,7 @@ fn network_sources(network: &NetworkDef) -> Result<NetworkSources, GenericError>
 /// Register every chain of the bundled network `name`, wiring the parachains
 /// to the relay and enabling the statement-store protocol where the catalog
 /// specifies it. Returns the chains' genesis hashes.
-pub(crate) fn add_network(
+pub fn add_network(
     builder: EmbeddedChainProviderBuilder,
     name: &str,
 ) -> Result<(EmbeddedChainProviderBuilder, NetworkChains), GenericError> {
@@ -172,7 +172,7 @@ pub(crate) fn add_network(
 /// The network name and service (`relay`/`asset-hub`/`bulletin`/`people`) that
 /// `genesis_hash` maps to in the catalog, for log attribution. `None` if no
 /// bundled network defines it.
-pub(crate) fn catalog_service(genesis_hash: [u8; 32]) -> Option<(&'static str, &'static str)> {
+pub fn catalog_service(genesis_hash: [u8; 32]) -> Option<(&'static str, &'static str)> {
     for network in CATALOG {
         for (service, chain) in [
             ("relay", &network.relay),
@@ -191,7 +191,7 @@ pub(crate) fn catalog_service(genesis_hash: [u8; 32]) -> Option<(&'static str, &
 /// Resolve the bundled network containing `genesis_hash` from that hash alone:
 /// its chains and the relay `genesis_hash` syncs through. `None` if no bundled
 /// network defines it.
-pub(crate) fn catalog_network_chains(genesis_hash: [u8; 32]) -> Option<ResolvedNetwork> {
+pub fn catalog_network_chains(genesis_hash: [u8; 32]) -> Option<ResolvedNetwork> {
     for network in CATALOG {
         let Ok((chains, sources)) = network_sources(network) else {
             continue;

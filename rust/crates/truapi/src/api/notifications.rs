@@ -14,7 +14,7 @@ use crate::{wire, wire_trait};
 pub trait Notifications: Send + Sync {
     /// Send a push notification to the user.
     ///
-    /// Returns a [`NotificationId`](crate::v01::NotificationId) that can be
+    /// Returns a notification id that can be
     /// passed to [`cancel_push_notification`](Self::cancel_push_notification)
     /// to retract a scheduled notification. When `scheduled_at` is set the host
     /// persists the notification across restarts and fires it through the

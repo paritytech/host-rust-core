@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use crate::chain_runtime::ChainRuntime;
+use crate::host_internal::sso_messages::RingVrfError;
 use crate::host_logic::product_account::derivation_index_bytes;
-use crate::host_logic::sso::messages::RingVrfError;
 use crate::runtime::vrf::{self, Vrf};
 use async_trait::async_trait;
 use subxt::dynamic;
@@ -19,21 +19,21 @@ use truapi::v01::{ProductProofContext, RingLocation, RingLocationJunction};
 const MEMBERS_PALLET: &str = "Members";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::runtime) struct MemberCandidate {
-    pub(in crate::runtime) member: [u8; 32],
+pub struct MemberCandidate {
+    pub member: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::runtime) struct ResolvedRing {
-    pub(in crate::runtime) selected: MemberCandidate,
-    pub(in crate::runtime) ring_index: u32,
-    pub(in crate::runtime) ring_revision: u32,
-    pub(in crate::runtime) domain_size: u32,
-    pub(in crate::runtime) members: Vec<[u8; 32]>,
+pub struct ResolvedRing {
+    pub selected: MemberCandidate,
+    pub ring_index: u32,
+    pub ring_revision: u32,
+    pub domain_size: u32,
+    pub members: Vec<[u8; 32]>,
 }
 
 #[async_trait]
-pub(in crate::runtime) trait RingResolver: Send + Sync {
+pub trait RingResolver: Send + Sync {
     /// Members pallet instance used in fully qualified ring locations.
     async fn members_pallet_index(&self, chain_id: &[u8; 32]) -> Result<u8, RingVrfError>;
 
@@ -49,12 +49,12 @@ pub(in crate::runtime) trait RingResolver: Send + Sync {
     ) -> Result<ResolvedRing, RingVrfError>;
 }
 
-pub(in crate::runtime) struct ChainRingResolver {
+pub struct ChainRingResolver {
     chain: ChainRuntime,
 }
 
 impl ChainRingResolver {
-    pub(in crate::runtime) fn new(chain: ChainRuntime) -> Arc<Self> {
+    pub fn new(chain: ChainRuntime) -> Arc<Self> {
         Arc::new(Self { chain })
     }
 
@@ -235,7 +235,7 @@ mod development {
 
     /// [`super::context_bytes`], except that the `raw:` product id (which
     /// dotNS cannot issue) makes the `Raw` suffix the context, verbatim.
-    pub(in crate::runtime) fn development_context_bytes(context: &ProductProofContext) -> [u8; 32] {
+    pub fn development_context_bytes(context: &ProductProofContext) -> [u8; 32] {
         if context.product_id == RAW_CONTEXT_PRODUCT_ID
             && let DerivationIndex::Raw(bytes) = context.suffix
         {
@@ -244,9 +244,9 @@ mod development {
         super::context_bytes(context)
     }
 }
-pub(in crate::runtime) use development::development_context_bytes;
+pub use development::development_context_bytes;
 
-pub(in crate::runtime) fn context_bytes(context: &ProductProofContext) -> [u8; 32] {
+pub fn context_bytes(context: &ProductProofContext) -> [u8; 32] {
     let suffix = derivation_index_bytes(&context.suffix);
     let mut input = Vec::with_capacity(9 + context.product_id.len() + suffix.len());
     input.extend_from_slice(b"product/");
@@ -256,7 +256,7 @@ pub(in crate::runtime) fn context_bytes(context: &ProductProofContext) -> [u8; 3
     blake2b_256(&input, None)
 }
 
-pub(in crate::runtime) fn create_proof(
+pub fn create_proof(
     vrf: &Vrf,
     entropy: &[u8; 32],
     resolved: &ResolvedRing,

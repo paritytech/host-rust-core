@@ -13,8 +13,8 @@ use thiserror::Error;
 use super::StatementAllowanceError;
 use super::collection::PersonhoodCollection;
 use super::extension::Metadata;
+use super::key_hash::blake2_128_concat;
 use super::proof::vrf_error;
-use super::ring::blake2_128_concat;
 use super::rpc::RpcClient;
 use super::view;
 

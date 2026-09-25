@@ -10,8 +10,8 @@ use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use web_time::Duration;
 
+use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, v1};
 use crate::host_logic::session::{SessionInfo, SsoSessionInfo};
-use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
 use crate::host_logic::sso::pairing;
 use crate::subscription::Spawner;
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,7 +40,7 @@ use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey
 /// Block until `condition` holds, failing with `message` after two seconds.
 /// Background runtime tasks run on their own threads, so a test that observes
 /// their effects polls for them instead of assuming an ordering.
-pub(crate) fn wait_until(mut condition: impl FnMut() -> bool, message: &str) {
+pub fn wait_until(mut condition: impl FnMut() -> bool, message: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while !condition() {
         assert!(std::time::Instant::now() < deadline, "{message}");
@@ -49,7 +49,7 @@ pub(crate) fn wait_until(mut condition: impl FnMut() -> bool, message: &str) {
 }
 
 /// Test spawner that matches the current target.
-pub(crate) fn test_spawner() -> Spawner {
+pub fn test_spawner() -> Spawner {
     #[cfg(not(target_arch = "wasm32"))]
     {
         thread_per_subscription_spawner()
@@ -62,7 +62,7 @@ pub(crate) fn test_spawner() -> Spawner {
 
 /// Synchronous spawner for tests that should complete work immediately.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn immediate_spawner() -> Spawner {
+pub fn immediate_spawner() -> Spawner {
     Arc::new(futures::executor::block_on)
 }
 
@@ -75,98 +75,97 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 /// other callback returns a unit value or empty stream, so the runtime
 /// can exercise its delegation paths without pulling in a real backend.
 #[derive(Default)]
-pub(crate) struct StubPlatform {
-    pub(crate) device_permission_decisions:
+pub struct StubPlatform {
+    pub device_permission_decisions:
         Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
-    pub(crate) device_permission_requests: Mutex<Vec<v01::HostDevicePermissionRequest>>,
+    pub device_permission_requests: Mutex<Vec<v01::HostDevicePermissionRequest>>,
     /// Product passed to each permission prompt, in order.
-    pub(crate) permission_prompt_products: Mutex<Vec<ProductContext>>,
-    pub(crate) remote_permission_denied: bool,
-    pub(crate) remote_permission_decisions:
+    pub permission_prompt_products: Mutex<Vec<ProductContext>>,
+    pub remote_permission_denied: bool,
+    pub remote_permission_decisions:
         Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
     /// Every `remote_permission` request, in order, so a test can assert which
     /// domains reached the prompt and that a stored grant suppresses a re-ask.
-    pub(crate) remote_permission_requests: Arc<Mutex<Vec<v01::RemotePermissionRequest>>>,
+    pub remote_permission_requests: Arc<Mutex<Vec<v01::RemotePermissionRequest>>>,
     /// URLs handed to `navigate_to`. Empty means the gate blocked before the
     /// platform was ever reached.
-    pub(crate) navigations: Arc<Mutex<Vec<String>>>,
-    pub(crate) account_alias_confirmed: bool,
-    pub(crate) account_alias_error: Option<&'static str>,
-    pub(crate) create_proof_confirmed: bool,
-    pub(crate) create_proof_error: Option<&'static str>,
-    pub(crate) account_access_confirmed: bool,
-    pub(crate) account_access_error: Option<&'static str>,
-    pub(crate) account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
+    pub navigations: Arc<Mutex<Vec<String>>>,
+    pub account_alias_confirmed: bool,
+    pub account_alias_error: Option<&'static str>,
+    pub create_proof_confirmed: bool,
+    pub create_proof_error: Option<&'static str>,
+    pub account_access_confirmed: bool,
+    pub account_access_error: Option<&'static str>,
+    pub account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
     /// Permission answers retain their lifetime separately from action confirmations.
-    pub(crate) permission_confirmation_decisions:
+    pub permission_confirmation_decisions:
         Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
     /// Inverted so the derived default (`false`) approves, matching the
     /// pre-consent behavior where a cold own-account resolve was not gated.
-    pub(crate) product_subtree_denied: bool,
-    pub(crate) product_subtree_reviews: Arc<Mutex<Vec<ProductSubtreeReview>>>,
-    pub(crate) identity_disclosure_confirmed: bool,
-    pub(crate) identity_disclosure_error: Option<&'static str>,
-    pub(crate) identity_disclosure_calls: Arc<AtomicUsize>,
-    pub(crate) sign_payload_confirmed: bool,
+    pub product_subtree_denied: bool,
+    pub product_subtree_reviews: Arc<Mutex<Vec<ProductSubtreeReview>>>,
+    pub identity_disclosure_confirmed: bool,
+    pub identity_disclosure_error: Option<&'static str>,
+    pub identity_disclosure_calls: Arc<AtomicUsize>,
+    pub sign_payload_confirmed: bool,
     /// Every `SignPayload` review passed to `confirm_user_action`, in order.
     /// Empty proves an AutoSigning grant suppressed the prompt.
-    pub(crate) sign_payload_reviews: Arc<Mutex<Vec<SignPayloadReview>>>,
-    pub(crate) sign_payload_error: Option<&'static str>,
-    pub(crate) sign_raw_confirmed: bool,
-    pub(crate) sign_raw_error: Option<&'static str>,
-    pub(crate) sign_raw_reviews: Arc<Mutex<Vec<SignRawReview>>>,
-    pub(crate) sign_vrf_confirmed: bool,
-    pub(crate) sign_vrf_error: Option<&'static str>,
-    pub(crate) sign_vrf_reviews: Arc<Mutex<Vec<SignVrfReview>>>,
+    pub sign_payload_reviews: Arc<Mutex<Vec<SignPayloadReview>>>,
+    pub sign_payload_error: Option<&'static str>,
+    pub sign_raw_confirmed: bool,
+    pub sign_raw_error: Option<&'static str>,
+    pub sign_raw_reviews: Arc<Mutex<Vec<SignRawReview>>>,
+    pub sign_vrf_confirmed: bool,
+    pub sign_vrf_error: Option<&'static str>,
+    pub sign_vrf_reviews: Arc<Mutex<Vec<SignVrfReview>>>,
     /// Every `StatementStoreProductSign` review passed to `confirm_user_action`, in order.
-    pub(crate) statement_store_product_sign_reviews:
-        Arc<Mutex<Vec<StatementStoreProductSignReview>>>,
-    pub(crate) create_transaction_confirmed: bool,
+    pub statement_store_product_sign_reviews: Arc<Mutex<Vec<StatementStoreProductSignReview>>>,
+    pub create_transaction_confirmed: bool,
     /// Every `CreateTransaction` review passed to `confirm_user_action`, in
     /// order. Empty proves an AutoSigning grant suppressed the prompt.
-    pub(crate) create_transaction_reviews: Arc<Mutex<Vec<CreateTransactionReview>>>,
-    pub(crate) create_transaction_error: Option<&'static str>,
+    pub create_transaction_reviews: Arc<Mutex<Vec<CreateTransactionReview>>>,
+    pub create_transaction_error: Option<&'static str>,
     /// Pause a transaction review until the test releases its confirmation.
-    pub(crate) create_transaction_confirmation_gate:
+    pub create_transaction_confirmation_gate:
         Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
-    pub(crate) resource_allocation_confirmed: bool,
-    pub(crate) resource_allocation_error: Option<&'static str>,
+    pub resource_allocation_confirmed: bool,
+    pub resource_allocation_error: Option<&'static str>,
     /// Pause a resource review until the test releases its confirmation.
-    pub(crate) resource_allocation_confirmation_gate:
+    pub resource_allocation_confirmation_gate:
         Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     /// Every `ResourceAllocation` review passed to `confirm_user_action`, in order.
-    pub(crate) resource_allocation_reviews: Arc<Mutex<Vec<ResourceAllocationReview>>>,
-    pub(crate) session_blob: Option<Vec<u8>>,
-    pub(crate) session_error: Option<&'static str>,
-    pub(crate) session_clears: Arc<Mutex<usize>>,
-    pub(crate) session_writes: Arc<Mutex<Vec<Vec<u8>>>>,
-    pub(crate) on_auth_session_write: Arc<Mutex<Option<StorageWriteHook>>>,
+    pub resource_allocation_reviews: Arc<Mutex<Vec<ResourceAllocationReview>>>,
+    pub session_blob: Option<Vec<u8>>,
+    pub session_error: Option<&'static str>,
+    pub session_clears: Arc<Mutex<usize>>,
+    pub session_writes: Arc<Mutex<Vec<Vec<u8>>>>,
+    pub on_auth_session_write: Arc<Mutex<Option<StorageWriteHook>>>,
     /// Every `auth_state_changed` emission in order.
-    pub(crate) auth_states: Arc<Mutex<Vec<AuthState>>>,
+    pub auth_states: Arc<Mutex<Vec<AuthState>>>,
     /// Invoked after each recorded auth state, outside any stub lock, so a
     /// test can react to a transition (e.g. cancel the login it observes).
-    pub(crate) on_auth_state: Arc<Mutex<Option<AuthStateHook>>>,
+    pub on_auth_state: Arc<Mutex<Option<AuthStateHook>>>,
     /// When true, `subscribe_theme` returns a never-ending stream.
-    pub(crate) theme_stream_pending: bool,
+    pub theme_stream_pending: bool,
     /// Set when the pending theme stream is dropped.
-    pub(crate) theme_stream_dropped: Arc<AtomicBool>,
-    pub(crate) pairing_success_response: bool,
+    pub theme_stream_dropped: Arc<AtomicBool>,
+    pub pairing_success_response: bool,
     /// Deliver an authenticated wallet pending status and then stay open.
-    pub(crate) pairing_pending_response: bool,
+    pub pairing_pending_response: bool,
     /// Deliver a wallet failure status on the pairing subscription.
-    pub(crate) pairing_failure_response: bool,
+    pub pairing_failure_response: bool,
     /// Deliver the pairing success statement only through a snapshot
     /// query page; the live subscription stays silent.
-    pub(crate) pairing_success_via_query: bool,
+    pub pairing_success_via_query: bool,
     /// Acknowledge the pairing subscription and then publish nothing, the
     /// shape a peer answering on a different SSO envelope presents: subscribed
     /// to the topic, with no statement this host can open ever arriving.
-    pub(crate) pairing_silent_after_subscribe: bool,
-    pub(crate) notification_id: v01::NotificationId,
-    pub(crate) pushed_notifications: Arc<Mutex<Vec<v01::HostPushNotificationRequest>>>,
-    pub(crate) cancelled_notifications: Arc<Mutex<Vec<v01::NotificationId>>>,
-    pub(crate) sent_rpc: Arc<Mutex<Vec<String>>>,
-    pub(crate) rpc_responses: Vec<String>,
+    pub pairing_silent_after_subscribe: bool,
+    pub notification_id: u32,
+    pub pushed_notifications: Arc<Mutex<Vec<v01::HostPushNotificationRequest>>>,
+    pub cancelled_notifications: Arc<Mutex<Vec<u32>>>,
+    pub sent_rpc: Arc<Mutex<Vec<String>>>,
+    pub rpc_responses: Vec<String>,
     /// Responses keyed by JSON-RPC method, answered as each request arrives with
     /// that request's own id echoed back. A `state_call` is keyed by the runtime
     /// API it names instead, so metadata and view-function reads stay separable.
@@ -175,74 +174,73 @@ pub(crate) struct StubPlatform {
     /// indefinitely for the next request, so a slow step between two requests
     /// cannot outrun the response pump. Prefer it whenever a test drives a path
     /// that decodes metadata or does other work between calls.
-    pub(crate) rpc_method_responses: Vec<(&'static str, String)>,
+    pub rpc_method_responses: Vec<(&'static str, String)>,
     /// Hold the first connection's `rpc_method_responses` answers until the
     /// test releases them.
-    pub(crate) rpc_method_responses_gate:
-        Arc<Mutex<Option<futures::channel::oneshot::Receiver<()>>>>,
-    pub(crate) sso_response_script: Option<SsoResponseScript>,
+    pub rpc_method_responses_gate: Arc<Mutex<Option<futures::channel::oneshot::Receiver<()>>>>,
+    pub sso_response_script: Option<SsoResponseScript>,
     /// Every genesis hash handed to `connect`, in order. Lets a test assert
     /// *which* chain a lookup reached, not merely that it reached one: the
     /// hashes a host is configured with are same-typed `[u8; 32]` passed
     /// positionally, so a transposed pair still connects and still answers.
-    pub(crate) chain_connects: Arc<Mutex<Vec<[u8; 32]>>>,
+    pub chain_connects: Arc<Mutex<Vec<[u8; 32]>>>,
     /// When set, `connect` fails with this reason.
-    pub(crate) chain_connect_error: Option<&'static str>,
+    pub chain_connect_error: Option<&'static str>,
     /// When true, the connection's response stream ends instead of staying
     /// pending. A follow opened over it then yields `None` rather than waiting
     /// out `OPERATION_TIMEOUT`, which is the difference between a test that
     /// asserts a lookup failed and a test that spends ten seconds proving it.
-    pub(crate) chain_responses_end: bool,
+    pub chain_responses_end: bool,
     /// When true, `connect` stays pending forever.
     /// Hold every core-storage read pending forever, standing in for a host
     /// callback that is never answered.
-    pub(crate) core_storage_pending: bool,
-    pub(crate) chain_connect_pending: bool,
+    pub core_storage_pending: bool,
+    pub chain_connect_pending: bool,
     /// Set when a `chain_connect_pending` connect future is dropped.
-    pub(crate) pending_connect_dropped: Arc<AtomicBool>,
+    pub pending_connect_dropped: Arc<AtomicBool>,
     /// Value returned by `lookup_preimage`, if any. Tests set this to a
     /// forged value to exercise the in-core integrity check.
-    pub(crate) preimage_lookup_value: Option<Vec<u8>>,
-    pub(crate) local_storage: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    pub preimage_lookup_value: Option<Vec<u8>>,
+    pub local_storage: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     /// Every product storage write that reached the platform, in order, so a
     /// test can see which writes the core skipped.
-    pub(crate) local_storage_writes: Arc<Mutex<Vec<StorageWrite>>>,
+    pub local_storage_writes: Arc<Mutex<Vec<StorageWrite>>>,
     /// Open `subscribe_storage` streams by namespaced key; `write` and
     /// `clear` push each change to the matching ones.
-    pub(crate) storage_subscribers: Arc<Mutex<Vec<(String, StorageChangeSender)>>>,
+    pub storage_subscribers: Arc<Mutex<Vec<(String, StorageChangeSender)>>>,
     /// Every `begin_operation` as `(product_id, label)`, in order. The
     /// returned id is the call's 1-based position.
-    pub(crate) begun_operations: Arc<Mutex<Vec<(String, String)>>>,
+    pub begun_operations: Arc<Mutex<Vec<(String, String)>>>,
     /// Every `end_operation` as `(product_id, id)`, in order.
-    pub(crate) ended_operations: Arc<Mutex<Vec<(String, u32)>>>,
+    pub ended_operations: Arc<Mutex<Vec<(String, u32)>>>,
     /// Held open by a test so `begin_operation` is still in flight while the
     /// dispatch awaiting it goes away.
-    pub(crate) begin_operation_gate: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
+    pub begin_operation_gate: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     /// When set, `end_operation` records the call and then fails with this
     /// reason, standing in for a host that drops the operation and still
     /// reports an error.
-    pub(crate) end_operation_error: Option<&'static str>,
+    pub end_operation_error: Option<&'static str>,
     /// When set, product/core storage reads fail with this reason.
-    pub(crate) local_storage_error: Option<&'static str>,
+    pub local_storage_error: Option<&'static str>,
     /// When set, only `PermissionAuthorization` reads fail. Narrower than
     /// `local_storage_error`, which fails every key: a test that needs the
     /// manifest cache to answer while the stored permission decision is
     /// unreadable cannot use the broad knob.
-    pub(crate) permission_storage_error: Option<&'static str>,
+    pub permission_storage_error: Option<&'static str>,
 }
 
 /// One product storage write as the platform saw it: namespaced key and bytes.
-pub(crate) type StorageWrite = (String, Vec<u8>);
+pub type StorageWrite = (String, Vec<u8>);
 
 /// Sender side of one stubbed storage subscription.
-pub(crate) type StorageChangeSender = futures::channel::mpsc::UnboundedSender<
+pub type StorageChangeSender = futures::channel::mpsc::UnboundedSender<
     Result<v01::HostLocalStorageChangeItem, v01::GenericError>,
 >;
 
 impl StubPlatform {
     /// Fail every open subscription on `key`, as a host whose store broke
     /// mid-stream would.
-    pub(crate) fn fail_storage_subscriptions(&self, key: &str, reason: &str) {
+    pub fn fail_storage_subscriptions(&self, key: &str, reason: &str) {
         self.storage_subscribers
             .lock()
             .expect("storage subscribers mutex poisoned")
@@ -273,7 +271,7 @@ impl StubPlatform {
 
 /// Scripted peer behavior for the recording connection's SSO exchange.
 #[derive(Clone)]
-pub(crate) enum SsoResponseScript {
+pub enum SsoResponseScript {
     /// Peer acknowledges the request and replies with `response`.
     Success {
         session: SessionInfo,
@@ -305,7 +303,7 @@ impl Stream for PendingThemeStream {
 }
 
 /// First `Pairing` deeplink recorded on `auth_states`, if any.
-pub(crate) fn first_pairing_deeplink(auth_states: &Mutex<Vec<AuthState>>) -> Option<String> {
+pub fn first_pairing_deeplink(auth_states: &Mutex<Vec<AuthState>>) -> Option<String> {
     auth_states
         .lock()
         .expect("auth state list mutex poisoned")
@@ -317,12 +315,12 @@ pub(crate) fn first_pairing_deeplink(auth_states: &Mutex<Vec<AuthState>>) -> Opt
 }
 
 /// Default stub platform wrapped in an `Arc`.
-pub(crate) fn stub_platform() -> Arc<StubPlatform> {
+pub fn stub_platform() -> Arc<StubPlatform> {
     Arc::new(StubPlatform::default())
 }
 
 /// Runtime configuration used by platform-backed runtime tests.
-pub(crate) fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductContext) {
+pub fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductContext) {
     (
         PairingHostConfig::new(
             HostInfo {
@@ -343,7 +341,7 @@ pub(crate) fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductCon
 }
 
 /// Basic connected session fixture without SSO channel material.
-pub(crate) fn session_info() -> crate::host_logic::session::SessionInfo {
+pub fn session_info() -> crate::host_logic::session::SessionInfo {
     crate::host_logic::session::SessionInfo {
         public_key: [
             0x80, 0x05, 0x28, 0xc9, 0x55, 0x87, 0x3e, 0x4c, 0x78, 0xb7, 0xdf, 0x24, 0xf7, 0x1d,
@@ -370,7 +368,7 @@ pub(crate) fn session_info() -> crate::host_logic::session::SessionInfo {
 
 /// A pairing host and the signing host it paired with, each holding its own
 /// side of one SSO session.
-pub(crate) fn sso_host_and_responder_sessions() -> (SsoSessionInfo, SsoSessionInfo) {
+pub fn sso_host_and_responder_sessions() -> (SsoSessionInfo, SsoSessionInfo) {
     use crate::host_logic::sso::pairing::{
         ResponderIdentity, create_pairing_bootstrap, derive_x25519_keypair_from_entropy,
         establish_responder_session_info, establish_sso_session_info,
@@ -419,7 +417,7 @@ pub(crate) fn sso_host_and_responder_sessions() -> (SsoSessionInfo, SsoSessionIn
 }
 
 /// Connected session fixture with deterministic SSO channel material.
-pub(crate) fn sso_session_info() -> crate::host_logic::session::SessionInfo {
+pub fn sso_session_info() -> crate::host_logic::session::SessionInfo {
     let mut session = session_info();
     let mini_secret = MiniSecretKey::from_bytes(&[7; 32]).unwrap();
     let keypair = mini_secret.expand_to_keypair(ExpansionMode::Ed25519);
@@ -443,14 +441,14 @@ pub(crate) fn sso_session_info() -> crate::host_logic::session::SessionInfo {
 }
 
 /// Deterministic peer statement-store signing keypair.
-pub(crate) fn peer_statement_keypair() -> ([u8; 64], [u8; 32]) {
+pub fn peer_statement_keypair() -> ([u8; 64], [u8; 32]) {
     let mini_secret = MiniSecretKey::from_bytes(&[9; 32]).unwrap();
     let keypair = mini_secret.expand_to_keypair(ExpansionMode::Ed25519);
     (keypair.secret.to_bytes(), keypair.public.to_bytes())
 }
 
 /// SCALE-encoded statement signed by the deterministic peer keypair.
-pub(crate) fn signed_test_statement(data: Vec<u8>) -> Vec<u8> {
+pub fn signed_test_statement(data: Vec<u8>) -> Vec<u8> {
     let (secret, public) = peer_statement_keypair();
     crate::host_logic::statement_store::sign_statement_fields(
         secret,
@@ -464,7 +462,7 @@ pub(crate) fn signed_test_statement(data: Vec<u8>) -> Vec<u8> {
 }
 
 /// Last submitted SSO remote message decoded from the stub RPC log.
-pub(crate) fn submitted_remote_message(
+pub fn submitted_remote_message(
     platform: &Arc<StubPlatform>,
     session: &SessionInfo,
 ) -> RemoteMessage {
@@ -474,7 +472,7 @@ pub(crate) fn submitted_remote_message(
 }
 
 /// Every SSO message this host has published, oldest first.
-pub(crate) fn submitted_remote_messages(
+pub fn submitted_remote_messages(
     platform: &Arc<StubPlatform>,
     session: &SessionInfo,
 ) -> Vec<RemoteMessage> {
@@ -536,7 +534,7 @@ fn wait_for_statement_submit(sent: &Arc<Mutex<Vec<String>>>) -> String {
 }
 
 /// JSON-RPC response sequence for a successful SSO request/response exchange.
-pub(crate) fn sso_success_responses(
+pub fn sso_success_responses(
     session: &SessionInfo,
     message_id: &str,
     response: RemoteMessage,
@@ -573,7 +571,7 @@ pub(crate) fn sso_success_responses(
 }
 
 /// Dynamic JSON-RPC response script for a successful SSO request/response exchange.
-pub(crate) fn sso_success_response_script(
+pub fn sso_success_response_script(
     session: &SessionInfo,
     response: RemoteMessage,
 ) -> SsoResponseScript {
@@ -584,14 +582,14 @@ pub(crate) fn sso_success_response_script(
 }
 
 /// Dynamic JSON-RPC response script where the SSO peer sends `Disconnected`.
-pub(crate) fn sso_peer_disconnect_response_script(session: &SessionInfo) -> SsoResponseScript {
+pub fn sso_peer_disconnect_response_script(session: &SessionInfo) -> SsoResponseScript {
     SsoResponseScript::PeerDisconnect {
         session: session.clone(),
     }
 }
 
 /// JSON-RPC response sequence for the background peer-disconnect monitor.
-pub(crate) fn sso_peer_disconnect_monitor_responses(
+pub fn sso_peer_disconnect_monitor_responses(
     session: &crate::host_logic::session::SessionInfo,
 ) -> Vec<String> {
     let subscription_id = "peer-disconnect-monitor-sub";
@@ -604,10 +602,10 @@ pub(crate) fn sso_peer_disconnect_monitor_responses(
                 pairing::SsoStatementData::Request {
                     request_id: "wallet-disconnect-monitor".to_string(),
                     data: vec![
-                        crate::host_logic::sso::messages::RemoteMessage {
+                        crate::host_internal::sso_messages::RemoteMessage {
                             message_id: "wallet-disconnect-monitor".to_string(),
-                            data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-                                crate::host_logic::sso::messages::v1::RemoteMessage::Disconnected,
+                            data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+                                crate::host_internal::sso_messages::v1::RemoteMessage::Disconnected,
                             ),
                         }
                         .encode(),
@@ -620,7 +618,7 @@ pub(crate) fn sso_peer_disconnect_monitor_responses(
 }
 
 /// JSON-RPC subscription acknowledgement frame.
-pub(crate) fn subscribe_ack_frame(request_id: &str, subscription_id: &str) -> String {
+pub fn subscribe_ack_frame(request_id: &str, subscription_id: &str) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": request_id,
@@ -641,7 +639,7 @@ fn statement_submit_ack_frame(request_id: &str) -> String {
 }
 
 /// JSON-RPC `newStatements` notification carrying SCALE statements.
-pub(crate) fn new_statements_frame(subscription_id: &str, statements: Vec<Vec<u8>>) -> String {
+pub fn new_statements_frame(subscription_id: &str, statements: Vec<Vec<u8>>) -> String {
     let statements = statements
         .into_iter()
         .map(|statement| format!("0x{}", hex::encode(statement)))
@@ -684,7 +682,7 @@ fn core_encryption_public_key_from_deeplink(deeplink: &str) -> [u8; 32] {
 }
 
 /// Pairing device statement and encryption keys encoded in a deeplink.
-pub(crate) fn pairing_device_from_deeplink(deeplink: &str) -> ([u8; 32], [u8; 32]) {
+pub fn pairing_device_from_deeplink(deeplink: &str) -> ([u8; 32], [u8; 32]) {
     let encoded = deeplink
         .split("handshake=")
         .nth(1)
@@ -700,7 +698,7 @@ pub(crate) fn pairing_device_from_deeplink(deeplink: &str) -> ([u8; 32], [u8; 32
 }
 
 /// Signed wallet handshake statement answering `deeplink` with pairing success.
-pub(crate) fn wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
+pub fn wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
     wallet_handshake_statement_with_response(
         deeplink,
         pairing::v2::EncryptedResponse::Success(Box::new(wallet_handshake_success())),
@@ -717,7 +715,7 @@ fn pending_wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
 }
 
 /// Signed wallet handshake statement answering `deeplink` with failure `reason`.
-pub(crate) fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) -> Vec<u8> {
+pub fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) -> Vec<u8> {
     wallet_handshake_statement_with_response(
         deeplink,
         pairing::v2::EncryptedResponse::Failed(reason.to_string()),
@@ -728,7 +726,7 @@ pub(crate) fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) ->
 /// Wallet device X25519 public key distinct from the persistent SSO key, so
 /// tests catch a session that keys device-scoped material off the SSO channel
 /// key by mistake.
-pub(crate) fn wallet_device_encryption_public_key() -> [u8; 32] {
+pub fn wallet_device_encryption_public_key() -> [u8; 32] {
     pairing::x25519_public_key([9; 32])
 }
 
@@ -758,16 +756,16 @@ fn wallet_handshake_statement_with_response(
 }
 
 /// SSO signing response message for the given request id.
-pub(crate) fn sign_response_message(
+pub fn sign_response_message(
     message_id: &str,
     signature: Vec<u8>,
     signed_transaction: Option<Vec<u8>>,
-) -> crate::host_logic::sso::messages::RemoteMessage {
-    crate::host_logic::sso::messages::RemoteMessage {
+) -> crate::host_internal::sso_messages::RemoteMessage {
+    crate::host_internal::sso_messages::RemoteMessage {
         message_id: format!("wallet-{message_id}"),
-        data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignResponse(
-                crate::host_logic::sso::messages::Response {
+        data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+            crate::host_internal::sso_messages::v1::RemoteMessage::SignResponse(
+                crate::host_internal::sso_messages::Response {
                     responding_to: message_id.to_string(),
                     payload: Ok(truapi::latest::HostSignPayloadResponse {
                         signature,
@@ -780,15 +778,15 @@ pub(crate) fn sign_response_message(
 }
 
 /// SSO legacy-account raw signing response for the given request id.
-pub(crate) fn sign_raw_legacy_response_message(
+pub fn sign_raw_legacy_response_message(
     message_id: &str,
     signature: Vec<u8>,
-) -> crate::host_logic::sso::messages::RemoteMessage {
-    crate::host_logic::sso::messages::RemoteMessage {
+) -> crate::host_internal::sso_messages::RemoteMessage {
+    crate::host_internal::sso_messages::RemoteMessage {
         message_id: format!("wallet-{message_id}"),
-        data: crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::SignRawWithLegacyAccountResponse(
-                crate::host_logic::sso::messages::Response {
+        data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+            crate::host_internal::sso_messages::v1::RemoteMessage::SignRawWithLegacyAccountResponse(
+                crate::host_internal::sso_messages::Response {
                     responding_to: message_id.to_string(),
                     payload: Ok(signature),
                 },
@@ -799,7 +797,7 @@ pub(crate) fn sign_raw_legacy_response_message(
 
 /// Product account id fixture for `identifier`; the derivation suffix is the
 /// canonical decimal form of `index`.
-pub(crate) fn account_id(identifier: &str, index: u32) -> v01::ProductAccountId {
+pub fn account_id(identifier: &str, index: u32) -> v01::ProductAccountId {
     v01::ProductAccountId {
         dot_ns_identifier: identifier.to_string(),
         derivation_index: v01::DerivationIndex::Index(index),
@@ -807,14 +805,14 @@ pub(crate) fn account_id(identifier: &str, index: u32) -> v01::ProductAccountId 
 }
 
 /// Raw signing payload fixture.
-pub(crate) fn raw_payload() -> v01::RawPayload {
+pub fn raw_payload() -> v01::RawPayload {
     v01::RawPayload::Bytes {
         bytes: b"hello".to_vec(),
     }
 }
 
 /// Product-scoped proof context fixture for `product_id`.
-pub(crate) fn product_proof_context(product_id: &str) -> v01::ProductProofContext {
+pub fn product_proof_context(product_id: &str) -> v01::ProductProofContext {
     v01::ProductProofContext {
         product_id: product_id.to_string(),
         suffix: v01::DerivationIndex::Index(7),
@@ -822,7 +820,7 @@ pub(crate) fn product_proof_context(product_id: &str) -> v01::ProductProofContex
 }
 
 /// Ring-location fixture addressing a single pallet-instance ring.
-pub(crate) fn ring_location_fixture() -> v01::RingLocation {
+pub fn ring_location_fixture() -> v01::RingLocation {
     v01::RingLocation {
         chain_id: [1; 32],
         junctions: vec![v01::RingLocationJunction::PalletInstance(42)],
@@ -830,7 +828,7 @@ pub(crate) fn ring_location_fixture() -> v01::RingLocation {
 }
 
 /// Contextual-alias request fixture for `product_id`.
-pub(crate) fn account_alias_request(product_id: &str) -> HostAccountGetAliasRequest {
+pub fn account_alias_request(product_id: &str) -> HostAccountGetAliasRequest {
     HostAccountGetAliasRequest::V1(v01::HostAccountGetAliasRequest {
         key_handle: v01::ProductAccountId {
             dot_ns_identifier: product_id.to_string(),
@@ -842,7 +840,7 @@ pub(crate) fn account_alias_request(product_id: &str) -> HostAccountGetAliasRequ
 }
 
 /// Ring-VRF proof request fixture for `product_id`.
-pub(crate) fn create_proof_request(product_id: &str) -> HostAccountCreateProofRequest {
+pub fn create_proof_request(product_id: &str) -> HostAccountCreateProofRequest {
     HostAccountCreateProofRequest::V1(v01::HostAccountCreateProofRequest {
         key_handle: v01::ProductAccountId {
             dot_ns_identifier: product_id.to_string(),
@@ -855,7 +853,7 @@ pub(crate) fn create_proof_request(product_id: &str) -> HostAccountCreateProofRe
 }
 
 /// Structured signing payload fixture.
-pub(crate) fn sign_payload_data() -> v01::HostSignPayloadData {
+pub fn sign_payload_data() -> v01::HostSignPayloadData {
     v01::HostSignPayloadData {
         block_hash: vec![0; 32],
         block_number: vec![0; 4],
@@ -876,7 +874,7 @@ pub(crate) fn sign_payload_data() -> v01::HostSignPayloadData {
 }
 
 /// Product transaction payload fixture for `identifier`.
-pub(crate) fn product_tx_payload(identifier: &str) -> v01::ProductAccountTxPayload {
+pub fn product_tx_payload(identifier: &str) -> v01::ProductAccountTxPayload {
     v01::ProductAccountTxPayload {
         signer: account_id(identifier, 0),
         genesis_hash: [1; 32],
@@ -887,7 +885,7 @@ pub(crate) fn product_tx_payload(identifier: &str) -> v01::ProductAccountTxPaylo
 }
 
 /// Resource-allocation request fixture containing all supported resource kinds.
-pub(crate) fn resource_allocation_request() -> HostRequestResourceAllocationRequest {
+pub fn resource_allocation_request() -> HostRequestResourceAllocationRequest {
     HostRequestResourceAllocationRequest::V1(v01::HostRequestResourceAllocationRequest {
         resources: vec![
             v01::AllocatableResource::StatementStoreAllowance,
@@ -897,7 +895,7 @@ pub(crate) fn resource_allocation_request() -> HostRequestResourceAllocationRequ
 }
 
 /// Unsigned statement fixture with channel, topics, expiry, and data.
-pub(crate) fn statement() -> v01::Statement {
+pub fn statement() -> v01::Statement {
     v01::Statement {
         proof: None,
         decryption_key: None,
@@ -909,7 +907,7 @@ pub(crate) fn statement() -> v01::Statement {
 }
 
 /// Signed statement fixture scoped to `topic`.
-pub(crate) fn signed_statement(topic: [u8; 32]) -> v01::SignedStatement {
+pub fn signed_statement(topic: [u8; 32]) -> v01::SignedStatement {
     v01::SignedStatement {
         proof: v01::StatementProof::Sr25519 {
             signature: [9; 64],
@@ -1141,7 +1139,7 @@ impl PlatformCoreStorage for StubPlatform {
 }
 
 /// Stable string key used by the stub core-storage map.
-pub(crate) fn core_storage_test_key(key: CoreStorageKey) -> String {
+pub fn core_storage_test_key(key: CoreStorageKey) -> String {
     format!("core:{}", hex::encode(key.encode()))
 }
 

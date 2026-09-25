@@ -40,40 +40,40 @@ ws-bridge = ["debug-sink", "dep:rand"]
 truapi = { path = "../truapi" }
 truapi-platform = { path = "../truapi-platform" }
 truapi-macros = { path = "../truapi-macros" }
-async-trait = "0.1"
-derive_more = { version = "2", features = ["debug", "display", "error", "from"] }
-futures = "0.3"
-futures-timer = "3"
-parity-scale-codec = { version = "3", features = ["derive"] }
-scale-decode = { version = "0.16", features = ["derive"] }
+async-trait = { workspace = true }
+derive_more = { workspace = true, features = ["debug", "display", "error", "from"] }
+futures = { workspace = true }
+futures-timer = { workspace = true }
+parity-scale-codec = { workspace = true, features = ["derive"] }
+scale-decode = { workspace = true, features = ["derive"] }
 # Metadata decoding backs allowance registration, which both the native and the
 # wasm host perform, so these are not target-gated.
-frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
-scale-info = { version = "2.11", default-features = false, features = ["decode"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "1"
-unicode-normalization = "0.1"
-url = "2"
-hex = "0.4"
-nanoid = "0.4"
-blake2b_simd = { version = "1", default-features = false }
-sp-crypto-hashing = { version = "0.1", default-features = false }
-schnorrkel = { version = "0.11.5", default-features = false, features = ["alloc", "getrandom"] }
-substrate-bip39 = { version = "0.6", default-features = false }
-zeroize = { version = "1", default-features = false, features = ["alloc", "derive"] }
-getrandom = { version = "0.2", features = ["js"] }
-hkdf = "0.12"
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
-x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
-sha2 = "0.10"
-merlin = "3"
-parking_lot = "0.12"
+frame-metadata = { workspace = true, features = ["std", "current", "decode"] }
+scale-info = { workspace = true, features = ["decode"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+unicode-normalization = { workspace = true }
+url = { workspace = true }
+hex = { workspace = true }
+nanoid = { workspace = true }
+blake2b_simd = { workspace = true }
+sp-crypto-hashing = { workspace = true }
+schnorrkel = { workspace = true, features = ["alloc", "getrandom"] }
+substrate-bip39 = { workspace = true }
+zeroize = { workspace = true, features = ["alloc", "derive"] }
+getrandom = { workspace = true, features = ["js"] }
+hkdf = { workspace = true }
+chacha20poly1305 = { workspace = true, features = ["alloc"] }
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+sha2 = { workspace = true }
+merlin = { workspace = true }
+parking_lot = { workspace = true }
 
-tracing = "0.1"
+tracing = { workspace = true }
 # `registry` + `std` only: pulls the Registry + per-layer filter/reload, but
 # not `env-filter` (which drags in `regex`, heavy on wasm).
-tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+tracing-subscriber = { workspace = true, features = ["registry", "std"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The browser core loads `truapi-verifiable` as a separate WASM module instead.
@@ -81,37 +81,37 @@ verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b0
 truapi-verifiable = { path = "../truapi-verifiable" }
 truapi = { path = "../truapi", features = ["uniffi"] }
 truapi-platform = { path = "../truapi-platform", features = ["uniffi"] }
-futures = { version = "0.3", features = ["thread-pool"] }
-rand = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"], optional = true }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
+futures = { workspace = true, features = ["thread-pool"] }
+rand = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"], optional = true }
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["handshake"], optional = true }
 uniffi.workspace = true
-subxt = { version = "0.50.3", default-features = false, features = ["native"] }
-subxt-rpcs = { version = "0.50.3", default-features = false, features = ["jsonrpsee", "native"] }
-base64 = { version = "0.22", optional = true }
+subxt = { workspace = true, features = ["native"] }
+subxt-rpcs = { workspace = true, features = ["jsonrpsee", "native"] }
+base64 = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-futures-timer = { version = "3", features = ["wasm-bindgen"] }
-js-sys = "0.3"
-subxt = { version = "0.50.3", default-features = false, features = ["web"] }
-subxt-rpcs = { version = "0.50.3", default-features = false, features = ["web"] }
-wasm-bindgen = "0.2.118"
-wasm-bindgen-futures = "0.4"
-console_error_panic_hook = "0.1"
-send_wrapper = { version = "0.6", features = ["futures"] }
-web-time = "1"
-web-sys = { version = "0.3", features = ["console"] }
+futures-timer = { workspace = true, features = ["wasm-bindgen"] }
+js-sys = { workspace = true }
+subxt = { workspace = true, features = ["web"] }
+subxt-rpcs = { workspace = true, features = ["web"] }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+console_error_panic_hook = { workspace = true }
+send_wrapper = { workspace = true, features = ["futures"] }
+web-time = { workspace = true }
+web-sys = { workspace = true, features = ["console"] }
 
 [dev-dependencies]
-scale-info = "2.11"
+scale-info = { workspace = true, features = ["std"] }
 truapi-platform = { path = "../truapi-platform", features = ["mock"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "0.3"
+wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "handshake"] }
 
 [lints]
 workspace = true

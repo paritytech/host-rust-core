@@ -4,13 +4,13 @@
 //! `ProductRuntimeHost` can use this module's shared request/session types
 //! without knowing where the key material lives.
 //! Alias, proof, and ring-VRF operations reuse the request payloads in
-//! `host_logic::sso::messages` for both local calls and SSO transport.
+//! `host_internal::sso_messages` for both local calls and SSO transport.
 
 use async_trait::async_trait;
 use std::sync::Arc;
 use truapi::latest::{
-    AccountId, HostAccountCreateProofRequest, HostAccountCreateProofResponse,
-    HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountListRingVrfKeysRequest,
+    HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasRequest,
+    HostAccountGetAliasResponse, HostAccountListRingVrfKeysRequest,
     HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyRequest,
     HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignRequest,
     HostAccountRingVrfSignResponse, HostAccountSignVrfError, HostAccountSignVrfRequest,
@@ -24,26 +24,26 @@ use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse
 use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
 
-use crate::host_logic::extrinsic::LocalTransactionError;
+use crate::host_internal::extrinsic::LocalTransactionError;
+use crate::host_internal::sso_messages::{ProductRequest, RingVrfError};
+use crate::host_internal::transaction::ExtrinsicPayloadError;
 use crate::host_logic::raw_signing::RawPayloadError;
 use crate::host_logic::session::{SessionInfo, SessionState};
-use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
-use crate::host_logic::transaction::ExtrinsicPayloadError;
 
 /// Secret key allocated for Bulletin preimage submission.
 ///
 /// The core is the sole holder: the secret never crosses the host boundary.
 /// Zeroized on drop, and its `Debug` redacts the material.
 #[derive(Clone, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
-pub(crate) struct BulletinAllowanceKey {
+pub struct BulletinAllowanceKey {
     #[debug("\"<redacted>\"")]
     secret: [u8; 64],
 }
 
 impl BulletinAllowanceKey {
     /// Wrap a 64-byte sr25519 secret; other lengths are `Unavailable`.
-    pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
+    pub fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
         let secret: [u8; 64] =
             secret
                 .try_into()
@@ -57,14 +57,14 @@ impl BulletinAllowanceKey {
     }
 
     /// Raw secret for the in-core Bulletin signer.
-    pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
+    pub fn as_secret_bytes(&self) -> &[u8; 64] {
         &self.secret
     }
 }
 
 /// Persisted AutoSigning capability for one hard product subtree.
 #[derive(Clone, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
-pub(crate) struct AutoSigningKey {
+pub struct AutoSigningKey {
     #[debug("\"<redacted>\"")]
     secret: [u8; 64],
     #[debug("\"<redacted>\"")]
@@ -72,18 +72,18 @@ pub(crate) struct AutoSigningKey {
 }
 
 impl AutoSigningKey {
-    pub(crate) fn from_parts(secret: [u8; 64], ring_vrf_domain_entropy: [u8; 32]) -> Self {
+    pub fn from_parts(secret: [u8; 64], ring_vrf_domain_entropy: [u8; 32]) -> Self {
         Self {
             secret,
             ring_vrf_domain_entropy,
         }
     }
 
-    pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
+    pub fn as_secret_bytes(&self) -> &[u8; 64] {
         &self.secret
     }
 
-    pub(crate) fn ring_vrf_domain_entropy(&self) -> &[u8; 32] {
+    pub fn ring_vrf_domain_entropy(&self) -> &[u8; 32] {
         &self.ring_vrf_domain_entropy
     }
 }
@@ -93,7 +93,7 @@ impl AutoSigningKey {
 /// preserving authority-private material inside the concrete authority
 /// implementation.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AuthoritySession {
+pub struct AuthoritySession {
     /// Root account public key for the active authority session.
     pub public_key: [u8; 32],
     /// Identity account resolved from the signing host, when available.
@@ -108,7 +108,7 @@ pub(crate) struct AuthoritySession {
 
 impl AuthoritySession {
     /// Project the neutral snapshot out of a concrete session.
-    pub(crate) fn from_session_info(info: &SessionInfo, validation_id: Vec<u8>) -> Self {
+    pub fn from_session_info(info: &SessionInfo, validation_id: Vec<u8>) -> Self {
         Self {
             public_key: info.public_key,
             identity_account_id: info.identity_account_id,
@@ -119,7 +119,7 @@ impl AuthoritySession {
     }
 
     /// Preferred display username: full over lite, skipping empty values.
-    pub(crate) fn primary_username(&self) -> Option<&str> {
+    pub fn primary_username(&self) -> Option<&str> {
         self.full_username
             .as_deref()
             .filter(|value| !value.is_empty())
@@ -133,7 +133,7 @@ impl AuthoritySession {
 
 /// Typed account-authority failure before it is mapped to an API-specific error.
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
-pub(crate) enum AuthorityError {
+pub enum AuthorityError {
     /// User or authority rejected the request.
     #[display("Rejected")]
     Rejected,
@@ -229,14 +229,14 @@ impl From<AuthorityError> for HostAccountSignVrfError {
     "Account authority request {reason}{}",
     if request_id.is_empty() { String::new() } else { format!(" for {request_id}") }
 )]
-pub(crate) struct AuthorityCancelError {
+pub struct AuthorityCancelError {
     request_id: String,
     reason: CancellationReason,
 }
 
 impl AuthorityCancelError {
     /// Cancellation attributed to the request it interrupted.
-    pub(crate) fn new(request_id: &str, reason: CancellationReason) -> Self {
+    pub fn new(request_id: &str, reason: CancellationReason) -> Self {
         Self {
             request_id: request_id.to_string(),
             reason,
@@ -246,7 +246,7 @@ impl AuthorityCancelError {
 
 /// Payload-signing request selected by the product API entrypoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SignPayloadAuthorityRequest {
+pub enum SignPayloadAuthorityRequest {
     /// Sign a payload with a product-derived account.
     Product(HostSignPayloadRequest),
     /// Sign a payload through the legacy-account API.
@@ -260,13 +260,13 @@ pub(crate) enum SignPayloadAuthorityRequest {
 
 /// Raw-signing request selected by the product API entrypoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SignRawAuthorityRequest {
+pub enum SignRawAuthorityRequest {
     /// Sign raw data with a product-derived account.
     Product(HostSignRawRequest),
     /// Sign raw data through the legacy-account API.
     LegacyAccount {
         /// Account selected by the product and validated against the session.
-        account: AccountId,
+        account: [u8; 32],
         /// Original legacy-account request.
         request: HostSignRawWithLegacyAccountRequest,
     },
@@ -274,7 +274,7 @@ pub(crate) enum SignRawAuthorityRequest {
 
 /// Transaction-creation request selected by the product API entrypoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CreateTransactionAuthorityRequest {
+pub enum CreateTransactionAuthorityRequest {
     /// Create a transaction with a product-derived account.
     Product(ProductAccountTxPayload),
     /// Create a transaction through the legacy-account API using the product slot-zero account.
@@ -290,7 +290,7 @@ pub(crate) enum CreateTransactionAuthorityRequest {
 
 /// Whether an active AutoSigning grant covers one product-account call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AutoSigningGrant {
+pub enum AutoSigningGrant {
     /// Covered: the matching authority call serves this request from local key
     /// material and raises no prompt anywhere.
     Active,
@@ -300,17 +300,17 @@ pub(crate) enum AutoSigningGrant {
 
 /// Statement-store allowance signing material held by the authority layer.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct StatementStoreAllowanceKey {
+pub struct StatementStoreAllowanceKey {
     /// sr25519 secret used to sign allowance statements.
-    pub(crate) secret: [u8; 64],
+    pub secret: [u8; 64],
     /// Public key derived from `secret`.
-    pub(crate) public_key: [u8; 32],
+    pub public_key: [u8; 32],
 }
 
 impl StatementStoreAllowanceKey {
     /// Wrap a 64-byte sr25519 secret and derive its public key; other lengths
     /// are `Unavailable`.
-    pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
+    pub fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
         let secret: [u8; 64] =
             secret
                 .try_into()
@@ -332,7 +332,7 @@ impl StatementStoreAllowanceKey {
 /// signing host. A signing-host implementation can later provide the same
 /// surface from local keys without changing product runtime code.
 #[async_trait]
-pub(crate) trait ProductAuthority: Send + Sync {
+pub trait ProductAuthority: Send + Sync {
     /// Current account-authority session, if connected.
     fn current_session(&self) -> Option<AuthoritySession>;
 
@@ -568,7 +568,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
 }
 
 /// Build the neutral authority-session snapshot for `session`.
-pub(super) fn authority_session(session: &SessionInfo) -> AuthoritySession {
+pub fn authority_session(session: &SessionInfo) -> AuthoritySession {
     AuthoritySession::from_session_info(session, authority_session_validation_id(session))
 }
 
@@ -578,7 +578,7 @@ pub(super) fn authority_session(session: &SessionInfo) -> AuthoritySession {
 /// Both roles use this before touching key material: a snapshot taken before
 /// user confirmation must still be the current authority session when the
 /// signature or derivation happens, otherwise the request is rejected.
-pub(super) fn require_current_session(
+pub fn require_current_session(
     session_state: &SessionState,
     session: &AuthoritySession,
 ) -> Result<SessionInfo, AuthorityError> {
@@ -593,7 +593,7 @@ pub(super) fn require_current_session(
 }
 
 /// Opaque token identifying which concrete session a snapshot was taken from.
-pub(super) fn authority_session_validation_id(session: &SessionInfo) -> Vec<u8> {
+pub fn authority_session_validation_id(session: &SessionInfo) -> Vec<u8> {
     let mut id = Vec::with_capacity(67);
     if let Some(sso) = &session.sso {
         id.extend_from_slice(b"sso");

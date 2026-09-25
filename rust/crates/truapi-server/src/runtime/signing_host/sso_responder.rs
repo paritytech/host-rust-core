@@ -26,27 +26,24 @@ use truapi::v01;
 use super::sso_replay::{ReplayExecution, SsoReplayScope, execute_once};
 use super::{SigningHost, SigningHostSsoService};
 use crate::chain_runtime::RuntimeFailure;
+use crate::host_internal::sso_messages::{
+    IncomingSsoRequest, OnExistingAllowancePolicy, RemoteMessage, RemoteMessageData,
+    SsoResponseCode, build_outgoing_request_statement, build_signed_session_response_statement,
+    decode_incoming_sso_request, v1,
+};
+use crate::host_internal::sso_wire::ResponseOutcome;
 use crate::host_logic::entropy::root_entropy_source;
 use crate::host_logic::product_account::derive_sr25519_hard_path;
 use crate::host_logic::product_account::{
     ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
 };
 use crate::host_logic::session::SsoSessionInfo;
-use crate::host_logic::sso::messages::{
-    IncomingSsoRequest, OnExistingAllowancePolicy, RemoteMessage, RemoteMessageData,
-    SsoResponseCode, build_outgoing_request_statement, build_signed_session_response_statement,
-    decode_incoming_sso_request, v1,
-};
 use crate::host_logic::sso::pairing::{
     ResponderIdentity, VersionedHandshakeProposal, bootstrap_topic, decode_pairing_deeplink,
     derive_identity_chat_private_key, derive_x25519_keypair_from_entropy,
     encrypt_v2_handshake_response, establish_responder_session_info, v2, x25519_public_key,
 };
-use crate::host_logic::sso::wire::ResponseOutcome;
-use crate::host_logic::statement_store::{
-    build_signed_statement, current_unix_secs as statement_current_unix_secs,
-    parse_new_statements_result,
-};
+use crate::host_logic::statement_store::{build_signed_statement, parse_new_statements_result};
 use crate::runtime::authority::{AuthorityError, AuthoritySession};
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::{fresh_statement_expiry, sso_message_id};
@@ -54,6 +51,7 @@ use crate::runtime::sso_service::{Dispatch, SsoWithdrawals};
 use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
 use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
+use crate::unix_time::current_unix_secs as statement_current_unix_secs;
 
 /// RFC-0022 domain for the responder's persistent SSO X25519 key.
 const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
@@ -251,7 +249,7 @@ fn sanitize_pairing_metadata(value: String) -> Option<String> {
 
 /// Failure while deriving or allocating a Statement Store/Bulletin allowance.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum AllowanceAllocationError {
+pub enum AllowanceAllocationError {
     /// Signing host session or authority state was unavailable.
     #[error("{0}")]
     Authority(#[from] AuthorityError),
@@ -294,7 +292,7 @@ pub(super) enum AllowanceAllocationError {
 }
 
 impl AllowanceAllocationError {
-    pub(super) fn into_authority_error(self) -> AuthorityError {
+    pub fn into_authority_error(self) -> AuthorityError {
         match self {
             Self::Authority(err) => err,
             other => AuthorityError::Unavailable {
@@ -306,7 +304,7 @@ impl AllowanceAllocationError {
 
 /// Answer `deeplink` and serve the resulting SSO session until it ends.
 #[instrument(skip_all, fields(runtime.method = "sso_responder.respond_to_pairing"))]
-pub(crate) async fn respond_to_pairing(
+pub async fn respond_to_pairing(
     services: Arc<RuntimeServices>,
     signing_host: Arc<SigningHost>,
     deeplink: &str,
@@ -322,7 +320,7 @@ pub(crate) async fn respond_to_pairing(
 }
 
 /// Answer a pairing host's handshake without entering its long-lived serve loop.
-pub(crate) async fn establish_pairing(
+pub async fn establish_pairing(
     services: Arc<RuntimeServices>,
     signing_host: Arc<SigningHost>,
     deeplink: &str,
@@ -384,7 +382,7 @@ async fn establish_pairing_session(
 }
 
 /// Resume a previously paired SSO session from its persisted public peer keys.
-pub(crate) async fn resume_pairing(
+pub async fn resume_pairing(
     services: Arc<RuntimeServices>,
     signing_host: Arc<SigningHost>,
     peer: PairedSsoPeer,
@@ -409,7 +407,7 @@ pub(crate) async fn resume_pairing(
 }
 
 /// Notify a paired host that this signing host is ending their SSO session.
-pub(crate) async fn disconnect_paired_host(
+pub async fn disconnect_paired_host(
     services: Arc<RuntimeServices>,
     signing_host: Arc<SigningHost>,
     peer: PairedSsoPeer,
@@ -496,7 +494,7 @@ pub struct AnnouncedPairing {
 /// Callers own the matching [`notify_pairing_failed`]: the host has dropped its
 /// QR and waits without a deadline, so an allocation that then fails leaves it
 /// waiting forever unless it is told.
-pub(crate) async fn notify_pairing_allowance_allocation(
+pub async fn notify_pairing_allowance_allocation(
     services: Arc<RuntimeServices>,
     signing_host: Arc<SigningHost>,
     deeplink: &str,
@@ -524,7 +522,7 @@ pub(crate) async fn notify_pairing_allowance_allocation(
 
 /// Tell the pairing host that pairing failed, so it reports `reason` and offers
 /// a retry rather than waiting on an answer that is never coming.
-pub(crate) async fn notify_pairing_failed(
+pub async fn notify_pairing_failed(
     services: Arc<RuntimeServices>,
     announced: &AnnouncedPairing,
     reason: String,
@@ -935,7 +933,7 @@ fn response_cli_summary(
     summary
 }
 
-pub(super) async fn allocate_statement_store_allowance(
+pub async fn allocate_statement_store_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
     session: &AuthoritySession,
@@ -1071,7 +1069,7 @@ pub(super) async fn allocate_statement_store_allowance(
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
-pub(super) async fn allocate_bulletin_allowance(
+pub async fn allocate_bulletin_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
     session: &AuthoritySession,
@@ -1195,7 +1193,7 @@ pub(super) async fn allocate_bulletin_allowance(
 /// Asset Hub is resolved through the host's chain set rather than a configured
 /// hash, so a host that does not serve it says so instead of claiming against
 /// whatever chain a stale hash happens to reach.
-pub(super) async fn allocate_smart_contract_allowance(
+pub async fn allocate_smart_contract_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
     session: &AuthoritySession,
@@ -1295,7 +1293,7 @@ pub(super) async fn allocate_smart_contract_allowance(
 ///
 /// `std::time::SystemTime` compiles for wasm32 but panics when read, so the
 /// browser takes its clock from `web-time` instead.
-pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
+pub fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
     #[cfg(not(target_arch = "wasm32"))]
     use std::time::{SystemTime, UNIX_EPOCH};
     #[cfg(target_arch = "wasm32")]
@@ -1311,13 +1309,13 @@ pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
 mod tests {
     use super::super::LocalActivation;
     use super::*;
-    use crate::host_logic::extrinsic::tests::split_v4;
-    use crate::host_logic::product_account::derive_ring_vrf_domain_entropy;
-    use crate::host_logic::sso::messages::{
+    use crate::host_internal::extrinsic::tests::split_v4;
+    use crate::host_internal::sso_messages::{
         self, GetAccountAliasResponse, RemoteMessage, RingVrfError, SsoAllocatedResource,
         SsoAllocationOutcome,
     };
-    use crate::host_logic::sso::wire::ResponseOutcome;
+    use crate::host_internal::sso_wire::ResponseOutcome;
+    use crate::host_logic::product_account::derive_ring_vrf_domain_entropy;
 
     /// The key a host advertises on chain must be the one it serves over
     /// pairing. These derive independently, so a test that asks only one of
@@ -1884,7 +1882,7 @@ mod tests {
         );
         assert_eq!(
             dispatch(v1::RemoteMessage::ProductSubtreeResponse(
-                messages::Response {
+                sso_messages::Response {
                     responding_to: "m-1".to_string(),
                     payload: Ok([7; 32]),
                 }
@@ -1892,7 +1890,7 @@ mod tests {
             Dispatch::NotARequest("ProductSubtreeResponse"),
         );
         let Dispatch::Response(answer) = dispatch(v1::RemoteMessage::ProductSubtreeRequest(
-            messages::ProductSubtreeRequest {
+            sso_messages::ProductSubtreeRequest {
                 product_id: "myapp.dot".to_string(),
             },
         )) else {
@@ -1950,7 +1948,7 @@ mod tests {
         let service = SigningHostSsoService::new(signing_host);
         let request = RemoteMessage::request(
             "allocation-1".to_string(),
-            messages::ResourceAllocationRequest {
+            sso_messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
                 resources: vec![
                     api::AllocatableResource::AutoSigning,
@@ -2005,7 +2003,7 @@ mod tests {
         let response = answer(
             &signing_host,
             "alias-1",
-            v1::RemoteMessage::GetAccountAliasRequest(messages::ProductRequest {
+            v1::RemoteMessage::GetAccountAliasRequest(sso_messages::ProductRequest {
                 calling_product_id: "myapp.dot".to_string(),
                 payload: api::HostAccountGetAliasRequest {
                     key_handle: api::ProductAccountId {
@@ -2038,10 +2036,10 @@ mod tests {
         let response = answer(
             &signing_host,
             "alloc-1",
-            v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
+            v1::RemoteMessage::ResourceAllocationRequest(sso_messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
                 resources: vec![api::AllocatableResource::StatementStoreAllowance],
-                on_existing: messages::OnExistingAllowancePolicy::Ignore,
+                on_existing: sso_messages::OnExistingAllowancePolicy::Ignore,
             }),
         );
 
@@ -2080,10 +2078,10 @@ mod tests {
         let response = answer(
             &signing_host,
             "alloc-auto-signing",
-            v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
+            v1::RemoteMessage::ResourceAllocationRequest(sso_messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
                 resources: vec![api::AllocatableResource::AutoSigning],
-                on_existing: messages::OnExistingAllowancePolicy::Ignore,
+                on_existing: sso_messages::OnExistingAllowancePolicy::Ignore,
             }),
         );
 
@@ -2114,7 +2112,7 @@ mod tests {
         let service = SigningHostSsoService::new(signing_host.clone());
         let message = RemoteMessage::request(
             "alloc-stale".to_string(),
-            messages::ResourceAllocationRequest {
+            sso_messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
                 resources: vec![api::AllocatableResource::AutoSigning],
                 on_existing: OnExistingAllowancePolicy::Ignore,
@@ -2156,7 +2154,7 @@ mod tests {
     fn allocation_request(message_id: &str) -> RemoteMessage {
         RemoteMessage::request(
             message_id.to_string(),
-            messages::ResourceAllocationRequest {
+            sso_messages::ResourceAllocationRequest {
                 calling_product_id: "myapp.dot".to_string(),
                 resources: vec![api::AllocatableResource::AutoSigning],
                 on_existing: OnExistingAllowancePolicy::Ignore,
@@ -2167,7 +2165,7 @@ mod tests {
     fn cancel(message_id: &str, target: &str) -> RemoteMessage {
         RemoteMessage {
             message_id: message_id.to_string(),
-            data: RemoteMessageData::V1(v1::RemoteMessage::Cancel(messages::Withdrawal {
+            data: RemoteMessageData::V1(v1::RemoteMessage::Cancel(sso_messages::Withdrawal {
                 message_id: target.to_string(),
             })),
         }
@@ -2353,8 +2351,8 @@ mod tests {
             &signing_host,
             "legacy-tx-1",
             v1::RemoteMessage::CreateTransactionWithLegacyAccountRequest(
-                messages::CreateTransactionWithLegacyAccountRequest {
-                    payload: messages::CreateTransactionLegacyPayload::V1(payload),
+                sso_messages::CreateTransactionWithLegacyAccountRequest {
+                    payload: sso_messages::CreateTransactionLegacyPayload::V1(payload),
                 },
             ),
         );
@@ -2381,7 +2379,7 @@ mod tests {
         let response = answer(
             &signing_host,
             "subtree-1",
-            v1::RemoteMessage::ProductSubtreeRequest(messages::ProductSubtreeRequest {
+            v1::RemoteMessage::ProductSubtreeRequest(sso_messages::ProductSubtreeRequest {
                 product_id: "browse.dot".to_string(),
             }),
         );

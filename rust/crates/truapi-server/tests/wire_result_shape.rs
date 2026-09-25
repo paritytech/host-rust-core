@@ -30,7 +30,7 @@ use parity_scale_codec::{Decode, Encode};
 
 use truapi::{CallError, v01};
 
-use truapi_server::core::TrUApiCore;
+use truapi_server::TrUApiCore;
 use truapi_server::frame::{
     MESSAGE_TYPE_INTERRUPT, MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, MESSAGE_TYPE_START,
     PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload, ProtocolErrorV1, ProtocolMessage,

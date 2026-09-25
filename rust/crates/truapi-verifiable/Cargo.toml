@@ -30,11 +30,11 @@ dwarf-debug-info = false
 
 [dependencies]
 verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff" }
-parity-scale-codec = "3"
-wasm-bindgen = "0.2.118"
+parity-scale-codec.workspace = true
+wasm-bindgen.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { workspace = true, features = ["js"] }
 
 [lints]
 workspace = true
