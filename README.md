@@ -579,6 +579,27 @@ make ios-chat-host-playground-run
 
 Run both integrations with one iOS build using `make ios-chat-all`.
 
+The Android twin of that launcher runs the same TrUAPI Playground worker
+against the shared core inside a headless emulator, and writes its report to
+`playground/test-results/android-chat/diagnosis-report.md`:
+
+```bash
+cd hosts/android && ./gradlew :app:assembleVanillaDebug && cd -
+make android-chat-playground-run
+```
+
+Prerequisites:
+
+- an Android SDK on `ANDROID_HOME`, with the `truapi-chat-e2e` AVD created
+- the Rust Android targets (`make android-jni`, which needs `cargo-ndk` and the NDK)
+- a `python` on `PATH`, which the rust-android-gradle linker wrapper shells out to
+- a stub `hosts/android/app/google-services.json`
+- a debug keystore configured in `hosts/android/local.properties`
+
+The `TRUAPI_ANDROID_E2E_*` environment variables override every default
+(device, APK, product, room, message, username, URL, report path); they
+mirror the iOS `TRUAPI_IOS_E2E_*` ones.
+
 ## Regenerate the TypeScript client
 
 When the Rust trait surface changes:

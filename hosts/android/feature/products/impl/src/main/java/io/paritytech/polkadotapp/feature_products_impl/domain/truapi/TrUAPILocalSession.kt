@@ -4,7 +4,10 @@ import io.paritytech.polkadotapp.feature_account_api.data.repository.AccountRepo
 import io.paritytech.polkadotapp.feature_account_api.data.storage.accountSecrets.AccountSecretsStorage
 import io.paritytech.polkadotapp.feature_account_api.data.storage.accountSecrets.requireMetaAccountPassphrase
 import io.paritytech.polkadotapp.feature_usernames_api.domain.usecase.UsernameOfAccountUseCase
+import kotlinx.coroutines.withTimeoutOrNull
+import timber.log.Timber
 import javax.inject.Inject
+import kotlin.time.Duration.Companion.seconds
 
 /** Secret material and display identity for the core's wallet-local session. */
 class TrUAPILocalSession(
@@ -34,11 +37,19 @@ class TrUAPILocalSessionSource @Inject constructor(
 
         TrUAPILocalSession(
             secret = accountSecretsStorage.requireMetaAccountPassphrase(account.id).entropy,
-            // Display metadata only, so a missing username still yields a session.
-            liteUsername = usernameOfAccountUseCase.getUsername()
-                .getOrNull()
-                ?.liteUsername
-                ?.getDisplayUsername(),
+            liteUsername = resolveLiteUsername(),
         )
+    }
+
+    private suspend fun resolveLiteUsername(): String? {
+        val username = withTimeoutOrNull(LITE_USERNAME_LOOKUP_TIMEOUT) { usernameOfAccountUseCase.getUsername() }
+            ?: return null.also {
+                Timber.w("TrUAPI local session: lite username lookup did not answer in time; booting without one")
+            }
+        return username.getOrNull()?.liteUsername?.getDisplayUsername()
+    }
+
+    private companion object {
+        val LITE_USERNAME_LOOKUP_TIMEOUT = 5.seconds
     }
 }

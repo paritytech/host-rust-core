@@ -1,8 +1,8 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.bot
 
 import android.content.Context
+import io.paritytech.polkadotapp.common.BuildConfig
 import io.paritytech.polkadotapp.common.utils.childScope
-import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.ChatExtensionContext
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.CreateRoomRequest
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.DefaultRoomMetadata
@@ -14,16 +14,19 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatId
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessage
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageId
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageOrigin
+import io.paritytech.polkadotapp.feature_chats_api.domain.model.productRoomId
 import io.paritytech.polkadotapp.feature_products_api.model.Product
 import io.paritytech.polkadotapp.feature_products_api.model.toChatExtensionId
+import io.paritytech.polkadotapp.feature_products_impl.domain.bot.e2e.E2EPendingChatMessages
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.message.ProductsMessageContent
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.message.ProductsMessageRenderer
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.CreateProductRoomRequest
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.CreateProductRoomResult
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatIdParameter
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatRoom
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.extractProductChatIdParameter
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.toChatId
+import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.ROOM_HOST
+import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWorker
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWorkerRefCounter
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.WorkerModalityApi
 import io.paritytech.polkadotapp.feature_products_impl.presentation.bot.menu.ProductChatMenuRenderer
@@ -54,6 +57,7 @@ class ProductChatExtension(
     appContext: Context,
     val product: Product,
     private val workerRefCounter: ProductWorkerRefCounter,
+    private val pendingE2EMessages: E2EPendingChatMessages,
 ) : ExternalExtension() {
     override val id = product.id.toChatExtensionId()
 
@@ -95,11 +99,16 @@ class ProductChatExtension(
             // routes. The reference is released from the finally so a dispose that races boot never
             // leaks the acquisition.
             val reference = workerRefCounter.acquire(product.id, "chat:${product.id.value}")
+            var attachedWorker: ProductWorker? = null
             try {
                 reference.enableModalityApi(WorkerModalityApi.Chat(messaging))
-                runningWorker.attach(reference.worker())
+                val worker = reference.worker()
+                attachedWorker = worker
+                runningWorker.attach(worker)
+                if (BuildConfig.DEBUG) pendingE2EMessages.attach(product.id, worker)
                 awaitCancellation()
             } finally {
+                if (BuildConfig.DEBUG) attachedWorker?.let { pendingE2EMessages.detach(product.id, it) }
                 withContext(NonCancellable) { reference.release() }
                 runningWorker.attach(null)
             }
@@ -124,7 +133,7 @@ class ProductChatExtension(
 
     private suspend fun routeMessage(message: ChatMessage) {
         when (val content = message.content) {
-            is ChatMessage.Content.Text -> runningWorker.onUserMessage(content.text)
+            is ChatMessage.Content.Text -> runningWorker.onUserMessage(message.chatId.productRoomId(), content.text)
             else -> {}
         }
     }
@@ -148,11 +157,7 @@ class ProductChatExtension(
         override fun subscribeChatRooms(): Flow<List<ProductChatRoom>> {
             return extensionContext.subscribeOwnRooms().map { chatIds ->
                 chatIds.mapNotNull { chatId ->
-                    val param = chatId.extractProductChatIdParameter(id)
-                        .logFailure("Unexpected state: subscribeOwnRooms returned corrupted chatId: ${chatId.value}")
-                        .getOrNull() ?: return@mapNotNull null
-
-                    ProductChatRoom(roomId = param.value, participatingAs = "RoomHost")
+                    chatId.productRoomId()?.let { ProductChatRoom(roomId = it, participatingAs = ROOM_HOST) }
                 }
             }
         }

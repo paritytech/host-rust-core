@@ -5,6 +5,16 @@ plugins {
 
 android {
     namespace = "io.paritytech.polkadotapp.tools_remoteconfig_impl"
+
+    defaultConfig {
+        buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "true")
+    }
+
+    buildTypes {
+        getByName("release") { buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "false") }
+        getByName("nightly") { buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "false") }
+        getByName("safetynet") { buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "false") }
+    }
 }
 
 dependencies {

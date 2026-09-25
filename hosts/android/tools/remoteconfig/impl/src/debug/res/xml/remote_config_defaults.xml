@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Debug-only override of the empty src/main copy: the paseo-next-v2 values a checkout with stub
+  Firebase credentials boots on. The ids use the `preview-*` spelling a TESTNET build resolves.
+-->
+<defaults>
+    <entry>
+        <key>chains_v2</key>
+        <value>[
+  {
+    "chainId": "preview-people",
+    "name": "Individuality",
+    "addressPrefix": 42,
+    "genesisHash": "4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48",
+    "nodes": [
+      { "url": "wss://paseo-people-next-system-rpc.polkadot.io", "name": "Parity" }
+    ],
+    "assets": [
+      { "assetId": 0, "symbol": "PAS", "precision": 10 },
+      {
+        "assetId": 1, "symbol": "pUSD", "precision": 10,
+        "type": "statemine", "typeExtras": { "assetId": "1" }
+      }
+    ],
+    "options": ["testnet", "fullSyncByDefault"]
+  },
+  {
+    "chainId": "preview-bulletin",
+    "name": "Bulletin",
+    "addressPrefix": 42,
+    "genesisHash": "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
+    "nodes": [
+      { "url": "wss://paseo-bulletin-next-rpc.polkadot.io", "name": "Parity" }
+    ],
+    "assets": [
+      { "assetId": 0, "symbol": "PAS", "precision": 10 }
+    ],
+    "options": ["testnet", "fullSyncByDefault"]
+  },
+  {
+    "chainId": "preview-ah",
+    "name": "Asset Hub",
+    "addressPrefix": 42,
+    "genesisHash": "4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
+    "nodes": [
+      { "url": "wss://paseo-asset-hub-next-rpc.polkadot.io", "name": "Parity" }
+    ],
+    "assets": [
+      { "assetId": 0, "symbol": "PAS", "precision": 10 },
+      {
+        "assetId": 1, "symbol": "USDT", "precision": 6,
+        "type": "statemine", "typeExtras": { "assetId": "1" }
+      },
+      {
+        "assetId": 2, "symbol": "USDC", "precision": 6,
+        "type": "statemine", "typeExtras": { "assetId": "2" }
+      },
+      {
+        "assetId": 3, "symbol": "pUSD", "precision": 10,
+        "type": "statemine", "typeExtras": { "assetId": "3" }
+      },
+      {
+        "assetId": 4, "symbol": "PGAS", "precision": 10,
+        "type": "statemine", "typeExtras": { "assetId": "4" }
+      }
+    ],
+    "options": ["testnet", "fullSyncByDefault"]
+  }
+]</value>
+    </entry>
+    <entry>
+        <key>dot_ns_config</key>
+        <value>{
+  "resolverContractAddress": "0x7f74d7cd50f5a834270e2ad395a01b01891ab37d",
+  "protocolRegistryAddress": "0xd19e3d0c97cf501125a04a97405e3e6592fa846e",
+  "registryContractAddress": "0xf34054fd76bbf85f216cf9908226d5f0a72e50ca"
+}</value>
+    </entry>
+    <entry>
+        <key>identity_backend_url</key>
+        <value>https://identity.dotspark.app/</value>
+    </entry>
+    <entry>
+        <!-- Trailing /ipfs/ matters: the bare CID is resolved relative to this base. -->
+        <key>ipfs_gateway_url</key>
+        <value>https://paseo-bulletin-next-ipfs.polkadot.io/ipfs/</value>
+    </entry>
+    <entry>
+        <key>game_dashboard_url</key>
+        <value>https://identity.dotspark.app/</value>
+    </entry>
+</defaults>

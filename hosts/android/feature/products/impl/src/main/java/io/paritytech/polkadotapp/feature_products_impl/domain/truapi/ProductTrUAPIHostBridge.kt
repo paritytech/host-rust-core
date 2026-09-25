@@ -4,6 +4,7 @@ import androidx.core.net.toUri
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
+import io.parity.truapi.ChatHostBridge
 import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
@@ -243,6 +244,7 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         navigationPolicy: NavigationPolicy,
         kind: ProductExecutionKind,
         onReadyToInject: (bootstrap: String) -> Unit,
+        chat: ChatHostBridge? = null,
     ): Result<TrUAPIProductExecution> {
         execution?.let {
             Timber.w("truapi.attach: already attached to %s, ignoring", productId.value)
@@ -256,6 +258,7 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
             val opened = runtime.openProductExecution(
                 bridge = buildBridge(productId, navigationPolicy),
                 configuration = ProductExecutionConfig(productId.value, kind),
+                chat = chat,
                 pocket = pocket,
             )
             execution = opened
