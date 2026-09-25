@@ -48,7 +48,8 @@ class ConfirmationReviewMappingTest {
     fun `sign payload product maps to transaction`() {
         val review = UserConfirmationReview.SignPayload(
             SignPayloadReview.Product(
-                HostSignPayloadRequest(account = nativeAccount(), payload = signPayloadData()),
+                callingProductId = caller,
+                request = HostSignPayloadRequest(account = nativeAccount(), payload = signPayloadData()),
             ),
         )
 
@@ -97,6 +98,7 @@ class ConfirmationReviewMappingTest {
     fun `sign raw product bytes maps to raw`() {
         val review = UserConfirmationReview.SignRaw(
             SignRawReview.Product(
+                callingProductId = caller,
                 request = HostSignRawRequest(
                     account = nativeAccount(),
                     payload = RawPayload.Bytes(byteArrayOf(0xca.toByte(), 0xfe.toByte())),
@@ -137,6 +139,7 @@ class ConfirmationReviewMappingTest {
     fun `a raw payload with no transaction-payload protection is refused, not shown as a message`() {
         val product = UserConfirmationReview.SignRaw(
             SignRawReview.Product(
+                callingProductId = caller,
                 request = HostSignRawRequest(account = nativeAccount(), payload = RawPayload.Payload("hello")),
                 watermarked = false,
             ),
@@ -156,7 +159,8 @@ class ConfirmationReviewMappingTest {
     fun `create transaction product maps extensions`() {
         val review = UserConfirmationReview.CreateTransaction(
             CreateTransactionReview.Product(
-                ProductAccountTxPayload(
+                callingProductId = caller,
+                payload = ProductAccountTxPayload(
                     signer = nativeAccount(),
                     genesisHash = ByteArray(32) { 3 },
                     callData = byteArrayOf(9),
@@ -256,15 +260,22 @@ class ConfirmationReviewMappingTest {
     )
 
     @Test
-    fun `statement store sign maps to a statement confirmation`() {
-        val review = UserConfirmationReview.StatementStoreProductSign(
-            StatementStoreProductSignReview(account = nativeAccount(), payload = byteArrayOf(1, 2, 3)),
-        )
+    fun `statement store sign uses caller with signing account fallback`() {
+        val confirmations = listOf(caller, null).map { callingProductId ->
+            val review = UserConfirmationReview.StatementStoreProductSign(
+                StatementStoreProductSignReview(
+                    callingProductId = callingProductId,
+                    account = nativeAccount(),
+                    payload = byteArrayOf(1, 2, 3),
+                ),
+            )
 
-        val confirmation = review.toConfirmation(caller) as TrUAPIConfirmation.StatementSign
+            val confirmation = review.toConfirmation("host") as TrUAPIConfirmation.StatementSign
 
-        assertEquals("demo-product.dot", confirmation.requesterProductId)
-        assertEquals(3, confirmation.payloadSize)
+            confirmation.requesterProductId to confirmation.payloadSize
+        }
+
+        assertEquals(listOf(caller to 3, "demo-product.dot" to 3), confirmations)
     }
 
     @Test

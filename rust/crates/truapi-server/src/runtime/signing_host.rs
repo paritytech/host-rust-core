@@ -1462,6 +1462,7 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
 #[cfg(test)]
 mod tests {
     mod auto_signing;
+    mod cross_product_account;
     mod raw_signing;
     mod trusted_signing;
 

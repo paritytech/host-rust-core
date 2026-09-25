@@ -197,7 +197,10 @@ fn untrusted_callers_cannot_silently_sign_even_with_chain_submit_permission() {
                 Err(CallError::Domain(HostSignPayloadError::V1(
                     v01::HostSignPayloadError::Rejected,
                 ))),
-                vec![SignPayloadReview::Product(request)],
+                vec![SignPayloadReview::Product {
+                    calling_product_id: Some(caller.to_string()),
+                    request
+                }],
             ),
             "{caller} signing for {owner}",
         );
@@ -291,6 +294,7 @@ fn ordinary_products_still_confirm_unwatermarked_messages() {
                 v01::HostSignPayloadError::Rejected,
             ))),
             vec![SignRawReview::Product {
+                calling_product_id: Some("ordinary.paseo".to_string()),
                 request,
                 watermarked: false,
             }],
@@ -649,7 +653,10 @@ fn a_relayed_trusted_account_still_requires_confirmation() {
         ),
         (
             Err("Rejected".to_string()),
-            vec![SignPayloadReview::Product(request)],
+            vec![SignPayloadReview::Product {
+                calling_product_id: None,
+                request
+            }],
         ),
     );
 }

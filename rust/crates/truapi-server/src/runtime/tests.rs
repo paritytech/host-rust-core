@@ -363,6 +363,124 @@ fn a_grant_to_another_product_does_not_admit_this_caller() {
     );
 }
 
+/// The account gate, which decides whether a signature may be made with
+/// another product's account. The caller is `unknown.dot` throughout, so a
+/// manifest names the bare label `unknown`.
+fn account_target(host: &ProductRuntimeHost, target: &str) -> Option<String> {
+    futures::executor::block_on(host.authorized_product_account(target, &CallContext::default()))
+}
+
+#[test]
+fn the_callers_own_account_needs_no_grant_and_no_manifest() {
+    // No manifest is cached for anyone: reaching for one here would be a
+    // chain read in front of every signature a product makes for itself.
+    let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+    assert_eq!(
+        account_target(&host, "unknown.dot").as_deref(),
+        Some("unknown.dot")
+    );
+}
+
+#[test]
+fn a_context_grant_admits_the_granting_products_account() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        account_target(&host, "wallet.dot").as_deref(),
+        Some("wallet.dot")
+    );
+}
+
+#[test]
+fn all_admits_the_granting_products_account() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["all"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        account_target(&host, "wallet.dot").as_deref(),
+        Some("wallet.dot")
+    );
+}
+
+#[test]
+fn a_storage_grant_alone_does_not_admit_the_account() {
+    // The scopes are separable on purpose: "read what I stored" is not "act
+    // as me", and a publisher that wrote the narrower one meant it.
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"unknown":["storage"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(account_target(&host, "wallet.dot"), None);
+}
+
+#[test]
+fn a_context_grant_to_another_product_does_not_admit_this_caller() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "wallet.dot", r#"{"stash":["context"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(account_target(&host, "wallet.dot"), None);
+}
+
+#[test]
+fn a_product_publishing_no_manifest_admits_nobody() {
+    let platform = stub_platform();
+    cache_manifest_entry(&platform, "wallet.dot", None, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(account_target(&host, "wallet.dot"), None);
+}
+
+/// A subname of the granting product is that product, as it is for every
+/// other grant: the grant is filed under the bare label.
+#[test]
+fn a_subname_of_the_granting_product_is_admitted_under_its_base_grant() {
+    let platform = stub_platform();
+    cache_manifest(&platform, "app.wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    let host = ProductRuntimeHost::new_compat(platform, test_spawner());
+    assert_eq!(
+        account_target(&host, "app.wallet.dot").as_deref(),
+        Some("app.wallet.dot")
+    );
+}
+
+/// What `sign_payload` answers for an account owned by `wallet.dot`.
+fn sign_with_wallets_account(host: &ProductRuntimeHost) -> CallError<HostSignPayloadError> {
+    futures::executor::block_on(host.sign_payload(
+        &CallContext::default(),
+        HostSignPayloadRequest::V1(v01::HostSignPayloadRequest {
+            account: account_id("wallet.dot", 0),
+            payload: crate::test_support::sign_payload_data(),
+        }),
+    ))
+    .expect_err("no session is connected, so nothing signs here")
+}
+
+/// The grant is consulted after the session, so a caller with no session is
+/// told the same thing whether or not the account it named would have admitted
+/// it. Consulting the grant first made the pair of refusals a probe for which
+/// products grant which, and reached the chain to answer it.
+#[test]
+fn a_caller_without_a_session_cannot_tell_a_granted_account_from_an_ungranted_one() {
+    let granting = stub_platform();
+    cache_manifest(&granting, "wallet.dot", r#"{"unknown":["context"]}"#, 0);
+    let granted = ProductRuntimeHost::new_compat(granting, test_spawner());
+
+    let withholding = stub_platform();
+    cache_manifest(&withholding, "wallet.dot", r#"{"stash":["context"]}"#, 0);
+    let ungranted = ProductRuntimeHost::new_compat(withholding, test_spawner());
+
+    for host in [&granted, &ungranted] {
+        assert!(
+            matches!(
+                sign_with_wallets_account(host),
+                CallError::Domain(HostSignPayloadError::V1(
+                    v01::HostSignPayloadError::Rejected
+                ))
+            ),
+            "a session-less caller learns only that there is no session",
+        );
+    }
+}
+
 #[test]
 fn a_cached_miss_refuses_without_returning_to_the_chain() {
     // "This product publishes no manifest" is an answer worth keeping. Without
@@ -1483,7 +1601,13 @@ fn bare_localhost_product_allows_dev_product_accounts() {
     let host =
         ProductRuntimeHost::new(stub_platform(), runtime_config("localhost"), test_spawner());
 
-    assert!(host.is_product_account_valid_for_caller("myapp.dot"));
+    assert_eq!(
+        futures::executor::block_on(
+            host.authorized_product_account("myapp.dot", &CallContext::default())
+        )
+        .as_deref(),
+        Some("myapp.dot")
+    );
 }
 
 /// A product destination reaches the platform as a `polkadot://` URL, whatever

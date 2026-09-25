@@ -148,21 +148,28 @@ struct TrUAPIReviewPromptMapperTests {
     }
 
     @Test
-    func mapsStatementSignRequestFromSigningAccount() throws {
+    func mapsStatementSignRequesterWithSigningAccountFallback() throws {
         let payload = try Data.randomOrError(of: 48)
+        let cases: [(String?, String)] = [
+            ("caller.dot", "caller.dot"),
+            (nil, "signer.dot")
+        ]
 
-        let request = mapper.makeStatementSignRequest(from: StatementStoreProductSignReview(
-            account: TrUAPIHostProductAccountId(
-                dotNsIdentifier: "signer.dot",
-                derivationIndex: .index(0)
-            ),
-            payload: payload
-        ))
+        for (callingProductId, expectedProductId) in cases {
+            let request = mapper.makeStatementSignRequest(from: StatementStoreProductSignReview(
+                callingProductId: callingProductId,
+                account: TrUAPIHostProductAccountId(
+                    dotNsIdentifier: "signer.dot",
+                    derivationIndex: .index(0)
+                ),
+                payload: payload
+            ))
 
-        #expect(request == StatementSignConfirmationRequest(
-            productId: "signer.dot",
-            payload: payload
-        ))
+            #expect(request == StatementSignConfirmationRequest(
+                productId: expectedProductId,
+                payload: payload
+            ))
+        }
     }
 }
 

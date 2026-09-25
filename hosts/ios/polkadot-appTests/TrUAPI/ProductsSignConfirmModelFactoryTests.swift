@@ -17,7 +17,10 @@ struct ProductsSignConfirmModelFactoryTests {
         let method = try Data.randomOrError(of: 12)
         let account = TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(0))
         let input = ProductsSignConfirmInput.signPayload(
-            .product(HostSignPayloadRequest(account: account, payload: Self.makeHostSignPayloadData(method: method)))
+            .product(
+                callingProductId: requester.name,
+                request: HostSignPayloadRequest(account: account, payload: Self.makeHostSignPayloadData(method: method))
+            )
         )
 
         let model = try await makeFactory().makeModel(from: input, requester: requester)
@@ -46,7 +49,8 @@ struct ProductsSignConfirmModelFactoryTests {
     @Test func createTransactionProductFallsBackToRawCall() async throws {
         let signer = TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(1))
         let input = try ProductsSignConfirmInput.createTransaction(.product(
-            ProductAccountTxPayload(
+            callingProductId: requester.name,
+            payload: ProductAccountTxPayload(
                 signer: signer,
                 genesisHash: Data.randomOrError(of: 32),
                 callData: Data.randomOrError(of: 20),
@@ -84,7 +88,11 @@ struct ProductsSignConfirmModelFactoryTests {
         let bytes = try Data.randomOrError(of: 16)
         let account = TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(0))
         let input = ProductsSignConfirmInput.signRaw(
-            .product(request: HostSignRawRequest(account: account, payload: .bytes(bytes: bytes)), watermarked: true)
+            .product(
+                callingProductId: requester.name,
+                request: HostSignRawRequest(account: account, payload: .bytes(bytes: bytes)),
+                watermarked: true
+            )
         )
 
         let model = try await makeFactory().makeModel(from: input, requester: requester)
@@ -129,6 +137,7 @@ struct ProductsSignConfirmModelFactoryTests {
                 watermarked: false
             )
             : .product(
+                callingProductId: requester.name,
                 request: HostSignRawRequest(
                     account: TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(0)),
                     payload: .bytes(bytes: bytes)

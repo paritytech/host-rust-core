@@ -23,11 +23,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
 use truapi::v01;
 use truapi_platform::{
-    AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
-    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionDecision,
-    PermissionStatusHost, Permissions, PreimageHost, ProductContext, ProductOperations,
-    ProductStorage, ProductStorageKey, SessionUiInfo, SignRawReview, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    AuthState, ChainProvider, CoreStorage, CoreStorageKey, CreateTransactionReview,
+    DevicePermissionStatus, Features, JsonRpcConnection, LocaleHost, Navigation, Notifications,
+    PermissionDecision, PermissionStatusHost, Permissions, PreimageHost, ProductContext,
+    ProductOperations, ProductStorage, ProductStorageKey, SessionUiInfo, SignPayloadReview,
+    SignRawReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
@@ -866,11 +866,43 @@ impl UserConfirmation for CliPlatform {
     }
 }
 
+/// Names the product that asked, for the reviews that carry one. A relayed
+/// request carries no caller, and saying so is more use than naming nobody.
+fn asking(calling_product_id: Option<&str>) -> String {
+    match calling_product_id {
+        Some(product_id) => format!("Product {product_id}"),
+        None => "A paired host".to_string(),
+    }
+}
+
 fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
     match review {
+        UserConfirmationReview::SignPayload(SignPayloadReview::Product {
+            calling_product_id,
+            request,
+        }) => (
+            "sign payload",
+            format!(
+                "{} requested a SCALE payload signature for the {} account.",
+                asking(calling_product_id.as_deref()),
+                request.account.dot_ns_identifier,
+            ),
+        ),
         UserConfirmationReview::SignPayload(_) => (
             "sign payload",
             "A product requested a SCALE payload signature.".to_string(),
+        ),
+        UserConfirmationReview::SignRaw(SignRawReview::Product {
+            calling_product_id,
+            request,
+            watermarked: true,
+        }) => (
+            "sign raw data",
+            format!(
+                "{} requested a raw-data signature for the {} account. The payload is hidden here.",
+                asking(calling_product_id.as_deref()),
+                request.account.dot_ns_identifier,
+            ),
         ),
         UserConfirmationReview::SignRaw(
             SignRawReview::Product { watermarked: false, .. }
@@ -895,9 +927,21 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
         UserConfirmationReview::StatementStoreProductSign(review) => (
             "sign statement proof",
             format!(
-                "Product {} requested a Statement Store proof signature over a {}-byte payload.",
+                "{} requested a Statement Store proof signature for the {} account over a {}-byte payload.",
+                asking(review.calling_product_id.as_deref()),
                 review.account.dot_ns_identifier,
                 review.payload.len()
+            ),
+        ),
+        UserConfirmationReview::CreateTransaction(CreateTransactionReview::Product {
+            calling_product_id,
+            payload,
+        }) => (
+            "create transaction",
+            format!(
+                "{} requested a transaction from the {} account.",
+                asking(calling_product_id.as_deref()),
+                payload.signer.dot_ns_identifier,
             ),
         ),
         UserConfirmationReview::CreateTransaction(_) => (
@@ -1857,12 +1901,15 @@ mod tests {
         assert!(!detail.contains("["));
     }
 
+    /// Both products by name, because a signature made with an account the
+    /// caller does not own is the thing the user has to be able to see.
     #[test]
-    fn statement_proof_approval_names_product_without_dumping_payload() {
+    fn statement_proof_approval_names_both_products_without_dumping_payload() {
         let review = UserConfirmationReview::StatementStoreProductSign(
             truapi_platform::StatementStoreProductSignReview {
+                calling_product_id: Some("dim2next.paseo".to_string()),
                 account: api::ProductAccountId {
-                    dot_ns_identifier: "myapp.dot".to_string(),
+                    dot_ns_identifier: "dim2.paseo".to_string(),
                     derivation_index: api::DerivationIndex::Index(0),
                 },
                 payload: vec![0x42; 128],
@@ -1874,7 +1921,8 @@ mod tests {
         assert_eq!(action, "sign statement proof");
         assert_eq!(
             detail,
-            "Product myapp.dot requested a Statement Store proof signature over a 128-byte payload."
+            "Product dim2next.paseo requested a Statement Store proof signature for the \
+             dim2.paseo account over a 128-byte payload."
         );
         assert!(!detail.contains("[66"));
     }
