@@ -580,6 +580,8 @@ async fn accept_loop(
     let mut relisten_pause = RELISTEN_PAUSE_MIN;
     loop {
         tokio::select! {
+            // Shutdown first, so a stopping loop never binds its port again.
+            biased;
             _ = &mut shutdown => {
                 logger("truapi.ws_bridge.shutdown", "accept loop exiting");
                 for task in &setup_tasks {
@@ -590,9 +592,12 @@ async fn accept_loop(
                 }
                 break;
             }
-            accepted = async { listener.as_ref().expect("branch requires a listener").accept().await },
-                if listener.is_some() =>
-            {
+            accepted = async {
+                match &listener {
+                    Some(listener) => listener.accept().await,
+                    None => core::future::pending().await,
+                }
+            } => {
                 let (stream, peer) = match accepted {
                     Ok(pair) => pair,
                     Err(err) if is_connection_error(&err) => {
