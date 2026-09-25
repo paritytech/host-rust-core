@@ -312,6 +312,7 @@ extension ServiceCoordinator {
             logger: logger
         )
         RootDependencyLocator.setDependency(truapiRuntimeProvider as TrUAPIHostRuntimeProviding)
+        RootDependencyLocator.setDependency(spaFlowState.iconViewModelFactory as ProductIconViewModelMaking)
 
         guard
             let signInHostCoordinator = createSignInHostCoordinator(
