@@ -3242,11 +3242,13 @@ pub trait PocketPlatform: Send + Sync {
 /// The core checks the `Alarm` grant and refuses a start that is not in the
 /// future before it calls here. The host owns everything else: one reminder
 /// per product, replaced by every schedule; kept across app kill and device
-/// reboot; rung as an alarm, or delivered as an ordinary notification when the
-/// OS refuses alarms; dropped once the game has started, when the product's
-/// `Alarm` grant is revoked, and when the product is uninstalled. A host
-/// reports `Alarm` as OS-`Denied` only when the OS allows neither alarms nor
-/// notifications.
+/// reboot; rung as an alarm twenty seconds before the start, or delivered as a
+/// notification when the OS refuses alarms; kept for an hour after the start
+/// so a returning player lands in the product; and dropped once the player
+/// has left the product after the start, when that hour has passed, when the
+/// product's `Alarm` grant is revoked, or when the product is uninstalled. A
+/// host reports `Alarm` as OS-`Denied` only when the OS allows neither alarms
+/// nor notifications.
 #[async_trait]
 pub trait GamePlatform: Send + Sync {
     /// Hold `starts_at` (Unix milliseconds, UTC) as the product's reminder,

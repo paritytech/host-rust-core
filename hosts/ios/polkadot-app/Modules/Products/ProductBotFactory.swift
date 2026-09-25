@@ -90,6 +90,7 @@ private extension ProductBotFactory {
             runtime: runtime,
             chainRegistry: chainRegistry,
             notificationScheduler: ProductNotificationScheduler.shared,
+            gameReminders: GameReminderCenter.shared,
             ipfsFetcher: IpfsFetcher(ipfsBaseURL: AppConfig.KnownIPFS.main),
             hostProvider: hostProvider,
             logger: logger

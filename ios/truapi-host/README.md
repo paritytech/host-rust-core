@@ -254,10 +254,12 @@ let execution = try runtime.openProductExecution(
 ```
 
 The host owns the reminder: one per product, replaced by every
-`scheduleReminder`, kept across app kill and device reboot, rung as an alarm or
-delivered as an ordinary notification when the OS refuses alarms, and dropped
-once the game has started, when the product's Alarm grant is revoked, and when
-the product is uninstalled.
+`scheduleReminder`, kept across app kill and device reboot, rung as an alarm
+twenty seconds before the start or delivered as an ordinary notification when
+the OS refuses alarms, kept for an hour after the start so a returning player
+lands in the product, and dropped once the player has left the product after
+the start, when that hour has passed, when the product's Alarm grant is
+revoked, or when the product is uninstalled.
 
 On the execution: `publishChatAction` delivers a user's action back to the
 product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`

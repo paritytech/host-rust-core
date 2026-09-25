@@ -340,8 +340,12 @@ public protocol PocketHostBridge: AnyObject, Sendable {
 /// stalls the others.
 ///
 /// The host owns the reminder: one per product, replaced by every schedule,
-/// kept across app kill and reboot, rung as an alarm or delivered as a
-/// notification when the OS refuses alarms, and dropped once the game starts.
+/// kept across app kill and reboot, rung as an alarm twenty seconds before the
+/// start or delivered as a notification when the OS refuses alarms, kept for
+/// an hour after the start so a returning player lands in the product, and
+/// dropped once the player has left the product after the start, when that
+/// hour has passed, when the product's `Alarm` grant is revoked, or when the
+/// product is uninstalled.
 ///
 /// Throw ``HostRejection`` (or an error conforming to `LocalizedError`) to
 /// decline a call.

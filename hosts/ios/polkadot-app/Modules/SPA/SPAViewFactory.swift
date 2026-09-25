@@ -190,6 +190,7 @@ extension SPAViewFactory {
             runtime: runtime,
             chainRegistry: ChainRegistryFacade.sharedRegistry,
             notificationScheduler: ProductNotificationScheduler.shared,
+            gameReminders: GameReminderCenter.shared,
             ipfsFetcher: IpfsFetcher(ipfsBaseURL: AppConfig.KnownIPFS.main),
             hostProvider: flowState.hostProvider,
             logger: Logger.shared

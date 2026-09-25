@@ -171,6 +171,7 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
 
         chatCoordinator.setup()
         productWorkerFacade.setup()
+        Task { await GameReminderCenter.shared.restoreAll() }
         chatExtensionsRegistry.discover()
         chatRequestCoordinator.setup()
         fiatOnrampTrackingService.setup()

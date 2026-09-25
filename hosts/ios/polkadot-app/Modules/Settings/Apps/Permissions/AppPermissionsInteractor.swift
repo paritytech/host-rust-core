@@ -8,6 +8,7 @@ final class AppPermissionsInteractor {
     private let providerFactory: ProductPermissionDataProviderMaking
     private let repository: ProductPermissionRepositoryProtocol
     private let notificationScheduler: ProductNotificationScheduling
+    private let gameReminders: GameReminderScheduling
     private let logger: LoggerProtocol
 
     private var subscriptionTask: Task<Void, Never>?
@@ -17,12 +18,14 @@ final class AppPermissionsInteractor {
         providerFactory: ProductPermissionDataProviderMaking,
         repository: ProductPermissionRepositoryProtocol,
         notificationScheduler: ProductNotificationScheduling = ProductNotificationScheduler.shared,
+        gameReminders: GameReminderScheduling = GameReminderCenter.shared,
         logger: LoggerProtocol = Logger.shared
     ) {
         self.productId = productId
         self.providerFactory = providerFactory
         self.repository = repository
         self.notificationScheduler = notificationScheduler
+        self.gameReminders = gameReminders
         self.logger = logger
     }
 
@@ -57,13 +60,17 @@ extension AppPermissionsInteractor: AppPermissionsInteractorInputProtocol {
         subscriptionTask?.cancel()
 
         let revokesNotifications = permissions.contains(.deviceCapability(.notifications))
+        let revokesAlarm = permissions.contains(.deviceCapability(.alarm))
 
-        Task { [repository, notificationScheduler, productId, logger] in
+        Task { [repository, notificationScheduler, gameReminders, productId, logger] in
             do {
                 try await repository.revoke(productId: productId, permissions: permissions)
 
                 if revokesNotifications {
                     try await notificationScheduler.cancelAll(forProductId: productId)
+                }
+                if revokesAlarm {
+                    await gameReminders.cancel(productId: productId)
                 }
             } catch {
                 logger.error("Failed to revoke product permissions: \(error)")

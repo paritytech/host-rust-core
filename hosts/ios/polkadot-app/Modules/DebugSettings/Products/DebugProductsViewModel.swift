@@ -63,6 +63,7 @@ final class DebugProductsViewModel {
 
         Task { @MainActor [notificationScheduler] in
             try? await notificationScheduler.cancelAll(forProductId: product.identifier)
+            await GameReminderCenter.shared.cancel(productId: product.identifier)
             try? await productRepository.saveOperation({ [] }, { [product.identifier] }).asyncExecute()
             try? await productChatRepository.deleteAllOperation().asyncExecute()
             try? scriptStorage.deleteScript(productId: product.identifier)

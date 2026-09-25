@@ -24,9 +24,10 @@
         }
 
         func resetAllData() {
-            if #available(iOS 26.0, *) {
+            if #available(iOS 26.1, *) {
                 clearAlarmKitAlarms()
             }
+            UserDefaultsGameReminderStore().removeAll()
             deleteAllKeychainItems()
             eraseAllUserDefaults()
             clearAllNotifications()
@@ -57,16 +58,14 @@
             }
         }
 
-        @available(iOS 26.0, *)
+        @available(iOS 26.1, *)
         func clearAlarmKitAlarms() {
-            guard let alarmIdString = SettingsManager.shared.string(for: .gameAlarmId),
-                  let alarmId = UUID(uuidString: alarmIdString) else {
-                return
-            }
             do {
-                try AlarmManager.shared.cancel(id: alarmId)
+                for alarm in try AlarmManager.shared.alarms {
+                    try? AlarmManager.shared.cancel(id: alarm.id)
+                }
             } catch {
-                logger.error("Failure to cancel alarm: \(error)")
+                logger.error("Failure to list alarms: \(error)")
             }
         }
 
