@@ -18,7 +18,7 @@ struct ProductsSignConfirmModelFactoryTests {
         let account = TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(0))
         let input = ProductsSignConfirmInput.signPayload(
             .product(
-                callingProductId: requester.name,
+                callingProductId: "test.product",
                 request: HostSignPayloadRequest(account: account, payload: Self.makeHostSignPayloadData(method: method))
             )
         )
@@ -49,7 +49,7 @@ struct ProductsSignConfirmModelFactoryTests {
     @Test func createTransactionProductFallsBackToRawCall() async throws {
         let signer = TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(1))
         let input = try ProductsSignConfirmInput.createTransaction(.product(
-            callingProductId: requester.name,
+            callingProductId: "test.product",
             payload: ProductAccountTxPayload(
                 signer: signer,
                 genesisHash: Data.randomOrError(of: 32),
@@ -89,7 +89,7 @@ struct ProductsSignConfirmModelFactoryTests {
         let account = TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(0))
         let input = ProductsSignConfirmInput.signRaw(
             .product(
-                callingProductId: requester.name,
+                callingProductId: "test.product",
                 request: HostSignRawRequest(account: account, payload: .bytes(bytes: bytes)),
                 watermarked: true
             )
@@ -137,7 +137,7 @@ struct ProductsSignConfirmModelFactoryTests {
                 watermarked: false
             )
             : .product(
-                callingProductId: requester.name,
+                callingProductId: "test.product",
                 request: HostSignRawRequest(
                     account: TrUAPIHostProductAccountId(dotNsIdentifier: "p.dot", derivationIndex: .index(0)),
                     payload: .bytes(bytes: bytes)
