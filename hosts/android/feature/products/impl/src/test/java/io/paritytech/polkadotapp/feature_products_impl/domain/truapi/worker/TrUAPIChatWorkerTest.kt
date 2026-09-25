@@ -208,8 +208,10 @@ class TrUAPIChatWorkerTest {
     fun `a disposed worker stops retrying instead of reopening`() = runTest {
         val execution: TrUAPIProductExecution = mock()
         whenever(execution.render(any())).thenReturn(flow { awaitCancellation() })
-        val workerScope = CoroutineScope(StandardTestDispatcher(testScheduler))
-        val worker = worker(workers = runningWorkers(execution), scope = workerScope)
+        val states = MutableStateFlow<WorkerExecutionState?>(WorkerExecutionState.Running(execution))
+        val workers: TrUAPIWorkerSupervisor = mock()
+        whenever(workers.executionState(productId)).thenReturn(states)
+        val worker = worker(workers = workers, scope = CoroutineScope(StandardTestDispatcher(testScheduler)))
 
         val results = mutableListOf<Result<JsWidget>>()
         val collector = launch {
@@ -218,11 +220,29 @@ class TrUAPIChatWorkerTest {
         advanceUntilIdle()
         verify(execution, times(1)).render(any())
 
+        // Disposal as the supervisor reports it: the product has no execution any more.
+        states.value = null
+        advanceUntilIdle()
+
+        assertTrue(results.isEmpty())
+        verify(execution, times(1)).render(any())
+
+        collector.cancel()
+    }
+
+    @Test
+    fun `a render on a worker whose scope is already cancelled still draws`() = runTest {
+        val execution: TrUAPIProductExecution = mock()
+        whenever(execution.render(any())).thenReturn(flowOf(RendererNode.Nil))
+        val workerScope = CoroutineScope(StandardTestDispatcher(testScheduler))
+        val worker = worker(workers = runningWorkers(execution), scope = workerScope)
+
         workerScope.cancel()
         advanceUntilIdle()
 
-        assertTrue(collector.isCancelled)
-        assertTrue(results.isEmpty())
+        val results = worker.renderMessage(roomId, messageId, messageType, messageData).toList()
+
+        assertEquals(listOf(Result.success(JsWidget.Spacer())), results)
         verify(execution, times(1)).render(any())
     }
 

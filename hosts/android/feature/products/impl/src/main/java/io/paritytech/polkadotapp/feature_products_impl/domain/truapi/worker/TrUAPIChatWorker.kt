@@ -15,7 +15,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -93,38 +92,34 @@ class TrUAPIChatWorker(
         messageData: DataByteArray,
     ): Flow<Result<JsWidget>> {
         return channelFlow {
-            val job = scope.launch {
-                val outcome = runCatching {
-                    // Rendering follows the executions: one dying mid-render is redrawn by the next.
-                    workers.executionState(productId)
-                        .map { state ->
-                            if (state is WorkerExecutionState.Failed) throw ExecutionUnavailableException(state.reason)
-                            (state as? WorkerExecutionState.Running)?.execution
+            val outcome = runCatching {
+                // Rendering follows the executions: one dying mid-render is redrawn by the next.
+                workers.executionState(productId)
+                    .map { state ->
+                        if (state is WorkerExecutionState.Failed) throw ExecutionUnavailableException(state.reason)
+                        (state as? WorkerExecutionState.Running)?.execution
+                    }
+                    .distinctUntilChanged()
+                    .flatMapLatest { execution ->
+                        if (execution == null) {
+                            emptyFlow()
+                        } else {
+                            reopeningChatRender(
+                                execution,
+                                roomId.orDefaultChat(),
+                                messageId,
+                                messageType,
+                                messageData.value,
+                            )
                         }
-                        .distinctUntilChanged()
-                        .flatMapLatest { execution ->
-                            if (execution == null) {
-                                emptyFlow()
-                            } else {
-                                reopeningChatRender(
-                                    execution,
-                                    roomId.orDefaultChat(),
-                                    messageId,
-                                    messageType,
-                                    messageData.value,
-                                )
-                            }
-                        }
-                        .collect { send(it) }
-                }
-                outcome.exceptionOrNull()?.let { failure ->
-                    if (failure is CancellationException) throw failure
-                    // trySend: a throw here would crash the process, not just this cell.
-                    trySend(Result.failure(failure))
-                }
+                    }
+                    .collect { send(it) }
             }
-            job.invokeOnCompletion { cause -> close(cause) }
-            awaitClose { job.cancel() }
+            outcome.exceptionOrNull()?.let { failure ->
+                if (failure is CancellationException) throw failure
+                // trySend: a throw here would crash the process, not just this cell.
+                trySend(Result.failure(failure))
+            }
         }.buffer(Channel.UNLIMITED)
     }
 
