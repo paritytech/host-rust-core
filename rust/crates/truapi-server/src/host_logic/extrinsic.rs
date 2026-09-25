@@ -353,7 +353,7 @@ pub(crate) async fn build_local_transaction(
 
 /// Choose the extrinsic format for `tx_ext_version`, then assemble it.
 ///
-/// V4 always follows transaction extension version 0, so a non-zero version
+/// V4 always uses transaction extension version 0, so a non-zero version
 /// builds V5. Version 0 builds V5 while it includes `VerifyMultiSignature`,
 /// since only then can a general transaction carry a signature, and V4
 /// otherwise.
