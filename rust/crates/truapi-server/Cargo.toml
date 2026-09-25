@@ -87,6 +87,9 @@ uniffi.workspace = true
 subxt = { version = "0.50.3", default-features = false, features = ["native"] }
 subxt-rpcs = { version = "0.50.3", default-features = false, features = ["jsonrpsee", "native"] }
 base64 = { version = "0.22", optional = true }
+rusqlite = { version = "0.40", features = ["bundled"] }
+async-sqlite = { version = "0.6", default-features = false, features = ["bundled"] }
+rusqlite_migration = "2.6"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
@@ -110,6 +113,7 @@ wasm-bindgen-test = "0.3"
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+tempfile = "3"
 
 [lints]
 workspace = true

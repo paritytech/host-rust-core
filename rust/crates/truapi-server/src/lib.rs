@@ -52,6 +52,9 @@ pub mod native;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_renderer;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod store;
+
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
