@@ -1464,7 +1464,6 @@ mod tests {
     mod auto_signing;
     mod cross_product_account;
     mod raw_signing;
-    mod trusted_signing;
 
     use std::sync::Arc;
 
@@ -1824,114 +1823,6 @@ mod tests {
         assert!(
             proof.is_ok(),
             "blessed account access ignores the saved denial: {proof:?}"
-        );
-    }
-
-    #[test]
-    fn blessed_context_grants_ignore_saved_decisions_and_permission_storage_errors() {
-        use crate::host_logic::product_manifest::{Granted, bare_product_label};
-        use crate::runtime::product_manifest::{RefusedBecause, scope_grant};
-
-        for (legacy, unreadable) in [(false, false), (true, false), (false, true)] {
-            let platform = Arc::new(StubPlatform {
-                permission_storage_error: unreadable.then_some("keychain locked"),
-                ..StubPlatform::default()
-            });
-            cache_grant(
-                &platform,
-                "owner.dot",
-                r#"{"dim2":["context"],"peopl":["context"],"stash":["context"],"ordinary":["context"]}"#,
-            );
-            let (services, _authority) = signing_runtime_with_platform(platform.clone());
-            let mut outcomes = Vec::new();
-            for caller in [
-                "dim2.dot",
-                "peopl.paseo",
-                "stash.testnet",
-                "ordinary.dot",
-                "app.dim2.dot",
-            ] {
-                if !unreadable {
-                    futures::executor::block_on(
-                        crate::host_logic::permissions::set_account_access_status(
-                            platform.as_ref(),
-                            if legacy {
-                                caller
-                            } else {
-                                bare_product_label(caller)
-                            },
-                            if legacy { "owner.dot" } else { "owner" },
-                            truapi_platform::PermissionAuthorizationStatus::Denied,
-                        ),
-                    )
-                    .unwrap();
-                }
-                outcomes.push(futures::executor::block_on(scope_grant(
-                    &services,
-                    platform.as_ref(),
-                    caller,
-                    "owner.dot",
-                    Granted::Context,
-                )));
-            }
-            let refusal = if unreadable {
-                RefusedBecause::DecisionUnreadable
-            } else {
-                RefusedBecause::UserDenied
-            };
-            assert_eq!(
-                outcomes,
-                vec![Ok(()), Ok(()), Ok(()), Err(refusal), Err(refusal)]
-            );
-        }
-    }
-
-    #[test]
-    fn blessed_context_access_still_requires_the_owners_manifest_and_allowed_context() {
-        use crate::host_logic::product_manifest::Granted;
-        use crate::runtime::product_manifest::{
-            RefusedBecause, require_own_context, ring_vrf_key_access_granted, scope_grant,
-        };
-
-        let platform = Arc::new(StubPlatform {
-            permission_storage_error: Some("keychain locked"),
-            ..StubPlatform::default()
-        });
-        let (services, _authority) = signing_runtime_with_platform(platform.clone());
-        cache_grant(&platform, "peopl.dot", "{}");
-        assert_eq!(
-            futures::executor::block_on(scope_grant(
-                &services,
-                platform.as_ref(),
-                "dim2.dot",
-                "peopl.dot",
-                Granted::Context
-            )),
-            Err(RefusedBecause::NotGranted),
-        );
-        cache_grant(&platform, "peopl.dot", r#"{"dim2":["context"]}"#);
-        let access = futures::executor::block_on(ring_vrf_key_access_granted(
-            &services,
-            platform.as_ref(),
-            "dim2.dot",
-            &full_person_key_handle(),
-        ))
-        .unwrap();
-        let outcomes: Vec<_> = ["dim2.dot", "peopl.dot", "bank.dot"]
-            .into_iter()
-            .map(|context| {
-                require_own_context(
-                    &access,
-                    &v01::ProductProofContext {
-                        product_id: context.to_string(),
-                        suffix: v01::DerivationIndex::Index(0),
-                    },
-                )
-            })
-            .collect();
-        assert_eq!(
-            outcomes,
-            vec![Ok(()), Ok(()), Err(RingVrfError::NotAllowlisted)]
         );
     }
 

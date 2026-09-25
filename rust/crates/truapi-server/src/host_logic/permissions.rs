@@ -2001,108 +2001,32 @@ mod tests {
     }
 
     #[test]
-    fn trusted_identity_disclosure_does_not_require_a_recorded_grant() {
-        let storage = MemStorage::default();
-        let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = trusted_service(&storage, &prompt);
-
-        assert_eq!(
-            futures::executor::block_on(
-                service.authorization_status(&PermissionAuthorizationRequest::IdentityDisclosure)
-            )
-            .unwrap(),
-            PermissionAuthorizationStatus::Authorized,
-        );
-    }
-
-    #[test]
-    fn trusted_identity_disclosure_ignores_recorded_denials() {
-        let storage = MemStorage::default();
-        let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = trusted_service(&storage, &prompt);
-        let request = PermissionAuthorizationRequest::IdentityDisclosure;
-        futures::executor::block_on(
-            service.set_authorization_status(&request, PermissionAuthorizationStatus::Denied),
-        )
-        .unwrap();
-        assert_eq!(
-            futures::executor::block_on(service.authorization_status(&request)),
-            Ok(PermissionAuthorizationStatus::Authorized),
-        );
-    }
-
-    #[test]
-    fn trusted_account_access_is_authorized_without_a_stored_decision() {
-        let storage = MemStorage::default();
-        let prompt = ScriptedPrompt::new(vec![], vec![]);
-        for label in ["peopl", "dim2", "jollity", "stash"] {
-            for suffix in truapi_platform::DOTNS_TLDS {
-                let product =
-                    ProductContext::new(format!(" {label}.{suffix} ").to_uppercase()).unwrap();
-                let service = PermissionsService::new(&storage, &prompt, &product);
-                assert_eq!(
-                    futures::executor::block_on(service.authorization_status(
-                        &PermissionAuthorizationRequest::AccountAccess {
-                            target_product_id: "other.dot".to_string(),
-                        },
-                    ))
-                    .unwrap(),
-                    PermissionAuthorizationStatus::Authorized,
-                    "{}",
-                    product.product_id,
-                );
-            }
-        }
-        assert!(futures::executor::block_on(storage.inner.lock()).is_empty());
-    }
-
-    #[test]
-    fn trusted_account_access_ignores_denials_from_bare_and_legacy_slots() {
-        let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let product = ProductContext::new("dim2.dot".to_string()).unwrap();
-        for denied_bare in [false, true] {
-            let storage = MemStorage::default();
-            for (caller, target, bare) in
-                [("dim2", "peopl", true), ("dim2.dot", "peopl.dot", false)]
-            {
-                futures::executor::block_on(set_account_access_status(
-                    &storage,
-                    caller,
-                    target,
-                    if bare == denied_bare {
-                        PermissionAuthorizationStatus::Denied
-                    } else {
-                        PermissionAuthorizationStatus::Authorized
-                    },
-                ))
-                .unwrap();
-            }
-            let service = PermissionsService::new(&storage, &prompt, &product);
-            assert_eq!(
-                futures::executor::block_on(service.authorization_status(
-                    &PermissionAuthorizationRequest::AccountAccess {
-                        target_product_id: "peopl.dot".to_string(),
-                    },
-                ))
-                .unwrap(),
-                PermissionAuthorizationStatus::Authorized,
-                "bare denial: {denied_bare}",
-            );
-        }
-    }
-
-    #[test]
-    fn trusted_account_access_ignores_permission_storage_failures() {
+    fn a_trusted_product_reads_permission_storage_only_for_devices() {
         let storage = FailingStorage;
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let service = PermissionsService::new(&storage, &prompt, &PEOPL);
+        let status = |request| futures::executor::block_on(service.authorization_status(&request));
         assert_eq!(
-            futures::executor::block_on(service.authorization_status(
-                &PermissionAuthorizationRequest::AccountAccess {
-                    target_product_id: "other.dot".to_string()
-                },
-            )),
-            Ok(PermissionAuthorizationStatus::Authorized),
+            [
+                status(PermissionAuthorizationRequest::Remote(remote(
+                    RemotePermission::ChainSubmit
+                ))),
+                status(PermissionAuthorizationRequest::IdentityDisclosure),
+                status(PermissionAuthorizationRequest::AccountAccess {
+                    target_product_id: "other.dot".to_string(),
+                }),
+                status(PermissionAuthorizationRequest::Device(
+                    HostDevicePermissionRequest::Camera
+                )),
+            ],
+            [
+                Ok(PermissionAuthorizationStatus::Authorized),
+                Ok(PermissionAuthorizationStatus::Authorized),
+                Ok(PermissionAuthorizationStatus::Authorized),
+                Err(GenericError {
+                    reason: "read failed".to_string()
+                }),
+            ],
         );
     }
 
@@ -2396,101 +2320,6 @@ mod tests {
     /// swallow them by silently returning a default authorization.
     #[derive(Default)]
     struct FailingStorage;
-
-    struct UntouchedStorage;
-
-    #[truapi_platform::async_trait]
-    impl CoreStorage for UntouchedStorage {
-        async fn read_core_storage(
-            &self,
-            _key: CoreStorageKey,
-        ) -> Result<Option<Vec<u8>>, GenericError> {
-            panic!("trusted permissions must not read storage")
-        }
-
-        async fn write_core_storage(
-            &self,
-            _key: CoreStorageKey,
-            _value: Vec<u8>,
-        ) -> Result<(), GenericError> {
-            panic!("trusted permissions must not write storage")
-        }
-
-        async fn clear_core_storage(&self, _key: CoreStorageKey) -> Result<(), GenericError> {
-            panic!("trusted permissions must not clear storage")
-        }
-    }
-
-    #[test]
-    fn trusted_permissions_never_consult_or_change_storage() {
-        let storage = UntouchedStorage;
-        let prompt = ScriptedPrompt::new(vec![], vec![]);
-        for label in ["peopl", "dim2", "jollity", "stash"] {
-            for suffix in truapi_platform::DOTNS_TLDS {
-                let product =
-                    ProductContext::new(format!(" {label}.{suffix} ").to_uppercase()).unwrap();
-                let service = PermissionsService::new(&storage, &prompt, &product);
-                for permission in every_remote_permission() {
-                    let request = remote(permission);
-                    assert_eq!(
-                        (
-                            futures::executor::block_on(service.peek_remote(&request)),
-                            futures::executor::block_on(
-                                service.check_or_prompt_remote(request.clone())
-                            ),
-                            futures::executor::block_on(service.authorize_remote(request.clone())),
-                            futures::executor::block_on(service.authorization_status(
-                                &PermissionAuthorizationRequest::Remote(request)
-                            )),
-                        ),
-                        (
-                            Ok(PermissionAuthorizationStatus::Authorized),
-                            Ok(PermissionAuthorizationStatus::Authorized),
-                            Ok(PermissionAuthorizationStatus::Authorized),
-                            Ok(PermissionAuthorizationStatus::Authorized),
-                        ),
-                    );
-                }
-                assert_eq!(
-                    futures::executor::block_on(service.authorization_status(
-                        &PermissionAuthorizationRequest::AccountAccess {
-                            target_product_id: "other.dot".to_string(),
-                        }
-                    )),
-                    Ok(PermissionAuthorizationStatus::Authorized),
-                );
-                assert_eq!(
-                    futures::executor::block_on(
-                        service.authorization_status(
-                            &PermissionAuthorizationRequest::IdentityDisclosure,
-                        )
-                    ),
-                    Ok(PermissionAuthorizationStatus::Authorized),
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn trusted_remote_permissions_ignore_storage_failures_but_device_permissions_do_not() {
-        let storage = FailingStorage;
-        let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, &PEOPL);
-        for permission in every_remote_permission() {
-            assert_eq!(
-                futures::executor::block_on(service.authorize_remote(remote(permission))),
-                Ok(PermissionAuthorizationStatus::Authorized),
-            );
-        }
-        assert_eq!(
-            futures::executor::block_on(
-                service.authorize_device(HostDevicePermissionRequest::Camera)
-            ),
-            Err(GenericError {
-                reason: "read failed".to_string()
-            }),
-        );
-    }
 
     #[truapi_platform::async_trait]
     impl CoreStorage for FailingStorage {

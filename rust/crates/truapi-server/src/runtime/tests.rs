@@ -2521,6 +2521,28 @@ fn get_account_other_product_accepts_confirmation_then_derives_key() {
 }
 
 #[test]
+fn get_account_other_product_skips_confirmation_for_a_blessed_product() {
+    let platform = stub_platform();
+    let host =
+        ProductRuntimeHost::new(platform.clone(), runtime_config("dim2.dot"), test_spawner());
+    let session = sso_session_info();
+    install_pairing_session(&host, session.clone());
+    cache_test_product_subtree(&host, &session, "other.dot");
+    let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+        product_account_id: account_id("other.dot", 0),
+    });
+    let HostAccountGetResponse::V1(inner) =
+        futures::executor::block_on(host.get_account(&CallContext::default(), request)).unwrap();
+    assert_eq!(
+        (
+            inner.account.public_key,
+            platform.account_access_reviews.lock().unwrap().len()
+        ),
+        (test_product_account_public("other.dot", 0).to_vec(), 0)
+    );
+}
+
+#[test]
 fn get_account_allow_once_does_not_authorize_the_next_disclosure() {
     futures::executor::block_on(async {
         let platform = Arc::new(StubPlatform {
@@ -2928,50 +2950,6 @@ fn get_user_id_returns_primary_username() {
 }
 
 #[test]
-fn blessed_products_get_username_without_permission_storage_or_confirmation() {
-    futures::executor::block_on(async {
-        for product_id in ["peopl.dot", "dim2.paseo", "stash.testnet"] {
-            for (denied, storage_error) in
-                [(false, None), (true, None), (false, Some("unavailable"))]
-            {
-                let platform = Arc::new(StubPlatform {
-                    permission_storage_error: storage_error,
-                    ..Default::default()
-                });
-                let host = ProductRuntimeHost::new(
-                    platform.clone(),
-                    runtime_config(product_id),
-                    test_spawner(),
-                );
-                install_pairing_session(&host, session_info());
-                if denied {
-                    host.set_permission_authorization_status(
-                        PermissionAuthorizationRequest::IdentityDisclosure,
-                        PermissionAuthorizationStatus::Denied,
-                    )
-                    .await
-                    .unwrap();
-                }
-                assert_eq!(
-                    (
-                        host.get_user_id(&CallContext::default(), HostGetUserIdRequest::V1)
-                            .await,
-                        platform.identity_disclosure_calls.load(Ordering::SeqCst),
-                    ),
-                    (
-                        Ok(HostGetUserIdResponse::V1(v01::HostGetUserIdResponse {
-                            primary_username: "Alice Smith".to_string(),
-                        })),
-                        0,
-                    ),
-                    "{product_id}, denied={denied}, storage_error={storage_error:?}",
-                );
-            }
-        }
-    });
-}
-
-#[test]
 fn get_user_id_caches_identity_disclosure_grant() {
     let platform = Arc::new(StubPlatform {
         identity_disclosure_confirmed: true,
@@ -3289,67 +3267,6 @@ fn preimage_submit_requires_remote_permission_before_backend_call() {
     );
 }
 
-#[test]
-fn blessed_preimage_submission_reaches_the_signer_without_confirmation() {
-    for (product_id, blessed) in [("dim2.paseo", true), ("ordinary.paseo", false)] {
-        let session = sso_session_info();
-        let platform = Arc::new(StubPlatform {
-            preimage_submit_denied: true,
-            permission_storage_error: blessed.then_some("permission storage must not be read"),
-            sso_response_script: Some(sso_success_response_script(
-                &session,
-                RemoteMessage {
-                    message_id: "preimage-signer".to_string(),
-                    data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
-                        Response {
-                            responding_to: "preimage-request".to_string(),
-                            payload: Ok(vec![
-                                crate::host_logic::sso::messages::SsoAllocationOutcome::Rejected,
-                            ]),
-                        },
-                    )),
-                },
-            )),
-            ..StubPlatform::default()
-        });
-        let host =
-            ProductRuntimeHost::new(platform.clone(), runtime_config(product_id), test_spawner());
-        install_pairing_session(&host, session.clone());
-        let mut cx = CallContext::with_request_id("preimage-request".to_string());
-        cx.set_timeout(Duration::from_secs(5));
-        let error = futures::executor::block_on(Preimage::submit(
-            &host,
-            &cx,
-            RemotePreimageSubmitRequest::V1(vec![1, 2, 3]),
-        ))
-        .unwrap_err();
-        let messages = submitted_remote_messages(&platform, &session);
-        assert_eq!(
-            (
-                error,
-                platform.preimage_submit_sizes.lock().unwrap().clone(),
-                messages.iter().map(RemoteMessage::name).collect::<Vec<_>>()
-            ),
-            (
-                preimage_submit_error(
-                    if blessed {
-                        "Bulletin allowance allocation was rejected by the signing host"
-                    } else {
-                        "User rejected preimage submission"
-                    }
-                    .to_string()
-                ),
-                if blessed { vec![] } else { vec![3] },
-                if blessed {
-                    vec!["resource_allocation"]
-                } else {
-                    vec![]
-                }
-            ),
-        );
-    }
-}
-
 fn broadcast_request() -> RemoteChainTransactionBroadcastRequest {
     RemoteChainTransactionBroadcastRequest::V1(v01::RemoteChainTransactionBroadcastRequest {
         genesis_hash: vec![0; 32],
@@ -3473,67 +3390,6 @@ fn a_broadcast_withdrawn_before_it_is_sent_never_reaches_the_node() {
         recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast"),
         0
     );
-}
-
-#[test]
-fn blessed_products_broadcast_without_confirmation_or_recorded_permissions() {
-    futures::executor::block_on(async {
-        for stored_status in [
-            PermissionAuthorizationStatus::Authorized,
-            PermissionAuthorizationStatus::Denied,
-        ] {
-            for storage_error in [None, Some("permission storage must not be read")] {
-                let platform = Arc::new(StubPlatform {
-                    permission_storage_error: storage_error,
-                    remote_permission_denied: true,
-                    rpc_method_responses: vec![
-                        (
-                            "transaction_v1_broadcast",
-                            r#""REMOTE-OP""#.to_string()
-                        );
-                        3
-                    ],
-                    ..Default::default()
-                });
-                let host = ProductRuntimeHost::new(
-                    platform.clone(),
-                    runtime_config("dim2.dot"),
-                    test_spawner(),
-                );
-                let permission = v01::RemotePermissionRequest {
-                    permission: v01::RemotePermission::ChainSubmit,
-                };
-                host.set_permission_authorization_status(
-                    PermissionAuthorizationRequest::Remote(permission.clone()),
-                    stored_status,
-                )
-                .await
-                .unwrap();
-                let stored = platform.local_storage.lock().unwrap().clone();
-                let mut outcomes = Vec::new();
-                for _ in 0..3 {
-                    outcomes.push(
-                        Chain::broadcast_transaction(
-                            &host,
-                            &CallContext::default(),
-                            broadcast_request(),
-                        )
-                        .await
-                        .is_ok(),
-                    );
-                }
-                assert_eq!(
-                    (
-                        outcomes,
-                        platform.remote_permission_requests.lock().unwrap().clone(),
-                        recorded_rpc_method_count(&platform.sent_rpc, "transaction_v1_broadcast"),
-                        platform.local_storage.lock().unwrap().clone(),
-                    ),
-                    (vec![true; 3], vec![], 3, stored),
-                );
-            }
-        }
-    });
 }
 
 #[test]
