@@ -5,6 +5,7 @@ import android.os.Build
 import io.paritytech.polkadotapp.common.utils.permissions.PermissionAsker
 import io.paritytech.polkadotapp.common.utils.permissions.PermissionResult
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.GameReminderCenter
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionRepository
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionRequester
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.DeviceCapabilityType
@@ -16,6 +17,7 @@ class DeviceCapabilityPermissionHandler @Inject constructor(
     private val repository: ProductPermissionRepository,
     private val requester: ProductPermissionRequester,
     private val permissionAsker: PermissionAsker,
+    private val gameReminderCenter: GameReminderCenter,
 ) : ProductPermissionHandler<ProductPermission.DeviceCapability> {
     override suspend fun isGranted(productId: ProductId, permission: ProductPermission.DeviceCapability): Boolean {
         return repository.isGranted(productId, permission)
@@ -42,6 +44,7 @@ class DeviceCapabilityPermissionHandler @Inject constructor(
 
     override suspend fun revoke(productId: ProductId, permission: ProductPermission.DeviceCapability) {
         repository.revoke(productId, permission)
+        if (permission.capability == DeviceCapabilityType.Alarm) gameReminderCenter.cancel(productId.value)
     }
 
     suspend fun requestOsPermissionIfNeeded(capability: DeviceCapabilityType): Boolean {

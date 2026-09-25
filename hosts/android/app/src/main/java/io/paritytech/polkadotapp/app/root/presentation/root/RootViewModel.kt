@@ -32,6 +32,7 @@ import io.paritytech.polkadotapp.feature_splash_api.presentation.SplashPassedObs
 import io.paritytech.polkadotapp.feature_sso_impl.domain.SsoService
 import io.paritytech.polkadotapp.feature_statement_store_api.domain.slotAllocator.StatementStoreSlotAllocator
 import io.paritytech.polkadotapp.feature_usernames_api.domain.usecase.ObserveAccountOnboardingStatusUseCase
+import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.GameReminderPillOverlays
 import io.paritytech.polkadotapp.tools_jwt_auth_impl.domain.warmUp.JwtAuthWarmUpService
 import io.paritytech.polkadotapp.tools_remoteconfig_api.RemoteConfigService
 import kotlinx.coroutines.CoroutineScope
@@ -63,12 +64,16 @@ class RootViewModel @Inject constructor(
     private val jwtAuthWarmUpService: JwtAuthWarmUpService,
     chatBotStateController: ChatBotStateController,
     chatEngine: ChatEngine,
+    gameReminderPillOverlays: GameReminderPillOverlays,
     observeAccountOnboardingStatus: ObserveAccountOnboardingStatusUseCase,
     bottomNavHeightProvider: BottomNavHeightProvider,
     chainHealthMixinFactory: ChainHealthMixin.Factory,
     coroutineDispatchers: CoroutineDispatchers,
 ) : BaseViewModel(), RootContract {
-    override val chatOverlays = chatEngine.observeActiveOverlays()
+    override val chatOverlays = combine(
+        chatEngine.observeActiveOverlays(),
+        gameReminderPillOverlays.overlays,
+    ) { chat, gameReminders -> chat + gameReminders }
     override val isOnboarded = observeAccountOnboardingStatus().map { it.isOnboarded }
     override val bottomNavHeight = bottomNavHeightProvider.heightDp
     override val chainsHealth = chainHealthMixinFactory.create(this).model

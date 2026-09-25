@@ -44,6 +44,14 @@ enum class PolkadotNotificationChannel(
         vibrationPattern = longArrayOf(0, 200, 150, 200)
     ),
 
+    PRODUCT_GAME_ALARM(
+        id = "product_game_alarms",
+        nameRes = RCommon.string.notification_channel_name_product_game_alarm,
+        descriptionRes = RCommon.string.notification_channel_description_product_game_alarm,
+        importance = NotificationManagerCompat.IMPORTANCE_MAX,
+        vibrationPattern = longArrayOf(0, 200, 150, 200)
+    ),
+
     TATTOO_BOT(
         id = "tattoo_bot_notifications",
         nameRes = RCommon.string.notification_channel_name_tattoo_bot,

@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -36,6 +37,7 @@ internal fun GamePillBar(
     state: VideoGamePillState.Shown,
     showChevron: Boolean,
     onClick: (() -> Unit)?,
+    @StringRes labelRes: Int = pillLabelRes(state),
 ) {
     PolkadotSurface(
         modifier = modifier,
@@ -56,7 +58,7 @@ internal fun GamePillBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             NovaText(
-                text = stringResource(pillLabelRes(state)).uppercase(),
+                text = stringResource(labelRes).uppercase(),
                 style = NovaGameTypography.pillText,
                 color = LegacyNovaStableColors.AmberAmber500,
             )

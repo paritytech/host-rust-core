@@ -23,6 +23,7 @@ import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.Ac
 import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.MembersRingLocator
 import io.paritytech.polkadotapp.feature_products_api.domain.browser.ProductSessionController
 import io.paritytech.polkadotapp.feature_products_api.domain.deriveEntropy.DeriveEntropyUseCase
+import io.paritytech.polkadotapp.feature_products_api.domain.gameReminders.GameReminderPills
 import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCollection
 import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketFaceSource
 import io.paritytech.polkadotapp.feature_products_api.domain.product.ProductContentWarmUp
@@ -72,6 +73,14 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.exploreProducts.Ex
 import io.paritytech.polkadotapp.feature_products_impl.domain.exploreProducts.RealExploreProductsService
 import io.paritytech.polkadotapp.feature_products_impl.domain.funding.FundingProductsWarmUp
 import io.paritytech.polkadotapp.feature_products_impl.domain.funding.RealFundingProductsWarmUp
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.GameReminderAlarms
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.GameReminderCenter
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.GameReminderOpener
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.GameReminderStore
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.RealGameReminderAlarms
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.RealGameReminderCenter
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.RealGameReminderPills
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.RealGameReminderStore
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.allowance.AllowanceKeyStorage
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.allowance.RealAllowanceKeyStorage
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.sponsoring.RealStatementStoreSubmissionSponsoring
@@ -134,8 +143,10 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWork
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.RealProductWorkerRefCounter
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.RealWorkerBootFactory
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.WorkerBootFactory
+import io.paritytech.polkadotapp.feature_products_impl.presentation.deeplink.GameReminderDeepLinkHandler
 import io.paritytech.polkadotapp.feature_products_impl.presentation.deeplink.PocketDeepLinkHandler
 import io.paritytech.polkadotapp.feature_products_impl.presentation.deeplink.PocketScanContentParser
+import io.paritytech.polkadotapp.feature_products_impl.presentation.initialization.GameReminderRestoreInitializer
 import io.paritytech.polkadotapp.feature_products_impl.presentation.initialization.ProductWorkerInitializer
 import io.paritytech.polkadotapp.feature_products_impl.presentation.initialization.TopUpResumeInitializer
 import io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductsRouter
@@ -354,6 +365,31 @@ internal interface ProductsModule {
     @Binds
     @Singleton
     fun bindProductNotificationScheduler(impl: RealProductNotificationScheduler): ProductNotificationScheduler
+
+    @Binds
+    fun bindGameReminderStore(impl: RealGameReminderStore): GameReminderStore
+
+    @Binds
+    fun bindGameReminderAlarms(impl: RealGameReminderAlarms): GameReminderAlarms
+
+    @Binds
+    @Singleton
+    fun bindGameReminderCenter(impl: RealGameReminderCenter): GameReminderCenter
+
+    @Binds
+    fun bindGameReminderPills(impl: RealGameReminderPills): GameReminderPills
+
+    @Binds
+    @IntoSet
+    fun bindGameReminderRestoreInitializer(impl: GameReminderRestoreInitializer): AppInitializer
+
+    @Binds
+    @IntoSet
+    fun bindGameReminderOpener(impl: GameReminderOpener): AppInitializer
+
+    @Binds
+    @IntoSet
+    fun bindGameReminderDeepLinkHandler(impl: GameReminderDeepLinkHandler): DeepLinkHandler
 
     @Binds
     fun bindProductRequestAccountResolver(impl: RealProductRequestAccountResolver): ProductRequestAccountResolver

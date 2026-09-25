@@ -22,6 +22,7 @@ import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsUtils
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_api.model.toUri
 import io.paritytech.polkadotapp.feature_products_impl.di.TrUAPIChainHttpClient
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.GameReminderCenter
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.HostApiInteractor
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.ProductTheme
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.ThemeVariant
@@ -76,6 +77,7 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
     private val appLifecycleObserver: AppLifecycleObserver,
     private val dotNsTldProvider: DotNsTldProvider,
     private val pocketCardStore: PocketCardStore,
+    private val gameReminderCenter: GameReminderCenter,
     @Assisted private val scope: CoroutineScope,
 ) {
     @AssistedFactory
@@ -251,6 +253,7 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
                 bridge = buildBridge(productId, navigationPolicy),
                 configuration = ProductExecutionConfig(productId.value, kind),
                 pocket = pocket,
+                game = ProductGameHostBridge(productId, gameReminderCenter, scope),
             )
             execution = opened
             pocketBridge = pocket

@@ -2,6 +2,7 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.product
 
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.data.repository.ProductRepository
+import io.paritytech.polkadotapp.feature_products_impl.domain.gameReminders.GameReminderCenter
 import io.paritytech.polkadotapp.feature_products_impl.domain.notifications.ProductNotificationScheduler
 import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.runBlocking
@@ -16,7 +17,8 @@ import org.mockito.Mockito.verify
 class UninstallProductUseCaseTest {
     private val productRepository: ProductRepository = mock()
     private val scheduler: ProductNotificationScheduler = mock()
-    private val useCase = UninstallProductUseCase(productRepository, scheduler)
+    private val gameReminderCenter: GameReminderCenter = mock()
+    private val useCase = UninstallProductUseCase(productRepository, scheduler, gameReminderCenter)
 
     private val productId = ProductId.fromStoredValue("acme.dot")
 
@@ -28,6 +30,15 @@ class UninstallProductUseCaseTest {
 
         assertTrue(result.isSuccess)
         assertProductDeletedAfterAlarmsCancelled()
+    }
+
+    @Test
+    fun `cancels the game reminder before deleting product`() = runBlocking<Unit> {
+        givenSchedulerCancelsSuccessfully()
+
+        uninstallProduct()
+
+        assertProductDeletedAfterGameReminderCancelled()
     }
 
     @Test
@@ -55,6 +66,12 @@ class UninstallProductUseCaseTest {
     private suspend fun assertProductDeletedAfterAlarmsCancelled() {
         val order = inOrder(scheduler, productRepository)
         order.verify(scheduler).cancelAllForProduct(productId)
+        order.verify(productRepository).deleteProduct(productId)
+    }
+
+    private suspend fun assertProductDeletedAfterGameReminderCancelled() {
+        val order = inOrder(gameReminderCenter, productRepository)
+        order.verify(gameReminderCenter).cancel(productId.value)
         order.verify(productRepository).deleteProduct(productId)
     }
 

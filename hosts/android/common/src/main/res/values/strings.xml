@@ -523,6 +523,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
 
     <string name="video_game_play_waiting_room_countdown">Game starts %s</string>
     <string name="video_game_pill_waiting_countdown_label">Game starting in</string>
+    <string name="game_reminder_pill_label">Game starts in</string>
     <string name="video_game_connection_game_starting_in">Game starting in %1$d</string>
     <string name="video_game_connection_connected">Connected</string>
     <string name="video_game_connection_connecting">Connecting</string>
@@ -1385,6 +1386,8 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
 
     <string name="notification_channel_name_products">Products</string>
     <string name="notification_channel_description_products">Notifications from products</string>
+    <string name="notification_channel_name_product_game_alarm">Game alarms</string>
+    <string name="notification_channel_description_product_game_alarm">Urgent alarms when a game is about to start</string>
 
     <string name="chat_bot_weekly_game_add_to_calendar_action_added">Added to calendar</string>
 
