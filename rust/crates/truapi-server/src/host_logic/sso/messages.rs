@@ -26,8 +26,8 @@ use parity_scale_codec::{Decode, Encode};
 use truapi::latest::{
     AccountId, AllocatableResource, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
     HostAccountSignVrfError, HostSignPayloadRequest, HostSignPayloadResponse, HostSignRawRequest,
-    LegacyAccountTxPayload, ProductAccountTxPayload, RawPayload, RegisteredRingVrfKey,
-    VrfSignature,
+    LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload, RawPayload,
+    RegisteredRingVrfKey, TxPayloadExtension, VrfSignature,
 };
 
 use crate::host_logic::session::SsoSessionInfo;
@@ -317,7 +317,53 @@ pub struct CreateTransactionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum CreateTransactionPayload {
     /// Version 1 product-account payload.
-    V1(ProductAccountTxPayload),
+    V1(SsoProductTxPayload),
+}
+
+/// A product-account transaction as it crosses to the signing host.
+///
+/// [`ProductAccountTxPayload`] without `contacts`: the pairing host swaps every
+/// declared handle for its account before relaying, so the signing host has no
+/// handle to resolve, and the wire stays the shape host-papp and existing
+/// wallets encode.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct SsoProductTxPayload {
+    /// Product account that signs.
+    pub signer: ProductAccountId,
+    /// Chain the transaction is for.
+    pub genesis_hash: [u8; 32],
+    /// SCALE-encoded call, contacts already substituted.
+    pub call_data: Vec<u8>,
+    /// Extensions the caller supplied.
+    pub extensions: Vec<TxPayloadExtension>,
+    /// Transaction extension version.
+    pub tx_ext_version: u8,
+}
+
+impl SsoProductTxPayload {
+    /// The relayed form of a payload whose contacts are already substituted.
+    pub fn from_resolved(payload: ProductAccountTxPayload) -> Self {
+        Self {
+            signer: payload.signer,
+            genesis_hash: payload.genesis_hash,
+            call_data: payload.call_data,
+            extensions: payload.extensions,
+            tx_ext_version: payload.tx_ext_version,
+        }
+    }
+
+    /// The payload the signing host reviews and signs. Its contacts were
+    /// resolved on the pairing host, so none are left to substitute.
+    pub fn into_product_payload(self) -> ProductAccountTxPayload {
+        ProductAccountTxPayload {
+            signer: self.signer,
+            genesis_hash: self.genesis_hash,
+            call_data: self.call_data,
+            extensions: self.extensions,
+            tx_ext_version: self.tx_ext_version,
+            contacts: Vec::new(),
+        }
+    }
 }
 
 /// Request sent when a product asks the signing host to create a transaction
@@ -596,11 +642,10 @@ mod tests {
     };
     use crate::test_support::sso_host_and_responder_sessions;
     use schnorrkel::{ExpansionMode, MiniSecretKey};
+    use truapi::latest::HostSignPayloadData;
     use truapi::latest::{
-        DerivationIndex, HostAccountSignVrfRequest, ProductAccountId, ProductProofContext,
-        RingLocation,
+        DerivationIndex, HostAccountSignVrfRequest, ProductAccountId, RingLocation,
     };
-    use truapi::latest::{HostSignPayloadData, TxPayloadExtension};
     use truapi::v01::RingLocationJunction;
     use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -826,9 +871,13 @@ mod tests {
         }
     }
 
+    fn sequential_bytes<const N: usize>(start: u8) -> [u8; N] {
+        std::array::from_fn(|index| start.wrapping_add(index as u8))
+    }
+
     #[test]
     fn ring_vrf_messages_wire_shape_pin() {
-        let context = ProductProofContext {
+        let context = truapi::latest::ProductProofContext {
             product_id: "voting.dot".to_string(),
             suffix: DerivationIndex::Index(0),
         };
@@ -868,18 +917,18 @@ mod tests {
             },
         );
 
-        assert_host_papp_0_8_11_fixture(
+        assert_host_papp_fixture(
             alias,
             "0x1c6d2d616c69617300032863616c6c65722e646f742470656f706c2e646f74000000000028766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f70",
         );
-        assert_host_papp_0_8_11_fixture(
+        assert_host_papp_fixture(
             proof,
             "0x1c6d2d70726f6f66000c2863616c6c65722e646f742470656f706c2e646f74000000000028766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f7010766f7465",
         );
     }
 
     #[test]
-    fn ring_vrf_response_messages_match_host_papp_0_8_11_fixtures() {
+    fn ring_vrf_response_messages_match_host_papp_fixtures() {
         let contextual_alias = HostAccountGetAliasResponse {
             context: [0x22; 32],
             alias: vec![0x33, 0x44],
@@ -904,24 +953,160 @@ mod tests {
             })),
         };
 
-        assert_host_papp_0_8_11_fixture(
+        assert_host_papp_fixture(
             alias_response,
             "0x1c722d616c69617300041c6d2d616c696173002222222222222222222222222222222222222222222222222222222222222222083344",
         );
-        assert_host_papp_0_8_11_fixture(
+        assert_host_papp_fixture(
             proof_response,
             "0x1c722d70726f6f66000d1c6d2d70726f6f660008556622222222222222222222222222222222222222222222222222222222222222220833440700000009000000",
         );
     }
 
-    fn sequential_bytes<const N: usize>(start: u8) -> [u8; N] {
-        std::array::from_fn(|index| start.wrapping_add(index as u8))
+    /// Pin `message` to the bytes host-papp encodes for it, both ways: the core
+    /// encodes exactly those bytes, and decodes them back to the same message.
+    /// A pairing host on host-papp and a wallet on this core must agree on
+    /// every byte, since the SSO decoder rejects short and trailing input.
+    ///
+    /// The fixtures come from `@novasamatech/host-papp` 0.12.0's own codec,
+    /// generated with `scripts/host-papp-fixtures.ts`.
+    fn assert_host_papp_fixture(message: RemoteMessage, expected: &str) {
+        let expected = expected.trim_start_matches("0x");
+        assert_eq!(hex::encode(message.encode()), expected);
+        assert_eq!(
+            decode_remote_message(&hex::decode(expected).expect("fixture is hex")),
+            Ok(message)
+        );
     }
 
-    fn assert_host_papp_0_8_11_fixture(message: RemoteMessage, expected: &str) {
-        assert_eq!(
-            hex::encode(message.encode()),
-            expected.trim_start_matches("0x")
+    #[test]
+    fn resource_allocation_message_wire_shape_pin() {
+        let message = RemoteMessage::request(
+            "m-resource".to_string(),
+            ResourceAllocationRequest {
+                calling_product_id: "truapi-playground.dot".to_string(),
+                resources: vec![
+                    AllocatableResource::StatementStoreAllowance,
+                    AllocatableResource::BulletinAllowance,
+                    AllocatableResource::SmartContractAllowance(DerivationIndex::Index(9)),
+                    AllocatableResource::AutoSigning,
+                ],
+                on_existing: OnExistingAllowancePolicy::Increase,
+            },
+        );
+
+        assert_host_papp_fixture(
+            message,
+            "0x286d2d7265736f757263650005547472756170692d706c617967726f756e642e646f741000010200090000000301",
+        );
+    }
+
+    #[test]
+    fn create_transaction_message_wire_shape_pin() {
+        let message = RemoteMessage::request(
+            "m-product-tx".to_string(),
+            CreateTransactionRequest {
+                payload: CreateTransactionPayload::V1(SsoProductTxPayload {
+                    signer: ProductAccountId {
+                        dot_ns_identifier: "truapi-playground.dot".to_string(),
+                        derivation_index: DerivationIndex::Index(0),
+                    },
+                    genesis_hash: sequential_bytes(32),
+                    call_data: vec![0, 0],
+                    extensions: vec![TxPayloadExtension {
+                        id: "CheckNonce".to_string(),
+                        extra: vec![1],
+                        additional_signed: vec![2, 3],
+                    }],
+                    tx_ext_version: 0,
+                }),
+            },
+        );
+
+        assert_host_papp_fixture(
+            message,
+            "0x306d2d70726f647563742d7478000700547472756170692d706c617967726f756e642e646f740000000000202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0800000428436865636b4e6f6e6365040108020300",
+        );
+    }
+
+    #[test]
+    fn playground_create_transaction_message_wire_shape_pin() {
+        let message = RemoteMessage::request(
+            "create-transaction-1".to_string(),
+            CreateTransactionRequest {
+                payload: CreateTransactionPayload::V1(SsoProductTxPayload {
+                    signer: ProductAccountId {
+                        dot_ns_identifier: "truapi-playground.dot".to_string(),
+                        derivation_index: DerivationIndex::Index(0),
+                    },
+                    genesis_hash: [
+                        0xbf, 0x04, 0x88, 0xdb, 0xe9, 0xda, 0xa1, 0xde, 0x1c, 0x08, 0xc5, 0xf7,
+                        0x43, 0xe2, 0x6f, 0xdc, 0x2a, 0x4e, 0xcd, 0x74, 0xcf, 0x87, 0xdd, 0x1b,
+                        0x4b, 0x1e, 0xeb, 0x99, 0xae, 0x4e, 0xf1, 0x9f,
+                    ],
+                    call_data: vec![0, 0],
+                    extensions: vec![],
+                    tx_ext_version: 0,
+                }),
+            },
+        );
+
+        assert_host_papp_fixture(
+            message,
+            "0x506372656174652d7472616e73616374696f6e2d31000700547472756170692d706c617967726f756e642e646f740000000000bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f0800000000",
+        );
+    }
+
+    #[test]
+    fn create_transaction_legacy_message_matches_host_papp_fixture() {
+        let message = RemoteMessage::request(
+            "m-legacy-tx".to_string(),
+            CreateTransactionWithLegacyAccountRequest {
+                payload: CreateTransactionLegacyPayload::V1(LegacyAccountTxPayload {
+                    signer: sequential_bytes(0),
+                    genesis_hash: sequential_bytes(32),
+                    call_data: vec![0, 0],
+                    extensions: vec![TxPayloadExtension {
+                        id: "CheckNonce".to_string(),
+                        extra: vec![1],
+                        additional_signed: vec![2, 3],
+                    }],
+                    tx_ext_version: 0,
+                }),
+            },
+        );
+
+        assert_host_papp_fixture(
+            message,
+            "0x2c6d2d6c65676163792d7478000900000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0800000428436865636b4e6f6e6365040108020300",
+        );
+    }
+
+    #[test]
+    fn sign_raw_legacy_messages_match_host_papp_fixtures() {
+        assert_host_papp_fixture(
+            RemoteMessage::request(
+                "m-legacy-raw".to_string(),
+                SignRawWithLegacyAccountRequest {
+                    account: sequential_bytes(0),
+                    data: RawPayload::Bytes {
+                        bytes: b"Hi".to_vec(),
+                    },
+                },
+            ),
+            "0x306d2d6c65676163792d726177000a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00084869",
+        );
+        assert_host_papp_fixture(
+            RemoteMessage::request(
+                "m-legacy-raw-payload".to_string(),
+                SignRawWithLegacyAccountRequest {
+                    account: sequential_bytes(0),
+                    data: RawPayload::Payload {
+                        payload: "<Bytes>Hi</Bytes>".to_string(),
+                    },
+                },
+            ),
+            "0x506d2d6c65676163792d7261772d7061796c6f6164000a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f01443c42797465733e48693c2f42797465733e",
         );
     }
 
@@ -1117,137 +1302,6 @@ mod tests {
                 .encode()
                 .windows(auto_signing_secret.len())
                 .any(|bytes| bytes == &auto_signing_secret[..])
-        );
-    }
-
-    #[test]
-    fn resource_allocation_message_wire_shape_pin() {
-        let message = RemoteMessage::request(
-            "m-resource".to_string(),
-            ResourceAllocationRequest {
-                calling_product_id: "truapi-playground.dot".to_string(),
-                resources: vec![
-                    AllocatableResource::StatementStoreAllowance,
-                    AllocatableResource::BulletinAllowance,
-                    AllocatableResource::SmartContractAllowance(DerivationIndex::Index(9)),
-                    AllocatableResource::AutoSigning,
-                ],
-                on_existing: OnExistingAllowancePolicy::Increase,
-            },
-        );
-
-        assert_host_papp_0_8_11_fixture(
-            message,
-            "0x286d2d7265736f757263650005547472756170692d706c617967726f756e642e646f741000010200090000000301",
-        );
-    }
-
-    #[test]
-    fn create_transaction_message_wire_shape_pin() {
-        let message = RemoteMessage::request(
-            "m-product-tx".to_string(),
-            CreateTransactionRequest {
-                payload: CreateTransactionPayload::V1(ProductAccountTxPayload {
-                    signer: ProductAccountId {
-                        dot_ns_identifier: "truapi-playground.dot".to_string(),
-                        derivation_index: DerivationIndex::Index(0),
-                    },
-                    genesis_hash: sequential_bytes(32),
-                    call_data: vec![0, 0],
-                    extensions: vec![TxPayloadExtension {
-                        id: "CheckNonce".to_string(),
-                        extra: vec![1],
-                        additional_signed: vec![2, 3],
-                    }],
-                    tx_ext_version: 0,
-                }),
-            },
-        );
-
-        assert_host_papp_0_8_11_fixture(
-            message,
-            "0x306d2d70726f647563742d7478000700547472756170692d706c617967726f756e642e646f740000000000202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0800000428436865636b4e6f6e6365040108020300",
-        );
-    }
-
-    #[test]
-    fn playground_create_transaction_message_wire_shape_pin() {
-        let message = RemoteMessage::request(
-            "create-transaction-1".to_string(),
-            CreateTransactionRequest {
-                payload: CreateTransactionPayload::V1(ProductAccountTxPayload {
-                    signer: ProductAccountId {
-                        dot_ns_identifier: "truapi-playground.dot".to_string(),
-                        derivation_index: DerivationIndex::Index(0),
-                    },
-                    genesis_hash: [
-                        0xbf, 0x04, 0x88, 0xdb, 0xe9, 0xda, 0xa1, 0xde, 0x1c, 0x08, 0xc5, 0xf7,
-                        0x43, 0xe2, 0x6f, 0xdc, 0x2a, 0x4e, 0xcd, 0x74, 0xcf, 0x87, 0xdd, 0x1b,
-                        0x4b, 0x1e, 0xeb, 0x99, 0xae, 0x4e, 0xf1, 0x9f,
-                    ],
-                    call_data: vec![0, 0],
-                    extensions: vec![],
-                    tx_ext_version: 0,
-                }),
-            },
-        );
-
-        assert_host_papp_0_8_11_fixture(
-            message,
-            "0x506372656174652d7472616e73616374696f6e2d31000700547472756170692d706c617967726f756e642e646f740000000000bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f0800000000",
-        );
-    }
-
-    #[test]
-    fn create_transaction_legacy_message_matches_host_papp_0_8_11_fixture() {
-        let message = RemoteMessage::request(
-            "m-legacy-tx".to_string(),
-            CreateTransactionWithLegacyAccountRequest {
-                payload: CreateTransactionLegacyPayload::V1(LegacyAccountTxPayload {
-                    signer: sequential_bytes(0),
-                    genesis_hash: sequential_bytes(32),
-                    call_data: vec![0, 0],
-                    extensions: vec![TxPayloadExtension {
-                        id: "CheckNonce".to_string(),
-                        extra: vec![1],
-                        additional_signed: vec![2, 3],
-                    }],
-                    tx_ext_version: 0,
-                }),
-            },
-        );
-
-        assert_host_papp_0_8_11_fixture(
-            message,
-            "0x2c6d2d6c65676163792d7478000900000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0800000428436865636b4e6f6e6365040108020300",
-        );
-    }
-
-    #[test]
-    fn sign_raw_legacy_messages_match_host_papp_0_8_11_fixtures() {
-        assert_host_papp_0_8_11_fixture(
-            RemoteMessage::request(
-                "m-legacy-raw".to_string(),
-                SignRawWithLegacyAccountRequest {
-                    account: sequential_bytes(0),
-                    data: RawPayload::Bytes {
-                        bytes: b"Hi".to_vec(),
-                    },
-                },
-            ),
-            "0x306d2d6c65676163792d726177000a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00084869",
-        );
-        assert_host_papp_0_8_11_fixture(
-            RemoteMessage::request(
-                "m-legacy-raw-payload".to_string(),
-                SignRawWithLegacyAccountRequest {
-                    account: sequential_bytes(0),
-                    data: RawPayload::Payload {
-                        payload: "<Bytes>Hi</Bytes>".to_string(),
-                    },
-                },
-            ),
-            "0x506d2d6c65676163792d7261772d7061796c6f6164000a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f01443c42797465733e48693c2f42797465733e",
         );
     }
 

@@ -10,6 +10,11 @@
 //! wallet and the pairing-host entry points are inert. It does answer other
 //! devices pairing with it: the signing host's responder side is exposed here,
 //! from the handshake answer through serving and ending the session.
+//!
+//! Contacts install once on the runtime rather than per execution, because the
+//! book belongs to the host and not to any product: see
+//! [`NativeTrUApiHostRuntime::set_contacts_callbacks`]. A host that installs
+//! none leaves `contacts.pick` answering `Unsupported`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -845,6 +850,101 @@ pub enum NativePocketRemoval {
     Privileged,
 }
 
+/// Native contacts adapter. A host with a contact list and a picker passes an
+/// implementation to [`NativeTrUApiHostRuntime::set_contacts_callbacks`]; one
+/// without leaves `contacts.pick` answering `Unsupported`.
+///
+/// The lookup runs inline, because it is a store read the host already has in
+/// hand. Presenting the picker is async, because it is the user.
+///
+/// Nothing here reaches a product, and the list never reaches the core: it asks
+/// only about the handles a transaction names, and the picker returns the one
+/// person the user chose.
+#[uniffi::export(rust, foreign)]
+#[async_trait::async_trait]
+pub trait NativeContactsCallbacks: Send + Sync {
+    /// Resolve `lookup.handles` to the contacts they name: one entry per
+    /// handle, in order, `None` where no current, unblocked contact hashes to
+    /// it. See [`truapi_platform::HostContactLookup`] for the hash.
+    fn contacts(
+        &self,
+        lookup: truapi_platform::HostContactLookup,
+    ) -> Result<truapi_platform::HostContactMatches, HostRejection>;
+
+    /// Present the picker on behalf of `product_id` and report what the user
+    /// did. A host with no contacts answers [`NativeContactPick::NoContacts`]
+    /// instead of drawing an empty overlay.
+    async fn pick_contact(&self, product_id: String) -> Result<NativeContactPick, HostRejection>;
+}
+
+/// How a native host's picker ended.
+///
+/// Mirrors [`truapi_platform::HostContactPick`] because UniFFI cannot lower a
+/// record from another crate out of an async callback return.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum NativeContactPick {
+    /// The user chose this account, as 32 bytes.
+    Picked {
+        /// The chosen contact's account.
+        account: Vec<u8>,
+    },
+    /// The user closed the picker without choosing.
+    Dismissed,
+    /// The user has no contacts, so the host drew nothing.
+    NoContacts,
+    /// This host resolves contacts but cannot present a picker.
+    Unsupported,
+}
+
+/// [`truapi_platform::ContactsPlatform`] served by host-provided
+/// [`NativeContactsCallbacks`]; constructed only when the host passed one.
+struct ContactsCallbackPlatform {
+    contacts: Arc<dyn NativeContactsCallbacks>,
+}
+
+#[async_trait]
+impl truapi_platform::ContactsPlatform for ContactsCallbackPlatform {
+    async fn contacts(
+        &self,
+        lookup: &truapi_platform::HostContactLookup,
+    ) -> Result<truapi_platform::HostContactMatches, v01::GenericError> {
+        self.contacts
+            .contacts(lookup.clone())
+            .map_err(|error| v01::GenericError {
+                reason: error.to_string(),
+            })
+    }
+
+    async fn pick_contact(
+        &self,
+        product: &ProductContext,
+    ) -> Result<truapi_platform::HostContactPick, v01::GenericError> {
+        let picked = self
+            .contacts
+            .pick_contact(product.product_id.clone())
+            .await
+            .map_err(|error| v01::GenericError {
+                reason: error.to_string(),
+            })?;
+        Ok(match picked {
+            NativeContactPick::Dismissed => truapi_platform::HostContactPick::Dismissed,
+            NativeContactPick::NoContacts => truapi_platform::HostContactPick::NoContacts,
+            NativeContactPick::Unsupported => truapi_platform::HostContactPick::Unsupported,
+            NativeContactPick::Picked { account } => {
+                // An account that is not 32 bytes names nobody, and minting a
+                // handle from it would hand the product a durable id for a
+                // person who does not exist.
+                let Ok(account) = <[u8; 32]>::try_from(account.as_slice()) else {
+                    return Err(v01::GenericError {
+                        reason: "picked account must be 32 bytes".to_string(),
+                    });
+                };
+                truapi_platform::HostContactPick::Picked { account }
+            }
+        })
+    }
+}
+
 /// Process-owned native TrUAPI runtime shared by all executable connections.
 #[derive(uniffi::Object)]
 pub struct NativeTrUApiHostRuntime {
@@ -1158,6 +1258,26 @@ impl NativeTrUApiHostRuntime {
             "truapi.native.host_runtime.boot",
             "host runtime ready",
         )
+    }
+
+    /// Install the host's contacts adapter, which owns the contact list and
+    /// draws the picker.
+    ///
+    /// Set-once, so the picker cannot change hands under a running product.
+    /// Answers whether this call installed it. Call it before opening any
+    /// product execution; a runtime without one answers `contacts.pick` with
+    /// `Unsupported`.
+    pub fn set_contacts_callbacks(&self, callbacks: Arc<dyn NativeContactsCallbacks>) -> bool {
+        self.runtime
+            .set_contacts_platform(Arc::new(ContactsCallbackPlatform {
+                contacts: callbacks,
+            }))
+    }
+
+    /// Tell the core the host's contacts changed. Call it whenever a contact
+    /// is removed or blocked, so a handle the core cached stops resolving.
+    pub fn notify_contacts_changed(&self) {
+        self.runtime.notify_contacts_changed();
     }
 
     /// Open a connection-scoped execution with immutable trusted context.
