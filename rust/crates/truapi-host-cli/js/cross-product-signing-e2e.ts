@@ -35,6 +35,15 @@
 //                   from trustedProducts: refused.
 //   sign-again      dim2.paseo signs once more, so a refusal above cannot be
 //                   the grant having gone.
+//
+// Both the granted and the untrusted phase run every surface
+// paritytech/platform-issues#20 names, not just the one the deep assertion
+// uses: `sign_raw`, `sign_payload`, `create_transaction` and the
+// statement-store product proof. The bug that issue reports is a granted
+// caller being told `PermissionDenied`, so each surface is checked for exactly
+// that, in both directions. A surface can still fail for its own reasons here
+// (no chain, a payload the host will not build); what may not happen is the
+// refusal.
 
 export {};
 
@@ -82,6 +91,103 @@ async function signWith(account: typeof OWNER_HANDLE) {
     account,
     payload: { tag: "Bytes", value: { bytes: MESSAGE } },
   });
+}
+
+/// A fixed genesis, so the gate is reached without resolving a chain. The gate
+/// answers before any chain work, which is what lets these run offline.
+const GENESIS =
+  "0x91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3";
+
+/// A statement a day out, so it is unexpired wherever it is checked.
+function statement() {
+  const expiry = BigInt(Math.floor(Date.now() / 1000) + 86400) << 32n;
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return { expiry, topics: [`0x${bytes.toHex()}` as `0x${string}`] };
+}
+
+/// Every surface paritytech/platform-issues#20 names, each naming `account`.
+///
+/// `refusal` differs on the statement-store surface: its error enum carries no
+/// `PermissionDenied`, and answers `UnknownAccount` both for an account this
+/// caller may not use and for one that does not exist, which is the same
+/// indistinguishability the other three get from `PermissionDenied`.
+const SURFACES: {
+  name: string;
+  refusal: string;
+  call: (account: typeof OWNER_HANDLE) => Promise<{ isOk(): boolean; error?: unknown }>;
+}[] = [
+  {
+    name: "signRaw",
+    refusal: REFUSAL,
+    call: (account) => signWith(account),
+  },
+  {
+    name: "signPayload",
+    refusal: REFUSAL,
+    call: (account) =>
+      truapi.signing.signPayload({
+        account,
+        payload: {
+          blockHash: GENESIS,
+          blockNumber: "0x00000000",
+          era: "0x00",
+          genesisHash: GENESIS,
+          method: "0x00003448656c6c6f2c20776f726c6421",
+          nonce: "0x00000000",
+          signedExtensions: [],
+          specVersion: "0x00000000",
+          tip: "0x00000000000000000000000000000000",
+          transactionVersion: "0x00000000",
+          version: 4,
+        },
+      }),
+  },
+  {
+    name: "createTransaction",
+    refusal: REFUSAL,
+    call: (account) =>
+      truapi.signing.createTransaction({
+        signer: account,
+        genesisHash: GENESIS,
+        callData: "0x000000",
+        extensions: [],
+        txExtVersion: 0,
+      }),
+  },
+  {
+    name: "statementStoreCreateProof",
+    refusal: "UnknownAccount",
+    call: (account) =>
+      truapi.statementStore.createProof({
+        productAccountId: account,
+        statement: statement(),
+      }),
+  },
+];
+
+/// Run every surface against `OWNER`'s account and require that the grant is
+/// the thing that decides, in whichever direction this phase expects.
+async function checkEverySurface(refused: boolean): Promise<void> {
+  for (const surface of SURFACES) {
+    const result = await surface.call(OWNER_HANDLE);
+    const tag = result.isOk() ? null : refusalTag(result.error);
+    if (refused) {
+      if (tag !== surface.refusal) {
+        throw new Error(
+          `${host.productId} -> ${OWNER} ${surface.name}: expected ${surface.refusal}, got ${result.isOk() ? "a success" : stringify(result.error)}`,
+        );
+      }
+      continue;
+    }
+    if (tag === surface.refusal) {
+      // The bug platform-issues#20 reports: an authorized caller refused.
+      throw new Error(
+        `${host.productId} was granted ${OWNER} context but ${surface.name} answered ${surface.refusal}`,
+      );
+    }
+  }
+  const verb = refused ? "refused" : "admitted";
+  console.log(`${verb} on every surface: ${SURFACES.map((s) => s.name).join(", ")}`);
 }
 
 /// The public key behind a handle, as this product is allowed to see it.
@@ -185,7 +291,12 @@ switch (phase) {
     console.log(`signed as ${OWNER}: ${ownerKey.slice(0, 18)}`);
     break;
   }
-  case "sign-granted":
+  case "sign-granted": {
+    expectProduct(GRANTED);
+    await expectGrantedSignature();
+    await checkEverySurface(false);
+    break;
+  }
   case "sign-again": {
     expectProduct(GRANTED);
     await expectGrantedSignature();
@@ -194,6 +305,7 @@ switch (phase) {
   case "sign-untrusted": {
     expectProduct(UNTRUSTED);
     await expectRefused();
+    await checkEverySurface(true);
     break;
   }
   default:
