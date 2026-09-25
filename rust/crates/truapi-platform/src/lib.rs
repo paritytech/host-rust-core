@@ -361,6 +361,25 @@ pub fn normalizes_to_trusted_remote_permissions(product_id: &str) -> bool {
         .is_ok_and(|normalized| has_trusted_remote_permissions(&normalized))
 }
 
+/// The label a development product identifier is served under.
+const LOCALHOST_PRODUCT_LABEL: &str = "localhost";
+
+/// Whether `product_id` is a development localhost product identifier.
+///
+/// Exactly `localhost`, or `localhost:` followed by a port and nothing else.
+/// Hosts grant these a development wildcard, so the match is the whole
+/// identifier: a prefix test would also admit `localhost:8080.evil`, and a
+/// label test would admit a published `localhost.<tld>`, which
+/// [`normalize_product_identifier`] rejects for the same reason.
+pub fn is_localhost_product_identifier(product_id: &str) -> bool {
+    if product_id == LOCALHOST_PRODUCT_LABEL {
+        return true;
+    }
+    product_id
+        .strip_prefix("localhost:")
+        .is_some_and(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// Largest accepted product identifier, in bytes.
 ///
 /// Bounds the size of one identifier, not how many exist: a manifest miss
@@ -388,10 +407,16 @@ pub fn normalize_product_identifier(
             product_id: product_id.to_string(),
         });
     }
-    if has_dotns_tld(&normalized)
-        || normalized == "localhost"
-        || normalized.starts_with("localhost:")
-    {
+    if is_localhost_product_identifier(&normalized) {
+        return Ok(normalized);
+    }
+    // `localhost` is reserved as a label, not only as a bare identifier. A
+    // product published as `localhost.<tld>` would otherwise be one string
+    // comparison away from whatever a host grants the development wildcard.
+    let reserves_localhost = normalized
+        .rsplit_once('.')
+        .is_some_and(|(label, _tld)| label == LOCALHOST_PRODUCT_LABEL);
+    if has_dotns_tld(&normalized) && !reserves_localhost {
         Ok(normalized)
     } else {
         Err(RuntimeConfigValidationError::InvalidProductId {
@@ -2378,6 +2403,34 @@ mod tests {
                 "{product_id} is a separate product and must prompt"
             );
         }
+    }
+
+    #[test]
+    fn a_published_product_cannot_take_the_localhost_label() {
+        // Hosts grant a development wildcard to a localhost product, so the
+        // label must not be reachable from dotNS.
+        for product_id in ["localhost.dot", "localhost.paseo", "LOCALHOST.DOT"] {
+            assert!(
+                normalize_product_identifier(product_id).is_err(),
+                "{product_id} must not be a valid product identifier"
+            );
+            assert!(
+                !is_localhost_product_identifier(product_id),
+                "{product_id} must not read as the development wildcard"
+            );
+        }
+        for product_id in ["localhost", "localhost:3000"] {
+            assert!(is_localhost_product_identifier(product_id), "{product_id}");
+        }
+        // A prefix test would admit these; the whole identifier has to match.
+        for product_id in ["localhost:3000.evil.dot", "localhost:", "localhost:80a"] {
+            assert!(
+                !is_localhost_product_identifier(product_id),
+                "{product_id} must not read as the development wildcard"
+            );
+        }
+        // Still a normal product, sharing only the prefix.
+        assert!(normalize_product_identifier("localhosting.dot").is_ok());
     }
 
     #[test]

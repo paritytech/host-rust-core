@@ -520,7 +520,7 @@ impl ProductRuntimeHost {
         // Localhost products are development-only wildcards once a host admits
         // them. Production hosts must reject localhost products before creating
         // the product runtime.
-        if product_id == "localhost" || product_id.starts_with("localhost:") {
+        if truapi_platform::is_localhost_product_identifier(&product_id) {
             return normalize_product_identifier(dot_ns_identifier).ok();
         }
         // Bounded here rather than left to the lookup: it can reach dotNS on
