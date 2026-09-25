@@ -1353,16 +1353,18 @@ export interface PermissionStatusHost {
  */
 export interface Permissions {
   /**
-   * Prompt the user for a device-level permission.
+   * Prompt the user for a device-level permission `product` requested.
    */
   devicePermission(
+    product: ProductContext,
     request: HostDevicePermissionRequest,
   ): Promise<PermissionDecision>;
 
   /**
-   * Prompt the user for a remote (product-scoped) permission bundle.
+   * Prompt the user for a remote permission bundle `product` requested.
    */
   remotePermission(
+    product: ProductContext,
     request: RemotePermissionRequest,
   ): Promise<PermissionDecision>;
 }
@@ -1505,6 +1507,10 @@ export interface UserConfirmation {
 
   /**
    * Confirm a reviewed action before the core continues.
+   *
+   * The core drops this future when the request behind the review is
+   * withdrawn, and an answer given afterwards reaches nobody. A host should
+   * dismiss its prompt when that happens.
    */
   confirmUserAction(review: UserConfirmationReview): Promise<boolean>;
 }

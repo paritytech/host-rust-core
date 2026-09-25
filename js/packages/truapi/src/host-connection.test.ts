@@ -5,10 +5,12 @@ import { createTransport } from "./client.js";
 import {
     ConnectionResetError,
     createMessagePortProvider,
+    createWebSocketProviderFactory,
     decodeWireMessage,
     encodeWireMessage,
     MESSAGE_TYPE_RECEIVE,
     type ProtocolMessage,
+    type WebSocketWireProvider,
 } from "./transport.js";
 import * as W from "./generated/wire-table.js";
 import * as T from "./generated/types.js";
@@ -24,7 +26,7 @@ async function until(condition: () => boolean) {
     expect(condition()).toBe(true);
 }
 
-function host() {
+function host(createProvider?: (url: string) => WebSocketWireProvider) {
     const frames: ProtocolMessage[] = [];
     const sockets: Bun.ServerWebSocket<undefined>[] = [];
     let answer = true;
@@ -71,7 +73,7 @@ function host() {
             },
         },
     });
-    const connection = createHostConnection(`ws://127.0.0.1:${server.port}`);
+    const connection = createHostConnection(`ws://127.0.0.1:${server.port}`, createProvider);
     cleanup.push(() => {
         connection.dispose();
         server.stop(true);
@@ -198,13 +200,15 @@ describe("shared SDK host connection", () => {
     });
 
     it("starts a connection for a passive client and retains it after socket loss without lifecycle hooks", async () => {
-        const { connection, sockets } = host();
+        const createProvider = jest.fn(createWebSocketProviderFactory());
+        const { connection, sockets } = host(createProvider);
         const statuses: string[] = [];
         connection.subscribeConnectionStatus((status) => statuses.push(status));
         const client = connection.client;
         await until(() => statuses.at(-1) === "connected");
         sockets[0]!.close();
         await until(() => sockets.length === 2 && statuses.at(-1) === "connected");
+        expect(createProvider).toHaveBeenCalledTimes(2);
         expect(connection.client).toBe(client);
         expect(
             (await client.permissions.requestRemotePermission(permission))._unsafeUnwrap(),

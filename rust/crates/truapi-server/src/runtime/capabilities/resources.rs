@@ -14,7 +14,7 @@ use truapi_platform::{ResourceAllocationReview, UserConfirmationReview};
 
 use crate::runtime::{
     ProductRuntimeHost, RESOURCE_ALLOCATION_REMOTE_AUTHORITY_RESPONSE_TIMEOUT,
-    remote_authority_call, remote_authority_context_with_default,
+    remote_authority_call, remote_authority_context_with_default, until_cancelled,
 };
 
 #[truapi::async_trait]
@@ -35,18 +35,27 @@ impl ResourceAllocation for ProductRuntimeHost {
             )));
         };
 
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::ResourceAllocation(
-                ResourceAllocationReview {
-                    calling_product_id: self.product_id(),
-                    resources: inner.resources.clone(),
+        let confirmed = until_cancelled(
+            cx,
+            self.platform
+                .confirm_user_action(UserConfirmationReview::ResourceAllocation(
+                    ResourceAllocationReview {
+                        calling_product_id: self.product_id(),
+                        resources: inner.resources.clone(),
+                    },
+                )),
+        )
+        .await
+        .map_err(|err| {
+            CallError::Domain(HostRequestResourceAllocationError::V1(
+                v01::ResourceAllocationError::Unknown {
+                    reason: err.to_string(),
                 },
             ))
-            .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("resource allocation confirmation failed: {err:?}"),
-            })?;
+        })?
+        .map_err(|err| CallError::HostFailure {
+            reason: format!("resource allocation confirmation failed: {err:?}"),
+        })?;
         if !confirmed {
             return Err(CallError::Domain(HostRequestResourceAllocationError::V1(
                 v01::ResourceAllocationError::Unknown {

@@ -1,5 +1,35 @@
 # @parity/truapi-debugger
 
+## 0.1.8
+
+### Patch Changes
+
+- 021815d: The debugger is marked private, which is what it already was in practice: it has never been published, and
+  its README runs it from the workspace. Changesets bumped its version with every release because it depends on the
+  client, so the version it declared climbed while nothing shipped, and the registry drift check reported a published
+  version that was missing. Publishing it later is removing that one field.
+- Updated dependencies [ffdd9b4]
+- Updated dependencies [5a9f4b9]
+- Updated dependencies [cf1702f]
+  - @parity/truapi@0.21.0
+
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [5f3dc71]
+- Updated dependencies
+  - @parity/truapi@0.20.0
+
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [a78d73c]
+- Updated dependencies [303b163]
+- Updated dependencies [5d5fd1c]
+  - @parity/truapi@0.19.0
+
 ## 0.1.5
 
 ### Patch Changes

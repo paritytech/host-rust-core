@@ -101,6 +101,27 @@ extension DebugSettingsPresenter: DebugSettingsPresenterProtocol {
         wireframe.present(viewModel: viewModel, style: .alert, from: view)
     }
 
+    /// Same restart as the runtime switch, and for the same reason: the bot list is rebuilt when
+    /// the product stream emits, which a settings write does not make it do.
+    func toggleHostPlacement() {
+        interactor.toggleHostPlacement()
+
+        let viewModel = AlertPresentableViewModel(
+            title: "Restart Required",
+            message: "Host-placed products changed. Restart the app to rebuild the chat list.",
+            actions: [
+                AlertPresentableAction(title: "Restart") { [weak self] in
+                    self?.interactor.restartApp()
+                },
+                AlertPresentableAction(title: "Cancel", style: .cancel) { [weak self] in
+                    self?.interactor.toggleHostPlacement()
+                }
+            ]
+        )
+
+        wireframe.present(viewModel: viewModel, style: .alert, from: view)
+    }
+
     func openTrUAPIPlayground() {
         wireframe.showTrUAPIPlayground(from: view)
     }
@@ -138,6 +159,10 @@ extension DebugSettingsPresenter: DebugSettingsInteractorOutputProtocol {
 
     func didReceive(strategyDebugEnabled: Bool) {
         view?.didReceive(strategyDebugEnabled: strategyDebugEnabled)
+    }
+
+    func didReceive(hostPlacementEnabled: Bool) {
+        view?.didReceive(hostPlacementEnabled: hostPlacementEnabled)
     }
 
     func didReceive(truApiRuntimeEnabled: Bool) {

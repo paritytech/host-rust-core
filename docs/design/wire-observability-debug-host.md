@@ -79,13 +79,17 @@ pub enum DebugEvent {
   into a live dispatch. Both in-path call sites **SHOULD** contain one
   (`catch_unwind`), which holds only where unwinding is enabled: the workspace
   release profile sets `panic = "abort"`, so in the release and xcframework
-  artifacts that carry the `ws-bridge` sink a panicking sink aborts the process
+  artifacts that carry the `debug-sink` feature a panicking sink aborts the process
   and no call-site guard can contain it. Containment is a dev-and-test
   protection; the contract on the sink is what holds in a shipped host.
 - The core **MUST** pass frame bytes through untouched, and **MUST NOT** decode,
   inspect, or redact them.
 - A sink that owns a socket **MUST** bound its backlog by both count and bytes,
   and **MUST** report the frames it dropped.
+- Whatever thread installs a sink is the thread a hung `emit` blocks, and it
+  blocks all of that thread's work. Nothing gates installation on worker scope:
+  the wasm sink is installed from a Web Worker entry point by convention, so a
+  main-thread consumer of the raw glue can install one and hang the page.
 
 ## 3. Envelope and wire identity
 
@@ -108,9 +112,9 @@ be omitted when zero, so the common envelope carries no extra field. It is how �
 producer that buffers **SHOULD** stamp it: the debugger's receive time is the flush
 instant for anything that waited in a queue, which collapses a backlog's durations
 to zero and pulls operations minutes apart into one retry-storm window. A producer
-that omits it accepts those artefacts. (The web link stamps it; the native sink
-does not yet, and buffers 4096 frames across reconnects, so native traces are
-subject to exactly that skew.)
+that omits it accepts those artefacts. (Both producers stamp it: the web link at
+emit, the native sink at enqueue, which is what keeps its 4096-frame buffer from
+collapsing a backlog's durations when a reconnect flushes it.)
 
 A producer **MUST** stamp a wire-contract identity: `v`, the envelope version;
 `codec`, the coarse codec version; and `schema`, a hash over every frame id, its
@@ -229,26 +233,57 @@ outright. That is the checkable half.
 
 The **tap** is not absent. `DebugSink`, both call sites, and `set_debug_sink`
 compile into every build of the core, including release and wasm32, and the
-native sink ships under the `ws-bridge` feature that the release and xcframework
+native sink ships under the `debug-sink` feature that the release and xcframework
 artifacts enable. What holds in production is that the tap is **inert**: no host
 installs a sink, so the frame path costs an unset-sink check. An
 implementation **MUST NOT** describe the tap as absent from a shipped host, and
 **MUST NOT** rely on its absence for any safety property - only on no sink being
 installed, which §9's enablement rules govern.
 
-- The web host reads its debugger URL behind a build-time DEV condition, so a
-  production bundle returns no URL and a stray `localStorage` key cannot turn the
-  tap on. With no URL the host installs no emit callback, so the core installs no
+"No host installs a sink" binds hosts that ship to end users. The headless CLI
+host is a deliberate exception and carries its dial in every build, including the
+prebuilt binaries the installer serves. It is a development tool a developer runs
+against their own host, and gating it behind a build flag would mean the one
+artifact most people have is the one that cannot debug - a Rust toolchain to chase
+a wire bug. Three conditions carry the weight the gate would have:
+
+- The dial **MUST** be asked for explicitly, by flag or environment variable. It
+  has no default and is never inferred.
+- The target **MUST** be a loopback `ws://` address (§6), rejected at the point it
+  is read rather than at first dial.
+- The host **MUST** announce the dial on startup, through the same surface as its
+  other lifecycle events so the alternate screen cannot swallow it, and **MUST**
+  announce its absence too (§9). This is what the gate would otherwise have bought:
+  a stale exported variable cannot tap a session quietly, because a tapped session
+  says so where the developer is already looking.
+
+A host that ships to end users **MUST NOT** read this as precedent. The web host's
+build-time gate stands, because a browser realm reaches people who asked for none
+of it.
+
+- The web host resolves its debugger URL behind a build-time DEV condition, so a
+  production bundle resolves no URL and nothing reachable from the page can turn
+  the tap on. The URL has two sources, both inside that condition: the `debugger`
+  option the embedding host passes, and a value the dev build carries
+  (`VITE_TRUAPI_DEBUGGER_URL`). The host's own value **MUST** win, so a build's
+  value is a default rather than an override, and the host **MUST** report which
+  source it used - an overridden build value is otherwise indistinguishable from
+  one that was never carried. Winning includes turning the dial **off**: an option
+  present but empty **MUST** resolve to off rather than falling through to the
+  build, or a build that carries a URL has no off switch short of being rebuilt.
+  With no URL the host installs no emit callback, so the core installs no
   sink. The condition **MUST** be the bare token the bundler substitutes
   (`import.meta.env.DEV`) — no alias, no optional chaining. A bundler replaces
   that exact token and nothing else; an aliased read survives into the bundle,
   reads `undefined`, and disables the tap in every build.
-- The switch's **presence** and the URL it holds are two separate reads, and only
-  the second is DEV-gated. A production build **MUST** still be able to observe
-  that the switch is set, because that is what §9's one production message keys
-  on; it **MUST NOT** read a URL from it, dial, or install a sink. Collapsing the
-  two into one DEV-gated read makes that message unreachable in the only build
-  that needs it.
+- Whether a dial was **asked for** and what it resolves to are two separate
+  questions, and only the second is DEV-gated. A production build **MUST** still
+  be able to observe that somebody asked, because that is what §9's one
+  production message keys on; it **MUST NOT** resolve a URL, dial, or install a
+  sink. The build value is the half that makes this checkable: it is substituted
+  at build time, so it survives into a production bundle, which is exactly the
+  case that must not go quiet. Collapsing the two questions into one DEV-gated
+  read makes that message unreachable in the only build that needs it.
 - An in-host embed **MUST** be gated on a build-time flag, not a runtime toggle.
 - An embedding host **MUST** take the debugger package as a development
   dependency behind that flag, so a production build drops the module and its
@@ -327,39 +362,71 @@ between host and viewer (§6). That exposure is unmitigated.
 
 ## 9. Enablement
 
-A dev build is told to dial by a host-specific switch: a browser host reads a
-per-origin store, a native host takes an injected value. Neither is a URL
-parameter.
+A dev build is told to dial by a value the embedding host supplies: a browser
+host takes it as a runtime option, a native host takes it as a flag or an
+environment variable. Neither is a URL parameter, and neither is a store the
+library reads on the host's behalf.
 
-The browser store is read in the realm that creates the host runtime — the shell
-page in one embedding, an iframe realm in another — and is per-origin, so a value
-set on any other origin is invisible.
+The embedder is the one party that knows whether this build should be
+observable, and the only one that can offer a switch in its own UI. A library
+that instead reads an ambient per-origin store decides for it: the host cannot
+refuse the dial, cannot surface it, and cannot explain it, while the value stays
+invisible across origins and browser profiles. A dev build **MAY** also carry a
+value it was compiled with; the host's own value **MUST** win over it, so the
+build's is a default and never an override, and an explicit "no dial" from the
+host **MUST** be distinguishable from the host saying nothing.
 
-Reading whether the switch is set is distinct from reading what it holds (§7).
+The headless CLI takes its value as a flag or an environment variable. More than
+one switch **MUST** resolve to one value and the report **MUST** name which
+supplied it, so a developer who forgot an exported variable can tell which switch
+is in play. A value that is not a loopback `ws://` target (§6) **MUST** fail the
+host at the point it is read, not at first dial - a host that starts without the
+debugger it was asked for presents, from the debugger's side, exactly as a host
+nobody switched on. Resolving it **MUST** be the business of the commands that
+serve frames: a command that emits none has no dial to report and **MUST NOT**
+open a sink for one.
+
+A host that is dialling **MUST** make that visible in its own surface, not only
+on a console: a line scrolls away, and a tap left on from an earlier session is
+then indistinguishable from one that was never started. The dial is what would
+carry decoded frames off the machine if it ever pointed somewhere that was not
+loopback (§6), so it is not enough that it be discoverable - it has to be
+apparent. A library that owns no surface of its own **SHOULD** provide the
+indicator itself and let a host replace it, rather than leaving each host to
+remember: the failure being guarded against is exactly a host that forgets.
+
+The dial **MUST** be resolved once, when the host runtime is created, and
+**MUST NOT** be changeable afterwards from inside the page. Whether frames are
+leaving is then a property of how the build was made and what the host asked
+for - not of anything typed into a console later, which would make "is this
+session being observed?" unanswerable without knowing what someone did earlier
+in the tab. A runtime toggle also gives console-paste, a live pattern against
+wallet users, something worth pasting at.
+
+One consequence is load-bearing: because the dial cannot change, a session's tap
+is installed exactly when a dial was resolved, and there is no second piece of
+state that could disagree with it.
+
+Reading whether a dial is configured is distinct from reading what it holds (§7).
 The production message below depends on the first surviving into a production
 build; the dial depends on the second, which does not.
 
 A host with a dial path **MUST** report it: one that does not dial says so once,
-one that does says where, each naming the source it read. Today only the web host
-has such a path - the native sink has no host wiring it up - so this binds the web
-host now and every host as its dial path lands. The debugger's own viewer
-holds a socket, so its socket count moves whether or not a host connected, and an
-empty board with a live socket is indistinguishable from a host nobody switched
-on. The message **MUST NOT** appear in a production build, with one exception: a
-host whose switch is **set** while the build is production **MUST** say so once.
+one that does says where, each naming the source it read. The web host and the
+headless CLI host both have such a path; a host that gains one is bound by this
+rule the moment it does. The report **MUST** go out on whatever surface the host
+already uses for its lifecycle events: a host that takes over the terminal writes
+its log lines somewhere the takeover then covers, so a report that is only logged
+is, in interactive use, no report at all. The debugger's own viewer holds a
+socket, so its socket count moves whether or not a host connected, and an empty
+board with a live socket is indistinguishable from a host nobody switched on.
 
-Silence is only safe when nobody asked, and the switch being set is the record
-that someone asked. The dial is behind a build-time DEV condition, and a host may
-have no dev-mode build in its local workflow at all: dot.li ships `build` and
-`preview` scripts and no dev server, so its normal local build compiles the dial
-out. Setting the documented per-origin value on such a build then produces no dial
-and no message, which reads as a broken debugger rather than a build that cannot
-carry one.
-
-The switch is what separates the two cases, so it is what the rule keys on. A
-production build nobody is debugging has no switch set and stays silent; a
-production build someone is trying to debug has one, and gets told why nothing
-dialled. The message must not assert _why_ the condition failed: a host cannot
+A production build whose dial nobody configured **MUST** stay silent, where the
+message would be noise. One that WAS configured **MUST** say so once: a build
+carries its compiled-in value into a production bundle, so dropping the dev flag
+from a build command is easy and leaves an empty board, no console line and no
+error - which reads as a broken debugger rather than a build that compiled the
+dial out. The message **MUST NOT** assert _why_ the gate refused: a host cannot
 distinguish a production build from a bundler that never substituted the token,
 since both leave the condition false.
 

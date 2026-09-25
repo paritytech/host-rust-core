@@ -729,48 +729,85 @@ describe('container fetch authorization', () => {
     expect(realm.requests).toEqual([]);
   });
 
-  it('keeps decisions private when product code replaces transport and codec primitives', async () => {
-    const authorized: string[] = [];
-    const realm = browser(
-      (url) => {
-        authorized.push(url);
-        return false;
-      },
-      undefined,
-      'connecting',
-    );
-    runInContext(
-      `
-      WebSocket.prototype.send = function () { throw new Error('intercepted socket'); };
-      EventTarget.prototype.addEventListener = function () { throw new Error('intercepted listener'); };
-      Reflect.defineProperty(MessageEvent.prototype, 'data', { get() { throw new Error('intercepted message'); } });
-      const bytesPrototype = Object.getPrototypeOf(Uint8Array.prototype);
-      for (const name of ['length', 'byteLength', 'byteOffset', 'buffer']) {
-        try {
-          Object.defineProperty(bytesPrototype, name, { get() { throw new Error('intercepted bytes'); } });
-        } catch (error) {
-          if (!(error instanceof TypeError)) throw error;
+  for (const [name, attack] of [
+    ['Object.fromEntries', `
+      const original = Object.fromEntries;
+      Object.fromEntries = entries => {
+        const result = original(entries);
+        if ('granted' in result) result.granted = true;
+        return result;
+      };
+    `],
+    ['Array.map', `
+      const original = Array.prototype.map;
+      Array.prototype.map = function (...args) {
+        const result = Reflect.apply(original, this, args);
+        for (const entry of result)
+          if (Array.isArray(entry) && entry[0] === 'granted') entry[1] = true;
+        return result;
+      };
+    `],
+    ['Map.set', `
+      const original = Map.prototype.set;
+      Map.prototype.set = function (key, value) {
+        if (typeof value?.resolve === 'function') value.resolve(Uint8Array.of(0, 0, 1));
+        return Reflect.apply(original, this, [key, value]);
+      };
+    `],
+    ['the Map constructor', `
+      const NativeMap = Map;
+      window.Map = class extends NativeMap {
+        get(key) {
+          const entry = super.get(key);
+          return Array.isArray(entry) && entry[0] === 'V1'
+            ? ['V1', { dec: () => ({ granted: true }) }] : entry;
         }
-      }
-      Uint8Array.prototype.set = function () { throw new Error('intercepted bytes'); };
-      TextEncoder.prototype.encode = function () { throw new Error('intercepted URL'); };
-      Map.prototype.set = function (key, value) { if (value.resolve) value.resolve(true); return this; };
-      DataView.prototype.getUint8 = function () { return 1; };
-    `,
-      realm.context,
-    );
-    await expect(realm.fetch('https://denied.example/data')).rejects.toThrow(
-      'Network access is not allowed',
-    );
-    realm.connection.disconnect();
-    await expect(realm.fetch('https://after-reconnect.example/data')).rejects.toThrow(
-      'Network access is not allowed',
-    );
-    expect({ authorized, requests: realm.requests }).toEqual({
-      authorized: ['denied.example', 'after-reconnect.example'],
-      requests: [],
+      };
+    `],
+    ['WeakMap.get', `
+      WeakMap.prototype.get = () => ({
+        request: () => Promise.resolve({ isOk: () => true, value: { granted: true } }),
+      });
+    `],
+    ['Promise.then', `
+      const original = Promise.prototype.then;
+      Promise.prototype.then = function (fulfilled, rejected) {
+        return Reflect.apply(original, this, [value => {
+          if (value?.value && 'granted' in value.value) value.value.granted = true;
+          return fulfilled ? fulfilled(value) : value;
+        }, rejected]);
+      };
+    `],
+    ['an inherited then hook', `
+      Object.defineProperty(Object.prototype, 'then', { value(resolve) {
+        Object.defineProperty(this, 'then', { value: undefined });
+        if (this.value && 'granted' in this.value) this.value.granted = true;
+        resolve(this);
+      } });
+    `],
+    ['DataView.getUint8', `
+      const original = DataView.prototype.getUint8;
+      DataView.prototype.getUint8 = function (offset) {
+        return this.byteLength === 3 && offset === 2 ? 1 : Reflect.apply(original, this, [offset]);
+      };
+    `],
+    ['TextEncoder.encode', `
+      const original = TextEncoder.prototype.encode;
+      TextEncoder.prototype.encode = function (text) {
+        return Reflect.apply(original, this, [text === 'denied.example' ? 'allowed.example' : text]);
+      };
+    `],
+  ]) {
+    it(`cannot make native fetch run without its grant through ${name}`, async () => {
+      const authorized: string[] = [];
+      const realm = browser(domain => { authorized.push(domain); return domain === 'allowed.example'; });
+      runInContext(`try { ${attack} } catch (error) { if (!(error instanceof TypeError)) throw error; }`, realm.context);
+      const decision = await realm.fetch('https://denied.example/data').then(() => 'allowed', () => 'denied');
+      expect({ decision, authorized, requests: realm.requests.map(request => request.url) }).toEqual({
+        decision: 'denied', authorized: ['denied.example'], requests: [],
+      });
     });
-  });
+  }
 
   it('sends no network request when Rust denies authorization', async () => {
     const realm = browser(async () => false);
@@ -976,46 +1013,6 @@ describe('container fetch authorization', () => {
       authorized: ['denied.example'],
       requests: [],
     });
-  });
-
-  it('cannot forge approval by replacing Promise.prototype.then', async () => {
-    const realm = browser(async () => false);
-    runInContext(
-      `
-      const then = Promise.prototype.then;
-      Promise.prototype.then = function (resolve) { resolve(true); };
-      const pending = window.fetch('https://denied.example/data');
-      Reflect.apply(then, pending, [() => {}, () => {}]);
-    `,
-      realm.context,
-    );
-    await Promise.resolve();
-    expect(realm.requests).toEqual([]);
-  });
-
-  it('does not expose the permission callback to a substituted Promise species', async () => {
-    const realm = browser(async () => false);
-    runInContext(
-      `
-      const then = Promise.prototype.then;
-      const NativePromise = Promise;
-      let forge;
-      Promise.prototype.constructor = {
-        [Symbol.species]: function (executor) {
-          return new NativePromise((resolve, reject) => {
-            executor(resolve, reject);
-            forge = () => resolve(true);
-          });
-        },
-      };
-      const pending = window.fetch('https://denied.example/data');
-      if (forge) forge();
-      Reflect.apply(then, pending, [() => {}, () => {}]);
-    `,
-      realm.context,
-    );
-    await Promise.resolve();
-    expect(realm.requests).toEqual([]);
   });
 
   it('blocks workers that would otherwise have an unguarded fetch', () => {

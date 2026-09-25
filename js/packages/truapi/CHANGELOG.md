@@ -1,5 +1,63 @@
 # @parity/truapi
 
+## 0.21.0
+
+### Minor Changes
+
+- ffdd9b4: `truapi-host` streams product frames to a wire debugger behind `--debugger <ws-url>` (or
+  `TRUAPI_DEBUGGER_URL`).
+
+  The commands that serve frames, `pairing-host`, `dev` and `signing-host`, resolve the switch before their frame
+  listener binds, so a non-loopback URL fails startup rather than at first dial. Each of those commands reports the
+  outcome once as a lifecycle event, naming the endpoint and the switch clap read it from, or saying the debugger is
+  off. Each accepted connection gets its own channel id, `<product-id>#<n>`, so concurrent peers under one host do not
+  share a trace key.
+
+- 5a9f4b9: The `Permissions` host callbacks name the product that asked: `devicePermission(product, request)` and
+  `remotePermission(product, request)` take the requesting `ProductContext` first, like the other product-scoped
+  callbacks, so a host can title the prompt with the product and key any grant it keeps itself by the product. Stored
+  decisions stay keyed by `productId` alone.
+
+  The `truapi-host` CLI names the requesting product in its permission approvals.
+
+### Patch Changes
+
+- cf1702f: Initialize built-in personhood ring keys when an authorized product lists the personhood owner's keys, so
+  full and lite handles are available without prior registration on the device.
+
+## 0.20.0
+
+### Minor Changes
+
+- 5f3dc71: Regenerate Rust and TypeScript sources before building the headless CLI so source installation works in fresh
+  and updated checkouts. Fix invalid documentation links and reject rustdoc warnings during code generation and CI.
+- Stop freezing built-in prototypes in the container so Next.js products hydrate in the CLI and native web views.
+
+## 0.19.0
+
+### Minor Changes
+
+- a78d73c: Keep the same client after a native host connection is interrupted. The shared SDK transport replaces its
+  WebSocket, while pending calls and subscriptions fail with `ConnectionResetError` without replay. Providers can
+  recreate their read/watch subscriptions after reconnection. Older SDKs still start through the MessagePort but need a
+  page reload after connection loss.
+
+  Browser permission checks use generated internal SDK calls. Hosts protect their shared authorization dependencies
+  before product code runs; public SDK methods remain replaceable, but products cannot patch the protected built-in
+  prototypes.
+
+  SCALE boolean decoding rejects values other than 0 and 1.
+
+- 303b163: Share the container's web API permission checks between CLI scripts and the development bootstrap tag.
+  Scripts remain in Bun with filesystem, environment, subprocess and import access. Dev keeps its existing app URL,
+  assets and hot reload. Public SDK calls and permission checks share one product execution.
+
+### Patch Changes
+
+- 5d5fd1c: Add reusable `/script` projects with dependency installation, editor types and TypeScript checking. Edit,
+  rerun or create projects from the CLI. Missing npm imports use Bun's runtime fallback, and Product SDK scripts
+  discover the active host automatically.
+
 ## 0.18.0
 
 ### Minor Changes

@@ -728,12 +728,14 @@ impl PermissionStatusHost for CliPlatform {
 impl Permissions for CliPlatform {
     async fn device_permission(
         &self,
+        product: &ProductContext,
         request: api::HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, api::GenericError> {
+        let product_id = &product.product_id;
         Ok(self
             .decide_with(
                 "device permission",
-                format!("A product requested access to {request}."),
+                format!("{product_id} requested access to {request}."),
                 ApprovalKind::Permission,
             )
             .await)
@@ -741,13 +743,15 @@ impl Permissions for CliPlatform {
 
     async fn remote_permission(
         &self,
+        product: &ProductContext,
         request: api::RemotePermissionRequest,
     ) -> Result<PermissionDecision, api::GenericError> {
+        let product_id = &product.product_id;
         let detail = match &request.permission {
             api::RemotePermission::Remote { .. } => format!(
-                "A product requested {request}. This covers all ports on each host, including local services."
+                "{product_id} requested {request}. This covers all ports on each host, including local services."
             ),
-            _ => format!("A product requested {request}."),
+            _ => format!("{product_id} requested {request}."),
         };
         Ok(self
             .decide_with("remote permission", detail, ApprovalKind::Permission)

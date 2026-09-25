@@ -16,7 +16,6 @@ extension ServiceCoordinator {
         personDataStore: DetermineStatePersonDataStore,
         syncService: DetermineStateSyncServicing,
         personhoodRegistrationService: PersonhoodRegistrationServicing,
-        claimStatusStore: ClaimStatusStore,
         audioSessionManager: AudioSessionManaging,
         spaFlowState: SPAFlowState
     ) -> (registry: ChatExtensionsRegistering, workerFacade: ProductWorkerFacade) {
@@ -64,11 +63,14 @@ extension ServiceCoordinator {
                 personDataStore: personDataStore,
                 syncService: syncService,
                 personhoodRegistrationService: personhoodRegistrationService,
-                claimStatusStore: claimStatusStore,
                 productBotProvider: productBotProvider,
                 audioSessionManager: audioSessionManager
             )
         }
+
+        // Detached from the registry: the row is the host's own, drawn before the product runs.
+        // It gives up rather than waiting forever, so a second assembly leaves no task behind.
+        Task { await HostPlacedRoomPlacer().placeRooms() }
 
         return (registry, workerFacade)
     }

@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cross-product-ringvrf e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
+.PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap debugger dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cross-product-ringvrf e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -25,6 +25,8 @@ DOTLI_TRUAPI_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi
 DOTLI_HOST_WASM_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi-host
 DOTLI_UI_TRUAPI_SHADOW := $(DOTLI_UI)/node_modules/@parity/truapi
 DOTLI_UI_HOST_WASM_SHADOW := $(DOTLI_UI)/node_modules/@parity/truapi-host
+DEBUGGER_PKG := $(JS_PACKAGES)/truapi-debugger
+DEBUGGER_PORT ?= 9231
 VITE_NETWORKS ?= paseo-next-v2,previewnet
 export VITE_NETWORKS
 
@@ -67,14 +69,11 @@ build: check-generated ## Build the Rust workspace and the TypeScript client.
 	cd $(TRUAPI_PKG) && npm run build
 	cd $(HOST_WASM_PKG) && npm run build
 
-headless: check-generated ## Build the truapi-host CLI and generated TypeScript client.
-	# The client build shells out to tsc, which `ensure-generated.sh` looks for at
-	# the root or in the package. Install workspace deps when neither is present so
-	# this target works on a checkout that has not run `make setup`.
-	@[ -x node_modules/.bin/tsc ] || [ -x $(TRUAPI_PKG)/node_modules/.bin/tsc ] \
+headless: ## Build the truapi-host CLI and generated TypeScript client.
+	@[ -x node_modules/.bin/tsc ] && [ -x node_modules/.bin/prettier ] \
 		|| npm ci --ignore-scripts
+	./scripts/codegen.sh
 	cargo build -p truapi-host-cli
-	cd $(TRUAPI_PKG) && npm run build
 	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
 install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `make headless install`.
@@ -98,6 +97,8 @@ CLI_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p' | sed 's/-linux-gnu$$/-l
 CLI_VERSION ?= $(shell awk -F'"' '/^version = /{print $$2; exit}' rust/crates/truapi-host-cli/Cargo.toml)
 CLI_ARCHIVE = truapi-host-$(CLI_VERSION)-$(CLI_TARGET).tar.gz
 CLI_RUNNER := $(CLI_DIST_DIR)/runner.js
+CLI_SCRIPT_TYPES_SOURCE := rust/crates/truapi-host-cli/js/script-types.d.ts
+CLI_SCRIPT_TYPES := $(CLI_DIST_DIR)/script-types.d.ts
 CLI_CONTAINER := $(CLI_DIST_DIR)/sandbox-assets/container.js
 CLI_STAGE = $(CLI_DIST_DIR)/$(CLI_TARGET)
 # macOS ships shasum, most Linux images ship only sha256sum.
@@ -108,20 +109,25 @@ SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo "sha256sum" || ec
 $(CLI_RUNNER): $(CLI_CONTAINER)
 	@test -f "$@" || bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
+$(CLI_SCRIPT_TYPES): $(CLI_SCRIPT_TYPES_SOURCE)
+	mkdir -p $(CLI_DIST_DIR)
+	cp $< $@
+
 $(CLI_CONTAINER):
 	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
 
-cli-runner: ## Bundle the product-script runner and browser sandbox into target/dist.
+cli-runner: $(CLI_SCRIPT_TYPES) ## Bundle the product-script runner, browser sandbox, and script types into target/dist.
 	bun scripts/build-cli-runner.ts "$(CLI_DIST_DIR)"
+	node scripts/check-host-script-types.mjs
 
-cli-dist: check-generated $(CLI_RUNNER) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
+cli-dist: check-generated $(CLI_RUNNER) $(CLI_SCRIPT_TYPES) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
 	rustup target add $(CLI_TARGET)
 	$(CARGO) build -p truapi-host-cli --release --target $(CLI_TARGET)
 	rm -rf $(CLI_STAGE)
 	mkdir -p $(CLI_STAGE)
-	cp target/$(CLI_TARGET)/release/truapi-host $(CLI_RUNNER) $(CLI_STAGE)/
+	cp target/$(CLI_TARGET)/release/truapi-host $(CLI_RUNNER) $(CLI_SCRIPT_TYPES) $(CLI_STAGE)/
 	cp -R $(CLI_DIST_DIR)/sandbox-assets $(CLI_STAGE)/
-	tar -czf $(CLI_DIST_DIR)/$(CLI_ARCHIVE) -C $(CLI_STAGE) truapi-host runner.js sandbox-assets
+	tar -czf $(CLI_DIST_DIR)/$(CLI_ARCHIVE) -C $(CLI_STAGE) truapi-host runner.js script-types.d.ts sandbox-assets
 	cd $(CLI_DIST_DIR) && $(SHA256) $(CLI_ARCHIVE) > $(CLI_ARCHIVE).sha256
 	@echo "packaged $(CLI_DIST_DIR)/$(CLI_ARCHIVE)"
 
@@ -166,10 +172,10 @@ uniffi: check-generated ## Generate Swift bindings from the truapi-server cdylib
 IOS_HOST ?= ../polkadot-app-ios-v2
 IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
 IOS_CONFIGURATION ?= Debug
-IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E
+IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E -DTRUAPI_RUNTIME_DEFAULT
 IOS_SIMULATOR_DEVICE ?=
 IOS_XCODE_DESTINATION ?= generic/platform=iOS Simulator
-IOS_BUNDLE ?= io.pcf.polkadotapp.develop
+IOS_BUNDLE ?= io.parity.polkadotapp.develop
 IOS_GOOGLE_SERVICE_PLIST ?= $(IOS_HOST)/polkadot-app/GoogleService/GoogleService-Info-Release.plist
 IOS_PRODUCT_HOST ?= truapi-playground.dot
 IOS_PRODUCT_URL ?= http://localhost:3100
@@ -404,6 +410,35 @@ dev: dev-bootstrap ## Start dotli host (:5173) + playground (:3000) together; op
 	( cd $(DOTLI) && bun run $(DOTLI_PREVIEW) ) & \
 	( cd $(PLAYGROUND) && yarn dev ) & \
 	( until curl -fsS http://localhost:3000/ >/dev/null 2>&1; do sleep 1; done; curl -fsS http://localhost:3000/diagnostics >/dev/null 2>&1 || true ) & \
+	wait
+
+debugger: dev-bootstrap ## Wire debugger (:9231) + a DEV-MODE dotli host (:5173) + playground (:3000). Open http://127.0.0.1:9231
+	# `make dev` cannot drive this: dotli ships only production builds, and the dial
+	# sits behind `import.meta.env.DEV`, so the host never dials and the board stays
+	# empty with no error. Hence a dev-mode host build here.
+	#
+	# Build every app EXCEPT the host, then the host below. Excluding it by name
+	# would put a list of dotli's apps in this repo that a new app there would
+	# silently fall off; skipping the siblings entirely leaves apps/sandbox unbuilt
+	# and the preview server exits 1, which a stale dist from an earlier `make dev`
+	# hides. The host is separate because dotli's own build runs `tsc` and does not
+	# typecheck against this repo's newer `@parity/truapi`; `vite build` does not.
+	cd $(DOTLI) && VITE_APP_DEBUG=true bunx turbo run build --filter='!@dotli/host'
+	cd $(DOTLI)/apps/host && NODE_ENV=development VITE_APP_DEBUG=true \
+		VITE_TRUAPI_DEBUGGER_URL=ws://127.0.0.1:$(DEBUGGER_PORT) bunx --bun vite build
+	@printf '\n  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'
+	@printf '  Host:      http://localhost:5173/localhost:3000\n'
+	@printf '  Another port:  DEBUGGER_PORT=9300 make debugger\n\n'
+	# The three servers log for a while after they start, which buries anything
+	# printed here. Waiting for the slowest to answer and then reprinting the two
+	# URLs puts them at the bottom, where they are still on screen.
+	@trap 'kill 0' EXIT; \
+	( cd $(DEBUGGER_PKG) && TRUAPI_DEBUGGER_PORT=$(DEBUGGER_PORT) bun run src/server.ts ) & \
+	( cd $(DOTLI) && bun scripts/preview-server.ts ) & \
+	( cd $(PLAYGROUND) && yarn dev ) & \
+	( until curl -sfo /dev/null http://localhost:3000; do sleep 1; done; \
+	  printf '\n  Ready.  Debugger:  http://127.0.0.1:$(DEBUGGER_PORT)\n'; \
+	  printf '          Host:      http://localhost:5173/localhost:3000\n\n' ) & \
 	wait
 
 e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local signing-host CLI.

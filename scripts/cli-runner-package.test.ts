@@ -48,7 +48,7 @@ beforeAll(async () => {
     },
   );
   if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-});
+}, 60_000);
 
 afterAll(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
@@ -155,6 +155,9 @@ it("shares web permissions with installed scripts and the injected browser clien
     `
     import { readFileSync, writeFileSync } from 'node:fs';
     import { join } from 'node:path';
+    assert(window === window.top && window.__HOST_WEBVIEW_MARK__);
+    assert(window.__HOST_API_CLIENT__.client === truapi);
+    assert(window.__HOST_API_PORT__ instanceof MessagePort);
     assert(Object.getOwnPropertyDescriptor(globalThis, 'fetch').configurable === false);
     const expected: string = process.env.PACKAGED_TEST_VALUE!;
     const report = join(import.meta.dir, 'report.txt');

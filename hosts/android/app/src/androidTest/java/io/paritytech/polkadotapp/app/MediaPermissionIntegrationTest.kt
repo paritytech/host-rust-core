@@ -152,8 +152,11 @@ class MediaPermissionIntegrationTest {
         }
         override suspend fun navigateTo(url: String) = Unit
         override suspend fun featureSupported(request: HostFeatureSupportedRequest) = false
-        override suspend fun remotePermission(request: RemotePermission) = PermissionDecision.DENY
-        override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision {
+        override suspend fun remotePermission(product: ProductExecutionConfig, request: RemotePermission) = PermissionDecision.DENY
+        override suspend fun devicePermission(
+            product: ProductExecutionConfig,
+            request: HostDevicePermissionRequest,
+        ): PermissionDecision {
             events.add("prompt:$request")
             return checkNotNull(decisions.poll()) { "Unexpected extra permission prompt" }
         }

@@ -196,7 +196,7 @@ struct AccountSearchProviderTests {
     @Test("Blocked account returned only by remote search is excluded from global")
     func blockedAccountFromRemoteSearchExcluded() async throws {
         let blockedAccountId = try Data.randomOrError(of: 32)
-        let blockedContact = try makeContact(
+        let blockedContact = makeContact(
             accountId: blockedAccountId,
             username: "blocked_remote",
             isBlocked: true
