@@ -42,6 +42,7 @@ import type {
   HostLocaleSubscribeItem,
   HostPocketListSubscribeItem,
   HostPocketRemoveCardRequest,
+  HostProfilePresentRequest,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
@@ -2234,6 +2235,28 @@ export interface ProductStorage {
 }
 
 /**
+ * Host-implemented adapter that shows a product-referenced profile in
+ * host-owned UI. Optional: a host that omits it leaves Profile requests
+ * answered `Unsupported`. See `OptionalPlatform`.
+ *
+ * The reference is a bearer capability. The host resolves, decrypts and
+ * renders it; profile bytes and the reference's key never return to the
+ * product. The core screens only the reference's shape, so parsing it and
+ * deciding what it may fetch are the host's.
+ */
+export interface ProfilePlatform {
+  /**
+   * Take one presentation and return once it is shown, never waiting for
+   * the user to dismiss it. Report an unparseable reference as
+   * `InvalidReference`; show load and fetch failures in the UI instead.
+   */
+  presentProfile(
+    product: ProductContext,
+    request: HostProfilePresentRequest,
+  ): Promise<void>;
+}
+
+/**
  * Host theme source.
  */
 export interface ThemeHost {
@@ -2287,6 +2310,7 @@ export interface HostCallbacks {
   identityBackend?: IdentityBackendHost;
   permissionStatus?: PermissionStatusHost;
   pocket?: PocketPlatform;
+  profile?: ProfilePlatform;
 }
 
 export interface RequiredHostCallbacks {
@@ -2310,4 +2334,5 @@ export interface RequiredHostCallbacks {
   identityBackend?: Required<IdentityBackendHost>;
   permissionStatus?: Required<PermissionStatusHost>;
   pocket?: Required<PocketPlatform>;
+  profile?: Required<ProfilePlatform>;
 }

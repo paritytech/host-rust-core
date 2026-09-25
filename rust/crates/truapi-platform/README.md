@@ -59,15 +59,19 @@ revokes the grant.
 - `PocketPlatform`: stream the product's Pocket card collection and remove a
   card from it. The host owns the collection and decides which cards are
   privileged.
+- `ProfilePlatform`: show a product-referenced profile in host-owned UI. The
+  host resolves, decrypts and renders the reference; nothing returns to the
+  product but acceptance.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
-traits above except `ChatPlatform`, `PermissionStatusHost` and
-`PocketPlatform`, which `OptionalPlatform` lists instead: a host supplies each
+traits above except `ChatPlatform`, `PermissionStatusHost`, `PocketPlatform`
+and `ProfilePlatform`, which `OptionalPlatform` lists instead: a host supplies each
 only when it can serve it. Codegen reads `OptionalPlatform` to emit each listed
 capability as an optional group on the host-callback surface.
 
 Omitting `ChatPlatform` makes the core answer Chat calls `Unsupported`, and
-omitting `PocketPlatform` does the same for Pocket calls.
+omitting `PocketPlatform` or `ProfilePlatform` does the same for Pocket or
+Profile calls.
 Omitting `PermissionStatusHost` leaves device grants resolving from stored
 state alone, which is what a host with no OS permission model does anyway.
 Serving it gates both halves of the surface: a device permission request and a

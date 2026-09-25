@@ -65,6 +65,7 @@ pub(super) struct JsBridge {
     pub(super) write: Function,
     pub(super) clear: Function,
     pub(super) subscribe_storage: Function,
+    pub(super) present_profile: Function,
     pub(super) subscribe_theme: Function,
     pub(super) confirm_permission: Function,
     pub(super) confirm_user_action: Function,
@@ -73,6 +74,7 @@ pub(super) struct JsBridge {
     pub(super) identity_backend_present: bool,
     pub(super) permission_status_present: bool,
     pub(super) pocket_present: bool,
+    pub(super) profile_present: bool,
 }
 
 impl JsBridge {
@@ -128,6 +130,8 @@ impl JsBridge {
             write: get_function(callbacks, "write")?,
             clear: get_function(callbacks, "clear")?,
             subscribe_storage: get_function(callbacks, "subscribeStorage")?,
+            present_profile: get_optional_function(callbacks, "presentProfile")?
+                .unwrap_or_else(|| missing_callback("presentProfile")),
             subscribe_theme: get_function(callbacks, "subscribeTheme")?,
             confirm_permission: get_function(callbacks, "confirmPermission")?,
             confirm_user_action: get_function(callbacks, "confirmUserAction")?,
@@ -145,6 +149,7 @@ impl JsBridge {
                 .is_some(),
             pocket_present: get_optional_function(callbacks, "subscribePocketCards")?.is_some()
                 && get_optional_function(callbacks, "removePocketCard")?.is_some(),
+            profile_present: get_optional_function(callbacks, "presentProfile")?.is_some(),
         })
     }
 
@@ -171,6 +176,11 @@ impl JsBridge {
     /// Whether the host supplied every `pocket` callback.
     pub(super) fn has_pocket(&self) -> bool {
         self.pocket_present
+    }
+
+    /// Whether the host supplied every `profile` callback.
+    pub(super) fn has_profile(&self) -> bool {
+        self.profile_present
     }
 }
 
@@ -714,6 +724,25 @@ impl truapi_platform::ProductStorage for WasmPlatform {
             Some(JsValue::from_str(&key)),
             parse_host_local_storage_change_item_item,
         )
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::ProfilePlatform for WasmPlatform {
+    async fn present_profile(
+        &self,
+        product: &truapi_platform::ProductContext,
+        request: v01::HostProfilePresentRequest,
+    ) -> Result<(), v01::HostProfilePresentError> {
+        invoke_unit(
+            &self.bridge.present_profile,
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                Uint8Array::from(request.encode().as_slice()).into(),
+            ],
+        )
+        .await
+        .map_err(|reason| v01::HostProfilePresentError::Unknown { reason })
     }
 }
 

@@ -291,6 +291,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
         chat: false,
         permissionStatus: false,
         pocket: false,
+        profile: false,
         identityBackend: false,
         coinageWallet: false,
       },
@@ -465,6 +466,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       chat: true,
       permissionStatus: false,
       pocket: false,
+      profile: false,
       identityBackend: false,
       coinageWallet: false,
     });
@@ -488,6 +490,31 @@ describe("createWebWorkerPairingHostRuntime", () => {
       chat: false,
       permissionStatus: false,
       pocket: true,
+      profile: false,
+      identityBackend: false,
+      coinageWallet: false,
+    });
+  });
+
+  it("reports the profile capability to the worker when the host serves it", async () => {
+    const worker = new FakeWorker();
+    void createWebWorkerPairingHostRuntime(
+      asWorker(worker),
+      makeHostCallbacks({
+        profile: { presentProfile: async () => {} },
+      }),
+      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+    );
+
+    worker.emit({ kind: "loaded" });
+
+    // Without this the worker never builds the profile callbacks, so a host
+    // that renders profiles is answered `Unsupported` anyway.
+    expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
+      chat: false,
+      permissionStatus: false,
+      pocket: false,
+      profile: true,
       identityBackend: false,
       coinageWallet: false,
     });

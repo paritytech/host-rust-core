@@ -5,7 +5,7 @@
 use super::*;
 
 /// Fingerprint of the generated wire contract.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "87a3b34c06a7c823";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "c8972ad11436a788";
 
 /// `account_connection_status_subscribe` method marker.
 pub struct AccountConnectionStatusSubscribe;
@@ -1627,6 +1627,33 @@ impl RequestMethod for PreimageSubmit {
     const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
 }
 
+/// `profile_present` method marker.
+pub struct ProfilePresent;
+impl ProfilePresent {
+    /// Canonical metadata and frame ids for this method.
+    pub const DESCRIPTOR: MethodDescriptor = MethodDescriptor {
+        service: "Profile",
+        method: "present",
+        wire_name: "profile_present",
+        request_type: "truapi::versioned::profile::HostProfilePresentRequest",
+        response_type: "truapi::versioned::profile::HostProfilePresentResponse",
+        error_type: Some("truapi::versioned::profile::HostProfilePresentError"),
+        kind: MethodKind::Request,
+        direction: Direction::ProductToHost,
+        required_execution: None,
+        wire: MethodWire::Request(MethodIds {
+            trait_id: 20,
+            method_id: 0,
+        }),
+    };
+}
+impl RequestMethod for ProfilePresent {
+    type Request = truapi::versioned::profile::HostProfilePresentRequest;
+    type Response = truapi::versioned::profile::HostProfilePresentResponse;
+    type Error = truapi::versioned::profile::HostProfilePresentError;
+    const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
+}
+
 /// `renderer_render` method marker.
 pub struct RendererRender;
 impl RendererRender {
@@ -2311,6 +2338,7 @@ pub const APP_METHODS: &[MethodDescriptor] = &[
     PermissionsAuthorizeDevicePermission::DESCRIPTOR,
     PreimageLookupSubscribe::DESCRIPTOR,
     PreimageSubmit::DESCRIPTOR,
+    ProfilePresent::DESCRIPTOR,
     ResourceAllocationRequest::DESCRIPTOR,
     SigningCreateTransaction::DESCRIPTOR,
     SigningCreateTransactionWithLegacyAccount::DESCRIPTOR,
@@ -2387,6 +2415,7 @@ pub const WIDGET_METHODS: &[MethodDescriptor] = &[
     PermissionsAuthorizeDevicePermission::DESCRIPTOR,
     PreimageLookupSubscribe::DESCRIPTOR,
     PreimageSubmit::DESCRIPTOR,
+    ProfilePresent::DESCRIPTOR,
     ResourceAllocationRequest::DESCRIPTOR,
     SigningCreateTransaction::DESCRIPTOR,
     SigningCreateTransactionWithLegacyAccount::DESCRIPTOR,
@@ -2470,6 +2499,7 @@ pub const WORKER_METHODS: &[MethodDescriptor] = &[
     PocketRemoveCard::DESCRIPTOR,
     PreimageLookupSubscribe::DESCRIPTOR,
     PreimageSubmit::DESCRIPTOR,
+    ProfilePresent::DESCRIPTOR,
     RendererRender::DESCRIPTOR,
     RendererActionSubscribe::DESCRIPTOR,
     ResourceAllocationRequest::DESCRIPTOR,
