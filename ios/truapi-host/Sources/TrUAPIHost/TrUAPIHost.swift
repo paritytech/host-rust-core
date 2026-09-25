@@ -343,6 +343,30 @@ public protocol PocketHostBridge: AnyObject, Sendable {
     func removeCard(cardId: String) throws -> NativePocketRemoval
 }
 
+/// Host-implemented contacts surface: a lookup from handles to contacts, and
+/// the picker drawn over them.
+///
+/// Installed once on the runtime with
+/// ``TrUAPIHostRuntime/setContacts(_:)``, because the list belongs to the host
+/// and not to any one product. A runtime without one answers `contacts.pick`
+/// with `Unsupported`.
+///
+/// Nothing here reaches a product, and the list never reaches the core: it
+/// asks only about the handles a transaction names, and the picker returns the
+/// one person the user chose. Omit the contacts the user has blocked, from both.
+public protocol ContactsHostBridge: AnyObject, Sendable {
+    /// Resolve `lookup.handles` to contacts: one entry per handle, in order,
+    /// `nil` where none matches. A contact's handle is BLAKE2b-256 keyed with
+    /// `lookup.handleKey` over its 32-byte account. Called inline, so answer
+    /// from what is already in hand.
+    func contacts(lookup: HostContactLookup) throws -> HostContactMatches
+
+    /// Present the picker on behalf of `productId` and report what the user
+    /// did. With no contacts, answer `.noContacts` instead of drawing an empty
+    /// overlay.
+    func pickContact(productId: String) async throws -> NativeContactPick
+}
+
 public extension HostBridge {
     /// Default no-op logger. Override to plumb into your logging framework.
     func onCoreLog(marker: String, detail: String) {}
@@ -471,6 +495,36 @@ private final class PocketCallbackAdapter: NativePocketCallbacks, @unchecked Sen
     private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
         do {
             return try operation()
+        } catch let error as HostRejection {
+            throw error
+        } catch {
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
+        }
+    }
+}
+
+/// Adapter that bridges the public `ContactsHostBridge` to the generated
+/// UniFFI `NativeContactsCallbacks` protocol.
+private final class ContactsCallbackAdapter: NativeContactsCallbacks, @unchecked Sendable {
+    private let bridge: ContactsHostBridge
+
+    init(bridge: ContactsHostBridge) {
+        self.bridge = bridge
+    }
+
+    func contacts(lookup: HostContactLookup) throws -> HostContactMatches {
+        do {
+            return try bridge.contacts(lookup: lookup)
+        } catch let error as HostRejection {
+            throw error
+        } catch {
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
+        }
+    }
+
+    func pickContact(productId: String) async throws -> NativeContactPick {
+        do {
+            return try await bridge.pickContact(productId: productId)
         } catch let error as HostRejection {
             throw error
         } catch {
@@ -731,6 +785,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     private let callbackRetainer: HostCallbacks
     private let notificationCenter: NotificationCenter
     private let foregroundObserver: NSObjectProtocol
+    private var contactsRetainer: NativeContactsCallbacks?
 
     public convenience init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
         try self.init(bridge: bridge, runtimeConfig: runtimeConfig, notificationCenter: .default)
@@ -764,6 +819,26 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
 
     deinit {
         notificationCenter.removeObserver(foregroundObserver)
+    }
+
+    /// Install the host's contacts adapter, which owns the contact list and
+    /// draws the picker.
+    ///
+    /// Set-once, so the picker cannot change hands under a running product.
+    /// Answers whether this call installed it. Call it before opening any
+    /// product execution.
+    @discardableResult
+    public func setContacts(_ contacts: ContactsHostBridge) -> Bool {
+        let adapter = ContactsCallbackAdapter(bridge: contacts)
+        contactsRetainer = adapter
+        return inner.setContactsCallbacks(callbacks: adapter)
+    }
+
+    /// Tell the core the host's contacts changed. Call it whenever a contact
+    /// is removed or blocked, so a contact handle the core cached stops
+    /// resolving.
+    public func notifyContactsChanged() {
+        inner.notifyContactsChanged()
     }
 
     /// Open one executable connection with a host-assigned immutable context.

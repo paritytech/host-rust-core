@@ -8,6 +8,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod attestation;
 pub mod bulletin;
+pub mod contact_substitution;
 pub mod device_key;
 pub mod dotns;
 pub mod dotns_gateway;

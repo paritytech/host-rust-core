@@ -51,7 +51,8 @@ struct ProductsSignConfirmModelFactoryTests {
                 genesisHash: Data.randomOrError(of: 32),
                 callData: Data.randomOrError(of: 20),
                 extensions: [],
-                txExtVersion: 0
+                txExtVersion: 0,
+                contacts: []
             )
         ))
 

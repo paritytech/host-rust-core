@@ -88,6 +88,7 @@ export type MainToWorker =
   | { kind: "disconnectSession"; requestId: number }
   | { kind: "cancelPairing" }
   | { kind: "notifySessionStoreChanged" }
+  | { kind: "notifyContactsChanged" }
   | { kind: "acquireWorker"; productId: string }
   | { kind: "releaseWorker"; productId: string }
   | { kind: "activateStoredSession"; requestId: number }

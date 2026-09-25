@@ -15,6 +15,7 @@ import {
 import { fromHex, toHex } from "@polkadot-api/utils";
 import type {
   Client,
+  ContactHandle,
   HexString,
   ProductAccountId,
   ProductAccountTxPayload,
@@ -48,6 +49,11 @@ export type BuildCreateTransactionPayload = (opts: {
   signer: ProductAccountId;
   genesisHash: HexString;
   callData: HexString;
+  /**
+   * Contact handles `callData` names, which the host replaces with the
+   * accounts they resolve to. A call naming nobody leaves this out.
+   */
+  contacts?: ContactHandle[];
 }) => Promise<Result<ProductAccountTxPayload, Error>>;
 
 // Lite usernames are keyed by their dotted label ("alice.01") on the Asset
@@ -276,6 +282,7 @@ export function createBuildCreateTransactionPayload(
         chainState,
       ),
       txExtVersion: txExtVersionFromMetadata(unified),
+      contacts: opts.contacts ?? [],
     });
   };
 }

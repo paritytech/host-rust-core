@@ -722,6 +722,9 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
     case "notifySessionStoreChanged":
       runtime?.notifySessionStoreChanged();
       break;
+    case "notifyContactsChanged":
+      runtime?.notifyContactsChanged();
+      break;
     case "acquireWorker":
       runtime?.acquireWorker(msg.productId);
       break;

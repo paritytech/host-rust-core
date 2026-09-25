@@ -883,6 +883,7 @@ pub(crate) fn product_tx_payload(identifier: &str) -> v01::ProductAccountTxPaylo
         call_data: vec![0],
         extensions: vec![],
         tx_ext_version: 0,
+        contacts: Vec::new(),
     }
 }
 

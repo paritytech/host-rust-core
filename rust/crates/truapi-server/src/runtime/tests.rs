@@ -544,6 +544,680 @@ fn get_chain_info_unserved_identifier_is_not_supported() {
     );
 }
 
+/// A picker whose contact list and answer are fixed at construction.
+struct StubContactsPlatform {
+    /// The host's list; a test removes a contact by editing it.
+    listed: Mutex<Vec<truapi::latest::AccountId>>,
+    /// How many lookups the core made.
+    lookups: std::sync::atomic::AtomicUsize,
+    pick: truapi_platform::HostContactPick,
+    failure: Option<&'static str>,
+    /// Products the picker was opened on behalf of, in order.
+    asked_for: Mutex<Vec<String>>,
+}
+
+impl StubContactsPlatform {
+    fn new(
+        listed: Vec<truapi::latest::AccountId>,
+        pick: truapi_platform::HostContactPick,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            listed: Mutex::new(listed),
+            lookups: Default::default(),
+            pick,
+            failure: None,
+            asked_for: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn picking(account: truapi::latest::AccountId) -> Arc<Self> {
+        Self::new(
+            vec![account],
+            truapi_platform::HostContactPick::Picked { account },
+        )
+    }
+
+    fn dismissing() -> Arc<Self> {
+        Self::new(
+            vec![[10u8; 32]],
+            truapi_platform::HostContactPick::Dismissed,
+        )
+    }
+
+    fn empty() -> Arc<Self> {
+        Self::new(vec![], truapi_platform::HostContactPick::NoContacts)
+    }
+
+    fn without_a_picker() -> Arc<Self> {
+        Self::new(
+            vec![[10u8; 32]],
+            truapi_platform::HostContactPick::Unsupported,
+        )
+    }
+
+    fn failing(reason: &'static str) -> Arc<Self> {
+        Arc::new(Self {
+            listed: Mutex::new(vec![[10u8; 32]]),
+            lookups: Default::default(),
+            pick: truapi_platform::HostContactPick::Dismissed,
+            failure: Some(reason),
+            asked_for: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[truapi::async_trait]
+impl truapi_platform::ContactsPlatform for StubContactsPlatform {
+    async fn contacts(
+        &self,
+        lookup: &truapi_platform::HostContactLookup,
+    ) -> Result<truapi_platform::HostContactMatches, truapi::latest::GenericError> {
+        if let Some(reason) = self.failure {
+            return Err(truapi::latest::GenericError {
+                reason: reason.to_string(),
+            });
+        }
+        self.lookups
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let listed = self.listed.lock().expect("listed mutex poisoned");
+        Ok(truapi_platform::HostContactMatches {
+            accounts: lookup
+                .handles
+                .iter()
+                .map(|handle| {
+                    listed.iter().copied().find(|account| {
+                        &crate::runtime::contacts::contact_handle(&lookup.handle_key, account)
+                            == handle
+                    })
+                })
+                .collect(),
+        })
+    }
+
+    async fn pick_contact(
+        &self,
+        product: &ProductContext,
+    ) -> Result<truapi_platform::HostContactPick, truapi::latest::GenericError> {
+        self.asked_for
+            .lock()
+            .expect("asked_for mutex poisoned")
+            .push(product.product_id.clone());
+        match self.failure {
+            Some(reason) => Err(truapi::latest::GenericError {
+                reason: reason.to_string(),
+            }),
+            None => Ok(self.pick),
+        }
+    }
+}
+
+/// A picker-capable runtime for `product_id`, with a session unless
+/// `connected` is false.
+fn contacts_host(
+    product_id: &str,
+    platform: Arc<StubPlatform>,
+    contacts: Option<Arc<StubContactsPlatform>>,
+    connected: bool,
+) -> ProductRuntimeHost {
+    let (host_config, product) = runtime_config(product_id);
+    let services = RuntimeServices::with_chat_platform(
+        platform as Arc<dyn Platform>,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+        None,
+    );
+    if let Some(contacts) = contacts {
+        services.install_contacts_platform(contacts);
+    }
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    if connected {
+        install_pairing_session(&host, session_info());
+    }
+    host
+}
+
+fn pick(
+    host: &ProductRuntimeHost,
+) -> Result<HostContactsPickResponse, CallError<HostContactsPickError>> {
+    futures::executor::block_on(Contacts::pick(
+        host,
+        &CallContext::default(),
+        HostContactsPickRequest::V1(v01::HostContactsPickRequest {}),
+    ))
+}
+
+/// A host that implements only the required `contacts` method.
+struct LookupOnlyContactsPlatform;
+
+#[truapi::async_trait]
+impl truapi_platform::ContactsPlatform for LookupOnlyContactsPlatform {
+    async fn contacts(
+        &self,
+        lookup: &truapi_platform::HostContactLookup,
+    ) -> Result<truapi_platform::HostContactMatches, truapi::latest::GenericError> {
+        Ok(truapi_platform::HostContactMatches {
+            accounts: vec![None; lookup.handles.len()],
+        })
+    }
+}
+
+/// A host whose lookup answers every handle with one fixed account, the way a
+/// buggy or hostile host would.
+struct MisanswerContactsPlatform;
+
+#[truapi::async_trait]
+impl truapi_platform::ContactsPlatform for MisanswerContactsPlatform {
+    async fn contacts(
+        &self,
+        lookup: &truapi_platform::HostContactLookup,
+    ) -> Result<truapi_platform::HostContactMatches, truapi::latest::GenericError> {
+        Ok(truapi_platform::HostContactMatches {
+            accounts: vec![Some([0xEE; 32]); lookup.handles.len()],
+        })
+    }
+}
+
+#[test]
+fn a_host_that_only_resolves_contacts_reports_unsupported() {
+    // `pick_contact` is defaulted so a host needs to write one method. The
+    // default is truthful: a product learns the picker will never work here,
+    // rather than a dismissal it would keep retrying.
+    let (host_config, product) = runtime_config("voting.dot");
+    let services = RuntimeServices::with_chat_platform(
+        stub_platform() as Arc<dyn Platform>,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+        None,
+    );
+    services.install_contacts_platform(Arc::new(LookupOnlyContactsPlatform));
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    install_pairing_session(&host, session_info());
+
+    assert_eq!(pick(&host).unwrap_err(), CallError::Unsupported);
+}
+
+#[test]
+fn contacts_pick_without_a_platform_is_unsupported() {
+    // No picker means no overlay, and nothing to ask the user.
+    let host = contacts_host("voting.dot", stub_platform(), None, true);
+    assert_eq!(pick(&host).unwrap_err(), CallError::Unsupported);
+}
+
+#[test]
+fn contacts_pick_without_a_session_reports_not_connected() {
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking([10u8; 32])),
+        false,
+    );
+
+    assert_eq!(
+        pick(&host).unwrap_err(),
+        CallError::Domain(HostContactsPickError::V1(
+            v01::HostContactsPickError::NotConnected
+        ))
+    );
+}
+
+#[test]
+fn contacts_pick_never_prompts_for_a_permission() {
+    // The user's selection is the consent, so there is no grant to request
+    // and nothing persisted per product.
+    let platform = stub_platform();
+    let host = contacts_host(
+        "voting.dot",
+        platform.clone(),
+        Some(StubContactsPlatform::picking([10u8; 32])),
+        true,
+    );
+
+    pick(&host).expect("the picker opens");
+
+    assert!(
+        platform
+            .device_permission_requests
+            .lock()
+            .expect("device permission list mutex poisoned")
+            .is_empty(),
+        "a user-mediated picker must not also request a permission"
+    );
+}
+
+#[test]
+fn contacts_pick_tells_the_host_which_product_is_asking() {
+    // The host draws the overlay, so it has to be able to name the caller.
+    let contacts = StubContactsPlatform::picking([10u8; 32]);
+    let host = contacts_host("voting.dot", stub_platform(), Some(contacts.clone()), true);
+
+    pick(&host).expect("the picker opens");
+
+    assert_eq!(
+        *contacts.asked_for.lock().expect("asked_for mutex poisoned"),
+        vec!["voting.dot".to_string()]
+    );
+}
+
+#[test]
+fn the_handle_is_derived_from_the_sessions_secret_entropy_source() {
+    // The security property of the whole design, pinned end to end: the
+    // handle a product receives must be the one derived from this session's
+    // root entropy source. Keying on anything public (session.public_key is
+    // published on chain) or on a constant would satisfy every other test
+    // here, so this is the only thing standing between the design and a
+    // handle an adversary can recompute.
+    let account = [10u8; 32];
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking(account)),
+        true,
+    );
+
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+        panic!("the user picked someone");
+    };
+    let handle = handle.bytes;
+
+    let source = session_info()
+        .root_entropy_source
+        .expect("the test session carries an entropy source");
+    let expected = crate::runtime::contacts::contact_handle(
+        &crate::runtime::contacts::handle_key_from_root_source(&source),
+        &account,
+    );
+    assert_eq!(
+        handle, expected,
+        "the handle must key on the session's root entropy source"
+    );
+    // And is not what the public alternatives would have produced.
+    for public in [session_info().public_key, [0u8; 32]] {
+        assert_ne!(
+            handle,
+            crate::runtime::contacts::contact_handle(
+                &crate::runtime::contacts::handle_key_from_root_source(&public),
+                &account,
+            ),
+            "the handle must not be derivable from public material"
+        );
+    }
+}
+
+#[test]
+fn contacts_pick_returns_a_handle_and_never_the_account() {
+    let account = [10u8; 32];
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking(account)),
+        true,
+    );
+
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+        panic!("the user picked someone");
+    };
+    assert_ne!(
+        handle.bytes, account,
+        "the account must not be passed through as the handle"
+    );
+}
+
+#[test]
+fn a_dismissal_an_empty_list_and_no_picker_are_three_answers() {
+    // The distinction a product acts on: retry a dismissal, do not retry an
+    // empty list, and never retry a host that has no picker.
+    let dismissed = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::dismissing()),
+        true,
+    );
+    let HostContactsPickResponse::V1(response) =
+        pick(&dismissed).expect("a dismissal is not an error");
+    assert_eq!(response.outcome, v01::ContactPickOutcome::Dismissed);
+
+    let empty = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::empty()),
+        true,
+    );
+    let HostContactsPickResponse::V1(response) =
+        pick(&empty).expect("an empty list is not an error");
+    assert_eq!(response.outcome, v01::ContactPickOutcome::NoContacts);
+
+    let no_picker = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::without_a_picker()),
+        true,
+    );
+    assert_eq!(pick(&no_picker).unwrap_err(), CallError::Unsupported);
+}
+
+#[test]
+fn the_host_answers_an_empty_list_itself() {
+    // The core never sees the list, so emptiness is the host's to report: the
+    // picker is asked, and its `NoContacts` reaches the product as is.
+    let contacts = StubContactsPlatform::empty();
+    let host = contacts_host("voting.dot", stub_platform(), Some(contacts.clone()), true);
+
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the call succeeds");
+    assert_eq!(response.outcome, v01::ContactPickOutcome::NoContacts);
+    assert_eq!(
+        *contacts.asked_for.lock().expect("asked_for mutex poisoned"),
+        vec!["voting.dot".to_string()]
+    );
+}
+
+#[test]
+fn contacts_pick_maps_a_platform_failure_to_unknown() {
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::failing("overlay unavailable")),
+        true,
+    );
+
+    assert_eq!(
+        pick(&host).unwrap_err(),
+        CallError::Domain(HostContactsPickError::V1(
+            v01::HostContactsPickError::Unknown {
+                reason: "overlay unavailable".to_string(),
+            }
+        ))
+    );
+}
+
+#[test]
+fn contacts_pick_is_available_to_an_app_execution() {
+    // Unlike Chat, the picker is not gated on an execution kind.
+    let (_, product) = runtime_config("voting.dot");
+    assert_eq!(
+        product.execution_kind,
+        truapi_platform::ProductExecutionKind::App
+    );
+
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking([10u8; 32])),
+        true,
+    );
+    let HostContactsPickResponse::V1(response) =
+        pick(&host).expect("an app product may open the picker");
+    assert!(matches!(
+        response.outcome,
+        v01::ContactPickOutcome::Picked { .. }
+    ));
+}
+
+/// A call naming a handle is the call naming the account by the time anyone
+/// signs it or is asked about it.
+#[test]
+fn a_declared_handle_becomes_the_account_it_names() {
+    let account = [10u8; 32];
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking(account)),
+        true,
+    );
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+        panic!("the user picked someone");
+    };
+
+    // A transfer-shaped call: index, recipient, amount.
+    let mut call = vec![0x04, 0x00];
+    call.extend_from_slice(&handle.bytes);
+    call.extend_from_slice(&[0x07; 8]);
+
+    let substituted =
+        futures::executor::block_on(host.substitute_declared_contacts(call.clone(), &[handle]))
+            .expect("the handle resolves to the contact it was minted for");
+
+    assert_eq!(
+        &substituted[2..34],
+        &account,
+        "the recipient is the account"
+    );
+    assert_eq!(&substituted[..2], &call[..2]);
+    assert_eq!(&substituted[34..], &call[34..]);
+}
+
+/// A handle the user just picked resolves from the core's cache, so signing a
+/// payment to them does not read the host's list again.
+#[test]
+fn a_picked_handle_signs_without_reading_the_list() {
+    let contacts = StubContactsPlatform::picking([10u8; 32]);
+    let host = contacts_host("voting.dot", stub_platform(), Some(contacts.clone()), true);
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+        panic!("the user picked someone");
+    };
+    let reads_after_pick = contacts.lookups.load(std::sync::atomic::Ordering::SeqCst);
+
+    futures::executor::block_on(
+        host.substitute_declared_contacts(handle.bytes.to_vec(), &[handle]),
+    )
+    .expect("the cached handle resolves");
+
+    assert_eq!(
+        contacts.lookups.load(std::sync::atomic::Ordering::SeqCst),
+        reads_after_pick,
+        "a cache hit must not read the list"
+    );
+}
+
+/// Once the host says its contacts changed, a contact it removed stops
+/// resolving even though the core had cached their handle.
+#[test]
+fn a_removed_contact_stops_resolving_once_the_host_signals() {
+    let contacts = StubContactsPlatform::picking([10u8; 32]);
+    let host = contacts_host("voting.dot", stub_platform(), Some(contacts.clone()), true);
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+        panic!("the user picked someone");
+    };
+
+    contacts
+        .listed
+        .lock()
+        .expect("listed mutex poisoned")
+        .clear();
+    host.services.contact_handles.clear();
+
+    assert_eq!(
+        futures::executor::block_on(
+            host.substitute_declared_contacts(handle.bytes.to_vec(), &[handle])
+        ),
+        Err(crate::runtime::ContactResolutionError::UnknownContact),
+        "a removed contact must not resolve from a cleared cache"
+    );
+}
+
+/// A handle the host has no contact for is the only revocation this API has,
+/// and it refuses rather than signing a call that names nobody.
+#[test]
+fn a_handle_no_contact_matches_refuses_the_call() {
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking([10u8; 32])),
+        true,
+    );
+    let stale = v01::ContactHandle { bytes: [0xEE; 32] };
+    let mut call = vec![0x04, 0x00];
+    call.extend_from_slice(&stale.bytes);
+
+    assert_eq!(
+        futures::executor::block_on(host.substitute_declared_contacts(call, &[stale])),
+        Err(crate::runtime::ContactResolutionError::UnknownContact)
+    );
+}
+
+/// A connected runtime whose contacts adapter is `contacts`.
+fn host_with_contacts(contacts: Arc<dyn truapi_platform::ContactsPlatform>) -> ProductRuntimeHost {
+    let (host_config, product) = runtime_config("voting.dot");
+    let services = RuntimeServices::with_chat_platform(
+        stub_platform() as Arc<dyn Platform>,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+        None,
+    );
+    services.install_contacts_platform(contacts);
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+    install_pairing_session(&host, session_info());
+    host
+}
+
+/// The host resolves, but the core checks: an account that does not hash to
+/// the handle it was returned for is no contact, so a host cannot make a
+/// made-up handle pay somebody.
+#[test]
+fn an_account_the_host_returns_for_the_wrong_handle_refuses_the_call() {
+    let host = host_with_contacts(Arc::new(MisanswerContactsPlatform));
+    let forged = v01::ContactHandle { bytes: [0x42; 32] };
+
+    assert_eq!(
+        futures::executor::block_on(
+            host.substitute_declared_contacts(forged.bytes.to_vec(), &[forged])
+        ),
+        Err(crate::runtime::ContactResolutionError::UnknownContact)
+    );
+}
+
+/// A handle in the call that the product forgot to declare would be signed as
+/// an address nobody holds, so the call is refused instead.
+#[test]
+fn a_known_handle_left_undeclared_refuses_the_call() {
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::picking([10u8; 32])),
+        true,
+    );
+    let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+        panic!("the user picked someone");
+    };
+    let mut call = vec![0x04, 0x00];
+    call.extend_from_slice(&handle.bytes);
+
+    assert_eq!(
+        futures::executor::block_on(host.substitute_declared_contacts(call, &[])),
+        Err(crate::runtime::ContactResolutionError::UnknownContact)
+    );
+}
+
+/// A lookup that fails says nothing about the contact, so it must not read as
+/// a revoked one: the product can retry rather than drop the handle.
+#[test]
+fn a_failed_host_lookup_is_not_an_unknown_contact() {
+    let host = contacts_host(
+        "voting.dot",
+        stub_platform(),
+        Some(StubContactsPlatform::failing("store offline")),
+        true,
+    );
+    let handle = v01::ContactHandle { bytes: [0x42; 32] };
+
+    assert_eq!(
+        futures::executor::block_on(
+            host.substitute_declared_contacts(handle.bytes.to_vec(), &[handle])
+        ),
+        Err(crate::runtime::ContactResolutionError::Host(
+            "store offline".to_string()
+        ))
+    );
+}
+
+/// Every handle the cache cannot answer goes to the host in one lookup.
+#[test]
+fn uncached_handles_are_resolved_in_one_lookup() {
+    let (alice, bob) = ([10u8; 32], [11u8; 32]);
+    let contacts = StubContactsPlatform::new(
+        vec![alice, bob],
+        truapi_platform::HostContactPick::Dismissed,
+    );
+    let host = contacts_host("voting.dot", stub_platform(), Some(contacts.clone()), true);
+    let source = session_info()
+        .root_entropy_source
+        .expect("the test session carries an entropy source");
+    let key = crate::runtime::contacts::handle_key_from_root_source(&source);
+    let handles = [alice, bob].map(|account| v01::ContactHandle {
+        bytes: crate::runtime::contacts::contact_handle(&key, &account),
+    });
+    let call: Vec<u8> = handles.iter().flat_map(|handle| handle.bytes).collect();
+
+    let substituted =
+        futures::executor::block_on(host.substitute_declared_contacts(call, &handles))
+            .expect("both handles resolve");
+
+    assert_eq!(&substituted[..32], &alice);
+    assert_eq!(&substituted[32..], &bob);
+    assert_eq!(
+        contacts.lookups.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "both misses go to the host together"
+    );
+}
+
+/// A call that declares nobody reaches for no contact list, so a host that
+/// serves no picker still builds ordinary transactions.
+#[test]
+fn a_call_declaring_no_contacts_needs_no_picker() {
+    let host = contacts_host("voting.dot", stub_platform(), None, true);
+    let call = vec![0x04, 0x00, 0x09];
+
+    assert_eq!(
+        futures::executor::block_on(host.substitute_declared_contacts(call.clone(), &[])),
+        Ok(call)
+    );
+}
+
+#[test]
+fn two_products_receive_the_same_handle_for_one_contact() {
+    // The deliberate property: the handle is a durable shared id, so a
+    // product can be handed a recipient another product already knows.
+    let platform = stub_platform();
+    let account = [10u8; 32];
+
+    let handle_for = |product_id: &str| {
+        let host = contacts_host(
+            product_id,
+            platform.clone(),
+            Some(StubContactsPlatform::picking(account)),
+            true,
+        );
+        let HostContactsPickResponse::V1(response) = pick(&host).expect("the picker opens");
+        let v01::ContactPickOutcome::Picked { handle } = response.outcome else {
+            panic!("the user picked someone");
+        };
+        handle
+    };
+
+    assert_eq!(handle_for("voting.dot"), handle_for("games.dot"));
+}
+
 /// Records which `ChatPlatform` methods the runtime actually reached.
 #[derive(Default)]
 struct RecordingChatPlatform {
@@ -4294,6 +4968,8 @@ fn auto_signing_test_platform(session: &SessionInfo, request_id: &str) -> Arc<St
             .unwrap();
     Arc::new(StubPlatform {
         resource_allocation_confirmed: true,
+        // A grant skips confirmation, except for a call naming contacts.
+        create_transaction_confirmed: true,
         sso_response_script: Some(sso_success_response_script(
             session,
             RemoteMessage {
@@ -4417,6 +5093,7 @@ fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
                 extensions: vec![],
                 // V4 needs no chain metadata, so the whole assembly is local.
                 tx_ext_version: 0,
+                contacts: Vec::new(),
             }),
         ))
         .expect("a V4 transaction assembles locally under the capability");
@@ -4436,6 +5113,178 @@ fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
         "the product account signed it",
     );
     assert_eq!(call, vec![0x04, 0x00]);
+}
+
+/// The account a picked contact resolves to, and the handle a product holds
+/// for them. Minted through the real picker so the handle is keyed the way a
+/// product's would be.
+fn picked_contact(host: &ProductRuntimeHost) -> v01::ContactHandle {
+    let HostContactsPickResponse::V1(picked) = pick(host).expect("the picker opens");
+    let v01::ContactPickOutcome::Picked { handle } = picked.outcome else {
+        panic!("the user picked someone");
+    };
+    handle
+}
+
+/// A transfer-shaped call: call index, recipient, amount.
+fn transfer_naming(recipient: &[u8; 32]) -> Vec<u8> {
+    let mut call = vec![0x04, 0x00];
+    call.extend_from_slice(recipient);
+    call.extend_from_slice(&[0x07; 8]);
+    call
+}
+
+fn transaction_naming(
+    handle: v01::ContactHandle,
+    declared: Vec<v01::ContactHandle>,
+) -> HostCreateTransactionRequest {
+    HostCreateTransactionRequest::V1(v01::ProductAccountTxPayload {
+        signer: account_id("myapp.dot", 0),
+        genesis_hash: [1; 32],
+        call_data: transfer_naming(&handle.bytes),
+        extensions: vec![],
+        // V4 needs no chain metadata, so the whole assembly is local.
+        tx_ext_version: 0,
+        contacts: declared,
+    })
+}
+
+/// A granted host that also serves a picker, so what a transaction naming a
+/// contact ends up signing is visible with no prompt in the way.
+fn granted_pairing_host_with_contact(
+    account: truapi::latest::AccountId,
+) -> (Arc<StubPlatform>, ProductRuntimeHost) {
+    let (platform, host) = granted_pairing_host();
+    assert!(
+        host.services
+            .install_contacts_platform(StubContactsPlatform::picking(account)),
+        "the picker installs before anything reads it",
+    );
+    (platform, host)
+}
+
+/// The bytes that get signed name the account. A product declares a handle,
+/// and by the time an extrinsic exists the recipient is an account the chain
+/// can pay, so a handle can never reach a block.
+#[test]
+fn a_signed_transaction_pays_the_account_the_handle_named() {
+    const ALICE: truapi::latest::AccountId = [0xA1; 32];
+    let (_, host) = granted_pairing_host_with_contact(ALICE);
+    let handle = picked_contact(&host);
+    assert_ne!(handle.bytes, ALICE, "the handle is not the account");
+
+    let HostCreateTransactionResponse::V1(response) =
+        futures::executor::block_on(host.create_transaction(
+            &CallContext::default(),
+            transaction_naming(handle, vec![handle]),
+        ))
+        .expect("the declared handle resolves to the contact it was minted for");
+
+    let (_, _, call) = crate::host_logic::extrinsic::tests::split_v4(&response.transaction);
+    assert_eq!(
+        call,
+        transfer_naming(&ALICE),
+        "the signed call pays the account, and nothing else moved",
+    );
+    assert!(
+        !call.windows(32).any(|window| window == handle.bytes),
+        "no handle survives into what was signed",
+    );
+}
+
+/// The signed call goes back to the product with the contact's account in it,
+/// so an auto-signing grant does not skip the user when a call names contacts:
+/// otherwise a product could read any handle's account unseen.
+#[test]
+fn a_grant_still_asks_the_user_when_a_call_names_a_contact() {
+    const ALICE: truapi::latest::AccountId = [0xA1; 32];
+    let (platform, host) = granted_pairing_host_with_contact(ALICE);
+    let handle = picked_contact(&host);
+
+    futures::executor::block_on(host.create_transaction(
+        &CallContext::default(),
+        transaction_naming(handle, vec![handle]),
+    ))
+    .expect("the user confirms");
+
+    assert_eq!(
+        platform
+            .create_transaction_reviews
+            .lock()
+            .expect("reviews mutex poisoned")
+            .len(),
+        1,
+        "naming a contact asks the user despite the grant"
+    );
+}
+
+/// The confirmation is drawn from the substituted call, so the user is asked
+/// about the person being paid rather than about 32 opaque bytes.
+#[test]
+fn the_confirmation_shows_the_account_not_the_handle() {
+    const ALICE: truapi::latest::AccountId = [0xA1; 32];
+    let platform = Arc::new(StubPlatform {
+        create_transaction_confirmed: true,
+        ..StubPlatform::default()
+    });
+    let host = contacts_host(
+        "myapp.dot",
+        platform.clone(),
+        Some(StubContactsPlatform::picking(ALICE)),
+        true,
+    );
+    let handle = picked_contact(&host);
+
+    let _ = futures::executor::block_on(host.create_transaction(
+        &CallContext::default(),
+        transaction_naming(handle, vec![handle]),
+    ));
+
+    let reviews = platform
+        .create_transaction_reviews
+        .lock()
+        .expect("create transaction review list mutex poisoned");
+    let [truapi_platform::CreateTransactionReview::Product(reviewed)] = reviews.as_slice() else {
+        panic!("one product transaction was reviewed, got {reviews:?}");
+    };
+    assert_eq!(
+        reviewed.call_data,
+        transfer_naming(&ALICE),
+        "the review names the account",
+    );
+}
+
+/// A handle the host can no longer resolve refuses the whole transaction. A
+/// removed contact and a forged handle look the same here, which is the only
+/// revocation this API has.
+#[test]
+fn a_transaction_naming_an_unresolvable_handle_is_refused() {
+    let (platform, host) = granted_pairing_host_with_contact([0xA1; 32]);
+    let stale = v01::ContactHandle { bytes: [0xEE; 32] };
+
+    let error = futures::executor::block_on(host.create_transaction(
+        &CallContext::default(),
+        transaction_naming(stale, vec![stale]),
+    ))
+    .expect_err("a handle naming nobody refuses the call");
+
+    assert!(
+        matches!(
+            error,
+            CallError::Domain(HostCreateTransactionError::V1(
+                v01::HostCreateTransactionError::UnknownContact
+            ))
+        ),
+        "refused as UnknownContact, got {error:?}",
+    );
+    assert!(
+        platform
+            .create_transaction_reviews
+            .lock()
+            .expect("create transaction review list mutex poisoned")
+            .is_empty(),
+        "nothing was shown for a call that could not be resolved",
+    );
 }
 
 #[test]

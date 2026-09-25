@@ -17,6 +17,7 @@ mod authority;
 pub(crate) mod bulletin_rpc;
 mod capabilities;
 mod chat;
+pub(crate) mod contacts;
 mod dotns_lookup;
 mod identity;
 pub(crate) mod login_failure;
@@ -51,6 +52,14 @@ pub(crate) use actions::ActionChannel;
 use authority::{AuthorityCancelError, AuthoritySession};
 pub(crate) use authority::{AuthorityError, BulletinAllowanceKey, ProductAuthority};
 pub(crate) use chat::chat_platform_for;
+pub(crate) use contacts::ContactResolutionError;
+
+/// The host's contact picker plus the key its handles are minted under:
+/// everything one `contacts.pick` call needs from the connection.
+type ContactsPicker = (
+    Arc<dyn truapi_platform::ContactsPlatform>,
+    crate::runtime::contacts::ContactHandles,
+);
 use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use pairing_host::PairingHost;
@@ -74,7 +83,7 @@ pub use signing_host::StatementRenewalTarget;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::TrackedStatementRenewalTarget;
 use tracing::{instrument, warn};
-use truapi::api::{Chat, Pocket, Renderer};
+use truapi::api::{Chat, Contacts, Pocket, Renderer};
 use truapi::versioned::account::{HostAccountGetError, HostAccountSignVrfError};
 use truapi::versioned::chat::{
     HostChatActionSubscribeError, HostChatActionSubscribeItem, HostChatActionSubscribeRequest,
@@ -82,6 +91,9 @@ use truapi::versioned::chat::{
     HostChatListSubscribeError, HostChatListSubscribeItem, HostChatListSubscribeRequest,
     HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
     HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
+};
+use truapi::versioned::contacts::{
+    HostContactsPickError, HostContactsPickRequest, HostContactsPickResponse,
 };
 use truapi::versioned::pocket::{
     HostPocketListSubscribeError, HostPocketListSubscribeItem, HostPocketListSubscribeRequest,
@@ -1220,6 +1232,178 @@ impl ProductRuntimeHost {
             return Err(CallError::Denied);
         }
         self.pocket_platform.clone().ok_or(CallError::Unsupported)
+    }
+
+    /// Replace the contact handles a call declares with the accounts they
+    /// name, before the call is shown to the user or signed.
+    ///
+    /// Substituting here rather than at the authority is what lets the
+    /// confirmation show who is being paid: the host draws the review from the
+    /// call it is about to sign, and by then the handle is an account it can
+    /// put a name to. A call declaring no contacts reaches for no host, but is
+    /// still refused if it carries a handle it forgot to declare.
+    pub(crate) async fn substitute_declared_contacts(
+        &self,
+        call_data: Vec<u8>,
+        declared: &[v01::ContactHandle],
+    ) -> Result<Vec<u8>, ContactResolutionError> {
+        let cache = &self.services.contact_handles;
+        let declared_bytes: Vec<[u8; 32]> = declared.iter().map(|handle| handle.bytes).collect();
+        if cache.has_undeclared_handle(&call_data, &declared_bytes) {
+            return Err(ContactResolutionError::UnknownContact);
+        }
+        if declared.is_empty() {
+            return Ok(call_data);
+        }
+        let (platform, handles) = self.contacts_picker().map_err(|error| match error {
+            CallError::Unsupported => ContactResolutionError::Unsupported,
+            CallError::Domain(v01::HostContactsPickError::NotConnected) => {
+                ContactResolutionError::NotConnected
+            }
+            CallError::Domain(v01::HostContactsPickError::Unknown { reason }) => {
+                ContactResolutionError::Host(reason)
+            }
+            other => ContactResolutionError::Host(format!("{other:?}")),
+        })?;
+        let mut resolved: Vec<([u8; 32], Option<[u8; 32]>)> = declared_bytes
+            .iter()
+            .map(|handle| (*handle, cache.get(handle, &handles)))
+            .collect();
+        // The host is asked only about handles the cache cannot answer, all
+        // of them in one lookup.
+        let misses: Vec<[u8; 32]> = resolved
+            .iter()
+            .filter(|(_, account)| account.is_none())
+            .map(|(handle, _)| *handle)
+            .collect();
+        if !misses.is_empty() {
+            let generation = cache.generation();
+            let lookup = truapi_platform::HostContactLookup {
+                handle_key: handles.handle_key(),
+                handles: misses,
+            };
+            let matches = platform
+                .contacts(&lookup)
+                .await
+                .map_err(|error| ContactResolutionError::Host(error.reason))?;
+            // One answer per handle, or the answers cannot be paired up.
+            if matches.accounts.len() != lookup.handles.len() {
+                return Err(ContactResolutionError::Host(format!(
+                    "contacts lookup answered {} of {} handles",
+                    matches.accounts.len(),
+                    lookup.handles.len()
+                )));
+            }
+            let mut answers = matches.accounts.into_iter();
+            for (handle, account) in resolved.iter_mut().filter(|(_, account)| account.is_none()) {
+                let answer = answers.next().expect("one answer per miss; qed");
+                // A host answer is checked, not trusted: an account that does
+                // not hash to its handle is treated as no contact at all.
+                *account = answer.filter(|account| handles.names(handle, account));
+                if let Some(account) = account {
+                    cache.insert(*handle, *account, generation);
+                }
+            }
+        }
+        crate::host_logic::contact_substitution::substitute(&call_data, &resolved)
+            .map_err(|_| ContactResolutionError::UnknownContact)
+    }
+
+    /// The contact picker for this connection, plus the key its handles are
+    /// minted under.
+    ///
+    /// Ordered so a host that serves no picker answers `Unsupported` without an
+    /// overlay ever being raised. There is no permission step: the user
+    /// selecting a contact is the consent.
+    fn contacts_picker(&self) -> Result<ContactsPicker, CallError<v01::HostContactsPickError>> {
+        // A capability the host does not serve is a framework answer; a
+        // missing session is one the product handles.
+        let platform = self
+            .services
+            .contacts_platform()
+            .ok_or(CallError::Unsupported)?;
+        let session = self
+            .authority
+            .current_session()
+            .ok_or(CallError::Domain(v01::HostContactsPickError::NotConnected))?;
+        let handle_key =
+            self.authority
+                .contacts_handle_key(&session)
+                .map_err(|error| match error {
+                    AuthorityError::Disconnected => {
+                        CallError::Domain(v01::HostContactsPickError::NotConnected)
+                    }
+                    other => CallError::Domain(v01::HostContactsPickError::Unknown {
+                        reason: other.to_string(),
+                    }),
+                })?;
+        Ok((
+            platform,
+            crate::runtime::contacts::ContactHandles::from_handle_key(handle_key),
+        ))
+    }
+}
+
+#[truapi_platform::async_trait]
+impl Contacts for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "contacts.pick"))]
+    async fn pick(
+        &self,
+        _cx: &CallContext,
+        _request: HostContactsPickRequest,
+    ) -> Result<HostContactsPickResponse, CallError<HostContactsPickError>> {
+        let wrap = HostContactsPickError::V1;
+        let (platform, handles) = self
+            .contacts_picker()
+            .map_err(|error| contacts_error(error, wrap))?;
+
+        let unknown = |error: v01::GenericError| {
+            CallError::Domain(wrap(v01::HostContactsPickError::Unknown {
+                reason: error.reason,
+            }))
+        };
+
+        // Read before the picker opens: a removal signalled while the user is
+        // choosing must not be undone by caching their choice.
+        let generation = self.services.contact_handles.generation();
+        let outcome = match platform
+            .pick_contact(&self.product)
+            .await
+            .map_err(unknown)?
+        {
+            truapi_platform::HostContactPick::Picked { account } => {
+                let handle = handles.mint(&account);
+                self.services
+                    .contact_handles
+                    .insert(handle, account, generation);
+                v01::ContactPickOutcome::Picked {
+                    handle: v01::ContactHandle { bytes: handle },
+                }
+            }
+            truapi_platform::HostContactPick::Dismissed => v01::ContactPickOutcome::Dismissed,
+            truapi_platform::HostContactPick::NoContacts => v01::ContactPickOutcome::NoContacts,
+            // A host that resolves contacts but cannot present them is a
+            // framework-level gap, not an outcome the user produced.
+            truapi_platform::HostContactPick::Unsupported => return Err(CallError::Unsupported),
+        };
+        Ok(HostContactsPickResponse::V1(
+            v01::HostContactsPickResponse { outcome },
+        ))
+    }
+}
+
+/// Re-wrap a latest-payload picker error into its versioned envelope.
+fn contacts_error<E>(
+    error: CallError<v01::HostContactsPickError>,
+    wrap: fn(v01::HostContactsPickError) -> E,
+) -> CallError<E> {
+    match error {
+        CallError::Domain(domain) => CallError::Domain(wrap(domain)),
+        CallError::Denied => CallError::Denied,
+        CallError::Unsupported => CallError::Unsupported,
+        CallError::MalformedFrame { reason } => CallError::MalformedFrame { reason },
+        CallError::HostFailure { reason } => CallError::HostFailure { reason },
+        CallError::Cancelled => CallError::Cancelled,
     }
 }
 

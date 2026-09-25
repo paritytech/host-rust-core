@@ -207,7 +207,8 @@ each product connection. Role-specific operations live only on the matching hand
 `activate_external_session`, and `reset_session_state` on the pairing handle,
 `activate_local_session` on the signing handle. Both handles expose
 `clear_product_state` to revoke one product's capability material without
-touching the session or other products. Calling the wrong operation is
+touching the session or other products, and `notify_contacts_changed` to drop
+the contact handles the core cached once a contact is removed or blocked. Calling the wrong operation is
 a compile error, not a runtime `Unavailable`.
 
 `SigningHostConfig.network_suffix` is the network's bare dotNS TLD (`dot`,

@@ -7,6 +7,7 @@
 import * as S from "@parity/truapi/scale";
 
 import {
+  AccountId,
   AllocatableResource,
   Bytes32,
   ChainIdentifier,
@@ -287,6 +288,68 @@ export interface HostChainSet {
    */
   chains: Array<HostChainEntry>;
 }
+
+/**
+ * Contact handles the core needs turned back into accounts, and the key they
+ * were minted under.
+ *
+ * A handle is `BLAKE2b-256(key = handle_key, message = account)`, the account
+ * being its 32 raw bytes. The host holds the accounts, so it is the one that
+ * can match: hash each contact's account under `handle_key`, or keep that hash
+ * as an indexed column for the session, and look the handles up.
+ */
+export interface HostContactLookup {
+  /**
+   * The key every handle here was minted under. Per session, and never
+   * given to a product.
+   */
+  handleKey: Bytes32;
+
+  /**
+   * The handles to resolve, in the order the answer must follow.
+   */
+  handles: Array<Bytes32>;
+}
+
+/**
+ * The host's answer to a `HostContactLookup`.
+ *
+ * A named wrapper because the callback emitter cannot return a bare `Vec`.
+ */
+export interface HostContactMatches {
+  /**
+   * One entry per requested handle, in order: the contact's account, or
+   * ``undefined`` when no current contact hashes to it.
+   */
+  accounts: Array<AccountId | undefined>;
+}
+
+/**
+ * How a host's contact picker ended.
+ */
+export type HostContactPick =
+  /**
+   * The user chose this account.
+   *
+   * Consumed by the core to mint the product-facing handle and never
+   * forwarded to a product: it is the person's real account, and the handle
+   * exists precisely so a product does not receive it.
+   */
+  | { tag: "Picked"; value: { account: AccountId } }
+  /**
+   * The user closed the picker without choosing.
+   */
+  | { tag: "Dismissed"; value?: undefined }
+  /**
+   * The user has no contacts, so the host drew nothing.
+   */
+  | { tag: "NoContacts"; value?: undefined }
+  /**
+   * This host resolves contacts but cannot present a picker. The core
+   * answers the product `Unsupported`, so it can tell "try again later"
+   * apart from "this host will never pick".
+   */
+  | { tag: "Unsupported"; value?: undefined };
 
 /**
  * Review shown before a product learns the user's primary identity.
@@ -744,6 +807,50 @@ export const HostChainSet: S.Codec<HostChainSet> = S.lazy(
 );
 
 /**
+ * Contact handles the core needs turned back into accounts, and the key they
+ * were minted under.
+ *
+ * A handle is `BLAKE2b-256(key = handle_key, message = account)`, the account
+ * being its 32 raw bytes. The host holds the accounts, so it is the one that
+ * can match: hash each contact's account under `handle_key`, or keep that hash
+ * as an indexed column for the session, and look the handles up.
+ */
+export const HostContactLookup: S.Codec<HostContactLookup> = S.lazy(
+  (): S.Codec<HostContactLookup> =>
+    S.Struct({
+      handleKey: Bytes32,
+      handles: S.Vector(Bytes32),
+    }) as S.Codec<HostContactLookup>,
+);
+
+/**
+ * The host's answer to a `HostContactLookup`.
+ *
+ * A named wrapper because the callback emitter cannot return a bare `Vec`.
+ */
+export const HostContactMatches: S.Codec<HostContactMatches> = S.lazy(
+  (): S.Codec<HostContactMatches> =>
+    S.Struct({
+      accounts: S.Vector(S.Option(AccountId)),
+    }) as S.Codec<HostContactMatches>,
+);
+
+/**
+ * How a host's contact picker ended.
+ */
+export const HostContactPick: S.Codec<HostContactPick> = S.lazy(
+  (): S.Codec<HostContactPick> =>
+    S.TaggedUnion({
+      Picked: S.Struct({ account: AccountId }) as S.Codec<{
+        account: AccountId;
+      }>,
+      Dismissed: S._void,
+      NoContacts: S._void,
+      Unsupported: S._void,
+    }),
+);
+
+/**
  * Review shown before a product learns the user's primary identity.
  */
 export const IdentityDisclosureReview: S.Codec<IdentityDisclosureReview> =
@@ -1043,6 +1150,52 @@ export interface ChatPlatform {
   subscribeChatRooms(
     product: ProductContext,
   ): AsyncIterable<Result<HostChatListSubscribeItem, GenericError>>;
+}
+
+/**
+ * Host-owned contact picker, drawn from the chat lists the host's chat
+ * extensions hold.
+ *
+ * Optional, and listed on `OptionalPlatform` as `ChatPlatform` is.
+ *
+ * The host owns the UI and the list. It draws the names, so nothing it renders
+ * reaches the product, and the list never crosses to the core either: the core
+ * asks only about the handles a transaction names. A host omits contacts the
+ * user has blocked, from the picker and from lookups alike.
+ */
+export interface ContactsPlatform {
+  /**
+   * Resolve `lookup.handles` to the contacts they name.
+   *
+   * The one method a host has to write. Answer one entry per handle, in
+   * order, with ``undefined`` for a handle no current contact hashes to — a
+   * removed or blocked contact, or a handle a product made up. The core
+   * re-hashes every account returned and refuses one that does not match
+   * its handle, so a wrong answer is caught rather than trusted.
+   */
+  contacts(lookup: HostContactLookup): Promise<HostContactMatches>;
+
+  /**
+   * Present the contact picker on behalf of `product` and return the user's
+   * choice.
+   *
+   * Defaults to `HostContactPick::Unsupported`, so a Rust host that
+   * implements `Self::contacts` alone still compiles and its products get
+   * a truthful answer rather than a dismissal they would retry forever.
+   *
+   * A JS host reaches the same answer by another route: the generated
+   * surface types this method optional, but a capability group counts as
+   * served only when every callback in it is present, so omitting this one
+   * makes the whole group absent and `contacts.pick` answers `Unsupported`
+   * before any of it is reached.
+   *
+   * The core cannot draw UI, so a selection has to come from the host; the
+   * whole point is that the host renders the names rather than shipping
+   * them to the product. `product` is passed so the host can say who is
+   * asking; it is not a filter. A host with no contacts answers
+   * `HostContactPick::NoContacts` instead of drawing an empty overlay.
+   */
+  pickContact?(product: ProductContext): Promise<HostContactPick>;
 }
 
 /**
@@ -1501,6 +1654,7 @@ export interface HostCallbacks {
   preimage: PreimageHost;
   productOperations: ProductOperations;
   chat?: ChatPlatform;
+  contacts?: ContactsPlatform;
   permissionStatus?: PermissionStatusHost;
   pocket?: PocketPlatform;
 }
@@ -1520,6 +1674,7 @@ export interface RequiredHostCallbacks {
   preimage: Required<PreimageHost>;
   productOperations: Required<ProductOperations>;
   chat?: Required<ChatPlatform>;
+  contacts?: Required<ContactsPlatform>;
   permissionStatus?: Required<PermissionStatusHost>;
   pocket?: Required<PocketPlatform>;
 }
