@@ -59,7 +59,11 @@ struct UnloadIntoCoinsStrategy {
 // MARK: - TransferStrategy
 
 extension UnloadIntoCoinsStrategy: TransferStrategy {
-    func prepare(groupId: CoinageTxGroupId?) async throws -> PreparedStrategy {
+    func prepare(
+        groupId: CoinageTxGroupId?,
+        custodyId: String?,
+        authorization: (@Sendable () throws -> Void)?
+    ) async throws -> PreparedStrategy {
         guard !perGroupAllocations.isEmpty else {
             throw TransferStrategyError.emptyVouchers
         }
@@ -94,40 +98,17 @@ extension UnloadIntoCoinsStrategy: TransferStrategy {
         // failure aborts before a single extrinsic is broadcast.
         let requests = try await buildRequests(for: realizedGroups)
 
-        // Register all groups atomically under the transfer's groupId
         logger?.info("Submitting \(requests.count) unload extrinsics for \(allVouchers.count) vouchers")
-        try await txService.submitTransactions(
-            requests.map {
+        return try await txService.prepareTransfer(
+            requests: requests.map {
                 CoinageTxRequest(inputs: $0.inputs, outputs: $0.outputs, builder: $0.builder, origin: $0.origin)
             },
-            groupId: groupId
+            coins: readyCoins + realizedGroups.flatMap(\.recipientCoins),
+            groupId: groupId,
+            custodyId: custodyId,
+            authorization: authorization,
+            afterSubmission: { await quotaTracker.noteUnloadHappened(count: requests.count) }
         )
-
-        // Each group spent one free-unload token; note them after submission (a token for a tx that
-        // never left is still available) so the quota estimate follows the actual spend.
-        await quotaTracker.noteUnloadHappened(count: requests.count)
-
-        // Ready coins need no submission; every group's recipient coins leave to the peer. Change
-        // coins stay ours. All pre-committed before the memo can leave.
-        let handedOff = readyCoins + realizedGroups.flatMap(\.recipientCoins)
-        let handoffCommit = try await txService
-            .preCommitHandoff(handedOff.map { .coin($0.derivationIndex, $0.publicKey) })
-
-        var memoEntries = readyCoins.map {
-            PlannedMemoEntry(
-                coinDerivationIndex: $0.derivationIndex,
-                valueExponent: $0.exponent
-            )
-        }
-        for group in realizedGroups {
-            memoEntries += group.recipientCoins.map {
-                PlannedMemoEntry(
-                    coinDerivationIndex: $0.derivationIndex, valueExponent: $0.exponent
-                )
-            }
-        }
-
-        return PreparedStrategy(memoEntries: memoEntries, handoffCommit: handoffCommit)
     }
 }
 

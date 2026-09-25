@@ -38,9 +38,10 @@ use truapi::latest;
 use crate::async_trait;
 use crate::{
     AuthPresenter, AuthState, ChainProvider, ChatPlatform, CoreStorage, CoreStorageKey, Features,
-    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionDecision, Permissions,
-    PreimageHost, ProductContext, ProductOperations, ProductStorage, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    HopProvider, JsonRpcConnection, LocaleHost, NativeChatFileExportRequest,
+    NativeChatFilePickRequest, NativeChatFilesHost, NativeChatPickedFile, Navigation,
+    Notifications, PermissionDecision, Permissions, PreimageHost, ProductContext,
+    ProductOperations, ProductStorage, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 
 /// How the mock answers a permission prompt for one capability.
@@ -88,6 +89,10 @@ pub enum ConfirmKind {
     SignVrf,
     /// [`UserConfirmationReview::ProductSubtree`].
     ProductSubtree,
+    /// [`UserConfirmationReview::ChatAuthority`].
+    ChatAuthority,
+    /// [`UserConfirmationReview::MainPurseChatPayment`].
+    MainPurseChatPayment,
 }
 
 impl ConfirmKind {
@@ -107,6 +112,8 @@ impl ConfirmKind {
             }
             UserConfirmationReview::SignVrf(_) => ConfirmKind::SignVrf,
             UserConfirmationReview::ProductSubtree(_) => ConfirmKind::ProductSubtree,
+            UserConfirmationReview::ChatAuthority(_) => ConfirmKind::ChatAuthority,
+            UserConfirmationReview::MainPurseChatPayment(_) => ConfirmKind::MainPurseChatPayment,
         }
     }
 }
@@ -795,6 +802,43 @@ fn core_key(key: &CoreStorageKey) -> String {
             hex_key(peer_statement_account_id),
             hex_key(peer_encryption_public_key)
         ),
+        CoreStorageKey::MainPurseCoinage {
+            root_public_key,
+            genesis_hash,
+        } => format!(
+            "core:main-purse-coinage:{}:{}",
+            hex_key(root_public_key),
+            hex_key(genesis_hash)
+        ),
+        CoreStorageKey::NativeChatDevice {
+            root_public_key,
+            genesis_hash,
+            product_id,
+        } => format!(
+            "core:native-chat-device:{}:{}:{product_id}",
+            hex_key(root_public_key),
+            hex_key(genesis_hash)
+        ),
+        CoreStorageKey::NativeChatProducts {
+            root_public_key,
+            genesis_hash,
+        } => format!(
+            "core:native-chat-products:{}:{}",
+            hex_key(root_public_key),
+            hex_key(genesis_hash)
+        ),
+        CoreStorageKey::NativeChatFileChunk {
+            root_public_key,
+            genesis_hash,
+            product_id,
+            attachment_id,
+            ..
+        } => format!(
+            "core:native-chat-file-chunk:{}:{}:{product_id}:{}",
+            hex_key(root_public_key),
+            hex_key(genesis_hash),
+            hex_key(attachment_id)
+        ),
         CoreStorageKey::ProductManifest { product_id } => {
             format!("core:product-manifest:{product_id}")
         }
@@ -1325,6 +1369,68 @@ impl ProductOperations for MockPlatform {
             .expect("open operations poisoned")
             .retain(|open| open.id != id || open.product_id != product.product_id);
         Ok(())
+    }
+}
+
+#[async_trait]
+impl NativeChatFilesHost for MockPlatform {
+    async fn pick_chat_files(
+        &self,
+        _request: NativeChatFilePickRequest,
+    ) -> Result<Vec<NativeChatPickedFile>, latest::GenericError> {
+        Err(native_chat_files_unavailable())
+    }
+
+    async fn read_chat_file(
+        &self,
+        _source_id: String,
+        _offset: u64,
+        _length: u32,
+    ) -> Result<Vec<u8>, latest::GenericError> {
+        Err(native_chat_files_unavailable())
+    }
+
+    async fn release_chat_file(&self, _source_id: String) -> Result<(), latest::GenericError> {
+        Err(native_chat_files_unavailable())
+    }
+
+    async fn begin_chat_file_export(
+        &self,
+        _request: NativeChatFileExportRequest,
+    ) -> Result<Option<String>, latest::GenericError> {
+        Err(native_chat_files_unavailable())
+    }
+
+    async fn write_chat_file_export(
+        &self,
+        _export_id: String,
+        _offset: u64,
+        _data: Vec<u8>,
+    ) -> Result<(), latest::GenericError> {
+        Err(native_chat_files_unavailable())
+    }
+
+    async fn finish_chat_file_export(
+        &self,
+        _export_id: String,
+    ) -> Result<(), latest::GenericError> {
+        Err(native_chat_files_unavailable())
+    }
+
+    async fn cancel_chat_file_export(
+        &self,
+        _export_id: String,
+    ) -> Result<(), latest::GenericError> {
+        Err(native_chat_files_unavailable())
+    }
+}
+
+#[async_trait]
+impl HopProvider for MockPlatform {}
+
+fn native_chat_files_unavailable() -> latest::GenericError {
+    latest::GenericError {
+        reason: "native chat files unavailable".to_string(),
     }
 }
 

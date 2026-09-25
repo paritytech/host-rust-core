@@ -21,6 +21,8 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | `@parity/truapi-host/testing/host-page`    | The browser half the fixture drives, for a suite that boots its own page.                                                            |
 | `@parity/truapi-host/wasm/testing`         | The raw glue for the signing-enabled bundle the test host runs on.                                                                   |
 
+The shipped WASM includes `WasmSigningHostRuntime`. Its configuration requires `runtimeConfig.networkSuffix`: the bare
+TLD (`dot`, `paseo`, or `testnet`) matching the People chain and the wallet's onboarding configuration.
 `scripts/build-wasm.mjs` builds two WASM bundles, both `--no-default-features`. `wasm/web` is the production browser
 host and excludes `WasmSigningHostRuntime`; `wasm/testing` adds the Rust `wasm-signing-host` and `test-host` features,
 which is what lets the test host hold keys and answer resource allocation as granted without allocating anything. A real
@@ -29,6 +31,19 @@ browser wallet instead needs a web bundle built with `--no-default-features --fe
 `ProductRuntimeConfig` configures the pairing host and requires no network suffix. The signing constructor's
 configuration requires `runtimeConfig.networkSuffix` in addition: the bare TLD (`dot`, `paseo`, or `testnet`) matching
 the People chain and the wallet's onboarding configuration.
+
+Signing hosts using instance-scoped Coinage must also supply `runtimeConfig.coinageInstanceId` (or
+`hostConfig.coinageInstanceId` in the worker factory) from trusted host/network configuration. It is an integer from `0`
+through `4294967295`, including zero; strings, fractions and out-of-range values are rejected. Omission preserves legacy
+Coinage support, but Coinage operations on an instance-scoped runtime fail closed without it. This asset instance is not
+a purse derivation identifier and is never selected by guest product code.
+
+The optional runtime-wide `callbacks.coinageWallet` group registers an existing native main-purse service through
+`nativeCoinage(request)`. Omitting the group uses Core's built-in Rust wallet; no explicit backend selector is needed. A
+registered native wallet remains authoritative when unavailable, locked, or failing: none of those states enables Rust
+custody. Registration is captured when the runtime is constructed and cannot be replaced by product callbacks. Malformed
+native groups reject initialization. Native request/response payloads, especially outgoing memos, are Host-private;
+infrastructure exceptions are sanitized at the adapter boundary.
 
 `runtimeConfig.assetHub` is required by both configurations, pairing and signing. It is the Asset Hub genesis hash, in
 the same shape as `runtimeConfig.people` and `runtimeConfig.bulletin`. Product manifests are read from the dotNS
@@ -55,7 +70,6 @@ The optional callback receives `LocalIdentityProgress` (exported from `@parity/t
 elapsed-time estimates. `confirming` means the backend accepted the request, not that the username is owned yet; only
 the resolved promise confirms ownership. A retry does not submit another registration. Observer exceptions do not
 interrupt the operation, and settled or disposed requests receive no further progress.
-
 Both methods return `LocalIdentity` (exported from `@parity/truapi-host/web`): the canonical lowercase `0x`-prefixed
 `identityAccountId` and an optional verified `liteUsername`. The backend must allow the worker's origin, or the host
 must provide an approved same-origin proxy. Secret material stays in the signing runtime. Disconnecting or replacing the
@@ -275,6 +289,20 @@ const secondProvider = await runtime.createProvider({
 
 `@parity/truapi-host/web` also exports `createIframeHost` for the protocol-iframe MessageChannel handshake. Host code
 creates one worker runtime and then opens one provider per product id.
+
+When UI callbacks capture a product label, pass that product's typed callbacks as the second argument to
+`runtime.createProvider(product, callbacks)`. The worker routes these callbacks to that execution without replacing the
+shared signing authority, main purse, native Chat authority, or private core storage. Wallet callbacks always use the
+runtime-wide bundle, even when a provider supplies overrides. Disposing a provider does not dispose the owner runtime. A
+signing host keeps one owner alive for wallet recovery, not ordinary Chat reception, and must not run independent
+signing runtimes against the same purse inventory.
+
+`createBrowserNativeChatFilesHost(sourceStore?)` accepts an optional `BrowserNativeChatFileSourceStore` with
+`putSources`, `readSource` and `releaseSource`. Use it when core custody spans host origins: immutable file sources must
+remain reachable wherever the persisted actor is restored. `putSources` must commit all supplied Blob snapshots durably
+before resolving; `readSource` returns that snapshot, not a mutable filesystem reference. Picker/export consent and
+bounded reads remain in the SDK. The default source store is origin-local IndexedDB with private immutable Blobs, not
+application encryption at rest. An embedder owns disposal of a file host it supplies.
 
 ## Session lifecycle
 

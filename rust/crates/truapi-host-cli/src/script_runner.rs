@@ -555,13 +555,14 @@ console.log(JSON.stringify({
             &script,
             ScriptHostRole::SigningHost,
         )?;
+        let project_directory = fs::canonicalize(project.path())?;
 
         assert_eq!(
             command
                 .as_std()
                 .get_envs()
                 .find_map(|(key, value)| { (key == "TRUAPI_SCRIPT_CWD").then_some(value) }),
-            Some(Some(project.path().as_os_str()))
+            Some(Some(project_directory.as_os_str()))
         );
         Ok(())
     }

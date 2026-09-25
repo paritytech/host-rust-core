@@ -52,7 +52,11 @@ struct SplitCoinStrategy {
 // MARK: - TransferStrategy
 
 extension SplitCoinStrategy: TransferStrategy {
-    func prepare(groupId: CoinageTxGroupId?) async throws -> PreparedStrategy {
+    func prepare(
+        groupId: CoinageTxGroupId?,
+        custodyId: String?,
+        authorization: (@Sendable () throws -> Void)?
+    ) async throws -> PreparedStrategy {
         // Every piece of the split shares one provenance: the overflow coin's chain, plus this
         // split. Fanout counts all outputs, the recipient's and ours alike, since that is how many
         // ways the input was divided.
@@ -89,33 +93,19 @@ extension SplitCoinStrategy: TransferStrategy {
         }
         let origin = try makeOrigin()
 
-        // One fire-and-forget submit: registers (claiming the input) and broadcasts, returning once
-        // the entry is committed. The projection writes below follow, explained by that entry.
         logger?.debug("Submitting split extrinsic for \(assets.outputCoins.count) coins")
-        try await txService.submitTransaction(
-            request: CoinageTxRequest(
+        return try await txService.prepareTransfer(
+            requests: [CoinageTxRequest(
                 inputs: assets.inputs,
                 outputs: assets.outputs,
                 builder: builder,
                 origin: origin
-            ),
-            groupId: groupId
+            )],
+            coins: assets.handedOff,
+            groupId: groupId,
+            custodyId: custodyId,
+            authorization: authorization
         )
-
-        let handoffCommit = try await txService
-            .preCommitHandoff(assets.handedOff.map { .coin($0.derivationIndex, $0.publicKey) })
-
-        var memoEntries = wholeCoins.map {
-            PlannedMemoEntry(
-                coinDerivationIndex: $0.derivationIndex,
-                valueExponent: $0.exponent
-            )
-        }
-        memoEntries += recipientCoins.map {
-            PlannedMemoEntry(coinDerivationIndex: $0.derivationIndex, valueExponent: $0.exponent)
-        }
-
-        return PreparedStrategy(memoEntries: memoEntries, handoffCommit: handoffCommit)
     }
 }
 

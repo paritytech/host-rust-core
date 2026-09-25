@@ -94,8 +94,11 @@ impl StatementStoreRpc {
         &self,
         statement: Vec<u8>,
         label: &'static str,
-    ) -> Result<(), String> {
-        let rpc_client = self.client(label).await.map_err(|err| err.to_string())?;
+    ) -> Result<(), StatementSubmitError> {
+        let rpc_client = self
+            .client(label)
+            .await
+            .map_err(|err| StatementSubmitError::Rpc(err.to_string()))?;
         submit(&rpc_client, statement).await
     }
 
@@ -161,23 +164,41 @@ pub(super) async fn subscribe_match_all(
     subscribe(rpc_client, TopicFilterKind::MatchAll, topics).await
 }
 
+#[derive(Debug, Error)]
+pub(super) enum StatementSubmitError {
+    #[error("{0}")]
+    Rpc(String),
+    #[error("statement_submit not accepted: {0}")]
+    Rejected(Value),
+}
+
+impl StatementSubmitError {
+    pub(super) fn is_no_allowance(&self) -> bool {
+        matches!(self, Self::Rejected(result)
+            if result["status"] == "rejected" && result["reason"] == "noAllowance")
+    }
+}
+
 /// Submit a SCALE-encoded statement and confirm the store accepted it.
 ///
 /// `statement_submit` returns an RPC error only for internal failures; a
 /// rejected or invalid statement (e.g. `NoAllowance`, `BadProof`) comes back as
 /// `Ok(SubmitResult)`. Treat only `new`/`known` as success, so allowance/proof
 /// rejections surface instead of being silently dropped.
-pub(super) async fn submit(rpc_client: &RpcClient, statement: Vec<u8>) -> Result<(), String> {
+pub(super) async fn submit(
+    rpc_client: &RpcClient,
+    statement: Vec<u8>,
+) -> Result<(), StatementSubmitError> {
     let result = rpc_client
         .request::<Value>(
             SUBMIT_STATEMENT_METHOD,
             rpc_params![format!("0x{}", hex::encode(&statement))],
         )
         .await
-        .map_err(rpc_error_message)?;
+        .map_err(|error| StatementSubmitError::Rpc(rpc_error_message(error)))?;
     match result.get("status").and_then(Value::as_str) {
         Some("new") | Some("known") => Ok(()),
-        _ => Err(format!("statement_submit not accepted: {result}")),
+        _ => Err(StatementSubmitError::Rejected(result)),
     }
 }
 
@@ -190,8 +211,7 @@ pub(super) async fn submit_sso(
         match submit(rpc_client, statement.clone()).await {
             Ok(()) => return Ok(()),
             Err(reason)
-                if is_transient_no_allowance(&reason)
-                    && attempt < SSO_NO_ALLOWANCE_RETRY_ATTEMPTS =>
+                if reason.is_no_allowance() && attempt < SSO_NO_ALLOWANCE_RETRY_ATTEMPTS =>
             {
                 warn!(
                     label,
@@ -201,14 +221,10 @@ pub(super) async fn submit_sso(
                 );
                 futures_timer::Delay::new(SSO_NO_ALLOWANCE_RETRY_DELAY).await;
             }
-            Err(reason) => return Err(reason),
+            Err(reason) => return Err(reason.to_string()),
         }
     }
     unreachable!("the bounded SSO submit loop always returns")
-}
-
-fn is_transient_no_allowance(reason: &str) -> bool {
-    reason.contains("noAllowance")
 }
 
 /// Statement-store topic filter encoded as JSON-RPC params.
@@ -226,20 +242,5 @@ pub(super) fn rpc_error_message(error: subxt_rpcs::Error) -> String {
     match error {
         subxt_rpcs::Error::User(error) => error.message,
         other => other.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_transient_no_allowance;
-
-    #[test]
-    fn identifies_no_allowance_submit_rejections_for_retry() {
-        assert!(is_transient_no_allowance(
-            r#"statement_submit not accepted: {"reason":"noAllowance","status":"rejected"}"#
-        ));
-        assert!(!is_transient_no_allowance(
-            r#"statement_submit not accepted: {"reason":"badProof","status":"rejected"}"#
-        ));
     }
 }

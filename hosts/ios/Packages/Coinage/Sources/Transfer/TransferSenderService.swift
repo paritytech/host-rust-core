@@ -30,21 +30,32 @@ protocol TransferSenderServicing: Actor {
         result: CoinSelectionResult,
         currentDate: Date,
         breakdownContext: DenominationBreakdownContext,
-        groupId: CoinageTxGroupId?
+        groupId: CoinageTxGroupId?,
+        custodyId: String?,
+        authorization: (@Sendable () throws -> Void)?
     ) async throws -> PreparedTransfer
+
+    func retainedTransfer(
+        custodyId: String,
+        breakdownContext: DenominationBreakdownContext
+    ) async throws -> PreparedTransfer?
 }
 
 extension TransferSenderServicing {
     func execute(
         result: CoinSelectionResult,
         breakdownContext: DenominationBreakdownContext,
-        groupId: CoinageTxGroupId?
+        groupId: CoinageTxGroupId?,
+        custodyId: String? = nil,
+        authorization: (@Sendable () throws -> Void)? = nil
     ) async throws -> PreparedTransfer {
         try await execute(
             result: result,
             currentDate: .now,
             breakdownContext: breakdownContext,
-            groupId: groupId
+            groupId: groupId,
+            custodyId: custodyId,
+            authorization: authorization
         )
     }
 }
@@ -62,6 +73,7 @@ actor TransferSenderService {
     private let planFactory: TransferPlanCreating
     private let memoBuilder: MemoBuilding
     private let recyclerLoader: RecyclerReadinessLoading
+    private let txService: any CoinageTxServicing
     private let logger: SDKLoggerProtocol?
 
     private var cachedMaxVouchers: Int?
@@ -71,12 +83,14 @@ actor TransferSenderService {
         planFactory: TransferPlanCreating,
         memoBuilder: MemoBuilding,
         recyclerLoader: RecyclerReadinessLoading,
+        txService: any CoinageTxServicing,
         logger: SDKLoggerProtocol?
     ) {
         self.coinSelector = coinSelector
         self.planFactory = planFactory
         self.memoBuilder = memoBuilder
         self.recyclerLoader = recyclerLoader
+        self.txService = txService
         self.logger = logger
     }
 }
@@ -97,26 +111,45 @@ extension TransferSenderService: TransferSenderServicing {
         result: CoinSelectionResult,
         currentDate: Date,
         breakdownContext: DenominationBreakdownContext,
-        groupId: CoinageTxGroupId?
+        groupId: CoinageTxGroupId?,
+        custodyId: String? = nil,
+        authorization: (@Sendable () throws -> Void)? = nil
     ) async throws -> PreparedTransfer {
         try await markStallActivity("Execute transfer") {
+            if let custodyId {
+                try Task.checkCancellation()
+                guard !custodyId.isEmpty else { throw NativeTransferCustodyError.invalidRecord }
+                if let retained = try await retainedTransfer(custodyId: custodyId, breakdownContext: breakdownContext) {
+                    try validateNativeAmount(retained.memo, result: result, context: breakdownContext)
+                    return retained
+                }
+                try Task.checkCancellation()
+            }
             let plan: TransferPlan
             do {
                 plan = try await planFactory.createPlan(for: result, currentDate: currentDate)
             } catch {
-                logger?.error("Plan creation failed: \(error)")
+                if custodyId == nil { logger?.error("Plan creation failed: \(error)") }
                 throw TransferSenderServiceError.planCreationFailed(error)
             }
 
-            // Mint outputs (persisted by the allocator), fire the background-tracked submission, and
-            // pre-commit the handoff — everything that must land before the memo (the keys) can leave.
-            // A failure leaves registered entries and a provisional handoff, both resolved by the
-            // recovery pass / relaunch.
+            // Native custody is committed with registration; normal transports retain the existing
+            // provisional handoff until their carrying payload is durable.
             let prepared: PreparedStrategy
             do {
-                prepared = try await plan.strategy.prepare(groupId: groupId)
+                if custodyId != nil { try Task.checkCancellation() }
+                prepared = try await plan.strategy.prepare(
+                    groupId: groupId, custodyId: custodyId, authorization: authorization
+                )
             } catch {
-                logger?.error("Strategy preparation failed: \(error)")
+                if let custodyId {
+                    try Task.checkCancellation()
+                    if let retained = try await retainedTransfer(custodyId: custodyId, breakdownContext: breakdownContext) {
+                        try validateNativeAmount(retained.memo, result: result, context: breakdownContext)
+                        return retained
+                    }
+                }
+                if custodyId == nil { logger?.error("Strategy preparation failed: \(error)") }
                 throw TransferSenderServiceError.strategyFailed(error)
             }
 
@@ -125,12 +158,26 @@ extension TransferSenderService: TransferSenderServicing {
             do {
                 memo = try memoBuilder.buildMemo(from: prepared.memoEntries, breakdownContext: breakdownContext)
             } catch {
-                logger?.error("Memo building failed: \(error)")
+                if custodyId == nil { logger?.error("Memo building failed: \(error)") }
                 throw TransferSenderServiceError.memoBuildingFailed(error)
+            }
+            if custodyId != nil {
+                try Task.checkCancellation()
+                try validateNativeAmount(memo, result: result, context: breakdownContext)
             }
 
             return PreparedTransfer(memo: memo, handoffCommit: prepared.handoffCommit)
         }
+    }
+
+    func retainedTransfer(
+        custodyId: String,
+        breakdownContext: DenominationBreakdownContext
+    ) async throws -> PreparedTransfer? {
+        guard let retained = try await txService.retainedNativeTransfer(custodyId: custodyId) else { return nil }
+        try Task.checkCancellation()
+        let memo = try memoBuilder.buildMemo(from: retained.custody.memoEntries, breakdownContext: breakdownContext)
+        return PreparedTransfer(memo: memo, handoffCommit: retained.handoffCommit)
     }
 
     func previewStrategy(
@@ -149,5 +196,25 @@ extension TransferSenderService: TransferSenderServicing {
         )
 
         return try await coinSelector.selectCoins(input)
+    }
+}
+
+private extension TransferSenderService {
+    func validateNativeAmount(
+        _ memo: TransferMemo,
+        result: CoinSelectionResult,
+        context: DenominationBreakdownContext
+    ) throws {
+        let exponents: [Int16]
+        switch result {
+        case let .exactMatch(coins):
+            exponents = coins.map(\.exponent)
+        case let .split(wholeCoins, _, targetDenominations, _):
+            exponents = wholeCoins.map(\.exponent) + targetDenominations.map(\.exponent)
+        case let .unloadIntoCoins(coins, allocations):
+            exponents = coins.map(\.exponent) + allocations.flatMap { $0.recipientDenominations.map(\.exponent) }
+        }
+        let expected = exponents.reduce(BigUInt.zero) { $0 + context.valueInPlanks(for: $1) }
+        guard memo.totalValue == expected else { throw NativeTransferCustodyError.amountMismatch }
     }
 }

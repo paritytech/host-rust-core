@@ -63,11 +63,7 @@ private extension RustRuntimeEnvironment {
         chatMessaging: (any ProductChatMessaging)? = nil
     ) throws -> ExecutionModel {
         let chainConnections = TrUAPIChainConnectionPool(
-            engineResolver: { [chainRegistry] genesisHash in
-                chainRegistry.getChainByGenesis(for: genesisHash.toHex()).flatMap { chain in
-                    chainRegistry.getConnection(for: chain.chainId)
-                }
-            },
+            chainRegistry: chainRegistry,
             logger: logger
         )
 
@@ -120,6 +116,7 @@ private extension RustRuntimeEnvironment {
             productStorage: TrUAPILocalStorage.createProductLocalStorage(productId: productId),
             coreStorage: TrUAPILocalStorage.createCoreLocalStorage(),
             confirmationPresenter: TrUAPIConfirmationPresenter(routerFacade: routers),
+            chatFiles: TrUAPINativeChatFiles.shared,
             preimageCache: TrUAPIPreimageCache { [logger, ipfsFetcher] key in
                 do {
                     return try await ipfsFetcher.lookupBy(rawHash: key)

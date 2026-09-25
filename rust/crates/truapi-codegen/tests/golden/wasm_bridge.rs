@@ -13,7 +13,8 @@ use wasm_bindgen::JsValue;
 use super::{
     WasmPlatform, call_js_function, decode_bytes, decode_js_item, generic, get_function,
     get_optional_function, invoke_bool, invoke_bytes_return, invoke_js_subscription,
-    invoke_optional_bytes_return, invoke_unit, missing_callback, parse_optional_bytes_item,
+    invoke_optional_bytes_return, invoke_optional_string_return, invoke_unit, missing_callback,
+    parse_optional_bytes_item,
 };
 
 /// JS-side callbacks invoked by the wasm platform bridge. Methods with
@@ -24,7 +25,7 @@ use super::{
 /// Callbacks of an optional capability trait are replaced by a throwing
 /// stub when the host omits the group. The core never reaches them: it
 /// only holds an adapter for a capability whose `has_*` accessor is
-/// true, and answers the rest with `Unsupported`.
+/// true, and applies each omitted capability's absence behavior.
 pub(super) struct JsBridge {
     pub(super) auth_state_changed: Function,
     pub(super) chain_connect: Function,
@@ -32,12 +33,23 @@ pub(super) struct JsBridge {
     pub(super) register_chat_bot: Function,
     pub(super) post_chat_message: Function,
     pub(super) subscribe_chat_rooms: Function,
+    pub(super) native_coinage: Function,
     pub(super) read_core_storage: Function,
     pub(super) write_core_storage: Function,
     pub(super) clear_core_storage: Function,
     pub(super) feature_supported: Function,
     pub(super) supported_chains: Function,
+    pub(super) allowed_hop_endpoints: Function,
+    pub(super) hop_connect: Function,
+    pub(super) identity_username_candidates: Function,
     pub(super) subscribe_locale: Function,
+    pub(super) pick_chat_files: Function,
+    pub(super) read_chat_file: Function,
+    pub(super) release_chat_file: Function,
+    pub(super) begin_chat_file_export: Function,
+    pub(super) write_chat_file_export: Function,
+    pub(super) finish_chat_file_export: Function,
+    pub(super) cancel_chat_file_export: Function,
     pub(super) navigate_to: Function,
     pub(super) push_notification: Function,
     pub(super) cancel_notification: Function,
@@ -57,6 +69,8 @@ pub(super) struct JsBridge {
     pub(super) confirm_permission: Function,
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
+    pub(super) coinage_wallet_present: bool,
+    pub(super) identity_backend_present: bool,
     pub(super) permission_status_present: bool,
     pub(super) pocket_present: bool,
 }
@@ -74,12 +88,28 @@ impl JsBridge {
                 .unwrap_or_else(|| missing_callback("postChatMessage")),
             subscribe_chat_rooms: get_optional_function(callbacks, "subscribeChatRooms")?
                 .unwrap_or_else(|| missing_callback("subscribeChatRooms")),
+            native_coinage: get_optional_function(callbacks, "nativeCoinage")?
+                .unwrap_or_else(|| missing_callback("nativeCoinage")),
             read_core_storage: get_function(callbacks, "readCoreStorage")?,
             write_core_storage: get_function(callbacks, "writeCoreStorage")?,
             clear_core_storage: get_function(callbacks, "clearCoreStorage")?,
             feature_supported: get_function(callbacks, "featureSupported")?,
             supported_chains: get_function(callbacks, "supportedChains")?,
+            allowed_hop_endpoints: get_function(callbacks, "allowedHopEndpoints")?,
+            hop_connect: get_function(callbacks, "hopConnect")?,
+            identity_username_candidates: get_optional_function(
+                callbacks,
+                "identityUsernameCandidates",
+            )?
+            .unwrap_or_else(|| missing_callback("identityUsernameCandidates")),
             subscribe_locale: get_function(callbacks, "subscribeLocale")?,
+            pick_chat_files: get_function(callbacks, "pickChatFiles")?,
+            read_chat_file: get_function(callbacks, "readChatFile")?,
+            release_chat_file: get_function(callbacks, "releaseChatFile")?,
+            begin_chat_file_export: get_function(callbacks, "beginChatFileExport")?,
+            write_chat_file_export: get_function(callbacks, "writeChatFileExport")?,
+            finish_chat_file_export: get_function(callbacks, "finishChatFileExport")?,
+            cancel_chat_file_export: get_function(callbacks, "cancelChatFileExport")?,
             navigate_to: get_function(callbacks, "navigateTo")?,
             push_notification: get_function(callbacks, "pushNotification")?,
             cancel_notification: get_function(callbacks, "cancelNotification")?,
@@ -105,6 +135,12 @@ impl JsBridge {
                 && get_optional_function(callbacks, "registerChatBot")?.is_some()
                 && get_optional_function(callbacks, "postChatMessage")?.is_some()
                 && get_optional_function(callbacks, "subscribeChatRooms")?.is_some(),
+            coinage_wallet_present: get_optional_function(callbacks, "nativeCoinage")?.is_some(),
+            identity_backend_present: get_optional_function(
+                callbacks,
+                "identityUsernameCandidates",
+            )?
+            .is_some(),
             permission_status_present: get_optional_function(callbacks, "devicePermissionStatus")?
                 .is_some(),
             pocket_present: get_optional_function(callbacks, "subscribePocketCards")?.is_some()
@@ -115,6 +151,16 @@ impl JsBridge {
     /// Whether the host supplied every `chat` callback.
     pub(super) fn has_chat(&self) -> bool {
         self.chat_present
+    }
+
+    /// Whether the host supplied every `coinage_wallet` callback.
+    pub(super) fn has_coinage_wallet(&self) -> bool {
+        self.coinage_wallet_present
+    }
+
+    /// Whether the host supplied every `identity_backend` callback.
+    pub(super) fn has_identity_backend(&self) -> bool {
+        self.identity_backend_present
     }
 
     /// Whether the host supplied every `permission_status` callback.
@@ -217,6 +263,26 @@ impl truapi_platform::ChatPlatform for WasmPlatform {
 }
 
 #[truapi_platform::async_trait]
+impl truapi_platform::CoinageWalletHost for WasmPlatform {
+    async fn native_coinage(
+        &self,
+        request: truapi_platform::NativeCoinageRequest,
+    ) -> Result<truapi_platform::NativeCoinageResponse, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.native_coinage,
+            vec![Uint8Array::from(request.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::NativeCoinageResponse>(
+            bytes,
+            "nativeCoinage response did not decode",
+        )
+        .map_err(generic)
+    }
+}
+
+#[truapi_platform::async_trait]
 impl truapi_platform::CoreStorage for WasmPlatform {
     async fn read_core_storage(
         &self,
@@ -291,6 +357,27 @@ impl truapi_platform::Features for WasmPlatform {
     }
 }
 
+#[truapi_platform::async_trait]
+impl truapi_platform::IdentityBackendHost for WasmPlatform {
+    async fn identity_username_candidates(
+        &self,
+        username: String,
+        people_chain_genesis_hash: [u8; 32],
+    ) -> Result<Vec<[u8; 32]>, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.identity_username_candidates,
+            vec![
+                JsValue::from_str(&username),
+                Uint8Array::from(people_chain_genesis_hash.as_slice()).into(),
+            ],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<Vec<[u8; 32]>>(bytes, "identityUsernameCandidates response did not decode")
+            .map_err(generic)
+    }
+}
+
 impl truapi_platform::LocaleHost for WasmPlatform {
     fn subscribe_locale(
         &self,
@@ -300,6 +387,101 @@ impl truapi_platform::LocaleHost for WasmPlatform {
             None,
             parse_host_locale_subscribe_item_item,
         )
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::NativeChatFilesHost for WasmPlatform {
+    async fn pick_chat_files(
+        &self,
+        request: truapi_platform::NativeChatFilePickRequest,
+    ) -> Result<Vec<truapi_platform::NativeChatPickedFile>, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.pick_chat_files,
+            vec![Uint8Array::from(request.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<Vec<truapi_platform::NativeChatPickedFile>>(
+            bytes,
+            "pickChatFiles response did not decode",
+        )
+        .map_err(generic)
+    }
+
+    async fn read_chat_file(
+        &self,
+        source_id: String,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, v01::GenericError> {
+        invoke_bytes_return(
+            &self.bridge.read_chat_file,
+            vec![
+                JsValue::from_str(&source_id),
+                js_sys::BigInt::from(offset).into(),
+                JsValue::from_f64(f64::from(length)),
+            ],
+        )
+        .await
+        .map_err(generic)
+    }
+
+    async fn release_chat_file(&self, source_id: String) -> Result<(), v01::GenericError> {
+        invoke_unit(
+            &self.bridge.release_chat_file,
+            vec![JsValue::from_str(&source_id)],
+        )
+        .await
+        .map_err(generic)
+    }
+
+    async fn begin_chat_file_export(
+        &self,
+        request: truapi_platform::NativeChatFileExportRequest,
+    ) -> Result<Option<String>, v01::GenericError> {
+        invoke_optional_string_return(
+            &self.bridge.begin_chat_file_export,
+            vec![Uint8Array::from(request.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)
+    }
+
+    async fn write_chat_file_export(
+        &self,
+        export_id: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<(), v01::GenericError> {
+        invoke_unit(
+            &self.bridge.write_chat_file_export,
+            vec![
+                JsValue::from_str(&export_id),
+                js_sys::BigInt::from(offset).into(),
+                Uint8Array::from(data.as_slice()).into(),
+            ],
+        )
+        .await
+        .map_err(generic)
+    }
+
+    async fn finish_chat_file_export(&self, export_id: String) -> Result<(), v01::GenericError> {
+        invoke_unit(
+            &self.bridge.finish_chat_file_export,
+            vec![JsValue::from_str(&export_id)],
+        )
+        .await
+        .map_err(generic)
+    }
+
+    async fn cancel_chat_file_export(&self, export_id: String) -> Result<(), v01::GenericError> {
+        invoke_unit(
+            &self.bridge.cancel_chat_file_export,
+            vec![JsValue::from_str(&export_id)],
+        )
+        .await
+        .map_err(generic)
     }
 }
 

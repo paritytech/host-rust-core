@@ -1,10 +1,16 @@
 import type { RequiredHostCallbacks } from "./generated/host-callbacks.js";
+import {
+  unavailableHopProvider,
+  unavailableNativeChatFilesHost,
+} from "./adapter-support.js";
 
 /** `HostCallbacks` with every optional member required, for exhaustive test fixtures. */
 export type CompleteHostCallbacks = RequiredHostCallbacks;
 
 type HostCallbackOverrides = {
-  [K in keyof RequiredHostCallbacks]?: Partial<RequiredHostCallbacks[K]>;
+  [K in keyof RequiredHostCallbacks]?: K extends "coinageWallet"
+    ? RequiredHostCallbacks[K]
+    : Partial<RequiredHostCallbacks[K]>;
 };
 
 /** Default no-op host callbacks with optional per-test overrides. */
@@ -53,6 +59,7 @@ export function makeHostCallbacks(
       async *lookupPreimage() {},
     },
     theme: { async *subscribeTheme() {} },
+    locale: { async *subscribeLocale() {} },
     chain: {
       connect: async () => ({
         send() {},
@@ -92,7 +99,22 @@ export function makeHostCallbacks(
     },
     preimage: { ...defaults.preimage, ...overrides.preimage },
     theme: { ...defaults.theme, ...overrides.theme },
+    locale: { ...defaults.locale, ...overrides.locale },
     chain: { ...defaults.chain, ...overrides.chain },
+    ...(overrides.hop
+      ? { hop: { ...unavailableHopProvider, ...overrides.hop } }
+      : {}),
+    ...(overrides.coinageWallet === undefined
+      ? {}
+      : { coinageWallet: overrides.coinageWallet }),
+    ...(overrides.nativeChatFiles
+      ? {
+          nativeChatFiles: {
+            ...unavailableNativeChatFilesHost,
+            ...overrides.nativeChatFiles,
+          },
+        }
+      : {}),
     // Chat is an optional capability: only fixtures that ask for it get the
     // group, so the default fixture is a host that does not serve chat.
     ...(overrides.chat
@@ -124,6 +146,17 @@ export function makeHostCallbacks(
             async *subscribePocketCards() {},
             removePocketCard: async () => {},
             ...overrides.pocket,
+          },
+        }
+      : {}),
+    // An unavailable authenticated search must not look like an empty result.
+    ...(overrides.identityBackend
+      ? {
+          identityBackend: {
+            identityUsernameCandidates: async (): Promise<Uint8Array[]> => {
+              throw new Error("identity backend unavailable");
+            },
+            ...overrides.identityBackend,
           },
         }
       : {}),

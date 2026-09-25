@@ -14,7 +14,8 @@ use truapi::latest::{
     HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyRequest,
     HostAccountRegisterRingVrfKeyResponse, HostAccountRingVrfSignRequest,
     HostAccountRingVrfSignResponse, HostAccountSignVrfError, HostAccountSignVrfRequest,
-    HostCreateTransactionResponse, HostRequestResourceAllocationRequest,
+    HostCreateTransactionResponse, HostProductDeviceChatError, HostProductDeviceChatRequest,
+    HostProductDeviceChatResponse, HostRequestResourceAllocationRequest,
     HostRequestResourceAllocationResponse, HostSignPayloadRequest, HostSignPayloadResponse,
     HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, ProductAccountId,
@@ -27,7 +28,7 @@ use truapi_platform::ProductContext;
 use crate::host_logic::extrinsic::LocalTransactionError;
 use crate::host_logic::raw_signing::RawPayloadError;
 use crate::host_logic::session::{SessionInfo, SessionState};
-use crate::host_logic::sso::messages::{ProductRequest, RingVrfError};
+use crate::host_logic::sso::messages::{PaymentTopUpRequest, ProductRequest, RingVrfError};
 use crate::host_logic::statement_store::statement_public_key_from_secret;
 use crate::host_logic::transaction::ExtrinsicPayloadError;
 
@@ -288,6 +289,94 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     IdentityAccount(LegacyAccountTxPayload),
 }
 
+/// Host-owned Chat operation after the caller's capability authorization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProductDeviceChatAuthorityRequest {
+    pub calling_product_id: String,
+    pub operation: HostProductDeviceChatRequest,
+}
+
+/// Only trusted attachment preparation uploads preimages; products submit Chat statements.
+pub(crate) fn chat_requires_preimage_submit(operation: &HostProductDeviceChatRequest) -> bool {
+    match operation {
+        HostProductDeviceChatRequest::PrepareAttachments { .. } => true,
+        HostProductDeviceChatRequest::Initialize
+        | HostProductDeviceChatRequest::Bind { .. }
+        | HostProductDeviceChatRequest::Prepare { .. }
+        | HostProductDeviceChatRequest::Open { .. }
+        | HostProductDeviceChatRequest::SendPayment { .. }
+        | HostProductDeviceChatRequest::PaymentStatus { .. }
+        | HostProductDeviceChatRequest::ReconcilePayments
+        | HostProductDeviceChatRequest::OpenAttachment { .. }
+        | HostProductDeviceChatRequest::CommitMigration { .. }
+        | HostProductDeviceChatRequest::ContinueOpen { .. }
+        | HostProductDeviceChatRequest::ContinueState { .. }
+        | HostProductDeviceChatRequest::PaymentDenomination => false,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProductDeviceChatAuthorityError {
+    Disconnected,
+    Rejected,
+    Unavailable(String),
+    Domain(HostProductDeviceChatError),
+}
+
+impl From<AuthorityError> for ProductDeviceChatAuthorityError {
+    fn from(error: AuthorityError) -> Self {
+        match error {
+            AuthorityError::Disconnected => Self::Disconnected,
+            AuthorityError::Rejected => Self::Rejected,
+            other => Self::Unavailable(other.to_string()),
+        }
+    }
+}
+
+impl From<ProductDeviceChatAuthorityError> for truapi::v02::HostProductDeviceChatError {
+    fn from(error: ProductDeviceChatAuthorityError) -> Self {
+        match error {
+            ProductDeviceChatAuthorityError::Disconnected => Self::NotConnected,
+            ProductDeviceChatAuthorityError::Rejected => Self::UserRejected,
+            ProductDeviceChatAuthorityError::Unavailable(_) => Self::NetworkUnavailable,
+            ProductDeviceChatAuthorityError::Domain(error) => error,
+        }
+    }
+}
+
+/// Payment failures retain typed wallet results without exposing backend diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PaymentTopUpAuthorityError {
+    Authority(AuthorityError),
+    Domain(truapi::v01::HostPaymentTopUpError),
+}
+
+impl From<AuthorityError> for PaymentTopUpAuthorityError {
+    fn from(error: AuthorityError) -> Self {
+        Self::Authority(error)
+    }
+}
+
+impl From<PaymentTopUpAuthorityError> for truapi::v01::HostPaymentTopUpError {
+    fn from(error: PaymentTopUpAuthorityError) -> Self {
+        match error {
+            PaymentTopUpAuthorityError::Domain(error) if !matches!(error, Self::Unknown { .. }) => {
+                error
+            }
+            PaymentTopUpAuthorityError::Authority(AuthorityError::Disconnected) => Self::Unknown {
+                reason: "Wallet session is not active".to_string(),
+            },
+            PaymentTopUpAuthorityError::Authority(AuthorityError::Cancelled(_)) => Self::Unknown {
+                reason: "Payment top-up cancelled".to_string(),
+            },
+            // Backend failures may contain supplied source keys; never echo them.
+            _ => Self::Unknown {
+                reason: "Payment top-up unavailable".to_string(),
+            },
+        }
+    }
+}
+
 /// Whether an active AutoSigning grant covers one product-account call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AutoSigningGrant {
@@ -297,11 +386,11 @@ pub(crate) enum AutoSigningGrant {
     /// Not covered: the caller must obtain user consent.
     Absent,
 }
-
 /// Statement-store allowance signing material held by the authority layer.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
 pub(crate) struct StatementStoreAllowanceKey {
     /// sr25519 secret used to sign allowance statements.
+    #[debug("\"<redacted>\"")]
     pub(crate) secret: [u8; 64],
     /// Public key derived from `secret`.
     pub(crate) public_key: [u8; 32],
@@ -510,6 +599,22 @@ pub(crate) trait ProductAuthority: Send + Sync {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
+
+    /// Execute an authorized operation on the Host-owned native Chat device.
+    async fn product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<HostProductDeviceChatResponse, ProductDeviceChatAuthorityError>;
+
+    /// Credit caller-supplied incoming funding; no outgoing-spend or Chat grant.
+    async fn payment_top_up(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: PaymentTopUpRequest,
+    ) -> Result<(), PaymentTopUpAuthorityError>;
 
     /// Ask the account authority to allocate product-scoped resources.
     async fn allocate_resources(

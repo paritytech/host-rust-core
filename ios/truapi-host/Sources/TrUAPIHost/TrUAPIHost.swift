@@ -42,6 +42,9 @@ public struct HostRuntimeConfig: Sendable, Equatable {
     public let networkSuffix: String
     public let localSessionSecret: Data?
     public let localSessionLiteUsername: String?
+    /// Trusted asset instance, required for instance-scoped Coinage runtimes.
+    /// This is not the wallet's purse derivation identifier.
+    public let coinageInstanceId: UInt32?
 
     public init(
         hostName: String,
@@ -54,7 +57,8 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         assetHubChainGenesisHash: Data,
         networkSuffix: String,
         localSessionSecret: Data? = nil,
-        localSessionLiteUsername: String? = nil
+        localSessionLiteUsername: String? = nil,
+        coinageInstanceId: UInt32? = nil
     ) {
         self.hostName = hostName
         self.hostIcon = hostIcon
@@ -67,6 +71,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         self.networkSuffix = networkSuffix
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
+        self.coinageInstanceId = coinageInstanceId
     }
 
     fileprivate var native: NativeHostRuntimeConfig {
@@ -82,7 +87,8 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             networkSuffix: networkSuffix,
             localSessionSecret: localSessionSecret,
             localSessionLiteUsername: localSessionLiteUsername,
-            assetHubChainGenesisHash: assetHubChainGenesisHash
+            assetHubChainGenesisHash: assetHubChainGenesisHash,
+            coinageInstanceId: coinageInstanceId
         )
     }
 }
@@ -135,6 +141,52 @@ public protocol HostCoreStorageBackend: AnyObject, Sendable {
     func clear(key: Data) throws
 }
 
+/// Host-private immutable attachment custody. These async callbacks may present
+/// trusted native UI; source/export handles and bytes must never reach a guest.
+/// Empty selection or a nil export denotes user cancellation, not unavailability.
+public protocol NativeChatFilesHost: AnyObject, Sendable {
+    func pickChatFiles(request: NativeChatFilePickRequest) async throws -> [NativeChatPickedFile]
+    func readChatFile(sourceId: String, offset: UInt64, length: UInt32) async throws -> Data
+    func releaseChatFile(sourceId: String) async throws
+    func beginChatFileExport(request: NativeChatFileExportRequest) async throws -> String?
+    func writeChatFileExport(exportId: String, offset: UInt64, data: Data) async throws
+    func finishChatFileExport(exportId: String) async throws
+    func cancelChatFileExport(exportId: String) async throws
+}
+
+public extension NativeChatFilesHost {
+    func pickChatFiles(request: NativeChatFilePickRequest) async throws -> [NativeChatPickedFile] {
+        throw HostRejection.Rejected(reason: "native Chat files unavailable")
+    }
+    func readChatFile(sourceId: String, offset: UInt64, length: UInt32) async throws -> Data {
+        throw HostRejection.Rejected(reason: "native Chat files unavailable")
+    }
+    func releaseChatFile(sourceId: String) async throws {
+        throw HostRejection.Rejected(reason: "native Chat files unavailable")
+    }
+    func beginChatFileExport(request: NativeChatFileExportRequest) async throws -> String? {
+        throw HostRejection.Rejected(reason: "native Chat files unavailable")
+    }
+    func writeChatFileExport(exportId: String, offset: UInt64, data: Data) async throws {
+        throw HostRejection.Rejected(reason: "native Chat files unavailable")
+    }
+    func finishChatFileExport(exportId: String) async throws {
+        throw HostRejection.Rejected(reason: "native Chat files unavailable")
+    }
+    func cancelChatFileExport(exportId: String) async throws {
+        throw HostRejection.Rejected(reason: "native Chat files unavailable")
+    }
+}
+
+/// Optional process-wide native wallet custody, supplied at runtime construction.
+/// Omit only when the built-in Rust wallet owns custody. Keep a registered native
+/// wallet installed while locked or unavailable; failures never permit fallback.
+public protocol NativeCoinageHost: AnyObject, Sendable {
+    /// Host-private operation. Never expose requests, bearer memos, or raw native
+    /// errors to products or logs. Return sanitized operation failures as values.
+    func nativeCoinage(request: NativeCoinageRequest) async throws -> NativeCoinageResponse
+}
+
 /// Host-side callback bundle that the Rust core invokes for capabilities the
 /// native shell owns. The permission split mirrors the Rust `Permissions`
 /// trait:
@@ -148,7 +200,7 @@ public protocol HostCoreStorageBackend: AnyObject, Sendable {
 /// Async callbacks must suspend while waiting for a decision; blocking their
 /// thread stalls other TrUAPI traffic. Synchronous callbacks must return promptly.
 /// Run UI work on the main actor, for example with `await MainActor.run { ... }`.
-public protocol HostBridge: AnyObject, Sendable {
+public protocol HostBridge: NativeChatFilesHost {
     /// Lifecycle logger. Marker is a stable slug, detail is free-form.
     func onCoreLog(marker: String, detail: String)
 
@@ -206,6 +258,15 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Open a JSON-RPC chain connection and return a host-assigned id, or nil if unsupported.
     func chainConnect(genesisHash: Data) throws -> UInt32?
 
+    /// Exact WSS endpoint strings from trusted, current Bulletin configuration.
+    /// An unconfigured host returns an empty list.
+    func allowedHopEndpoints(bulletinGenesisHash: Data) async throws -> [String]
+
+    /// Recheck the exact endpoint against live trusted configuration before
+    /// dialing. Returns nil when HOP is unavailable. The returned id shares
+    /// chainSend/chainClose and notifyChainResponse/notifyChainClosed.
+    func hopConnect(bulletinGenesisHash: Data, endpoint: String) throws -> UInt32?
+
     /// Send one JSON-RPC request on a native chain connection.
     func chainSend(connectionId: UInt32, request: String) throws
 
@@ -220,6 +281,10 @@ public protocol HostBridge: AnyObject, Sendable {
 
     /// Return the current preimage value for `key`, or nil for a miss.
     func lookupPreimage(key: Data) async throws -> Data?
+
+    /// Exact-name AccountId32 candidates from this host's configured authenticated
+    /// identity service. The core verifies ownership and the People Chat key.
+    func identityUsernameCandidates(username: String, peopleChainGenesisHash: Data) async throws -> [Data]
 
     /// Return the current host theme. Hosts with no named themes report
     /// `ThemeName.default`.
@@ -349,6 +414,8 @@ public extension HostBridge {
     func cancelNotification(id: UInt32) throws {}
     func authStateChanged(state: AuthState) {}
     func chainConnect(genesisHash: Data) throws -> UInt32? { nil }
+    func allowedHopEndpoints(bulletinGenesisHash: Data) async throws -> [String] { [] }
+    func hopConnect(bulletinGenesisHash: Data, endpoint: String) throws -> UInt32? { nil }
     func chainSend(connectionId: UInt32, request: String) throws {}
     func chainClose(connectionId: UInt32) throws {}
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool { false }
@@ -356,6 +423,9 @@ public extension HostBridge {
         try await confirmUserAction(review: review) ? .allowAlways : .deny
     }
     func lookupPreimage(key: Data) async throws -> Data? { nil }
+    func identityUsernameCandidates(username: String, peopleChainGenesisHash: Data) async throws -> [Data] {
+        throw HostRejection.Rejected(reason: "native identity backend unavailable")
+    }
     func currentTheme() throws -> HostThemeSubscribeItem {
         HostThemeSubscribeItem(name: .default, variant: .dark)
     }
@@ -379,6 +449,26 @@ public extension HostBridge {
     }
 
     func endOperation(productId: String, id: UInt32) async throws {}
+}
+
+/// Kept separate from product callbacks so executions cannot replace custody.
+private final class NativeCoinageCallbackAdapter: NativeCoinageCallbacks, @unchecked Sendable {
+    private let bridge: NativeCoinageHost
+
+    init(bridge: NativeCoinageHost) {
+        self.bridge = bridge
+    }
+
+    func nativeCoinage(request: NativeCoinageRequest) async throws -> NativeCoinageCallbackResult {
+        do {
+            return NativeCoinageCallbackResult(response: try await bridge.nativeCoinage(request: request))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Even typed HostRejection values may embed secret-bearing native errors.
+            throw HostRejection.Rejected(reason: "Native Coinage wallet operation failed")
+        }
+    }
 }
 
 /// Ids handed out by the default `beginOperation`, distinct for the life of
@@ -588,6 +678,18 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
+    func allowedHopEndpoints(bulletinGenesisHash: Data) async throws -> [String] {
+        try await withHostRejection {
+            try await bridge.allowedHopEndpoints(bulletinGenesisHash: bulletinGenesisHash)
+        }
+    }
+
+    func hopConnect(bulletinGenesisHash: Data, endpoint: String) throws -> UInt32? {
+        try withHostRejection {
+            try bridge.hopConnect(bulletinGenesisHash: bulletinGenesisHash, endpoint: endpoint)
+        }
+    }
+
     func chainSend(connectionId: UInt32, request: String) throws {
         try withHostRejection {
             try bridge.chainSend(connectionId: connectionId, request: request)
@@ -597,6 +699,49 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func chainClose(connectionId: UInt32) throws {
         try withHostRejection {
             try bridge.chainClose(connectionId: connectionId)
+        }
+    }
+
+    func pickChatFiles(request: NativeChatFilePickRequest) async throws -> [NativeChatPickedFile] {
+        try await withChatFileRejection { try await bridge.pickChatFiles(request: request) }
+    }
+
+    func readChatFile(sourceId: String, offset: UInt64, length: UInt32) async throws -> Data {
+        try await withChatFileRejection {
+            try await bridge.readChatFile(sourceId: sourceId, offset: offset, length: length)
+        }
+    }
+
+    func releaseChatFile(sourceId: String) async throws {
+        try await withChatFileRejection { try await bridge.releaseChatFile(sourceId: sourceId) }
+    }
+
+    func beginChatFileExport(request: NativeChatFileExportRequest) async throws -> String? {
+        try await withChatFileRejection { try await bridge.beginChatFileExport(request: request) }
+    }
+
+    func writeChatFileExport(exportId: String, offset: UInt64, data: Data) async throws {
+        try await withChatFileRejection {
+            try await bridge.writeChatFileExport(exportId: exportId, offset: offset, data: data)
+        }
+    }
+
+    func finishChatFileExport(exportId: String) async throws {
+        try await withChatFileRejection { try await bridge.finishChatFileExport(exportId: exportId) }
+    }
+
+    func cancelChatFileExport(exportId: String) async throws {
+        try await withChatFileRejection { try await bridge.cancelChatFileExport(exportId: exportId) }
+    }
+
+    private func withChatFileRejection<T>(_ operation: () async throws -> T) async throws -> T {
+        do {
+            return try await operation()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Foundation/provider errors can contain a selected path or handle.
+            throw HostRejection.Rejected(reason: "native Chat file operation unavailable or failed")
         }
     }
 
@@ -615,6 +760,14 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func lookupPreimage(key: Data) async throws -> Data? {
         try await withHostRejection {
             try await bridge.lookupPreimage(key: key)
+        }
+    }
+
+    func identityUsernameCandidates(username: String, peopleChainGenesisHash: Data) async throws -> [Data] {
+        try await withHostRejection {
+            try await bridge.identityUsernameCandidates(
+                username: username, peopleChainGenesisHash: peopleChainGenesisHash
+            )
         }
     }
 
@@ -728,13 +881,22 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
 public final class TrUAPIHostRuntime: @unchecked Sendable {
     private let inner: NativeTrUApiHostRuntime
     private let callbackRetainer: HostCallbacks
+    private let nativeWalletRetainer: NativeCoinageCallbacks?
 
-    public init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
+    /// Register native custody once; nil selects the built-in Rust wallet.
+    public init(
+        bridge: HostBridge,
+        runtimeConfig: HostRuntimeConfig,
+        nativeWallet: NativeCoinageHost? = nil
+    ) throws {
         let adapter = HostCallbackAdapter(bridge: bridge)
         callbackRetainer = adapter
+        let walletAdapter = nativeWallet.map { NativeCoinageCallbackAdapter(bridge: $0) }
+        nativeWalletRetainer = walletAdapter
         inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
             callbacks: adapter,
-            runtimeConfig: runtimeConfig.native
+            runtimeConfig: runtimeConfig.native,
+            nativeWallet: walletAdapter
         )
     }
 

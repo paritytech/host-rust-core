@@ -2,6 +2,7 @@
 
 use super::super::authority::{
     AuthorityCancelError, AuthorityError, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
+    PaymentTopUpAuthorityError, ProductDeviceChatAuthorityError, ProductDeviceChatAuthorityRequest,
     SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
 };
 use super::super::sso_remote::{
@@ -14,11 +15,11 @@ use super::PairingHost;
 use crate::host_logic::session::{SessionInfo, SessionState, SsoSessionInfo};
 use crate::host_logic::sso::messages::{
     CreateTransactionLegacyPayload, CreateTransactionPayload, CreateTransactionRequest,
-    CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, ProductRequest,
-    ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
-    RingVrfError, SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource,
-    SsoAllocationOutcome, SsoSessionStatement, build_outgoing_request_statement,
-    decode_sso_session_statement, v1,
+    CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, PaymentTopUpRequest,
+    ProductRequest, ProductSubtreeRequest, RemoteMessage, RemoteMessageData,
+    ResourceAllocationRequest, RingVrfError, SignRawWithLegacyAccountRequest, SignRequest,
+    SsoAllocatedResource, SsoAllocationOutcome, SsoProductDeviceChatOperation, SsoSessionStatement,
+    build_outgoing_request_statement, decode_sso_session_statement, v1,
 };
 use crate::host_logic::sso::wire::SsoRequest;
 use crate::host_logic::statement_store::parse_new_statements_result;
@@ -41,6 +42,18 @@ impl Drop for SsoDisconnectMonitor {
 }
 
 impl PairingHost {
+    pub(super) async fn remote_payment_top_up(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        request: PaymentTopUpRequest,
+    ) -> Result<(), PaymentTopUpAuthorityError> {
+        self.call(cx, session, request)
+            .await
+            .map_err(remote_authority_error)?
+            .map_err(|error| PaymentTopUpAuthorityError::Domain(error.0))
+    }
+
     fn stop_disconnect_monitor(&self) {
         self.disconnect_monitor
             .lock()
@@ -488,6 +501,32 @@ impl PairingHost {
             .map_err(ring_vrf_transport_error)?
     }
 
+    /// Forward a narrow Chat authority operation without exposing outgoing wallet keys.
+    pub(super) async fn remote_product_device_chat(
+        &self,
+        cx: &CallContext,
+        session: &SessionInfo,
+        request: ProductDeviceChatAuthorityRequest,
+    ) -> Result<latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError> {
+        let response = self
+            .call(
+                cx,
+                session,
+                ProductRequest {
+                    calling_product_id: request.calling_product_id,
+                    payload: SsoProductDeviceChatOperation::V3(request.operation),
+                },
+            )
+            .await
+            .map_err(|error| ProductDeviceChatAuthorityError::from(remote_authority_error(error)))?
+            .map_err(|error| {
+                let truapi::versioned::account::HostProductDeviceChatError::V1(error) = error;
+                ProductDeviceChatAuthorityError::Domain(error)
+            })?;
+        let truapi::versioned::account::HostProductDeviceChatResponse::V2(response) = response;
+        Ok(response)
+    }
+
     /// Ask the paired signing host to allocate product resources, caching any
     /// returned allowance keys.
     pub(super) async fn remote_allocate_resources(
@@ -698,6 +737,7 @@ impl PairingHost {
                         .await?;
                     }
                     SsoAllocatedResource::SmartContractAllowance => {}
+                    SsoAllocatedResource::ProductStatementStoreAllowance => {}
                     SsoAllocatedResource::AutoSigning {
                         product_root_private_key,
                         ring_vrf_domain_entropy,

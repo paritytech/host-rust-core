@@ -6,9 +6,9 @@ use indoc::{formatdoc, writedoc};
 
 use crate::platform::{PlatformDefinition, PlatformInner, PlatformMethod, PlatformTrait};
 use crate::platform_callbacks::{
-    callback_namespace, collect_local_bridge_payload_types, composed_traits, optional_trait_names,
-    platform_trait_names, raw_callback_field_name, raw_callback_name, raw_callback_wire_name,
-    snake_case, stream_item, trait_object_return_name,
+    callback_namespace, collect_local_bridge_payload_types, composed_traits,
+    is_scale_vector_result, optional_trait_names, platform_trait_names, raw_callback_field_name,
+    raw_callback_name, raw_callback_wire_name, snake_case, stream_item, trait_object_return_name,
 };
 use crate::rustdoc::{ApiDefinition, TypeDef, TypeDefKind, TypeRef, VariantFields};
 
@@ -40,7 +40,7 @@ pub fn generate_wasm_bridge(
         use super::{{
             WasmPlatform, call_js_function, decode_bytes, decode_js_item, generic, get_function,
             get_optional_function, invoke_bool, invoke_bytes_return, invoke_js_subscription,
-            invoke_optional_bytes_return, invoke_unit, missing_callback, parse_optional_bytes_item,
+            invoke_optional_bytes_return, invoke_optional_string_return, invoke_unit, missing_callback, parse_optional_bytes_item,
         }};
 
         /// JS-side callbacks invoked by the wasm platform bridge. Methods with
@@ -51,7 +51,7 @@ pub fn generate_wasm_bridge(
         /// Callbacks of an optional capability trait are replaced by a throwing
         /// stub when the host omits the group. The core never reaches them: it
         /// only holds an adapter for a capability whose `has_*` accessor is
-        /// true, and answers the rest with `Unsupported`.
+        /// true, and applies each omitted capability's absence behavior.
         pub(super) struct JsBridge {{
         "#,
     )
@@ -327,6 +327,11 @@ fn emit_result_method(
             &bridge_call("invoke_bytes_return", &method.name, &args, &[]),
             &map_err,
         )
+    } else if matches!(ok, TypeRef::Option(inner) if is_string(inner)) {
+        await_chain(
+            &bridge_call("invoke_optional_string_return", &method.name, &args, &[]),
+            &map_err,
+        )
     } else if is_optional_bytes(ok) {
         await_chain(
             &bridge_call(
@@ -340,7 +345,7 @@ fn emit_result_method(
             ),
             &map_err,
         )
-    } else if ctx.is_api_codec(ok) || ctx.is_local_codec(ok) {
+    } else if ctx.is_api_codec(ok) || ctx.is_local_codec(ok) || is_scale_vector_result(ok) {
         formatdoc_decode_result(method, ok, &raw, &args, &map_err, ctx)?
     } else {
         bail!("unsupported wasm bridge result type for `{raw}`: {ok:?}");
@@ -610,6 +615,7 @@ fn numeric_js_arg(name: &str, primitive: &str) -> Result<String> {
         "u8" | "u16" | "u32" | "i8" | "i16" | "i32" => {
             Ok(format!("JsValue::from_f64(f64::from({name}))"))
         }
+        "u64" | "i64" => Ok(format!("js_sys::BigInt::from({name}).into()")),
         "bool" => Ok(format!("JsValue::from_bool({name})")),
         other => bail!("numeric callback parameter `{name}: {other}` is not JS-number safe"),
     }

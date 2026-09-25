@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
+use truapi_platform::{ChatPlatform, CoinageWalletHost, PermissionStatusHost, PocketPlatform};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -215,6 +215,7 @@ impl PairingHostRuntime {
             config.asset_hub_chain_genesis_hash,
             spawner.clone(),
             chat_platform,
+            None,
         );
         let pairing_host = PairingHostRole::new(services.clone(), config);
         pairing_host.clone().start_session_store_sync(spawner);
@@ -257,6 +258,23 @@ impl PairingHostRuntime {
             self.pairing_host.clone(),
             product,
             ConnectionAdapters::from_services(&self.services),
+            sink,
+        )
+    }
+
+    /// Scope product callbacks without creating another shared authority.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn product_runtime_with(
+        &self,
+        product: ProductContext,
+        adapters: ConnectionAdapters,
+        sink: Arc<dyn FrameSink>,
+    ) -> ProductRuntime {
+        ProductRuntime::new(
+            self.services.clone(),
+            self.pairing_host.clone(),
+            product,
+            adapters,
             sink,
         )
     }
@@ -540,20 +558,20 @@ impl SigningHostRuntime {
     where
         P: Platform + 'static,
     {
-        Self::with_chat_platform(platform, config, spawner, None)
+        Self::with_chat_platform(platform, config, spawner, None, None)
     }
 
     /// Build a signing-host runtime that serves Chat through `chat_platform`.
     ///
-    /// The pairing host has had this since chat reached the core; a signing
-    /// host needs it for the same reason a native host does, and without it no
-    /// runnable host in this repo can serve a chat product at all.
+    /// Native wallet custody is fixed at construction. `None` uses the built-in
+    /// Rust wallet; an injected native service never falls back on failure.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.with_chat_platform"))]
     pub fn with_chat_platform<P>(
         platform: Arc<P>,
         config: SigningHostConfig,
         spawner: Spawner,
         chat_platform: Option<Arc<dyn ChatPlatform>>,
+        native_wallet: Option<Arc<dyn CoinageWalletHost>>,
     ) -> Self
     where
         P: Platform + 'static,
@@ -567,6 +585,7 @@ impl SigningHostRuntime {
             config.asset_hub_chain_genesis_hash,
             spawner,
             chat_platform,
+            native_wallet,
         );
         if services.asset_hub_chain_genesis_hash().is_none() {
             // Said once at startup because the refusals themselves are
@@ -577,7 +596,11 @@ impl SigningHostRuntime {
                  every cross-product grant not already cached is refused"
             );
         }
-        let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);
+        let signing_host = SigningHostRole::new(
+            services.clone(),
+            config.network_suffix,
+            config.coinage_instance_id,
+        );
         Self {
             services,
             signing_host,
@@ -593,6 +616,15 @@ impl SigningHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_permission_status_host"))]
     pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
         self.services.install_permission_status_host(host)
+    }
+
+    /// Install the trusted host's authenticated username candidate source once,
+    /// before serving products. Chain ownership and Chat keys remain authoritative.
+    pub fn set_identity_backend_host(
+        &self,
+        host: Arc<dyn truapi_platform::IdentityBackendHost>,
+    ) -> bool {
+        self.services.install_identity_backend_host(host)
     }
 
     /// Install the host's [`PocketPlatform`], which owns the card collection.
@@ -632,9 +664,8 @@ impl SigningHostRuntime {
         )
     }
 
-    /// Build one product connection with adapters scoped to one native
-    /// executable while sharing this runtime's authentication and services.
-    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+    /// Scope product callbacks while sharing authentication, custody and services.
+    #[cfg(any(target_arch = "wasm32", feature = "ws-bridge"))]
     pub(crate) fn product_runtime_with(
         &self,
         product: ProductContext,
@@ -700,6 +731,7 @@ impl SigningHostRuntime {
     pub async fn clear_product_state(&self, product_id: &str) -> Result<(), v01::GenericError> {
         self.signing_host
             .clear_product_state(product_id)
+            .await
             .map_err(|error| v01::GenericError {
                 reason: error.to_string(),
             })
