@@ -18,14 +18,14 @@ class EncryptedHostStorage(
     private val preferences: EncryptedPreferences,
     private val namespace: String,
 ) : HostStorage {
-    override fun read(key: String): ByteArray? = readValue(preferences, qualify(key))
+    override suspend fun read(key: String): ByteArray? = readValue(preferences, qualify(key))
 
-    override fun write(key: String, value: ByteArray) {
+    override suspend fun write(key: String, value: ByteArray) {
         writeValue(preferences, qualify(key), value)
             ?.let { throw storageFailure("product storage: $it") }
     }
 
-    override fun clear(key: String) {
+    override suspend fun clear(key: String) {
         runCatching { preferences.removeKey(qualify(key)) }
             .getOrElse { throw storageFailure("failed to clear product storage key: ${it.message}") }
     }
@@ -45,14 +45,14 @@ class EncryptedHostStorage(
 class EncryptedHostCoreStorage(
     private val preferences: EncryptedPreferences,
 ) : HostCoreStorage {
-    override fun read(key: ByteArray): ByteArray? = readValue(preferences, qualify(key))
+    override suspend fun read(key: ByteArray): ByteArray? = readValue(preferences, qualify(key))
 
-    override fun write(key: ByteArray, value: ByteArray) {
+    override suspend fun write(key: ByteArray, value: ByteArray) {
         writeValue(preferences, qualify(key), value)
             ?.let { throw HostRejection.Rejected("core storage: $it") }
     }
 
-    override fun clear(key: ByteArray) {
+    override suspend fun clear(key: ByteArray) {
         runCatching { preferences.removeKey(qualify(key)) }
             .getOrElse { throw HostRejection.Rejected("failed to clear core storage key: ${it.message}") }
     }

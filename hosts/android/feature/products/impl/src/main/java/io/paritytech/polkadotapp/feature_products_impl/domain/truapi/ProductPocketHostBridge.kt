@@ -13,16 +13,15 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import uniffi.truapi_server.NativePocketRemoval
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import uniffi.truapi.PocketCard as NativePocketCard
 
 /**
- * Serves one product's slice of the collection to the core. Both callbacks run inline on the core's
- * dispatcher thread: the list is answered from a snapshot, and a removal completes before returning
- * because the core reads the list again right after it and republishes that answer.
+ * Serves one product's slice of the collection to the core. The list is answered inline from a
+ * snapshot; a removal suspends until the store has removed the card, because the core reads the list
+ * again right after it and republishes that answer.
  */
 class ProductPocketHostBridge(
     private val productId: ProductId,
@@ -61,12 +60,11 @@ class ProductPocketHostBridge(
 
     override fun listCards(): List<NativePocketCard> = snapshot.get()
 
-    override fun removeCard(cardId: String): NativePocketRemoval {
-        // The snapshot carries the flag, so a card the host placed is refused without the blocking
-        // read below, which runs on the core's own dispatcher thread.
+    override suspend fun removeCard(cardId: String): NativePocketRemoval {
+        // The snapshot carries the flag, so a card the host placed is refused without reaching the store.
         if (snapshot.get().any { it.cardId == cardId && it.privileged }) return NativePocketRemoval.PRIVILEGED
 
-        val removal = runBlocking { store.removeCard(PocketCardKey(productId, PocketCardId(cardId))) }
+        val removal = store.removeCard(PocketCardKey(productId, PocketCardId(cardId)))
         return removal.fold(
             onSuccess = { outcome ->
                 snapshot.updateAndGet { cards -> cards.filterNot { it.cardId == cardId } }

@@ -602,7 +602,7 @@ impl From<NativeChatBotRegistrationStatus> for v01::ChatBotRegistrationStatus {
 /// the entire bridge — not just the request being served. Async callbacks
 /// (`navigate_to`, `push_notification`, `device_permission`,
 /// `remote_permission`, `feature_supported`, `confirm_user_action`, `confirm_permission`,
-/// `lookup_preimage`) are awaited by the core — implementations hop to the
+/// `lookup_preimage`, and the core and local storage callbacks) are awaited by the core — implementations hop to the
 /// main thread for any UI and may keep the future pending arbitrarily long,
 /// but must suspend rather than block the polling thread (foreign
 /// implementations bridged through UniFFI suspend naturally; the rule
@@ -610,7 +610,10 @@ impl From<NativeChatBotRegistrationStatus> for v01::ChatBotRegistrationStatus {
 /// cancels the foreign task. The remaining sync callbacks run inline on the
 /// dispatcher thread and must return promptly without blocking; in
 /// particular `auth_state_changed` should only hand the state to the host
-/// UI thread, never wait for the user.
+/// UI thread, never wait for the user. `chain_send` and `chain_close` stay
+/// sync so requests reach the connection in the order the core sent them;
+/// they must only enqueue work on the host's connection, never wait on the
+/// network.
 #[uniffi::export(rust, foreign)]
 #[async_trait::async_trait]
 pub trait HostCallbacks: Send + Sync {
@@ -672,15 +675,15 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Read a core-owned host-private storage slot. `key` is a SCALE-encoded
     /// [`CoreStorageKey`].
-    fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
+    async fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
 
     /// Persist a core-owned host-private storage slot. `key` is a
     /// SCALE-encoded [`CoreStorageKey`].
-    fn core_storage_write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), HostRejection>;
+    async fn core_storage_write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), HostRejection>;
 
     /// Clear a core-owned host-private storage slot. `key` is a SCALE-encoded
     /// [`CoreStorageKey`].
-    fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection>;
+    async fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection>;
 
     /// Open a JSON-RPC connection for a chain. Return a host-assigned
     /// connection id, or `None` when unsupported.
@@ -758,11 +761,15 @@ pub trait HostCallbacks: Send + Sync {
     fn device_paired(&self, device: PairedSsoPeer);
 
     /// Read a value from the host's scoped key-value store.
-    fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
+    async fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
     /// Write a value to the host's scoped key-value store.
-    fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), HostStorageError>;
+    async fn local_storage_write(
+        &self,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), HostStorageError>;
     /// Clear a value from the host's scoped key-value store.
-    fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
+    async fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
 
     /// Record a pending operation, whose id keeps the product's worker alive
     /// until it ends.
@@ -819,14 +826,15 @@ pub trait NativeChatCallbacks: Send + Sync {
 
 /// Native Pocket collection adapter. Hosts with a Pocket surface pass an
 /// implementation to [`NativeTrUApiHostRuntime::open_product_execution`]; hosts
-/// without one pass `None`. Callbacks run inline on the process-wide dispatch
-/// pool shared by every product execution, so one that blocks stalls the
-/// others.
+/// without one pass `None`. `list_cards` runs inline on the core runtime
+/// shared by every product execution, so it must return promptly;
+/// `remove_card` is awaited and may suspend while the host's storage works.
 ///
 /// The host decides a removal and reports what it did, so the check and the
 /// removal happen together under whatever lock it holds. A card cannot be
 /// pinned between the two.
 #[uniffi::export(rust, foreign)]
+#[async_trait::async_trait]
 pub trait NativePocketCallbacks: Send + Sync {
     /// Return the product's cards as this host currently holds them, each with
     /// the flag saying whether the host pinned it.
@@ -834,7 +842,7 @@ pub trait NativePocketCallbacks: Send + Sync {
 
     /// Remove one of the product's cards, reporting whether the card was
     /// taken out, was already gone, or is pinned and stays.
-    fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection>;
+    async fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection>;
 }
 
 /// What a host did with a removal request.
@@ -2401,7 +2409,10 @@ impl Features for CallbackPlatform {
 #[async_trait]
 impl ProductStorage for CallbackPlatform {
     async fn read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
-        self.callbacks.local_storage_read(key).map_err(Into::into)
+        self.callbacks
+            .local_storage_read(key)
+            .await
+            .map_err(Into::into)
     }
 
     async fn write(
@@ -2411,6 +2422,7 @@ impl ProductStorage for CallbackPlatform {
     ) -> Result<(), v01::HostLocalStorageReadError> {
         self.callbacks
             .local_storage_write(key.clone(), value.clone())
+            .await
             .map_err(v01::HostLocalStorageReadError::from)?;
         self.storage_events
             .notify_storage_changed(&key, Some(value));
@@ -2420,6 +2432,7 @@ impl ProductStorage for CallbackPlatform {
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
         self.callbacks
             .local_storage_clear(key.clone())
+            .await
             .map_err(v01::HostLocalStorageReadError::from)?;
         self.storage_events.notify_storage_changed(&key, None);
         Ok(())
@@ -2437,6 +2450,7 @@ impl ProductStorage for CallbackPlatform {
         let current = async move {
             callbacks
                 .local_storage_read(key)
+                .await
                 .map(|value| v01::HostLocalStorageChangeItem { value })
                 .map_err(|error| {
                     let error: v01::HostLocalStorageReadError = error.into();
@@ -2487,6 +2501,7 @@ impl CoreStorage for CallbackPlatform {
     ) -> Result<Option<Vec<u8>>, v01::GenericError> {
         self.callbacks
             .core_storage_read(key.encode())
+            .await
             .map_err(v01::GenericError::from)
     }
 
@@ -2497,12 +2512,14 @@ impl CoreStorage for CallbackPlatform {
     ) -> Result<(), v01::GenericError> {
         self.callbacks
             .core_storage_write(key.encode(), value)
+            .await
             .map_err(v01::GenericError::from)
     }
 
     async fn clear_core_storage(&self, key: CoreStorageKey) -> Result<(), v01::GenericError> {
         self.callbacks
             .core_storage_clear(key.encode())
+            .await
             .map_err(v01::GenericError::from)
     }
 }
@@ -2798,7 +2815,12 @@ impl truapi_platform::PocketPlatform for PocketCallbackPlatform {
         let unknown = |error: HostRejection| v01::HostPocketRemoveCardError::Unknown {
             reason: error.to_string(),
         };
-        match self.pocket.remove_card(request.card_id).map_err(unknown)? {
+        match self
+            .pocket
+            .remove_card(request.card_id)
+            .await
+            .map_err(unknown)?
+        {
             NativePocketRemoval::Privileged => Err(v01::HostPocketRemoveCardError::Privileged),
             // A card this host does not hold is already removed.
             NativePocketRemoval::Absent => Ok(()),
@@ -3298,14 +3320,18 @@ mod tests {
                 .expect("auth state mutex poisoned")
                 .push(state);
         }
-        fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+        async fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
             Ok(self.core_storage.lock().unwrap().get(&key).cloned())
         }
-        fn core_storage_write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), HostRejection> {
+        async fn core_storage_write(
+            &self,
+            key: Vec<u8>,
+            value: Vec<u8>,
+        ) -> Result<(), HostRejection> {
             self.core_storage.lock().unwrap().insert(key, value);
             Ok(())
         }
-        fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection> {
+        async fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection> {
             self.core_storage.lock().unwrap().remove(&key);
             Ok(())
         }
@@ -3373,17 +3399,20 @@ mod tests {
                 chains: Vec::new(),
             })
         }
-        fn local_storage_read(&self, _key: String) -> Result<Option<Vec<u8>>, HostStorageError> {
+        async fn local_storage_read(
+            &self,
+            _key: String,
+        ) -> Result<Option<Vec<u8>>, HostStorageError> {
             Ok(None)
         }
-        fn local_storage_write(
+        async fn local_storage_write(
             &self,
             _key: String,
             _value: Vec<u8>,
         ) -> Result<(), HostStorageError> {
             Ok(())
         }
-        fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+        async fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
             Ok(())
         }
         async fn begin_operation(
@@ -3398,6 +3427,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl NativePocketCallbacks for EventCallbacks {
         fn list_cards(&self) -> Result<Vec<v01::PocketCard>, HostRejection> {
             Ok(self
@@ -3407,7 +3437,7 @@ mod tests {
                 .clone())
         }
 
-        fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection> {
+        async fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection> {
             let mut cards = self
                 .pocket_cards
                 .lock()
@@ -3975,6 +4005,56 @@ mod tests {
         replacement
             .publish_chat_action(text_chat_action("fresh"))
             .expect("replacement execution has a fresh buffer");
+    }
+
+    /// A host removes a card through its own storage, which can take a while,
+    /// so the core waits for the answer without holding the thread that asked.
+    #[test]
+    fn native_pocket_removal_waits_for_the_host_without_holding_the_core_thread() {
+        struct DeferredRemoval {
+            outcome: Mutex<Option<futures::channel::oneshot::Receiver<NativePocketRemoval>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl NativePocketCallbacks for DeferredRemoval {
+            fn list_cards(&self) -> Result<Vec<v01::PocketCard>, HostRejection> {
+                Ok(Vec::new())
+            }
+
+            async fn remove_card(
+                &self,
+                _card_id: String,
+            ) -> Result<NativePocketRemoval, HostRejection> {
+                let outcome = self.outcome.lock().unwrap().take().expect("one removal");
+                Ok(outcome.await.expect("the host answers"))
+            }
+        }
+
+        let (answer, outcome) = futures::channel::oneshot::channel();
+        let platform = PocketCallbackPlatform {
+            pocket: Arc::new(DeferredRemoval {
+                outcome: Mutex::new(Some(outcome)),
+            }),
+            events: Arc::new(NativeEventBus::default()),
+        };
+        let product = ProductContext::new("pocket.dot".to_string()).expect("valid product id");
+        let mut removal = truapi_platform::PocketPlatform::remove_pocket_card(
+            &platform,
+            &product,
+            v01::HostPocketRemoveCardRequest {
+                card_id: "humanity".to_string(),
+            },
+        );
+
+        let waker = futures::task::noop_waker();
+        let mut context = core::task::Context::from_waker(&waker);
+        assert!(removal.poll_unpin(&mut context).is_pending());
+
+        answer.send(NativePocketRemoval::Privileged).unwrap();
+        assert!(matches!(
+            futures::executor::block_on(removal),
+            Err(v01::HostPocketRemoveCardError::Privileged)
+        ));
     }
 
     #[test]
@@ -5085,17 +5165,20 @@ mod tests {
                 Ok(NativePermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
-            fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            async fn core_storage_read(
+                &self,
+                _key: Vec<u8>,
+            ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn core_storage_write(
+            async fn core_storage_write(
                 &self,
                 _key: Vec<u8>,
                 _value: Vec<u8>,
             ) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
+            async fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
                 Ok(())
             }
             fn chain_connect(&self, _genesis_hash: Vec<u8>) -> Result<Option<u32>, HostRejection> {
@@ -5146,20 +5229,20 @@ mod tests {
                     chains: Vec::new(),
                 })
             }
-            fn local_storage_read(
+            async fn local_storage_read(
                 &self,
                 _key: String,
             ) -> Result<Option<Vec<u8>>, HostStorageError> {
                 Ok(None)
             }
-            fn local_storage_write(
+            async fn local_storage_write(
                 &self,
                 _key: String,
                 _value: Vec<u8>,
             ) -> Result<(), HostStorageError> {
                 Ok(())
             }
-            fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+            async fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
                 Ok(())
             }
             async fn begin_operation(
@@ -5262,17 +5345,20 @@ mod tests {
                 Ok(NativePermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
-            fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            async fn core_storage_read(
+                &self,
+                _key: Vec<u8>,
+            ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn core_storage_write(
+            async fn core_storage_write(
                 &self,
                 _key: Vec<u8>,
                 _value: Vec<u8>,
             ) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
+            async fn core_storage_clear(&self, _key: Vec<u8>) -> Result<(), HostRejection> {
                 Ok(())
             }
             fn chain_connect(&self, _genesis_hash: Vec<u8>) -> Result<Option<u32>, HostRejection> {
@@ -5323,20 +5409,20 @@ mod tests {
                     chains: Vec::new(),
                 })
             }
-            fn local_storage_read(
+            async fn local_storage_read(
                 &self,
                 _key: String,
             ) -> Result<Option<Vec<u8>>, HostStorageError> {
                 Ok(None)
             }
-            fn local_storage_write(
+            async fn local_storage_write(
                 &self,
                 _key: String,
                 _value: Vec<u8>,
             ) -> Result<(), HostStorageError> {
                 Ok(())
             }
-            fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+            async fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
                 Ok(())
             }
             async fn begin_operation(

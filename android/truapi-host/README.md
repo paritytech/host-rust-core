@@ -64,13 +64,13 @@ configuration update in the embedding app's package upgrade.
 The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](src/main/kotlin/io/parity/truapi/TrUAPIHost.kt):
 
 - `HostBridge` - callback bundle the embedding app implements. Splits device permissions, remote permissions, navigation, push, feature support, action and permission confirmations, and both storage backends.
-- `HostStorage` - product-scoped read/write/clear interface the host backs with its own persistence.
-- `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
+- `HostStorage` - product-scoped read/write/clear interface the host backs with its own persistence. Its methods suspend, so a backend can await disk or keystore work.
+- `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`). Its methods suspend, like `HostStorage`'s.
 - `LocalhostBridgeBootstrap` - supplies the private WebSocket endpoint to the container.
 - `ContainerScriptBundle` - loads the bundled browser container for installation at document start.
 - `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` holding its own token on the runtime's shared WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
 - `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
-- `PocketHostBridge` - the host's Pocket card collection, implemented by hosts with a Pocket surface and passed as `pocket` to `openProductExecution`. The execution then offers `notifyPocketCardsChanged`. `removeCard` decides and removes together, returning `NativePocketRemoval.Removed`, `Absent` or `Privileged`, so a card cannot be pinned between the check and the removal. Like Chat, Pocket is reachable only from a Worker execution with an active session, so without `activateLocalSession` every Pocket call answers `Denied`. Hosts without the bridge pass nothing and Pocket calls answer unsupported.
+- `PocketHostBridge` - the host's Pocket card collection, implemented by hosts with a Pocket surface and passed as `pocket` to `openProductExecution`. The execution then offers `notifyPocketCardsChanged`. `removeCard` suspends, and decides and removes together, returning `NativePocketRemoval.Removed`, `Absent` or `Privileged`, so a card cannot be pinned between the check and the removal. Like Chat, Pocket is reachable only from a Worker execution with an active session, so without `activateLocalSession` every Pocket call answers `Denied`. Hosts without the bridge pass nothing and Pocket calls answer unsupported.
 
 ## Chat
 
@@ -301,9 +301,9 @@ import uniffi.truapi.HostPushNotificationRequest
 
 class MyStorage : HostStorage {
     private val map = mutableMapOf<String, ByteArray>()
-    override fun read(key: String) = map[key]
-    override fun write(key: String, value: ByteArray) { map[key] = value }
-    override fun clear(key: String) { map.remove(key) }
+    override suspend fun read(key: String) = map[key]
+    override suspend fun write(key: String, value: ByteArray) { map[key] = value }
+    override suspend fun clear(key: String) { map.remove(key) }
 }
 
 // Core-owned storage: keyed by SCALE-encoded CoreStorageKey bytes. Back it with
@@ -312,9 +312,9 @@ class MyStorage : HostStorage {
 class MyCoreStorage : HostCoreStorage {
     private val map = HashMap<String, ByteArray>()
     private fun k(key: ByteArray) = key.joinToString("") { "%02x".format(it) }
-    override fun read(key: ByteArray) = map[k(key)]
-    override fun write(key: ByteArray, value: ByteArray) { map[k(key)] = value }
-    override fun clear(key: ByteArray) { map.remove(k(key)) }
+    override suspend fun read(key: ByteArray) = map[k(key)]
+    override suspend fun write(key: ByteArray, value: ByteArray) { map[k(key)] = value }
+    override suspend fun clear(key: ByteArray) { map.remove(k(key)) }
 }
 
 class MyBridge(private val webView: WebView) : HostBridge {
