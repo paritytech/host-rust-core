@@ -526,11 +526,12 @@ impl SigningHostSsoService {
         request: ProductRequest<api::HostAccountSignVrfRequest>,
     ) -> SignVrfResponse {
         self.signing_host
-            .sign_vrf(
+            .sign_vrf_request(
                 &cx.call,
                 &cx.session,
                 request.calling_product_id,
                 request.payload,
+                false,
             )
             .await
             .map_err(api::HostAccountSignVrfError::from)

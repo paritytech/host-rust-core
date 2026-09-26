@@ -346,15 +346,10 @@ impl ProductRuntimeHost {
             .map_err(StatementProofFailure::InvalidStatement)?;
         let payload = unsigned_statement_signing_payload(fields)
             .map_err(StatementProofFailure::UnableToSign)?;
-        // Signing as another product needs the user, not only that product's
-        // publisher. The three signing capabilities reach a confirmation
-        // through their own AutoSigning gate, which never covers a caller that
-        // is not the account's own product; this path has no such gate, so the
-        // confirmation is raised here rather than being absent.
+        // A publisher's grant does not replace an ordinary caller's signature approval.
         if product_account_id.dot_ns_identifier != self.product_id() {
             let confirmed = self
-                .platform
-                .confirm_user_action(UserConfirmationReview::StatementStoreProductSign(
+                .confirm_product_action(UserConfirmationReview::StatementStoreProductSign(
                     StatementStoreProductSignReview {
                         calling_product_id: Some(self.product_id()),
                         account: product_account_id.clone(),

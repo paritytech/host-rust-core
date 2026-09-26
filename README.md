@@ -85,6 +85,10 @@ The [permission model](docs/rfcs/0002-permission-model.md) separates outbound do
 Android permission prompts belong to one request and close when it finishes or is cancelled,
 including cancellation while the app is backgrounded.
 
+The shared Rust core asks blessed products (`peopl`, `dim2` and `stash`,
+on every supported network) only for device permissions. All other operations it
+handles bypass permission prompts and recorded decisions.
+
 ## Repository layout
 
 ```

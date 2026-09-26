@@ -30,12 +30,10 @@
 //! its set-shaped key is that domain's key, so it persists per-domain with no
 //! special case.
 //!
-//! Remote permissions have one product-scoped exception. A product whose label
-//! is listed in [`truapi_platform::REMOTE_PERMISSION_TRUSTED_LABELS`] reads as
-//! authorized for every remote permission while nothing is stored, and never
-//! reaches the prompt callback. A stored decision still wins, so a denial
-//! written through the admin surface revokes the grant. Device permissions,
-//! identity disclosure and account access are never covered.
+//! Remote permissions, identity disclosure and account access have one exception.
+//! A product listed in [`truapi_platform::REMOTE_PERMISSION_TRUSTED_LABELS`]
+//! is authorized without reading or writing permission records and never
+//! reaches the prompt callback. Device permissions are never covered.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -162,8 +160,8 @@ pub struct PermissionsService<'a, S: CoreStorage + ?Sized, P: Permissions + ?Siz
     /// Live OS permission state, when the host serves that capability. Absent
     /// leaves the stored decision governing on its own.
     status: Option<&'a dyn PermissionStatusHost>,
-    /// Whether `product` holds every remote permission without prompting.
-    remote_auto_granted: bool,
+    /// Whether non-device permissions are granted without records or prompts.
+    trusted_product: bool,
     /// One-use grants remain local to the execution that requested them.
     temporary_permissions: Arc<TemporaryPermissions>,
 }
@@ -180,7 +178,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             prompt,
             product,
             status: None,
-            remote_auto_granted: has_trusted_remote_permissions(&product.product_id),
+            trusted_product: has_trusted_remote_permissions(&product.product_id),
             temporary_permissions: Arc::default(),
         }
     }
@@ -270,6 +268,9 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         {
             return Ok((BundleResolution::Denied, Vec::new()));
         }
+        if self.trusted_product {
+            return Ok((BundleResolution::Authorized, Vec::new()));
+        }
         let mut undecided = Vec::new();
         let mut temporary_keys = Vec::new();
         for domain in domains {
@@ -306,7 +307,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     /// Walks [`remote_domain_candidates`] most-specific-first and returns the
     /// first stored decision, so an explicit grant for `api.example.com`
     /// survives a denial of `*.example.com` and vice versa. With no decision on
-    /// any candidate, blessed domains and trusted products are authorized.
+    /// any candidate, blessed domains are authorized.
     async fn effective_domain_status(
         &self,
         domain: &str,
@@ -316,7 +317,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         let mut fallback = if blessed {
             PermissionAuthorizationStatus::Authorized
         } else {
-            self.default_remote_status()
+            PermissionAuthorizationStatus::NotDetermined
         };
         for candidate in remote_domain_candidates(domain) {
             let key = CoreStorageKey::remote_domain_authorization(self.product_id(), &candidate);
@@ -357,26 +358,27 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         key: &CoreStorageKey,
         consume: bool,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
-        match self.cached_authorization(key, consume).await? {
-            PermissionAuthorizationStatus::NotDetermined => Ok(self.default_remote_status()),
-            decided => Ok(decided),
+        if self.trusted_product {
+            return Ok(PermissionAuthorizationStatus::Authorized);
         }
+        self.cached_authorization(key, consume).await
     }
 
-    fn default_remote_status(&self) -> PermissionAuthorizationStatus {
-        if self.remote_auto_granted {
-            PermissionAuthorizationStatus::Authorized
-        } else {
-            PermissionAuthorizationStatus::NotDetermined
-        }
-    }
-
-    /// Returns the stored authorization status for a permission request
+    /// Returns the current authorization status for a permission request
     /// without prompting.
     pub async fn authorization_status(
         &self,
         request: &PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
+        if self.trusted_product
+            && matches!(
+                request,
+                PermissionAuthorizationRequest::IdentityDisclosure
+                    | PermissionAuthorizationRequest::AccountAccess { .. }
+            )
+        {
+            return Ok(PermissionAuthorizationStatus::Authorized);
+        }
         match request {
             PermissionAuthorizationRequest::Device(permission) => {
                 self.peek_device(permission).await
@@ -402,7 +404,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         }
     }
 
-    /// Returns the stored authorization statuses for permission requests
+    /// Returns the current authorization statuses for permission requests
     /// without prompting. Results follow the same order as `requests`.
     pub async fn authorization_statuses(
         &self,
@@ -417,8 +419,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
 
     /// Update the stored authorization status for a permission request.
     ///
-    /// Setting `NotDetermined` clears the stored value so the next product
-    /// request prompts again.
+    /// Setting `NotDetermined` clears the stored value, restoring the default.
     pub async fn set_authorization_status(
         &self,
         request: &PermissionAuthorizationRequest,
@@ -543,6 +544,9 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         request: RemotePermissionRequest,
         consume: bool,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
+        if self.trusted_product {
+            return self.peek_remote(&request).await;
+        }
         let _guard = self.temporary_permissions.authorization.lock().await;
         let Some(domains) = requested_domains(&request).map(<[String]>::to_vec) else {
             let key = CoreStorageKey::remote_permission_authorization(self.product_id(), &request);
@@ -1845,12 +1849,12 @@ mod tests {
             ))
             .unwrap(),
             None,
-            "an auto-granted permission must leave the slot free for a later user decision"
+            "trusted authorization must not create a permission record"
         );
     }
 
     #[test]
-    fn a_stored_denial_outranks_a_trusted_product_grant() {
+    fn a_trusted_product_ignores_stored_remote_denials() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let service = trusted_service(&storage, &prompt);
@@ -1867,18 +1871,18 @@ mod tests {
 
             assert_eq!(
                 futures::executor::block_on(service.peek_remote(&request)).unwrap(),
-                PermissionAuthorizationStatus::Denied
+                PermissionAuthorizationStatus::Authorized
             );
             assert_eq!(
                 futures::executor::block_on(service.check_or_prompt_remote(request)).unwrap(),
-                PermissionAuthorizationStatus::Denied
+                PermissionAuthorizationStatus::Authorized
             );
         }
         assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn a_wildcard_denial_revokes_every_domain_for_a_trusted_product() {
+    fn a_trusted_product_ignores_stored_wildcard_denials() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let service = trusted_service(&storage, &prompt);
@@ -1893,32 +1897,10 @@ mod tests {
             assert_eq!(
                 futures::executor::block_on(service.peek_remote(&remote_domains(&[domain])))
                     .unwrap(),
-                PermissionAuthorizationStatus::Denied,
-                "the wildcard denial must be how a trusted product's domain access is revoked"
+                PermissionAuthorizationStatus::Authorized,
+                "stored wildcard decisions do not govern trusted products"
             );
         }
-    }
-
-    #[test]
-    fn clearing_a_denial_restores_a_trusted_product_grant() {
-        let storage = MemStorage::default();
-        let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = trusted_service(&storage, &prompt);
-        let request = PermissionAuthorizationRequest::Remote(remote(RemotePermission::ChainSubmit));
-
-        for status in [
-            PermissionAuthorizationStatus::Denied,
-            PermissionAuthorizationStatus::NotDetermined,
-        ] {
-            futures::executor::block_on(service.set_authorization_status(&request, status))
-                .unwrap();
-        }
-
-        assert_eq!(
-            futures::executor::block_on(service.authorization_status(&request)).unwrap(),
-            PermissionAuthorizationStatus::Authorized
-        );
-        assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -2019,23 +2001,33 @@ mod tests {
     }
 
     #[test]
-    fn a_trusted_product_is_not_authorized_for_identity_disclosure_or_account_access() {
-        let storage = MemStorage::default();
+    fn a_trusted_product_reads_permission_storage_only_for_devices() {
+        let storage = FailingStorage;
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = trusted_service(&storage, &prompt);
-
-        for request in [
-            PermissionAuthorizationRequest::IdentityDisclosure,
-            PermissionAuthorizationRequest::AccountAccess {
-                target_product_id: "other.dot".to_string(),
-            },
-        ] {
-            assert_eq!(
-                futures::executor::block_on(service.authorization_status(&request)).unwrap(),
-                PermissionAuthorizationStatus::NotDetermined,
-                "{request:?} is outside the remote-permission whitelist"
-            );
-        }
+        let service = PermissionsService::new(&storage, &prompt, &PEOPL);
+        let status = |request| futures::executor::block_on(service.authorization_status(&request));
+        assert_eq!(
+            [
+                status(PermissionAuthorizationRequest::Remote(remote(
+                    RemotePermission::ChainSubmit
+                ))),
+                status(PermissionAuthorizationRequest::IdentityDisclosure),
+                status(PermissionAuthorizationRequest::AccountAccess {
+                    target_product_id: "other.dot".to_string(),
+                }),
+                status(PermissionAuthorizationRequest::Device(
+                    HostDevicePermissionRequest::Camera
+                )),
+            ],
+            [
+                Ok(PermissionAuthorizationStatus::Authorized),
+                Ok(PermissionAuthorizationStatus::Authorized),
+                Ok(PermissionAuthorizationStatus::Authorized),
+                Err(GenericError {
+                    reason: "read failed".to_string()
+                }),
+            ],
+        );
     }
 
     #[test]

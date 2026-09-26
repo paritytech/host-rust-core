@@ -318,15 +318,9 @@ pub fn has_dotns_tld(normalized: &str) -> bool {
         .is_some_and(|(_, tld)| DOTNS_TLDS.contains(&tld))
 }
 
-/// Bare product labels whose products hold every [`RemotePermission`] without a
-/// user prompt.
+/// Blessed product labels across every network in [`DOTNS_TLDS`].
 ///
-/// These are first-party surfaces shipped alongside the host, so their remote
-/// access belongs to the host's own trust boundary rather than to a per-product
-/// decision. The list covers remote permissions only: device permissions,
-/// identity disclosure and cross-product account access are always asked for.
-/// Entries carry no TLD, so one entry covers the product on every network in
-/// [`DOTNS_TLDS`].
+/// These products bypass recorded permissions and prompt only for device access.
 pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", "dim2", "stash"];
 
 /// Hosts available to every product unless a stored permission decision blocks them.
@@ -354,8 +348,7 @@ pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
 /// normalizes first and answers `false` for an id that does not normalize at
 /// all: an unrecognised spelling is never read as trusted.
 ///
-/// Answers only whether the product is on the compiled-in list. A stored user
-/// decision is not consulted here and always wins over it.
+/// Recorded permission decisions do not affect this policy.
 pub fn normalizes_to_trusted_remote_permissions(product_id: &str) -> bool {
     normalize_product_identifier(product_id)
         .is_ok_and(|normalized| has_trusted_remote_permissions(&normalized))
@@ -2379,6 +2372,8 @@ mod tests {
             "peopl.paseo",
             "peopl.testnet",
             "dim2.dot",
+            "dim2.paseo",
+            "dim2.testnet",
             "stash.dot",
         ] {
             assert!(
@@ -2389,6 +2384,9 @@ mod tests {
         for product_id in [
             "app.peopl.dot",
             "sub.dim2.paseo",
+            "app.dim2.testnet",
+            "dim2.com",
+            "notdim2.dot",
             "peopl",
             "peopl.com",
             "peoplx.dot",
@@ -2443,6 +2441,7 @@ mod tests {
             "PEOPL.DOT",
             "  peopl.dot  ",
             "dim2.paseo",
+            " DIM2.TESTNET ",
             "stash.dot",
         ] {
             assert!(

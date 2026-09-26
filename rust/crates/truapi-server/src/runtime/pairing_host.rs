@@ -2153,20 +2153,22 @@ impl PairingHost {
             );
             return Ok(v01::VrfSignature { pre_output, proof });
         }
-        let confirmed = super::until_cancelled(
-            cx,
-            self.platform
-                .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
-                    calling_product_id: calling_product_id.clone(),
-                    request: request.clone(),
-                })),
-        )
-        .await?
-        .map_err(|err| AuthorityError::Unknown {
-            reason: format!("VRF signing confirmation failed: {err:?}"),
-        })?;
-        if !confirmed {
-            return Err(AuthorityError::Rejected);
+        if !truapi_platform::has_trusted_remote_permissions(&calling_product_id) {
+            let confirmed = super::until_cancelled(
+                cx,
+                self.platform
+                    .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                        calling_product_id: calling_product_id.clone(),
+                        request: request.clone(),
+                    })),
+            )
+            .await?
+            .map_err(|err| AuthorityError::Unknown {
+                reason: format!("VRF signing confirmation failed: {err:?}"),
+            })?;
+            if !confirmed {
+                return Err(AuthorityError::Rejected);
+            }
         }
         self.remote_sign_vrf(cx, &session, calling_product_id, request)
             .await

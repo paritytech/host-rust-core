@@ -2521,6 +2521,28 @@ fn get_account_other_product_accepts_confirmation_then_derives_key() {
 }
 
 #[test]
+fn get_account_other_product_skips_confirmation_for_a_blessed_product() {
+    let platform = stub_platform();
+    let host =
+        ProductRuntimeHost::new(platform.clone(), runtime_config("dim2.dot"), test_spawner());
+    let session = sso_session_info();
+    install_pairing_session(&host, session.clone());
+    cache_test_product_subtree(&host, &session, "other.dot");
+    let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+        product_account_id: account_id("other.dot", 0),
+    });
+    let HostAccountGetResponse::V1(inner) =
+        futures::executor::block_on(host.get_account(&CallContext::default(), request)).unwrap();
+    assert_eq!(
+        (
+            inner.account.public_key,
+            platform.account_access_reviews.lock().unwrap().len()
+        ),
+        (test_product_account_public("other.dot", 0).to_vec(), 0)
+    );
+}
+
+#[test]
 fn get_account_allow_once_does_not_authorize_the_next_disclosure() {
     futures::executor::block_on(async {
         let platform = Arc::new(StubPlatform {
