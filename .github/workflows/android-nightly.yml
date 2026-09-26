@@ -18,7 +18,9 @@ on:
   # Two hours after the iOS nightly starts, which takes a little over an hour,
   # so the two never overlap and a night's results arrive in one window.
   schedule:
-    - cron: "0 22 * * 1-5" # 22:00 UTC Monday to Friday
+    # Every day. A night with nothing new since the last successful build is
+    # skipped by the first job rather than by the calendar.
+    - cron: "0 22 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -32,11 +34,34 @@ permissions:
   id-token: write
 
 jobs:
+  # A scheduled night with nothing merged since the last successful build would
+  # still cut a prerelease, upload to App Distribution and announce an empty
+  # changelog. Only the schedule is skipped; a dispatch always builds.
+  changed:
+    name: Changed since the last nightly
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: check
+        uses: ./.github/actions/changed-since-last-build
+        with:
+          github_token: ${{ github.token }}
+          workflow: android-nightly.yml
+
   # Checks what can be checked before an hour of building. It confirms the
   # delivery target is real; it cannot confirm we may write to it, because
   # every read-only call is available to a role that cannot upload.
   preflight:
     name: Check delivery is possible
+    needs: changed
+    if: github.event_name != 'schedule' || needs.changed.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
