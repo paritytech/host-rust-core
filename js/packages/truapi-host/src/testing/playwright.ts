@@ -18,8 +18,16 @@ import type {
   NotificationLogEntry,
   PermissionLogEntry,
   PermissionPolicy,
+  PermissionPolicyAlias,
   SigningLogEntry,
+  StatementEntry,
 } from "../web/create-mock-host.js";
+import type { StatementInput } from "../web/loopback-statements.js";
+
+// The statement shapes `@parity/host-api-test-sdk` names, so a suite that
+// annotates what it injects or reads back compiles unchanged.
+export type { StatementEntry } from "../web/create-mock-host.js";
+export type { StatementInput } from "../web/loopback-statements.js";
 
 import { PRODUCT_FRAME_ID } from "./host-page.js";
 import { createTestHostServer } from "./server.js";
@@ -37,6 +45,10 @@ export {
 } from "./dev-accounts.js";
 export { DEV_ACCOUNT_NAMES } from "./dev-accounts.js";
 export type { DevAccount, DevAccountName } from "./dev-accounts.js";
+
+// A suite that annotates a `genesisHash` reaches for this name from the same
+// path `@parity/host-api-test-sdk/playwright` offers it on.
+export type { HexString } from "@parity/truapi";
 
 // Log entry types under the names `@parity/host-api-test-sdk` exports them by,
 // so a suite that annotates a control-surface result compiles unchanged.
@@ -140,6 +152,18 @@ export interface TestHostFixtureOptions {
    */
   allowances?: "granted" | "chain";
   /**
+   * Decisions applied before the product loads.
+   *
+   * `resourceAllocation` names resources the host refuses; anything unlisted
+   * stays granted. A boot option rather than a call, because a product asks for
+   * its resources on connect and a later call would land after that.
+   *
+   * A refusal here is answered as refused whatever {@link allowances} would
+   * otherwise say, which is what makes a product's refusal path reachable: with
+   * allocation granted there is nothing a suite could do to see one.
+   */
+  behaviors?: { resourceAllocation?: Record<string, boolean> };
+  /**
    * Serve the statement store in-page instead of forwarding it to the chains
    * the host proxies. Defaults to on when `allowances` is `"granted"`, so the
    * two halves of a statement flow agree: a product that is handed an
@@ -180,7 +204,9 @@ export interface TestHost {
   grantPermission(permission: string): Promise<void>;
   revokePermission(permission: string): Promise<void>;
   setEnforcePermissions(enforce: boolean): Promise<void>;
-  setPermissionBehavior(behavior: PermissionPolicy): Promise<void>;
+  setPermissionBehavior(
+    behavior: PermissionPolicy | PermissionPolicyAlias,
+  ): Promise<void>;
   getChatRooms(): Promise<unknown[]>;
   getChatBots(): Promise<unknown[]>;
   getChatMessageLog(): Promise<ChatMessageRecord[]>;
@@ -197,6 +223,14 @@ export interface TestHost {
    * than the full namespaced string, which is an internal shape.
    */
   findProductStorage(key: string): Promise<Uint8Array | undefined>;
+  /**
+   * The value the product stored under `key`, decoded as UTF-8.
+   *
+   * `@parity/host-api-test-sdk` spells this `getProductStorageValue` and
+   * returns a string, so a migrating suite's storage assertions compile
+   * unchanged. Use {@link findProductStorage} for a value that is not text.
+   */
+  getProductStorageValue(key: string): Promise<string | undefined>;
   clearPreimages(): Promise<void>;
   getTheme(): Promise<string>;
   setTheme(variant: string): Promise<void>;
@@ -253,13 +287,17 @@ export interface TestHost {
    * one no statement is ever built to submit. A product that signs its own
    * statements is observable here.
    */
-  getSubmittedStatements(): Promise<string[]>;
+  getSubmittedStatements(): Promise<StatementEntry[]>;
+  /** Every statement the store holds, submitted or injected, in order. */
+  getStatements(): Promise<StatementEntry[]>;
   /**
    * Deliver a statement to the product as a chain notification, returning how
    * many live subscriptions it reached. Subscribe first: zero means nothing
    * was listening.
    */
-  injectStatement(statement: Uint8Array | string): Promise<number>;
+  injectStatement(
+    statement: StatementInput | Uint8Array | string,
+  ): Promise<StatementEntry>;
   /** Statements injected so far, in order. */
   getInjectedStatements(): Promise<string[]>;
   /** Forget the injected statements. */
@@ -416,16 +454,36 @@ export function fromNetworks(
       runtimeConfig[split.configKey] = { genesisHash: entry.genesisHash };
     }
   }
+  // Only the People chain carries the statement store, so serving it locally on
+  // the hub as well would claim a store where none exists. A suite that declares
+  // no People chain has no such proxy to carry it, and a single unhashed proxy
+  // takes every request -- so that one serves the store instead. With several
+  // chains and no People among them there is no request this could attach to,
+  // and attaching it to a hub would answer statement reads a real hub refuses.
+  const peopleChains = networks.filter(
+    (entry) => splitChainId(entry.id).identifier === "People",
+  );
+  if (loopbackStatements && peopleChains.length === 0 && networks.length > 1) {
+    throw new Error(
+      "testHost `loopbackStatements` needs a People chain in `networks`, or a " +
+        "single chain whose proxy takes every request. Several chains are " +
+        "declared and none is a People chain, so there is no proxy the " +
+        "statement store belongs on: the store would answer reads that the " +
+        "declared chains refuse. Add the People chain, or drop to one chain.",
+    );
+  }
+  const servesStatements = (entry: NetworkConfig): boolean =>
+    loopbackStatements &&
+    (peopleChains.length > 0
+      ? splitChainId(entry.id).identifier === "People"
+      : true);
+
   return {
     mock: {
       chainProxies: networks.map((entry) => ({
         ...(networks.length > 1 ? { genesisHash: entry.genesisHash } : {}),
         rpcUrl: entry.rpcUrl,
-        // Only the People chain carries the statement store, so serving it
-        // locally on the hub as well would claim a store where none exists.
-        ...(loopbackStatements && splitChainId(entry.id).identifier === "People"
-          ? { loopbackStatements: true }
-          : {}),
+        ...(servesStatements(entry) ? { loopbackStatements: true } : {}),
       })),
       supportedChains: { network, chains },
     } as Pick<MockHostConfig, "chainProxies" | "supportedChains">,
@@ -499,6 +557,13 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
   // an unregistered allowance key has somewhere its statements are accepted.
   const loopbackStatements =
     defaults.loopbackStatements ?? (defaults.allowances ?? "granted") === "granted";
+  // Only the refused entries travel: `true` is what every unlisted resource
+  // already is, so carrying it would say something the host does not act on.
+  const withheldResources = Object.entries(
+    defaults.behaviors?.resourceAllocation ?? {},
+  )
+    .filter(([, allowed]) => !allowed)
+    .map(([resource]) => resource);
   const expanded = chains
     ? fromNetworks(chains, loopbackStatements)
     : undefined;
@@ -522,6 +587,7 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         loginBehavior: defaults.loginBehavior,
         topology: defaults.topology,
         allowances: defaults.allowances,
+        withheldResources,
         logLevel: defaults.logLevel,
       });
       await page.goto(url);
@@ -599,6 +665,12 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
           );
           return match?.[1];
         },
+        getProductStorageValue: async (key: string) =>
+          page.evaluate((storageKey) => {
+            const host = window.__TRUAPI_TEST_HOST__;
+            if (!host) throw new Error("test host is not running on this page");
+            return host.getProductStorageValue(storageKey);
+          }, key),
         getPreimages: async () => {
           const raw = await page.evaluate(() => {
             const host = window.__TRUAPI_TEST_HOST__;
@@ -650,15 +722,24 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         // Sent as hex, not bytes: `page.evaluate` serialises a Uint8Array as a
         // plain index object, which would inject a statement of nothing.
         injectStatement: (statement) =>
-          page.evaluate((value) => {
-            const host = window.__TRUAPI_TEST_HOST__;
-            if (!host) throw new Error("test host is not running on this page");
-            return host.injectStatement(value);
-          }, typeof statement === "string" ? statement : `0x${Array.from(statement, (b) => b.toString(16).padStart(2, "0")).join("")}`),
+          page.evaluate(
+            (value) => {
+              const host = window.__TRUAPI_TEST_HOST__;
+              if (!host) throw new Error("test host is not running on this page");
+              return host.injectStatement(value);
+            },
+            // A `Uint8Array` is reduced to hex here because `page.evaluate`
+            // serialises it as a plain index object, which would inject a
+            // statement of nothing. The decoded shape survives as it is.
+            statement instanceof Uint8Array
+              ? `0x${Array.from(statement, (byte) => byte.toString(16).padStart(2, "0")).join("")}`
+              : statement,
+          ),
         getInjectedStatements: () => call("getInjectedStatements"),
         clearStatements: () => call("clearStatements"),
 
         getSubmittedStatements: () => call("getSubmittedStatements"),
+        getStatements: () => call("getStatements"),
 
         // Playwright closes the page after the fixture yields, so there is
         // genuinely nothing to do -- not a silent stub standing in for work.
