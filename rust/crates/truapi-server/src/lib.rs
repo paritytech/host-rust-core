@@ -77,9 +77,9 @@ pub use host_logic::worker::{WorkerLedger, WorkerTransition};
 #[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
 pub use native_debug::{DebugSinkError, WsDebugSink};
 pub use platform::{
-    CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,
-    PairingHostConfig, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
-    ProductContext, SigningHostConfig, describe_core_storage_key,
+    CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostIdentity, PairingHostConfig,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform, ProductContext,
+    SigningHostConfig, describe_core_storage_key,
 };
 pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;

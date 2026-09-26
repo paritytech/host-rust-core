@@ -3,7 +3,7 @@
 //! `async_trait`.
 
 use truapi_server::platform::{
-    HostInfo, HostRuntimeConfig, PairingHostConfig, Platform, PlatformInfo, ProductContext,
+    HostIdentity, HostInfo, PairingHostConfig, Platform, PlatformInfo, ProductContext,
     ProductStorageKey, RuntimeConfigValidationError,
 };
 
@@ -54,7 +54,7 @@ fn runtime_config_validation_cases() {
     ];
 
     for case in cases {
-        let result = HostRuntimeConfig::new(
+        let result = HostIdentity::new(
             HostInfo {
                 name: case.host_name.to_string(),
                 icon: case.host_icon.map(str::to_string),

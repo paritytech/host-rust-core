@@ -3,7 +3,7 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 import dagger.Lazy
 import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
-import io.parity.truapi.HostRuntimeConfig
+import uniffi.truapi_server.HostRuntimeConfig
 import io.parity.truapi.HostStorage
 import uniffi.truapi_server.ProductExecutionConfig
 import io.parity.truapi.TrUAPIHostRuntime

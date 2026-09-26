@@ -43,10 +43,10 @@ use truapi::latest::{
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
 
-/// Role-neutral runtime configuration supplied by the embedding host.
+/// Role-neutral host identity supplied by the embedding host.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostRuntimeConfig {
+pub struct HostIdentity {
     /// Host metadata.
     pub host_info: HostInfo,
     /// Platform metadata.
@@ -61,7 +61,7 @@ pub struct PairingHostConfig {
     ///
     /// Host-spec B.1.3 defines the host metadata consumed by the signing host:
     /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L48-L60>
-    pub host: HostRuntimeConfig,
+    pub host: HostIdentity,
     /// People-chain genesis hash used for statement-store SSO.
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
@@ -88,7 +88,7 @@ pub struct SigningHostConfig {
     /// Host identity. Not read by the local-signing paths yet; retained for
     /// parity with [`PairingHostConfig`] and for the future signer-side SSO
     /// responder, which advertises host identity in handshake responses.
-    pub host: HostRuntimeConfig,
+    pub host: HostIdentity,
     /// People-chain genesis hash used for statement-store product calls.
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
@@ -170,8 +170,8 @@ pub struct PlatformInfo {
     pub version: Option<String>,
 }
 
-impl HostRuntimeConfig {
-    /// Build a role-neutral host runtime config, validating fields whose
+impl HostIdentity {
+    /// Build a role-neutral host identity, validating fields whose
     /// representation cannot be made invalid by Rust types alone.
     pub fn new(
         host_info: HostInfo,
@@ -212,7 +212,7 @@ impl PairingHostConfig {
             });
         }
         let config = Self {
-            host: HostRuntimeConfig::new(host_info, platform_info)?,
+            host: HostIdentity::new(host_info, platform_info)?,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
             asset_hub_chain_genesis_hash,
@@ -235,7 +235,7 @@ impl SigningHostConfig {
     ) -> Result<Self, RuntimeConfigValidationError> {
         validate_network_suffix(&network_suffix)?;
         Ok(Self {
-            host: HostRuntimeConfig::new(host_info, platform_info)?,
+            host: HostIdentity::new(host_info, platform_info)?,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
             asset_hub_chain_genesis_hash,

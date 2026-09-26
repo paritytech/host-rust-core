@@ -39,7 +39,6 @@ import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostLocaleSubscribeItem
-import uniffi.truapi.HostPlatform
 import uniffi.truapi.PocketCard
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.HostRendererActionSubscribeItem
@@ -84,86 +83,12 @@ import uniffi.truapi_server.StatementRenewalReport
 import uniffi.truapi_server.WorkerTransition
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
-import uniffi.truapi_server.NativeHostRuntimeConfig as UniFfiNativeHostRuntimeConfig
+import uniffi.truapi_server.HostRuntimeConfig
 import uniffi.truapi_server.ProductExecutionConfig
 
 /** Package metadata. */
 object TrUAPIHost {
     const val VERSION = "0.1.0"
-}
-
-/**
- * Immutable process-wide configuration shared by every product execution
- * opened from one [TrUAPIHostRuntime]. [peopleChainGenesisHash] and
- * [bulletinChainGenesisHash] must each be exactly 32 bytes, and so must
- * [assetHubChainGenesisHash], where the dotNS contracts are deployed: product
- * manifests are read from there, so it is what makes a `trustedProducts` grant
- * resolvable. 32 zero bytes says this host has no Asset Hub, and no manifest
- * then resolves, so every cross-product grant is refused except one already
- * cached, which is served without consulting it. [networkSuffix] is
- * the network's dotNS TLD without the leading dot (`dot`, `paseo`, `testnet`);
- * the core derives the wallet's reserved identities under it (`uid.<suffix>`,
- * `peopl.<suffix>`), the same person the app's own onboarding derives there.
- */
-data class HostRuntimeConfig(
-    val hostName: String,
-    val hostIcon: String? = null,
-    val hostVersion: String? = null,
-    val platformType: String? = null,
-    val platformVersion: String? = null,
-    val peopleChainGenesisHash: ByteArray,
-    val bulletinChainGenesisHash: ByteArray,
-    val assetHubChainGenesisHash: ByteArray,
-    val networkSuffix: String,
-    val localSessionSecret: ByteArray? = null,
-    val localSessionLiteUsername: String? = null,
-) {
-    internal fun toNative(): UniFfiNativeHostRuntimeConfig =
-        UniFfiNativeHostRuntimeConfig(
-            hostName = hostName,
-            hostIcon = hostIcon,
-            hostVersion = hostVersion,
-            hostPlatform = HostPlatform.ANDROID,
-            platformType = platformType,
-            platformVersion = platformVersion,
-            peopleChainGenesisHash = peopleChainGenesisHash,
-            bulletinChainGenesisHash = bulletinChainGenesisHash,
-            assetHubChainGenesisHash = assetHubChainGenesisHash,
-            networkSuffix = networkSuffix,
-            localSessionSecret = localSessionSecret,
-            localSessionLiteUsername = localSessionLiteUsername,
-        )
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is HostRuntimeConfig) return false
-        return hostName == other.hostName &&
-            hostIcon == other.hostIcon &&
-            hostVersion == other.hostVersion &&
-            platformType == other.platformType &&
-            platformVersion == other.platformVersion &&
-            peopleChainGenesisHash.contentEquals(other.peopleChainGenesisHash) &&
-            bulletinChainGenesisHash.contentEquals(other.bulletinChainGenesisHash) &&
-            assetHubChainGenesisHash.contentEquals(other.assetHubChainGenesisHash) &&
-            networkSuffix == other.networkSuffix &&
-            localSessionSecret.contentEquals(other.localSessionSecret) &&
-            localSessionLiteUsername == other.localSessionLiteUsername
-    }
-
-    override fun hashCode(): Int {
-        var result = hostName.hashCode()
-        result = 31 * result + (hostIcon?.hashCode() ?: 0)
-        result = 31 * result + (hostVersion?.hashCode() ?: 0)
-        result = 31 * result + (platformType?.hashCode() ?: 0)
-        result = 31 * result + (platformVersion?.hashCode() ?: 0)
-        result = 31 * result + peopleChainGenesisHash.contentHashCode()
-        result = 31 * result + bulletinChainGenesisHash.contentHashCode()
-        result = 31 * result + assetHubChainGenesisHash.contentHashCode()
-        result = 31 * result + networkSuffix.hashCode()
-        result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
-        result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
-        return result
-    }
 }
 
 /**
@@ -701,12 +626,12 @@ object LocalhostBridgeBootstrap {
  */
 class TrUAPIHostRuntime private constructor(
     bridge: HostBridge,
-    runtimeConfig: UniFfiNativeHostRuntimeConfig,
+    runtimeConfig: HostRuntimeConfig,
 ) : AutoCloseable {
     @Throws(NativeRuntimeConfigException::class)
     constructor(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) : this(
         bridge,
-        runtimeConfig.toNative(),
+        runtimeConfig,
     )
 
     // Co-owns the adapter alongside the generated FfiConverter handle map,

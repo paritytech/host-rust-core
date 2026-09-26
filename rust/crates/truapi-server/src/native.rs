@@ -178,24 +178,33 @@ pub enum SsoRequestOutcome {
 
 /// Process-owned native host configuration shared by every product execution.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct NativeHostRuntimeConfig {
+pub struct HostRuntimeConfig {
     /// Host name shown by the wallet during SSO pairing.
     pub host_name: String,
     /// Optional host icon URL shown by the wallet during SSO pairing.
+    #[uniffi(default)]
     pub host_icon: Option<String>,
     /// Optional host version shown by the wallet during SSO pairing.
+    #[uniffi(default)]
     pub host_version: Option<String>,
-    /// Platform category this host runs on, reported to products via
-    /// `System::host_info`.
-    pub host_platform: HostPlatform,
     /// Optional platform/browser name shown by the wallet during SSO pairing.
+    #[uniffi(default)]
     pub platform_type: Option<String>,
     /// Optional platform/browser version shown by the wallet during SSO pairing.
+    #[uniffi(default)]
     pub platform_version: Option<String>,
     /// People-chain genesis hash. Must be exactly 32 bytes.
     pub people_chain_genesis_hash: Vec<u8>,
     /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
     pub bulletin_chain_genesis_hash: Vec<u8>,
+    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Must be
+    /// exactly 32 bytes.
+    ///
+    /// Product manifests are read from dotNS, so this is what makes a
+    /// `trustedProducts` grant resolvable. 32 zero bytes says this host has no
+    /// Asset Hub; grants already in the manifest cache stay honoured until they
+    /// expire.
+    pub asset_hub_chain_genesis_hash: Vec<u8>,
     /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
     /// `testnet`). The wallet's reserved identities are derived under it:
     /// `uid.<suffix>` for the identity account, `peopl.<suffix>` for the person
@@ -204,21 +213,11 @@ pub struct NativeHostRuntimeConfig {
     /// person from the same seed.
     pub network_suffix: String,
     /// Optional local signing-host secret material (raw BIP-39 entropy).
+    #[uniffi(default)]
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
+    #[uniffi(default)]
     pub local_session_lite_username: Option<String>,
-    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Must be
-    /// exactly 32 bytes.
-    ///
-    /// Product manifests are read from dotNS, so this is what makes a
-    /// `trustedProducts` grant resolvable. 32 zero bytes says this host has no
-    /// Asset Hub; grants already in the manifest cache stay honoured until they
-    /// expire.
-    ///
-    /// Appended rather than placed with its sibling hashes: record fields are
-    /// positional over the FFI and the checksum does not cover their order, so
-    /// an insert shifts every field below it.
-    pub asset_hub_chain_genesis_hash: Vec<u8>,
 }
 
 /// Trusted identity attached by a native host to one executable connection.
@@ -318,10 +317,22 @@ pub enum NativeRuntimeConfigError {
     },
 }
 
-impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
+/// The platform products see in `System::host_info`. The native library ships
+/// only inside iOS and Android apps, so the target decides it.
+fn native_host_platform() -> HostPlatform {
+    if cfg!(target_os = "ios") {
+        HostPlatform::Ios
+    } else if cfg!(target_os = "android") {
+        HostPlatform::Android
+    } else {
+        HostPlatform::Unknown
+    }
+}
+
+impl TryFrom<HostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     type Error = NativeRuntimeConfigError;
 
-    fn try_from(config: NativeHostRuntimeConfig) -> Result<Self, Self::Error> {
+    fn try_from(config: HostRuntimeConfig) -> Result<Self, Self::Error> {
         let people_chain_genesis_hash =
             <[u8; 32]>::try_from(config.people_chain_genesis_hash.as_slice()).map_err(|_| {
                 NativeRuntimeConfigError::InvalidPeopleChainGenesisHash {
@@ -345,7 +356,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                 name: config.host_name,
                 icon: config.host_icon,
                 version: config.host_version,
-                platform: config.host_platform,
+                platform: native_host_platform(),
             },
             PlatformInfo {
                 kind: config.platform_type,
@@ -1003,7 +1014,7 @@ impl NativeTrUApiHostRuntime {
     #[uniffi::constructor]
     pub fn with_runtime_config(
         callbacks: Arc<dyn HostCallbacks>,
-        runtime_config: NativeHostRuntimeConfig,
+        runtime_config: HostRuntimeConfig,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         let runtime_config: NativeResolvedHostRuntimeConfig = runtime_config.try_into()?;
         Self::from_resolved(
@@ -3198,12 +3209,11 @@ mod tests {
         );
     }
 
-    fn native_host_runtime_config() -> NativeHostRuntimeConfig {
-        NativeHostRuntimeConfig {
+    fn native_host_runtime_config() -> HostRuntimeConfig {
+        HostRuntimeConfig {
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
-            host_platform: HostPlatform::Unknown,
             platform_type: None,
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
@@ -4475,19 +4485,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_reports_the_declared_host_platform() {
-        let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
-            host_platform: HostPlatform::Ios,
-            ..native_host_runtime_config()
-        })
-        .expect("config is valid");
+    fn runtime_config_reports_the_platform_the_library_was_built_for() {
+        let resolved = NativeResolvedHostRuntimeConfig::try_from(native_host_runtime_config())
+            .expect("config is valid");
 
-        assert_eq!(resolved.signing.host.host_info.platform, HostPlatform::Ios);
+        assert_eq!(
+            resolved.signing.host.host_info.platform,
+            native_host_platform()
+        );
     }
 
     #[test]
     fn runtime_config_rejects_wrong_size_genesis_hash() {
-        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+        let err = NativeResolvedHostRuntimeConfig::try_from(HostRuntimeConfig {
             people_chain_genesis_hash: vec![0; 31],
             ..native_host_runtime_config()
         })
@@ -4503,7 +4513,7 @@ mod tests {
     fn each_configured_genesis_hash_reaches_its_own_field() {
         // Three adjacent `Vec<u8>` feeding a positional constructor:
         // transposing any two compiles and, without this, passes.
-        let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+        let resolved = NativeResolvedHostRuntimeConfig::try_from(HostRuntimeConfig {
             people_chain_genesis_hash: vec![0xa1; 32],
             bulletin_chain_genesis_hash: vec![0xb2; 32],
             asset_hub_chain_genesis_hash: vec![0xc3; 32],
@@ -4526,7 +4536,7 @@ mod tests {
         // An empty vec must be an error, never a silent all-zero "no Asset
         // Hub".
         for len in [0usize, 31, 33] {
-            let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            let err = NativeResolvedHostRuntimeConfig::try_from(HostRuntimeConfig {
                 asset_hub_chain_genesis_hash: vec![0; len],
                 ..native_host_runtime_config()
             })
@@ -4547,7 +4557,7 @@ mod tests {
     fn runtime_config_rejects_a_network_suffix_that_is_not_a_bare_tld() {
         // The suffix ends every reserved derivation (`peopl.<suffix>`), so a
         // shell passing the dotted form would silently derive a stranger.
-        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+        let err = NativeResolvedHostRuntimeConfig::try_from(HostRuntimeConfig {
             network_suffix: ".paseo".to_string(),
             ..native_host_runtime_config()
         })
@@ -4574,7 +4584,7 @@ mod tests {
 
     #[test]
     fn runtime_config_rejects_relative_host_icon() {
-        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+        let err = NativeResolvedHostRuntimeConfig::try_from(HostRuntimeConfig {
             host_icon: Some("/dotli.png".to_string()),
             ..native_host_runtime_config()
         })
@@ -4588,7 +4598,7 @@ mod tests {
 
     #[test]
     fn runtime_config_rejects_non_https_host_icon() {
-        let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+        let err = NativeResolvedHostRuntimeConfig::try_from(HostRuntimeConfig {
             host_icon: Some("http://localhost:3000/dotli.png".to_string()),
             ..native_host_runtime_config()
         })

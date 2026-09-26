@@ -10,7 +10,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
-import io.parity.truapi.HostRuntimeConfig
+import uniffi.truapi_server.HostRuntimeConfig
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
 import uniffi.truapi_server.ProductExecutionConfig

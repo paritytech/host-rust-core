@@ -17,6 +17,9 @@ import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi_server.PermissionDecision
 import uniffi.truapi_server.UserConfirmationReview
+import uniffi.truapi_server.HostRuntimeConfig
+import uniffi.truapi_server.ProductExecutionConfig
+import uniffi.truapi_server.ProductExecutionKind
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 

@@ -20,74 +20,6 @@ public enum TrUAPIHost {
     public static let version = "0.1.0"
 }
 
-/// Immutable process-wide configuration shared by all product executions.
-public struct HostRuntimeConfig: Sendable, Equatable {
-    public let hostName: String
-    public let hostIcon: String?
-    public let hostVersion: String?
-    public let platformType: String?
-    public let platformVersion: String?
-    public let peopleChainGenesisHash: Data
-    public let bulletinChainGenesisHash: Data
-    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Product
-    /// manifests are read from there, so this is what makes a `trustedProducts`
-    /// grant resolvable. 32 zero bytes says this host has no Asset Hub, and no
-    /// manifest then resolves, so every cross-product grant is refused except
-    /// one already cached, which is served without consulting this.
-    public let assetHubChainGenesisHash: Data
-    /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
-    /// `testnet`). The core derives the wallet's reserved identities under it:
-    /// `uid.<suffix>` for the identity account and `peopl.<suffix>` for the
-    /// person ring-VRF keys, the same person the app's own onboarding derives
-    /// on that network.
-    public let networkSuffix: String
-    public let localSessionSecret: Data?
-    public let localSessionLiteUsername: String?
-
-    public init(
-        hostName: String,
-        hostIcon: String? = nil,
-        hostVersion: String? = nil,
-        platformType: String? = nil,
-        platformVersion: String? = nil,
-        peopleChainGenesisHash: Data,
-        bulletinChainGenesisHash: Data,
-        assetHubChainGenesisHash: Data,
-        networkSuffix: String,
-        localSessionSecret: Data? = nil,
-        localSessionLiteUsername: String? = nil
-    ) {
-        self.hostName = hostName
-        self.hostIcon = hostIcon
-        self.hostVersion = hostVersion
-        self.platformType = platformType
-        self.platformVersion = platformVersion
-        self.peopleChainGenesisHash = peopleChainGenesisHash
-        self.bulletinChainGenesisHash = bulletinChainGenesisHash
-        self.assetHubChainGenesisHash = assetHubChainGenesisHash
-        self.networkSuffix = networkSuffix
-        self.localSessionSecret = localSessionSecret
-        self.localSessionLiteUsername = localSessionLiteUsername
-    }
-
-    fileprivate var native: NativeHostRuntimeConfig {
-        NativeHostRuntimeConfig(
-            hostName: hostName,
-            hostIcon: hostIcon,
-            hostVersion: hostVersion,
-            hostPlatform: .ios,
-            platformType: platformType,
-            platformVersion: platformVersion,
-            peopleChainGenesisHash: peopleChainGenesisHash,
-            bulletinChainGenesisHash: bulletinChainGenesisHash,
-            networkSuffix: networkSuffix,
-            localSessionSecret: localSessionSecret,
-            localSessionLiteUsername: localSessionLiteUsername,
-            assetHubChainGenesisHash: assetHubChainGenesisHash
-        )
-    }
-}
-
 /// Bootstrap helper for the native localhost WebSocket bridge that a product
 /// execution starts when the cdylib is built with the `ws-bridge` feature.
 public enum LocalhostBridgeBootstrap {
@@ -713,7 +645,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         callbackRetainer = adapter
         let inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
             callbacks: adapter,
-            runtimeConfig: runtimeConfig.native
+            runtimeConfig: runtimeConfig
         )
         self.inner = inner
         self.notificationCenter = notificationCenter

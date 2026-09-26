@@ -26,6 +26,9 @@ import uniffi.truapi.RemotePermissionRequest
 import uniffi.truapi_server.PermissionAuthorizationRequest
 import uniffi.truapi_server.PermissionAuthorizationStatus
 import uniffi.truapi_server.PermissionDecision
+import uniffi.truapi_server.HostRuntimeConfig
+import uniffi.truapi_server.ProductExecutionConfig
+import uniffi.truapi_server.ProductExecutionKind
 import java.io.Closeable
 import java.net.InetAddress
 import java.net.ServerSocket
