@@ -1867,6 +1867,17 @@ impl NativeProductExecution {
     }
 }
 
+#[cfg(feature = "ws-bridge")]
+#[uniffi::export]
+impl NativeTrUApiHostRuntime {
+    /// Rebind the shared bridge listener on its port, keeping every
+    /// execution's endpoint valid. iOS reclaims a suspended app's listening
+    /// sockets, so call this each time the app returns to the foreground.
+    pub fn relisten_ws_bridge(&self) {
+        self.ws_bridge.relisten();
+    }
+}
+
 impl Drop for NativeProductExecution {
     fn drop(&mut self) {
         self.shutdown();

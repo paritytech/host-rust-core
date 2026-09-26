@@ -122,9 +122,11 @@ impl SigningHostSsoService {
                 let request = *request;
                 self.confirm(
                     cx,
-                    UserConfirmationReview::SignPayload(SignPayloadReview::Product(
-                        request.clone(),
-                    )),
+                    UserConfirmationReview::SignPayload(SignPayloadReview::Product {
+                        // A relayed request carries no caller identity.
+                        calling_product_id: None,
+                        request: request.clone(),
+                    }),
                 )
                 .await?;
                 self.signing_host
@@ -159,6 +161,7 @@ impl SigningHostSsoService {
         self.confirm(
             cx,
             UserConfirmationReview::SignRaw(SignRawReview::Product {
+                calling_product_id: None,
                 request: request.clone(),
                 watermarked,
             }),
@@ -470,7 +473,10 @@ impl SigningHostSsoService {
         let CreateTransactionPayload::V1(payload) = request.payload;
         self.serve_create_transaction(
             cx,
-            CreateTransactionReview::Product(payload.clone()),
+            CreateTransactionReview::Product {
+                calling_product_id: None,
+                payload: payload.clone(),
+            },
             CreateTransactionAuthorityRequest::Product(payload),
         )
         .await
