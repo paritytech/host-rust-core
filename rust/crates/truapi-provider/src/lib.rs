@@ -77,7 +77,7 @@ pub use networks::{NetworkChains, known_networks};
 #[cfg(any(feature = "ws", feature = "smoldot"))]
 pub use provider::{EmbeddedChainProvider, EmbeddedChainProviderBuilder};
 #[cfg(feature = "smoldot")]
-pub use storage::{GenesisHash, StorageClient, StorageClientError};
+pub use storage::{StorageClient, StorageClientError};
 
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
 uniffi::setup_scaffolding!();

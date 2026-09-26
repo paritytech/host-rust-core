@@ -29,6 +29,17 @@ use futures::stream::StreamExt;
 use crate::EmbeddedChainProvider;
 use crate::storage::{StorageClient, StorageClientError};
 
+// uniffi has no fixed-size array type, so a genesis hash crosses as bytes and
+// converts back here. `custom_type!` only accepts a single identifier, which is
+// all this private name is for.
+type GenesisHash = [u8; 32];
+
+uniffi::custom_type!(GenesisHash, Vec<u8>, {
+    remote,
+    lower: |hash| hash.to_vec(),
+    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
+});
+
 /// Errors surfaced to the foreign caller.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum ChainProviderError {
