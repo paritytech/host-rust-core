@@ -104,11 +104,11 @@ rejection the host never heard about. A signal already aborted when the call is 
 own deadline sends `Cancel` before it rejects, which is the leak it closes: today that deadline drops the pending entry
 and rejects without telling anyone.
 
-Tearing down an execution is unchanged. It aborts the dispatch futures wholesale, which drops the handlers outright and
-is strictly stronger than firing their tokens. The registry entries those futures held are not released on that path,
-since the release runs after the handler returns and an aborted future never reaches it. They cost a slot each until the
-registry itself is dropped with the connection, and a monotonic id is never presented again, so nothing is left
-reachable.
+Tearing down an execution withdraws every call first, as if a `Cancel` had named each, and refuses any that arrives
+later. A handler waiting on a paired host then tells it to stop, which an abort alone would drop before it could. The
+dispatch futures are aborted once the unwind grace has passed. The registry entries of futures aborted that way are not
+released, since the release runs after the handler returns. They cost a slot each until the registry itself is dropped
+with the connection, and a monotonic id is never presented again, so nothing is left reachable.
 
 ### What a withdrawn call stops
 

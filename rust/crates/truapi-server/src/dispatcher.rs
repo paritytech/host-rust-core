@@ -111,6 +111,9 @@ struct RequestRegistry {
     /// recorded, so crowding one out would take a burst of stale cancels
     /// between a `Cancel` and its own `Request`.
     early_withdrawals: VecDeque<String>,
+    /// Set once the connection is going away: every request is withdrawn,
+    /// including one that has not reached dispatch yet.
+    closed: bool,
 }
 
 impl RequestRegistry {
@@ -404,6 +407,32 @@ impl Dispatcher {
         self.subscriptions.cancel_all();
     }
 
+    /// Withdraw every request in flight, and every one that arrives later, as
+    /// if a `Cancel` frame had named each.
+    ///
+    /// For a connection going away: each running handler sees a withdrawal,
+    /// not a runtime timeout, and can act on it before it is dropped.
+    pub fn withdraw_requests(&self) {
+        let tokens: Vec<CancellationToken> = {
+            let mut registry = self
+                .requests
+                .lock()
+                .expect("dispatcher request registry mutex poisoned");
+            registry.closed = true;
+            registry
+                .in_flight
+                .values()
+                .map(|entry| {
+                    entry.withdrawn.store(true, Ordering::Release);
+                    entry.cancel.clone()
+                })
+                .collect()
+        };
+        for token in tokens {
+            token.cancel();
+        }
+    }
+
     /// Decide what the `Request` naming `request_id` may do: start with a
     /// fresh token, answer `Cancelled` because a `Cancel` beat it here, or be
     /// refused because the id is already running.
@@ -418,6 +447,9 @@ impl Dispatcher {
             .expect("dispatcher request registry mutex poisoned");
         if registry.in_flight.contains_key(request_id) {
             return Reservation::Duplicate;
+        }
+        if registry.closed {
+            return Reservation::AlreadyWithdrawn;
         }
         if let Some(position) = registry
             .early_withdrawals
@@ -802,6 +834,32 @@ mod tests {
         let decoded: Result<HostInfoResponse, truapi::CallError<HostInfoError>> =
             DecodeAll::decode_all(&mut &bytes[..]).expect("decodes as a response leg");
         assert_eq!(decoded, Err(truapi::CallError::Cancelled));
+    }
+
+    /// A connection going away withdraws what it was running, so a handler
+    /// waiting on a paired host tells it to stop, and it starts nothing new.
+    /// The withdrawal must read as one a `Cancel` frame made: a runtime
+    /// timeout reason would leave the paired host's request in place.
+    #[test]
+    fn withdrawing_every_request_reaches_running_and_later_calls() {
+        let dispatcher = Dispatcher::new(test_spawner());
+        let Reservation::Start(running) = dispatcher.reserve_request("p:1") else {
+            panic!("the call registers");
+        };
+
+        dispatcher.withdraw_requests();
+
+        assert_eq!(
+            (
+                running.reason(),
+                dispatcher.release_request("p:1"),
+                matches!(
+                    dispatcher.reserve_request("p:2"),
+                    Reservation::AlreadyWithdrawn
+                ),
+            ),
+            (Some(truapi::CancellationReason::Cancelled), true, true)
+        );
     }
 
     /// A `Cancel` names a call by id alone, so two live calls sharing one id
