@@ -65,6 +65,7 @@ const TRAIT_MODULE_MAP: &[(&str, &str)] = &[
     ("JsonRpc", "jsonrpc"),
     ("LocalStorage", "local_storage"),
     ("Payment", "payment"),
+    ("PeerTransport", "peer_transport"),
     ("Permissions", "permissions"),
     ("Preimage", "preimage"),
     ("Renderer", "renderer"),

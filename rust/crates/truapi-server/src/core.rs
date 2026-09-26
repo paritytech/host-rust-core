@@ -187,6 +187,52 @@ mod tests {
     use crate::frame::{Payload, request_ids, subscription_ids};
     use crate::test_support::{StubPlatform, runtime_config, test_spawner};
 
+    #[test]
+    fn a_published_product_has_no_implicit_peer_transport_grant() {
+        let (host_config, product) = runtime_config("dotli.dot");
+        let core = TrUApiCore::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+        );
+        let ids = request_ids("peer_transport_dial").expect("registered peer transport");
+        let frame = ProtocolMessage {
+            request_id: "p:peer".into(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::peer_transport::HostPeerTransportDialRequest::V1(
+                    truapi::latest::HostPeerTransportDialRequest {
+                        genesis: [0x35; 32],
+                        ip: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1],
+                        port: 43000,
+                        ed25519: [0; 32],
+                        p256: None,
+                    },
+                )
+                .encode(),
+            },
+        };
+        let response = futures::executor::block_on(core.receive_from_product(&frame.encode()))
+            .expect("registered method must answer explicitly");
+        assert_eq!(
+            ProtocolMessage::decode(&mut &response[..])
+                .unwrap()
+                .payload
+                .value,
+            Err::<truapi::versioned::peer_transport::HostPeerTransportDialResponse, _>(
+                truapi::CallError::Domain(
+                    truapi::versioned::peer_transport::HostPeerTransportDialError::V1(
+                        truapi::latest::HostPeerTransportDialError::NotGranted,
+                    ),
+                ),
+            )
+            .encode(),
+        );
+    }
+
     /// A request payload must consume exactly its own bytes. Trailing bytes
     /// mean the sender and this build disagree about the shape, so running the
     /// handler on the prefix would act on a frame neither side agreed to.
