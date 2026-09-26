@@ -46,9 +46,12 @@ private extension ChatMessageEntityMapper {
             return
         }
 
+        let lastOrder = UInt64(bitPattern: lastMessage.order)
         let lastTimestamp = UInt64(bitPattern: lastMessage.timestamp)
+        let newOrder = UInt64(bitPattern: messageEntity.order)
+        let newTimestamp = UInt64(bitPattern: messageEntity.timestamp)
 
-        guard lastTimestamp <= message.timestamp else {
+        guard (lastOrder, lastTimestamp) <= (newOrder, newTimestamp) else {
             return
         }
 

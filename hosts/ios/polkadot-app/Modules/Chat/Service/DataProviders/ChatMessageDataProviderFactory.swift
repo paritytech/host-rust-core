@@ -66,7 +66,9 @@ extension ChatMessageDataProviderFactory: ChatMessageDataProviderMaking {
     ) -> AnyObject {
         let request: NSFetchRequest<CDChatMessage> = CDChatMessage.fetchRequest()
         request.predicate = predicate
+        // Matches `byChatOrderTimestampIndex (chat, order, timestamp)` so the feed reads rows pre-sorted.
         request.sortDescriptors = [
+            NSSortDescriptor(key: #keyPath(CDChatMessage.order), ascending: true),
             NSSortDescriptor(key: #keyPath(CDChatMessage.timestamp), ascending: true)
         ]
 
