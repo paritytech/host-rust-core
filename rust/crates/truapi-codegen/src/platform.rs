@@ -800,6 +800,44 @@ mod tests {
         );
     }
 
+    // Server-internal traits such as `Transport` share the rustdoc JSON with
+    // the platform surface; only the `platform` module is host-facing.
+    #[test]
+    fn only_traits_in_the_platform_module_are_capabilities() {
+        let item_path = |crate_id: u32, path: &[&str]| ItemPath {
+            crate_id,
+            path: path.iter().map(|segment| segment.to_string()).collect(),
+            kind: "trait".to_string(),
+        };
+        let krate = Crate {
+            format_version: Some(57),
+            index: HashMap::new(),
+            paths: HashMap::from([
+                (
+                    "1".to_string(),
+                    item_path(0, &["truapi_server", "platform", "Navigation"]),
+                ),
+                (
+                    "2".to_string(),
+                    item_path(0, &["truapi_server", "transport", "Transport"]),
+                ),
+                (
+                    "3".to_string(),
+                    item_path(0, &["truapi_server", "Platform"]),
+                ),
+                (
+                    "4".to_string(),
+                    item_path(1, &["truapi_provider", "platform", "ChainProvider"]),
+                ),
+            ]),
+        };
+
+        assert_eq!(
+            collect_local_trait_ids(&krate),
+            BTreeSet::from(["1".to_string()])
+        );
+    }
+
     #[test]
     fn referenced_platform_type_names_must_be_unambiguous() {
         let krate = Crate {
