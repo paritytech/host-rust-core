@@ -17,6 +17,10 @@ use crate::runtime::{
     remote_authority_call, remote_authority_context_with_default,
 };
 
+// Published product runtimes have no JAM peer-transport grant.
+#[truapi::async_trait]
+impl truapi::api::PeerTransport for ProductRuntimeHost {}
+
 #[truapi::async_trait]
 impl ResourceAllocation for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "resource_allocation.request"))]
