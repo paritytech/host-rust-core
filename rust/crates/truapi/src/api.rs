@@ -12,6 +12,7 @@ pub mod payment;
 pub mod permissions;
 pub mod pocket;
 pub mod preimage;
+pub mod profile;
 pub mod renderer;
 pub mod resource_allocation;
 pub mod signing;
@@ -32,6 +33,7 @@ pub use payment::Payment;
 pub use permissions::Permissions;
 pub use pocket::Pocket;
 pub use preimage::Preimage;
+pub use profile::Profile;
 pub use renderer::Renderer;
 pub use resource_allocation::ResourceAllocation;
 pub use signing::Signing;
@@ -54,6 +56,7 @@ pub trait TrUApi:
     + Permissions
     + Pocket
     + Preimage
+    + Profile
     + Renderer
     + ResourceAllocation
     + Signing
@@ -79,6 +82,7 @@ impl<T> TrUApi for T where
         + Permissions
         + Pocket
         + Preimage
+        + Profile
         + Renderer
         + ResourceAllocation
         + Signing

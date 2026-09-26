@@ -44,12 +44,12 @@ use truapi::latest::{
     HostFeatureSupportedResponse, HostLocalStorageChangeItem, HostLocaleSubscribeItem,
     HostNativeChatAttachmentMetadata, HostNavigateToError, HostPlatform,
     HostPocketListSubscribeItem, HostPocketRemoveCardError, HostPocketRemoveCardRequest,
-    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
-    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, HostWorkerBeginOperationResponse,
-    HostWorkerOperationError, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
-    RingLocation,
+    HostProfilePresentError, HostProfilePresentRequest, HostPushNotificationRequest,
+    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
+    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
+    HostWorkerBeginOperationResponse, HostWorkerOperationError, LegacyAccountTxPayload,
+    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
+    RemotePermission, RemotePermissionRequest, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -1912,6 +1912,22 @@ pub enum CoreStorageKey {
         /// Host-selected Chat network.
         genesis_hash: [u8; 32],
     },
+    /// The profile reference the user disclosed to their chat contacts, with
+    /// the product that disclosed it. Wallet-owned: one per user, whichever
+    /// product wrote it. The reference is a bearer capability.
+    ///
+    /// Known gap (docs/rfcs/profile-disclosure.md): one slot, so the last product to disclose replaces
+    /// the others.
+    #[codec(index = 17)]
+    ProfileDisclosure,
+    /// Profile references this product's chat contacts disclosed, newest per
+    /// contact. Product-indexed, like the roster they belong to, so clearing
+    /// the product clears them. The references are bearer capabilities.
+    #[codec(index = 18)]
+    ProfileReferencesReceived {
+        /// Chat product whose contacts sent the references.
+        product_id: String,
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1968,6 +1984,10 @@ pub fn describe_core_storage_key(
         CoreStorageKey::MainPurseCoinage { .. } => ("MainPurseCoinage", None),
         CoreStorageKey::NativeChatDevice { .. } => ("NativeChatDevice", None),
         CoreStorageKey::NativeChatProducts { .. } => ("NativeChatProducts", None),
+        CoreStorageKey::ProfileDisclosure => ("ProfileDisclosure", None),
+        CoreStorageKey::ProfileReferencesReceived { product_id } => {
+            ("ProfileReferencesReceived", Some(product_id))
+        }
         CoreStorageKey::NativeChatFileChunk { product_id, .. } => {
             ("NativeChatFileChunk", Some(product_id))
         }
@@ -3783,6 +3803,26 @@ pub trait PocketPlatform: Send + Sync {
     ) -> Result<(), HostPocketRemoveCardError>;
 }
 
+/// Host-implemented adapter that shows a product-referenced profile in
+/// host-owned UI. Optional: a host that omits it leaves Profile requests
+/// answered `Unsupported`. See [`OptionalPlatform`].
+///
+/// The reference is a bearer capability. The host resolves, decrypts and
+/// renders it; profile bytes and the reference's key never return to the
+/// product. The core screens only the reference's shape, so parsing it and
+/// deciding what it may fetch are the host's.
+#[async_trait]
+pub trait ProfilePlatform: Send + Sync {
+    /// Take one presentation and return once it is shown, never waiting for
+    /// the user to dismiss it. Report an unparseable reference as
+    /// `InvalidReference`; show load and fetch failures in the UI instead.
+    async fn present_profile(
+        &self,
+        product: &ProductContext,
+        request: HostProfilePresentRequest,
+    ) -> Result<(), HostProfilePresentError>;
+}
+
 /// What the operating system currently says about a device capability.
 ///
 /// Distinct from [`PermissionAuthorizationStatus`], which is the product-scoped
@@ -3903,7 +3943,12 @@ impl<T> Platform for T where
 /// selects the built-in Rust wallet. Codegen reads this list to emit each
 /// capability as an optional group on the host-callback surface.
 pub trait OptionalPlatform:
-    ChatPlatform + PermissionStatusHost + PocketPlatform + IdentityBackendHost + CoinageWalletHost
+    ChatPlatform
+    + PermissionStatusHost
+    + PocketPlatform
+    + ProfilePlatform
+    + IdentityBackendHost
+    + CoinageWalletHost
 {
 }
 
@@ -3911,6 +3956,7 @@ impl<T> OptionalPlatform for T where
     T: ChatPlatform
         + PermissionStatusHost
         + PocketPlatform
+        + ProfilePlatform
         + IdentityBackendHost
         + CoinageWalletHost
 {

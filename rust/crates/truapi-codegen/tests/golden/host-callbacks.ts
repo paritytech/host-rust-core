@@ -42,6 +42,7 @@ import type {
   HostLocaleSubscribeItem,
   HostPocketListSubscribeItem,
   HostPocketRemoveCardRequest,
+  HostProfilePresentRequest,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
@@ -261,7 +262,22 @@ export type CoreStorageKey =
   | {
       tag: "NativeChatProducts";
       value: { rootPublicKey: Uint8Array; genesisHash: Uint8Array };
-    };
+    }
+  /**
+   * The profile reference the user disclosed to their chat contacts, with
+   * the product that disclosed it. Wallet-owned: one per user, whichever
+   * product wrote it. The reference is a bearer capability.
+   *
+   * Known gap (docs/rfcs/profile-disclosure.md): one slot, so the last product to disclose replaces
+   * the others.
+   */
+  | { tag: "ProfileDisclosure"; value?: undefined }
+  /**
+   * Profile references this product's chat contacts disclosed, newest per
+   * contact. Product-indexed, like the roster they belong to, so clearing
+   * the product clears them. The references are bearer capabilities.
+   */
+  | { tag: "ProfileReferencesReceived"; value: { productId: string } };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -1126,6 +1142,10 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         rootPublicKey: S.Bytes(32),
         genesisHash: S.Bytes(32),
       }) as S.Codec<{ rootPublicKey: Uint8Array; genesisHash: Uint8Array }>,
+      ProfileDisclosure: S._void,
+      ProfileReferencesReceived: S.Struct({ productId: S.str }) as S.Codec<{
+        productId: string;
+      }>,
     }),
 );
 
@@ -2234,6 +2254,28 @@ export interface ProductStorage {
 }
 
 /**
+ * Host-implemented adapter that shows a product-referenced profile in
+ * host-owned UI. Optional: a host that omits it leaves Profile requests
+ * answered `Unsupported`. See `OptionalPlatform`.
+ *
+ * The reference is a bearer capability. The host resolves, decrypts and
+ * renders it; profile bytes and the reference's key never return to the
+ * product. The core screens only the reference's shape, so parsing it and
+ * deciding what it may fetch are the host's.
+ */
+export interface ProfilePlatform {
+  /**
+   * Take one presentation and return once it is shown, never waiting for
+   * the user to dismiss it. Report an unparseable reference as
+   * `InvalidReference`; show load and fetch failures in the UI instead.
+   */
+  presentProfile(
+    product: ProductContext,
+    request: HostProfilePresentRequest,
+  ): Promise<void>;
+}
+
+/**
  * Host theme source.
  */
 export interface ThemeHost {
@@ -2287,6 +2329,7 @@ export interface HostCallbacks {
   identityBackend?: IdentityBackendHost;
   permissionStatus?: PermissionStatusHost;
   pocket?: PocketPlatform;
+  profile?: ProfilePlatform;
 }
 
 export interface RequiredHostCallbacks {
@@ -2310,4 +2353,5 @@ export interface RequiredHostCallbacks {
   identityBackend?: Required<IdentityBackendHost>;
   permissionStatus?: Required<PermissionStatusHost>;
   pocket?: Required<PocketPlatform>;
+  profile?: Required<ProfilePlatform>;
 }
