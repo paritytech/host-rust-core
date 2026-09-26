@@ -2,14 +2,22 @@
 # Regenerate js/packages/truapi/src/generated/* from rust/crates/truapi.
 #
 # Pipeline:
-#   1. cargo +nightly doc -p truapi -p truapi-platform --output-format json
-#      -> target/doc/{truapi,truapi_platform}.json
+#   1. cargo +nightly doc -p truapi -p truapi-provider --output-format json
+#      -> target/doc/{truapi,truapi_provider}.json
 #   2. cargo run -p truapi-codegen -- --input target/doc/truapi.json
+#                                     --output js/packages/truapi/src/generated
+#                                     --rust-output rust/crates/truapi-server/src/generated
+#      truapi-server's native build includes the dispatcher, so it has to exist
+#      before the server can be documented.
+#   3. cargo +nightly doc -p truapi-server --output-format json
+#      -> target/doc/truapi_server.json
+#   4. cargo run -p truapi-codegen -- --input target/doc/truapi.json
 #                                     --output js/packages/truapi/src/generated
 #                                     --playground-output js/packages/truapi/src/playground
 #                                     --client-examples-output playground/test/generated/examples
 #                                     --rust-output rust/crates/truapi-server/src/generated
-#                                     --platform-input target/doc/truapi_platform.json
+#                                     --platform-input target/doc/truapi_server.json
+#                                     --platform-input target/doc/truapi_provider.json
 #                                     --platform-ts-output js/packages/truapi-host/src/generated
 #                                     --platform-wasm-adapter-output js/packages/truapi-host/src/generated
 #                                     --platform-rust-output rust/crates/truapi-server/src/wasm
@@ -33,17 +41,25 @@ NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-nightly}"
 # libLLVM, which dies with SIGSEGV in initialize_available_targets.
 unset DYLD_LIBRARY_PATH
 
+RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings -Z unstable-options --output-format json"
+export RUSTDOCFLAGS
+
 # Both crates in one invocation: rustdoc starts once and truapi is documented
 # once for both, rather than a second process re-reading it.
-RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings -Z unstable-options --output-format json" \
-  cargo +"$NIGHTLY_TOOLCHAIN" doc -p truapi -p truapi-platform --no-deps
+cargo +"$NIGHTLY_TOOLCHAIN" doc -p truapi -p truapi-provider --no-deps
+cargo run -p truapi-codegen -- \
+  --input target/doc/truapi.json \
+  --output js/packages/truapi/src/generated \
+  --rust-output rust/crates/truapi-server/src/generated
+cargo +"$NIGHTLY_TOOLCHAIN" doc -p truapi-server --no-deps
 cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
   --playground-output js/packages/truapi/src/playground \
   --client-examples-output playground/test/generated/examples \
   --rust-output rust/crates/truapi-server/src/generated \
-  --platform-input target/doc/truapi_platform.json \
+  --platform-input target/doc/truapi_server.json \
+  --platform-input target/doc/truapi_provider.json \
   --platform-ts-output js/packages/truapi-host/src/generated \
   --platform-wasm-adapter-output js/packages/truapi-host/src/generated \
   --platform-rust-output rust/crates/truapi-server/src/wasm \

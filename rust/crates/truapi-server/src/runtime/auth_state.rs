@@ -4,8 +4,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::platform::{AuthPresenter, AuthState, LoginFailureKind, Platform, SessionUiInfo};
 use futures::channel::oneshot;
-use truapi_platform::{AuthPresenter, AuthState, LoginFailureKind, Platform, SessionUiInfo};
 
 use crate::runtime::login_failure::classify_login_failure;
 

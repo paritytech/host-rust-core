@@ -339,9 +339,9 @@ mod tests {
 
     #[test]
     fn connect_resolves_network_from_genesis_alone() {
+        use crate::platform::ChainProvider;
         use futures::executor::block_on;
         use futures::stream::StreamExt;
-        use truapi_platform::ChainProvider;
 
         // An empty provider — no explicit registration — still connects to a
         // catalog chain from its genesis hash alone.

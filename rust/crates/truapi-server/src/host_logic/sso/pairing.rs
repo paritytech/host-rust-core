@@ -12,6 +12,9 @@
 //! handshake codec:
 //! <https://github.com/paritytech/triangle-js-sdks/blob/afb26e2c78bf1134886c1248c1bf2b6b4dc1fce9/packages/host-papp/src/sso/auth/scale/handshakeV2.ts>
 
+use crate::platform::PairingHostConfig;
+#[cfg(test)]
+use crate::platform::{HostInfo, PlatformInfo};
 use chacha20poly1305::ChaCha20Poly1305;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use hkdf::Hkdf;
@@ -19,9 +22,6 @@ use parity_scale_codec::{Decode, Encode};
 use schnorrkel::{ExpansionMode, MiniSecretKey, SignatureError};
 use sha2::Sha256;
 use thiserror::Error;
-use truapi_platform::PairingHostConfig;
-#[cfg(test)]
-use truapi_platform::{HostInfo, PlatformInfo};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::host_logic::session::SsoSessionInfo;

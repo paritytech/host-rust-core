@@ -128,7 +128,7 @@ fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
             .sign_vrf_reviews
             .lock()
             .expect("VRF signing review list mutex poisoned"),
-        vec![truapi_platform::SignVrfReview {
+        vec![crate::platform::SignVrfReview {
             calling_product_id: "myapp.dot".to_string(),
             request: request.clone(),
         }]
@@ -195,7 +195,7 @@ fn sign_vrf_rejects_declined_pairing_host_confirmation_before_mobile_sso() {
             .sign_vrf_reviews
             .lock()
             .expect("VRF signing review list mutex poisoned"),
-        vec![truapi_platform::SignVrfReview {
+        vec![crate::platform::SignVrfReview {
             calling_product_id: "myapp.dot".to_string(),
             request,
         }]

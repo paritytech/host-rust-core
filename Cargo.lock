@@ -5497,7 +5497,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "truapi",
- "truapi-platform",
  "truapi-server",
  "unicode-width",
  "zeroize",
@@ -5511,22 +5510,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "trybuild",
-]
-
-[[package]]
-name = "truapi-platform"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "derive_more 2.1.1",
- "futures",
- "parity-scale-codec",
- "sp-crypto-hashing",
- "truapi",
- "unicode-normalization",
- "uniffi",
- "url",
- "zeroize",
 ]
 
 [[package]]
@@ -5559,7 +5542,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "truapi",
- "truapi-platform",
  "uniffi",
  "url",
  "wasm-bindgen",
@@ -5610,7 +5592,8 @@ dependencies = [
  "tracing-subscriber",
  "truapi",
  "truapi-macros",
- "truapi-platform",
+ "truapi-provider",
+ "truapi-server",
  "truapi-verifiable",
  "unicode-normalization",
  "uniffi",

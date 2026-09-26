@@ -5,13 +5,13 @@ use super::*;
 use crate::host_internal::sso_messages::{
     RemoteMessage, RemoteMessageData, SignRawWithLegacyAccountRequest, SignRequest, v1,
 };
+use crate::platform::SignRawReview;
 use crate::runtime::signing_host::sso_service::SigningHostSsoService;
 use crate::runtime::sso_service::Dispatch;
 use parity_scale_codec::{Decode, Encode};
 use truapi::versioned::signing::{
     HostSignRawWithLegacyAccountRequest, HostSignRawWithLegacyAccountResponse,
 };
-use truapi_platform::SignRawReview;
 
 #[test]
 fn raw_signing_review_matches_the_signed_bytes() {

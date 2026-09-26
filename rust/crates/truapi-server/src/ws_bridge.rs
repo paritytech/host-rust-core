@@ -899,10 +899,10 @@ impl FrameSink for WsFrameSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::{HostInfo, PlatformInfo, ProductContext, SigningHostConfig};
     use parity_scale_codec::Decode;
     use parity_scale_codec::Encode;
     use truapi::v01;
-    use truapi_platform::{HostInfo, PlatformInfo, ProductContext, SigningHostConfig};
 
     use crate::SigningHostRuntime;
     use crate::frame::{Payload, ProtocolMessage, request_ids};

@@ -3,6 +3,9 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::platform::{
+    AuthState, CoreStorage as PlatformCoreStorage, CoreStorageKey, PermissionAuthorizationRequest,
+};
 use parity_scale_codec::Encode;
 use truapi::api::{
     Account, Chain, Entropy, LocalStorage, Notifications, Permissions, Preimage,
@@ -64,9 +67,6 @@ use truapi::versioned::theme::HostThemeSubscribeItem;
 use truapi::versioned::worker::{
     HostWorkerBeginOperationRequest, HostWorkerBeginOperationResponse,
     HostWorkerEndOperationRequest,
-};
-use truapi_platform::{
-    AuthState, CoreStorage as PlatformCoreStorage, CoreStorageKey, PermissionAuthorizationRequest,
 };
 
 use super::product_manifest::{CachedManifest, MANIFEST_TTL_SECS};
@@ -672,7 +672,7 @@ struct RecordingChatPlatform {
 }
 
 #[truapi::async_trait]
-impl truapi_platform::ChatPlatform for RecordingChatPlatform {
+impl crate::platform::ChatPlatform for RecordingChatPlatform {
     async fn create_chat_room(
         &self,
         _product: &ProductContext,
@@ -961,7 +961,7 @@ fn chat_post_message_screens_content_before_it_reaches_a_host() {
     let (host_config, _) = runtime_config("chat.dot");
     let product = ProductContext::new_with_execution(
         "chat.dot".to_string(),
-        truapi_platform::ProductExecutionKind::Worker,
+        crate::platform::ProductExecutionKind::Worker,
     )
     .expect("test chat product context is valid");
     let spawner = test_spawner();
@@ -1011,7 +1011,7 @@ fn chat_post_message_screens_content_before_it_reaches_a_host() {
 
     // A body over budget reports the size variant the protocol declares.
     let too_large = post(v01::ChatMessageContent::Text {
-        text: "x".repeat(truapi_platform::CHAT_BODY_MAX_BYTES + 1),
+        text: "x".repeat(crate::platform::CHAT_BODY_MAX_BYTES + 1),
     })
     .expect_err("an over-budget body must not reach the host");
     assert!(matches!(
@@ -1024,7 +1024,7 @@ fn chat_post_message_screens_content_before_it_reaches_a_host() {
     // The payload arm of the size variant, which the body arm does not cover.
     let big_payload = post(v01::ChatMessageContent::Custom(v01::ChatCustomMessage {
         message_type: "vote".to_string(),
-        payload: vec![0; truapi_platform::CHAT_CUSTOM_PAYLOAD_MAX_BYTES + 1],
+        payload: vec![0; crate::platform::CHAT_CUSTOM_PAYLOAD_MAX_BYTES + 1],
     }))
     .expect_err("an over-budget custom payload must not reach the host");
     assert!(matches!(
@@ -1039,7 +1039,7 @@ fn chat_post_message_screens_content_before_it_reaches_a_host() {
         &host,
         &CallContext::default(),
         HostChatPostMessageRequest::V1(v01::HostChatPostMessageRequest {
-            room_id: "r".repeat(truapi_platform::CHAT_FIELD_MAX_BYTES + 1),
+            room_id: "r".repeat(crate::platform::CHAT_FIELD_MAX_BYTES + 1),
             payload: v01::ChatMessageContent::Text {
                 text: "hi".to_string(),
             },
@@ -1105,7 +1105,7 @@ fn chat_room_ids_agree_across_create_and_post() {
     let (host_config, _) = runtime_config("chat.dot");
     let product = ProductContext::new_with_execution(
         "chat.dot".to_string(),
-        truapi_platform::ProductExecutionKind::Worker,
+        crate::platform::ProductExecutionKind::Worker,
     )
     .expect("test chat product context is valid");
     let spawner = test_spawner();
@@ -1190,7 +1190,7 @@ fn chat_register_bot_rejects_unsafe_product_fields() {
     let (host_config, _) = runtime_config("chat.dot");
     let product = ProductContext::new_with_execution(
         "chat.dot".to_string(),
-        truapi_platform::ProductExecutionKind::Worker,
+        crate::platform::ProductExecutionKind::Worker,
     )
     .expect("test chat product context is valid");
     let spawner = test_spawner();
@@ -1275,7 +1275,7 @@ fn chat_register_bot_reaches_the_installed_adapter() {
     let (host_config, _) = runtime_config("chat.dot");
     let product = ProductContext::new_with_execution(
         "chat.dot".to_string(),
-        truapi_platform::ProductExecutionKind::Worker,
+        crate::platform::ProductExecutionKind::Worker,
     )
     .expect("test chat product context is valid");
     let spawner = test_spawner();
@@ -1346,7 +1346,7 @@ impl RecordingPocketPlatform {
 }
 
 #[truapi::async_trait]
-impl truapi_platform::PocketPlatform for RecordingPocketPlatform {
+impl crate::platform::PocketPlatform for RecordingPocketPlatform {
     fn subscribe_pocket_cards(
         &self,
         _product: &ProductContext,
@@ -1384,7 +1384,7 @@ impl truapi_platform::PocketPlatform for RecordingPocketPlatform {
 }
 
 fn pocket_host(
-    kind: truapi_platform::ProductExecutionKind,
+    kind: crate::platform::ProductExecutionKind,
     pocket: Option<Arc<RecordingPocketPlatform>>,
     with_session: bool,
 ) -> ProductRuntimeHost {
@@ -1403,7 +1403,7 @@ fn pocket_host(
     let pairing_host = PairingHost::new(services.clone(), host_config);
     let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
     adapters.pocket_platform =
-        pocket.map(|pocket| pocket as Arc<dyn truapi_platform::PocketPlatform>);
+        pocket.map(|pocket| pocket as Arc<dyn crate::platform::PocketPlatform>);
     let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
     if with_session {
         install_pairing_session(&host, session_info());
@@ -1451,7 +1451,7 @@ fn pocket_list_subscribe_forwards_the_host_list_and_interrupts_on_stream_errors(
         ("humanity", true),
     ]));
     let host = pocket_host(
-        truapi_platform::ProductExecutionKind::Worker,
+        crate::platform::ProductExecutionKind::Worker,
         Some(pocket),
         true,
     );
@@ -1488,7 +1488,7 @@ fn pocket_remove_card_normalizes_the_id_and_maps_domain_errors() {
         ("humanity", true),
     ]));
     let host = pocket_host(
-        truapi_platform::ProductExecutionKind::Worker,
+        crate::platform::ProductExecutionKind::Worker,
         Some(pocket.clone()),
         true,
     );
@@ -1531,7 +1531,7 @@ fn pocket_remove_card_normalizes_the_id_and_maps_domain_errors() {
 fn pocket_is_denied_to_apps_and_sessionless_workers_and_unsupported_without_an_adapter() {
     let pocket = Arc::new(RecordingPocketPlatform::with_cards(vec![]));
     let app = pocket_host(
-        truapi_platform::ProductExecutionKind::App,
+        crate::platform::ProductExecutionKind::App,
         Some(pocket.clone()),
         true,
     );
@@ -1545,7 +1545,7 @@ fn pocket_is_denied_to_apps_and_sessionless_workers_and_unsupported_without_an_a
     ));
 
     let no_session = pocket_host(
-        truapi_platform::ProductExecutionKind::Worker,
+        crate::platform::ProductExecutionKind::Worker,
         Some(pocket),
         false,
     );
@@ -1554,7 +1554,7 @@ fn pocket_is_denied_to_apps_and_sessionless_workers_and_unsupported_without_an_a
         Err(CallError::Denied)
     ));
 
-    let no_adapter = pocket_host(truapi_platform::ProductExecutionKind::Worker, None, true);
+    let no_adapter = pocket_host(crate::platform::ProductExecutionKind::Worker, None, true);
     assert!(matches!(
         remove_card(&no_adapter, "loyalty"),
         Err(CallError::Unsupported)
@@ -1686,7 +1686,7 @@ fn permission_prompts_name_the_requesting_product_and_execution_kind() {
     let (host_config, _) = runtime_config("camera.dot");
     let product = ProductContext::new_with_execution(
         "camera.dot".to_string(),
-        truapi_platform::ProductExecutionKind::Worker,
+        crate::platform::ProductExecutionKind::Worker,
     )
     .expect("test product context is valid");
     let spawner = test_spawner();
@@ -1758,7 +1758,7 @@ fn navigate_to_rejects_invalid_input_without_prompting_or_calling_platform() {
 #[test]
 fn navigate_to_external_denies_without_open_url_permission() {
     let platform = Arc::new(StubPlatform {
-        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        device_permission_decisions: Mutex::new([crate::platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
@@ -1845,7 +1845,7 @@ fn navigate_to_external_reuses_open_url_grant_across_destinations() {
 fn navigate_to_internal_targets_do_not_consume_open_url_permission() {
     let platform = Arc::new(StubPlatform {
         remote_permission_denied: true,
-        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        device_permission_decisions: Mutex::new([crate::platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
@@ -1891,8 +1891,8 @@ fn navigate_to_consumes_open_url_allow_once_at_handoff() {
                 let platform = Arc::new(StubPlatform {
                     device_permission_decisions: Mutex::new(
                         [
-                            truapi_platform::PermissionDecision::AllowOnce,
-                            truapi_platform::PermissionDecision::Deny,
+                            crate::platform::PermissionDecision::AllowOnce,
+                            crate::platform::PermissionDecision::Deny,
                         ]
                         .into(),
                     ),
@@ -2203,8 +2203,8 @@ fn push_notification_consumes_allow_once_before_scheduling() {
         let platform = Arc::new(StubPlatform {
             device_permission_decisions: Mutex::new(
                 [
-                    truapi_platform::PermissionDecision::AllowOnce,
-                    truapi_platform::PermissionDecision::Deny,
+                    crate::platform::PermissionDecision::AllowOnce,
+                    crate::platform::PermissionDecision::Deny,
                 ]
                 .into(),
             ),
@@ -2267,7 +2267,7 @@ fn push_notification_consumes_allow_once_before_scheduling() {
 #[test]
 fn push_notification_denial_never_reaches_scheduler() {
     let platform = Arc::new(StubPlatform {
-        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        device_permission_decisions: Mutex::new([crate::platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
@@ -2303,8 +2303,8 @@ fn push_notification_reuses_allow_always() {
     let platform = Arc::new(StubPlatform {
         device_permission_decisions: Mutex::new(
             [
-                truapi_platform::PermissionDecision::AllowAlways,
-                truapi_platform::PermissionDecision::Deny,
+                crate::platform::PermissionDecision::AllowAlways,
+                crate::platform::PermissionDecision::Deny,
             ]
             .into(),
         ),
@@ -2350,7 +2350,7 @@ fn cancel_notification_delegates_host_id() {
     let cancelled_notifications = Arc::new(Mutex::new(Vec::new()));
     let platform = Arc::new(StubPlatform {
         cancelled_notifications: cancelled_notifications.clone(),
-        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        device_permission_decisions: Mutex::new([crate::platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
     let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
@@ -2526,8 +2526,8 @@ fn get_account_allow_once_does_not_authorize_the_next_disclosure() {
         let platform = Arc::new(StubPlatform {
             permission_confirmation_decisions: Mutex::new(
                 [
-                    truapi_platform::PermissionDecision::AllowOnce,
-                    truapi_platform::PermissionDecision::Deny,
+                    crate::platform::PermissionDecision::AllowOnce,
+                    crate::platform::PermissionDecision::Deny,
                 ]
                 .into(),
             ),
@@ -2954,8 +2954,8 @@ fn get_user_id_allow_once_does_not_authorize_the_next_disclosure() {
         let platform = Arc::new(StubPlatform {
             permission_confirmation_decisions: Mutex::new(
                 [
-                    truapi_platform::PermissionDecision::AllowOnce,
-                    truapi_platform::PermissionDecision::Deny,
+                    crate::platform::PermissionDecision::AllowOnce,
+                    crate::platform::PermissionDecision::Deny,
                 ]
                 .into(),
             ),

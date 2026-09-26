@@ -23,9 +23,9 @@ import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.RemotePermissionRequest
-import uniffi.truapi_platform.PermissionAuthorizationRequest
-import uniffi.truapi_platform.PermissionAuthorizationStatus
-import uniffi.truapi_platform.PermissionDecision
+import uniffi.truapi_server.PermissionAuthorizationRequest
+import uniffi.truapi_server.PermissionAuthorizationStatus
+import uniffi.truapi_server.PermissionDecision
 import java.io.Closeable
 import java.net.InetAddress
 import java.net.ServerSocket

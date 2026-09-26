@@ -69,7 +69,7 @@ pub struct Dispatcher {
     subscriptions: SubscriptionManager,
     /// Trusted executable kind bound to this connection; `None` leaves the
     /// surface unrestricted for direct dispatcher embeddings.
-    execution: Option<truapi_platform::ProductExecutionKind>,
+    execution: Option<crate::platform::ProductExecutionKind>,
     /// `(trait, method)` pairs already reported on this connection. A peer
     /// whose wire table disagrees with ours is exactly what these reports are
     /// for, and exactly what would repeat them once per frame, so each pair is
@@ -165,7 +165,7 @@ impl Dispatcher {
     /// Construct a dispatcher bound to a trusted executable kind.
     pub fn for_execution(
         spawner: Spawner,
-        execution: truapi_platform::ProductExecutionKind,
+        execution: crate::platform::ProductExecutionKind,
     ) -> Self {
         Self {
             execution: Some(execution),
@@ -188,7 +188,7 @@ impl Dispatcher {
     }
 
     /// Return whether this connection may access a service execution kind.
-    pub fn allows_execution(&self, required: truapi_platform::ProductExecutionKind) -> bool {
+    pub fn allows_execution(&self, required: crate::platform::ProductExecutionKind) -> bool {
         self.execution.is_none_or(|actual| actual == required)
     }
 
@@ -1205,18 +1205,18 @@ mod tests {
     #[test]
     fn execution_filter_is_bound_to_the_connection() {
         let app =
-            Dispatcher::for_execution(test_spawner(), truapi_platform::ProductExecutionKind::App);
+            Dispatcher::for_execution(test_spawner(), crate::platform::ProductExecutionKind::App);
         let widget = Dispatcher::for_execution(
             test_spawner(),
-            truapi_platform::ProductExecutionKind::Widget,
+            crate::platform::ProductExecutionKind::Widget,
         );
         let worker = Dispatcher::for_execution(
             test_spawner(),
-            truapi_platform::ProductExecutionKind::Worker,
+            crate::platform::ProductExecutionKind::Worker,
         );
 
-        assert!(!app.allows_execution(truapi_platform::ProductExecutionKind::Worker));
-        assert!(!widget.allows_execution(truapi_platform::ProductExecutionKind::Worker));
-        assert!(worker.allows_execution(truapi_platform::ProductExecutionKind::Worker));
+        assert!(!app.allows_execution(crate::platform::ProductExecutionKind::Worker));
+        assert!(!widget.allows_execution(crate::platform::ProductExecutionKind::Worker));
+        assert!(worker.allows_execution(crate::platform::ProductExecutionKind::Worker));
     }
 }

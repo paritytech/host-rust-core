@@ -2,7 +2,7 @@
 //!
 //! `ProductRuntime` is the target-neutral boundary embedders should use.
 //! Platform adapters provide:
-//! - a [`truapi_platform::Platform`] implementation for host callbacks,
+//! - a [`crate::platform::Platform`] implementation for host callbacks,
 //! - a task [`Spawner`] for runtime-owned async work,
 //! - a [`FrameSink`] for outgoing protocol frames.
 //!
@@ -14,6 +14,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
+use crate::platform::{
+    CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
+    PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
+    normalize_product_identifier,
+};
 use futures::future::{AbortHandle, Abortable};
 use futures::{FutureExt, StreamExt, pin_mut};
 use parity_scale_codec::{Decode, Encode};
@@ -21,12 +27,6 @@ use thiserror::Error;
 use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
-use truapi_platform::{
-    CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
-    PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
-    normalize_product_identifier,
-};
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
@@ -1103,7 +1103,7 @@ impl HostAdmin {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl CoreAdmin for HostAdmin {
     async fn disconnect_session(&self) -> Result<(), v01::GenericError> {
         HostAdmin::disconnect_session(self).await;
@@ -1713,7 +1713,7 @@ mod tests {
     }
 
     fn activated_signing_runtime(platform: Arc<StubPlatform>) -> SigningHostRuntime {
-        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+        use crate::platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         let config = SigningHostConfig::new(
             HostInfo {
@@ -1822,8 +1822,8 @@ mod tests {
 
     #[test]
     fn remote_authorization_frames_consume_one_use_grants() {
+        use crate::platform::PermissionDecision;
         use truapi::CallError;
-        use truapi_platform::PermissionDecision;
 
         futures::executor::block_on(async {
             for request_upfront in [false, true] {
@@ -2571,7 +2571,7 @@ mod tests {
         let (host_config, _) = runtime_config("worker.dot");
         let product = ProductContext::new_with_execution(
             "worker.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Worker,
+            crate::platform::ProductExecutionKind::Worker,
         )
         .expect("worker product context is valid");
         let runtime = ProductRuntime::from_platform_with_config(
@@ -2647,7 +2647,7 @@ mod tests {
         let (host_config, _) = runtime_config("worker.dot");
         let product = ProductContext::new_with_execution(
             "worker.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Worker,
+            crate::platform::ProductExecutionKind::Worker,
         )
         .expect("worker product context is valid");
         let runtime = ProductRuntime::from_platform_with_config(
@@ -2699,7 +2699,7 @@ mod tests {
         let (host_config, _) = runtime_config("worker.dot");
         let product = ProductContext::new_with_execution(
             "worker.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Worker,
+            crate::platform::ProductExecutionKind::Worker,
         )
         .expect("worker product context is valid");
         let sink = Arc::new(RecordingSink::default());
@@ -3296,7 +3296,7 @@ mod tests {
     /// pairings.
     #[test]
     fn the_device_pairing_observer_is_installed_once() {
-        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+        use crate::platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         struct Inert;
         impl crate::DevicePairingObserver for Inert {
@@ -3327,7 +3327,7 @@ mod tests {
     #[test]
     fn answer_sso_request_distinguishes_disconnect_from_ignorable_messages() {
         use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, Response, v1};
-        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+        use crate::platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         const ENTROPY: [u8; 32] = [0xab; 32];
 
@@ -3375,7 +3375,7 @@ mod tests {
         use crate::host_internal::sso_messages::{
             ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
         };
-        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+        use crate::platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         const ENTROPY: [u8; 32] = [0xab; 32];
 
@@ -3510,8 +3510,8 @@ mod tests {
 
     /// Signing-host config carrying `asset_hub`, otherwise the shape every
     /// other signing test here uses.
-    fn signing_config_with_asset_hub(asset_hub: [u8; 32]) -> truapi_platform::SigningHostConfig {
-        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+    fn signing_config_with_asset_hub(asset_hub: [u8; 32]) -> crate::platform::SigningHostConfig {
+        use crate::platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         SigningHostConfig::new(
             HostInfo {
@@ -3552,7 +3552,7 @@ mod tests {
     fn a_pairing_host_runtime_carries_its_asset_hub_too() {
         // The sibling half of the same invariant, so #660 cannot recur one role
         // over.
-        use truapi_platform::{HostInfo, PairingHostConfig, PlatformInfo};
+        use crate::platform::{HostInfo, PairingHostConfig, PlatformInfo};
 
         let config = PairingHostConfig::new(
             HostInfo {
@@ -3598,7 +3598,7 @@ mod tests {
         // is.
         let services = crate::runtime::services::RuntimeServices::new(
             Arc::new(StubPlatform::default()),
-            truapi_platform::HostInfo {
+            crate::platform::HostInfo {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,

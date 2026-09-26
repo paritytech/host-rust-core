@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
-use futures::{FutureExt, pin_mut};
-use tracing::warn;
-use truapi::latest as api;
-use truapi_platform::{
+use crate::platform::{
     CreateTransactionReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
     UserConfirmationReview,
 };
+use futures::{FutureExt, pin_mut};
+use tracing::warn;
+use truapi::latest as api;
 
 use super::SigningHost;
 use super::sso_responder::{

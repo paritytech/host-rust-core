@@ -2,7 +2,7 @@
 //! traits with `Send + Sync + 'static` bounds and remains object-safe via
 //! `async_trait`.
 
-use truapi_platform::{
+use truapi_server::platform::{
     HostInfo, HostRuntimeConfig, PairingHostConfig, Platform, PlatformInfo, ProductContext,
     ProductStorageKey, RuntimeConfigValidationError,
 };
@@ -187,7 +187,7 @@ fn chat_icons_accept_only_https_and_inline_images() {
         "ftp://example.invalid/x.png",
     ] {
         assert!(
-            truapi_platform::validate_chat_icon("icon", hostile).is_err(),
+            truapi_server::platform::validate_chat_icon("icon", hostile).is_err(),
             "{hostile:?} must be rejected"
         );
     }
@@ -203,7 +203,7 @@ fn chat_icons_accept_only_https_and_inline_images() {
         "data:image/avif;base64,AAAAGGZ0",
     ] {
         assert!(
-            truapi_platform::validate_chat_icon("icon", allowed).is_ok(),
+            truapi_server::platform::validate_chat_icon("icon", allowed).is_ok(),
             "{allowed:?} must be accepted"
         );
     }
@@ -221,7 +221,7 @@ fn chat_names_keep_joiners_and_bidi_marks_but_drop_spoofing_controls() {
         "",
     ] {
         assert!(
-            truapi_platform::validate_chat_name("name", legitimate).is_ok(),
+            truapi_server::platform::validate_chat_name("name", legitimate).is_ok(),
             "{legitimate:?} must be accepted"
         );
     }
@@ -236,7 +236,7 @@ fn chat_names_keep_joiners_and_bidi_marks_but_drop_spoofing_controls() {
         "a\u{0}b",
     ] {
         assert!(
-            truapi_platform::validate_chat_name("name", spoofing).is_err(),
+            truapi_server::platform::validate_chat_name("name", spoofing).is_err(),
             "{spoofing:?} must be rejected"
         );
     }
@@ -244,29 +244,29 @@ fn chat_names_keep_joiners_and_bidi_marks_but_drop_spoofing_controls() {
 
 #[test]
 fn chat_identifiers_normalize_and_bound_the_value_the_host_receives() {
-    let nfc = truapi_platform::normalize_chat_identifier("botId", "cafe\u{301}").unwrap();
+    let nfc = truapi_server::platform::normalize_chat_identifier("botId", "cafe\u{301}").unwrap();
     assert_eq!(
         nfc,
-        truapi_platform::normalize_chat_identifier("botId", "caf\u{e9}").unwrap()
+        truapi_server::platform::normalize_chat_identifier("botId", "caf\u{e9}").unwrap()
     );
 
-    assert!(truapi_platform::normalize_chat_identifier("botId", "").is_err());
-    assert!(truapi_platform::normalize_chat_identifier("botId", "   ").is_err());
+    assert!(truapi_server::platform::normalize_chat_identifier("botId", "").is_err());
+    assert!(truapi_server::platform::normalize_chat_identifier("botId", "   ").is_err());
 
     // The cap applies after NFC, which can expand the input.
     let expanding = "\u{1d160}".repeat(64);
-    assert!(expanding.len() <= truapi_platform::CHAT_FIELD_MAX_BYTES);
-    let rejected = truapi_platform::normalize_chat_identifier("botId", &expanding);
+    assert!(expanding.len() <= truapi_server::platform::CHAT_FIELD_MAX_BYTES);
+    let rejected = truapi_server::platform::normalize_chat_identifier("botId", &expanding);
     assert!(
         rejected.is_err(),
         "a value that expands past the cap under NFC must be rejected"
     );
 
-    let oversized = "f".repeat(truapi_platform::CHAT_FIELD_MAX_BYTES + 1);
-    assert!(truapi_platform::normalize_chat_identifier("botId", &oversized).is_err());
+    let oversized = "f".repeat(truapi_server::platform::CHAT_FIELD_MAX_BYTES + 1);
+    assert!(truapi_server::platform::normalize_chat_identifier("botId", &oversized).is_err());
 
-    let icon = "d".repeat(truapi_platform::CHAT_ICON_MAX_BYTES + 1);
-    assert!(truapi_platform::validate_chat_icon("icon", &icon).is_err());
+    let icon = "d".repeat(truapi_server::platform::CHAT_ICON_MAX_BYTES + 1);
+    assert!(truapi_server::platform::validate_chat_icon("icon", &icon).is_err());
 }
 
 #[test]
@@ -282,12 +282,12 @@ fn chat_identifiers_reject_invisibles_that_names_keep() {
         "flip\u{00a0}per",
     ] {
         assert!(
-            truapi_platform::normalize_chat_identifier("botId", invisible).is_err(),
+            truapi_server::platform::normalize_chat_identifier("botId", invisible).is_err(),
             "{invisible:?} must not be a valid identifier"
         );
         // A display name still accepts them: emoji and Persian need joiners.
         assert!(
-            truapi_platform::validate_chat_name("name", invisible).is_ok(),
+            truapi_server::platform::validate_chat_name("name", invisible).is_ok(),
             "{invisible:?} must remain a valid display name"
         );
     }
@@ -295,7 +295,7 @@ fn chat_identifiers_reject_invisibles_that_names_keep() {
     // Ordinary identifiers, including an interior ASCII space, still pass.
     for ordinary in ["flipper", "flip-per", "flip per", "café", "支付"] {
         assert!(
-            truapi_platform::normalize_chat_identifier("botId", ordinary).is_ok(),
+            truapi_server::platform::normalize_chat_identifier("botId", ordinary).is_ok(),
             "{ordinary:?} must remain a valid identifier"
         );
     }

@@ -1,4 +1,4 @@
-//! Network provider backends for the [`truapi_platform::ChainProvider`]
+//! Network provider backends for the [`crate::platform::ChainProvider`]
 //! capability, shared across every host platform.
 //!
 //! [`EmbeddedChainProvider`] maps chain genesis hashes to a per-chain
@@ -12,7 +12,7 @@
 //!   WebSocket. On native targets it runs on a jsonrpsee transport and needs
 //!   an ambient tokio runtime; on `wasm32` the same API is served by the
 //!   browser's `WebSocket`.
-//! - `smoldot` feature — [`ChainSource::LightClient`], an embedded
+//! - `smoldot` feature — `ChainSource::LightClient`, an embedded
 //!   [smoldot](https://github.com/paritytech/smoldot) light client. On native
 //!   targets it runs on smoldot's default platform (OS threads, TCP + plain
 //!   WebSocket dialing), which declines `wss`, so those bootnodes are reached
@@ -33,12 +33,11 @@
     allow(unsafe_code)
 )]
 
-// The crate is inert without a backend: only the registry would compile, and
-// `connect` could never succeed. Fail the build loudly instead.
-#[cfg(not(any(feature = "ws", feature = "smoldot")))]
-compile_error!("truapi-provider requires at least one backend feature: `ws` or `smoldot`");
-
+// Without a backend feature the crate carries only the `platform` interfaces,
+// which is how truapi-server depends on it.
+#[cfg(any(feature = "ws", feature = "smoldot"))]
 mod config;
+#[cfg(any(feature = "ws", feature = "smoldot"))]
 mod error;
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
 mod ffi;
@@ -56,6 +55,8 @@ mod logging;
 mod logging_native;
 #[cfg(feature = "networks")]
 mod networks;
+pub mod platform;
+#[cfg(any(feature = "ws", feature = "smoldot"))]
 mod provider;
 #[cfg(feature = "smoldot")]
 mod storage;
@@ -67,11 +68,13 @@ mod ws;
 #[cfg(all(feature = "smoldot", not(target_arch = "wasm32")))]
 mod wss_tunnel;
 
+#[cfg(any(feature = "ws", feature = "smoldot"))]
 pub use config::ChainSource;
 #[cfg(feature = "smoldot")]
 pub use config::LightClientBuilder;
 #[cfg(feature = "networks")]
 pub use networks::{NetworkChains, known_networks};
+#[cfg(any(feature = "ws", feature = "smoldot"))]
 pub use provider::{EmbeddedChainProvider, EmbeddedChainProviderBuilder};
 #[cfg(feature = "smoldot")]
 pub use storage::{GenesisHash, StorageClient, StorageClientError};

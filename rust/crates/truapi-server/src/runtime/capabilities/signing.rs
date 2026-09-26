@@ -1,5 +1,8 @@
 //! Product-facing signing capability adapters.
 
+use crate::platform::{
+    CreateTransactionReview, SignPayloadReview, SignRawReview, UserConfirmationReview,
+};
 use tracing::{debug, instrument};
 use truapi::api::Signing;
 use truapi::versioned::signing::{
@@ -12,9 +15,6 @@ use truapi::versioned::signing::{
     HostSignRawWithLegacyAccountRequest, HostSignRawWithLegacyAccountResponse,
 };
 use truapi::{CallContext, CallError, v01};
-use truapi_platform::{
-    CreateTransactionReview, SignPayloadReview, SignRawReview, UserConfirmationReview,
-};
 
 use crate::runtime::authority::{
     AuthorityError, AuthoritySession, AutoSigningGrant, CreateTransactionAuthorityRequest,

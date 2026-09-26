@@ -3,7 +3,7 @@
 // Worker-side metadata and proxy functions for the raw WASM callback
 // surface. The worker transport/lifecycle remains hand-written; this
 // file owns the callback names, host-hook arity, and
-// subscription payload shape derived from `truapi-platform`.
+// subscription payload shape derived from the `platform` modules.
 
 import type { RawCallbacks } from "./host-callbacks-adapter.js";
 import type { GenericError } from "@parity/truapi";

@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::platform::{CoreStorage, CoreStorageKey};
 use futures::lock::Mutex;
 use parity_scale_codec::{Decode, Encode};
 use tracing::{debug, info, warn};
-use truapi_platform::{CoreStorage, CoreStorageKey};
 
 use super::SigningHost;
 use super::sso_responder::current_unix_secs;
@@ -597,7 +597,7 @@ mod tests {
         }
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl CoreStorage for MemStorage {
         async fn read_core_storage(
             &self,
@@ -659,7 +659,7 @@ mod tests {
     #[derive(Default)]
     struct YieldingStorage(MemStorage);
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl CoreStorage for YieldingStorage {
         async fn read_core_storage(
             &self,

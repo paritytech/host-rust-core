@@ -26,7 +26,7 @@ struct HostPlacedProductsTests {
 
     /// An exact match, so a subdomain is a separate product and a separate publisher, and a bare
     /// label with no TLD is not a product id at all. Same rule the core applies to these products
-    /// in `truapi_platform::has_trusted_remote_permissions`.
+    /// in `truapi_server::platform::has_trusted_remote_permissions`.
     @Test(
         "Only the reserved identity itself is host-placed",
         arguments: ["app.dim2.dot", "dim2x.dot", "xdim2.dot", "dim2", "", "notdim2.paseo"]

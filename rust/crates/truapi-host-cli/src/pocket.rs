@@ -22,7 +22,7 @@ use truapi::latest::{
     HostPocketRemoveCardRequest,
 };
 use truapi::v01;
-use truapi_platform::{PocketPlatform, ProductContext, async_trait};
+use truapi_server::platform::{PocketPlatform, ProductContext, async_trait};
 
 /// Cards and list subscribers for one product.
 #[derive(Default)]

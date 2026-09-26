@@ -7,7 +7,7 @@
 //! the response statements the pairing host is waiting for. Runs until the
 //! peer sends `Disconnected`, the local session ends, or the transport fails.
 //!
-//! Sensitive operations consult [`truapi_platform::UserConfirmation`], the
+//! Sensitive operations consult [`crate::platform::UserConfirmation`], the
 //! same seam browser hosts use for their confirmation modals; a headless host
 //! implements it with its approval policy.
 
@@ -1344,12 +1344,12 @@ mod tests {
         );
     }
     use crate::host_logic::statement_store::decode_verified_statement_data;
+    use crate::platform::{HostInfo, Platform, PlatformInfo, SigningHostConfig};
     use crate::runtime::authority::ProductAuthority;
     use crate::runtime::services::RuntimeServices;
     use crate::test_support::{StubPlatform, test_spawner};
     use std::sync::Arc;
     use truapi::latest as api;
-    use truapi_platform::{HostInfo, Platform, PlatformInfo, SigningHostConfig};
 
     const ENTROPY: [u8; 16] = [0xab; 16];
     /// The fixture's People chain is paseo-next-v2 (see `PEOPLE_METADATA`),

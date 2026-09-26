@@ -16,7 +16,7 @@ import { createMockHost, MOCK_GENESIS } from "./create-mock-host.js";
 
 const MOCK_RS = fileURLToPath(
   new URL(
-    "../../../../../rust/crates/truapi-platform/src/mock.rs",
+    "../../../../../rust/crates/truapi-server/src/platform/mock.rs",
     import.meta.url,
   ),
 );

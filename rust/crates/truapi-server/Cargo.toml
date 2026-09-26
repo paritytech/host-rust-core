@@ -33,10 +33,12 @@ wasm-signing-host = []
 test-host = []
 debug-sink = ["dep:tokio", "dep:tokio-tungstenite", "dep:base64"]
 ws-bridge = ["debug-sink", "dep:rand"]
+# In-memory `MockPlatform` for tests and host simulators.
+mock = []
 
 [dependencies]
 truapi = { path = "../truapi" }
-truapi-platform = { path = "../truapi-platform" }
+truapi-provider = { path = "../truapi-provider", default-features = false }
 truapi-macros = { path = "../truapi-macros" }
 async-trait = { workspace = true }
 derive_more = { workspace = true, features = ["debug", "display", "error", "from"] }
@@ -78,7 +80,6 @@ tracing-subscriber = { workspace = true, features = ["registry", "std"] }
 verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff" }
 truapi-verifiable = { path = "../truapi-verifiable" }
 truapi = { path = "../truapi", features = ["uniffi"] }
-truapi-platform = { path = "../truapi-platform", features = ["uniffi"] }
 futures = { workspace = true, features = ["thread-pool"] }
 rand = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"], optional = true }
@@ -102,7 +103,7 @@ web-sys = { workspace = true, features = ["console"] }
 
 [dev-dependencies]
 scale-info = { workspace = true, features = ["std"] }
-truapi-platform = { path = "../truapi-platform", features = ["mock"] }
+truapi-server = { path = ".", features = ["mock"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = { workspace = true }

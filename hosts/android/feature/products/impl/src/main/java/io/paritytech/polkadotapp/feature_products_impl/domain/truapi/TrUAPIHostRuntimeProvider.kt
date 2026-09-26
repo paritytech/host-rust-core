@@ -43,10 +43,10 @@ import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostLocalStorageReadError
 import uniffi.truapi.HostNavigateToError
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_platform.AuthState
-import uniffi.truapi_platform.HostChainSet
-import uniffi.truapi_platform.PermissionDecision
-import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi_server.AuthState
+import uniffi.truapi_server.HostChainSet
+import uniffi.truapi_server.PermissionDecision
+import uniffi.truapi_server.UserConfirmationReview
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_server.WorkerTransition

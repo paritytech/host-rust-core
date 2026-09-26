@@ -6,13 +6,13 @@ use std::time::{Duration, Instant};
 
 use futures::stream::{self, BoxStream};
 use truapi::v01;
-use truapi_platform::{
+use truapi_server::frame::ProtocolMessage;
+use truapi_server::platform::{
     AuthPresenter, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
     JsonRpcConnection, LocaleHost, Navigation, Notifications, PairingHostConfig, Permissions,
     PlatformInfo, PreimageHost, ProductContext, ProductOperations, ProductStorage, ThemeHost,
     UserConfirmation, UserConfirmationReview,
 };
-use truapi_server::frame::ProtocolMessage;
 use truapi_server::transport::Transport;
 
 /// Transport stub that records every frame sent through it, for asserting
@@ -92,7 +92,7 @@ pub fn test_runtime_config() -> (PairingHostConfig, ProductContext) {
 /// wire-shape tests that only inspect emitted frames.
 pub struct WireShapePlatform;
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl ProductStorage for WireShapePlatform {
     async fn read(&self, _key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
         Err(v01::HostLocalStorageReadError::Full)
@@ -115,7 +115,7 @@ impl ProductStorage for WireShapePlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl ProductOperations for WireShapePlatform {
     async fn begin_operation(
         &self,
@@ -133,14 +133,14 @@ impl ProductOperations for WireShapePlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl Navigation for WireShapePlatform {
     async fn navigate_to(&self, _url: String) -> Result<(), v01::HostNavigateToError> {
         Ok(())
     }
 }
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl Notifications for WireShapePlatform {
     async fn push_notification(
         &self,
@@ -154,25 +154,25 @@ impl Notifications for WireShapePlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl Permissions for WireShapePlatform {
     async fn device_permission(
         &self,
         _product: &ProductContext,
         _request: v01::HostDevicePermissionRequest,
-    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
-        Ok(truapi_platform::PermissionDecision::AllowAlways)
+    ) -> Result<truapi_server::platform::PermissionDecision, v01::GenericError> {
+        Ok(truapi_server::platform::PermissionDecision::AllowAlways)
     }
     async fn remote_permission(
         &self,
         _product: &ProductContext,
         _request: v01::RemotePermissionRequest,
-    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
-        Ok(truapi_platform::PermissionDecision::AllowAlways)
+    ) -> Result<truapi_server::platform::PermissionDecision, v01::GenericError> {
+        Ok(truapi_server::platform::PermissionDecision::AllowAlways)
     }
 }
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl Features for WireShapePlatform {
     async fn feature_supported(
         &self,
@@ -181,10 +181,12 @@ impl Features for WireShapePlatform {
         Ok(v01::HostFeatureSupportedResponse { supported: true })
     }
 
-    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
-        Ok(truapi_platform::HostChainSet {
+    async fn supported_chains(
+        &self,
+    ) -> Result<truapi_server::platform::HostChainSet, v01::GenericError> {
+        Ok(truapi_server::platform::HostChainSet {
             network: "paseo".to_string(),
-            chains: vec![truapi_platform::HostChainEntry {
+            chains: vec![truapi_server::platform::HostChainEntry {
                 identifier: v01::ChainIdentifier::AssetHub,
                 genesis_hash: [0xaa; 32],
             }],
@@ -202,7 +204,7 @@ impl JsonRpcConnection for DeadConnection {
     fn close(&self) {}
 }
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl ChainProvider for WireShapePlatform {
     async fn connect(
         &self,
@@ -214,7 +216,7 @@ impl ChainProvider for WireShapePlatform {
 
 impl AuthPresenter for WireShapePlatform {}
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl CoreStorage for WireShapePlatform {
     async fn read_core_storage(
         &self,
@@ -234,7 +236,7 @@ impl CoreStorage for WireShapePlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl UserConfirmation for WireShapePlatform {
     async fn confirm_user_action(
         &self,

@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context as LayerContext, Layer};
-use truapi_platform::PermissionDecision;
+use truapi_server::platform::PermissionDecision;
 use unicode_width::UnicodeWidthChar;
 
 use crate::LogLevel;

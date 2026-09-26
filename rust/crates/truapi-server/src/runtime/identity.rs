@@ -188,6 +188,7 @@ mod tests {
     use crate::host_logic::dotns_gateway::{
         VIEW_CALL_ORIGIN, account_to_h160, dispatcher_address_key, selector, timestamp_now_key,
     };
+    use crate::platform::JsonRpcConnection;
     use crate::subscription::thread_per_subscription_spawner;
     use async_trait::async_trait;
     use futures::StreamExt;
@@ -196,7 +197,6 @@ mod tests {
     use parity_scale_codec::{Compact, Decode, Encode};
     use serde_json::{Value as JsonValue, json};
     use std::sync::{Arc, Mutex};
-    use truapi_platform::JsonRpcConnection;
 
     const FOLLOW_ID: &str = "ah-follow";
     const BEST_HASH: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";

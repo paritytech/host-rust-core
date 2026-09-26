@@ -52,12 +52,12 @@ import uniffi.truapi.ThemeName
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi.HostLocalStorageReadError
 import uniffi.truapi.HostNavigateToError
-import uniffi.truapi_platform.AuthState
-import uniffi.truapi_platform.HostChainSet
-import uniffi.truapi_platform.PermissionAuthorizationRequest
-import uniffi.truapi_platform.PermissionAuthorizationStatus
-import uniffi.truapi_platform.PermissionDecision
-import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi_server.AuthState
+import uniffi.truapi_server.HostChainSet
+import uniffi.truapi_server.PermissionAuthorizationRequest
+import uniffi.truapi_server.PermissionAuthorizationStatus
+import uniffi.truapi_server.PermissionDecision
+import uniffi.truapi_server.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatBotRegistrationStatus
 import uniffi.truapi_server.NativeChatCallbacks
@@ -77,7 +77,7 @@ import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_server.localhostBridgeBootstrapScript
-import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
+import uniffi.truapi_server.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeStatementRenewalTarget

@@ -11,7 +11,7 @@
 //! fast-fail. The tests cover both this workspace's `SlotError` renderings and
 //! wordings observed from real wallets.
 
-use truapi_platform::LoginFailureKind;
+use crate::platform::LoginFailureKind;
 
 /// Whether `text` reports an allowance period with no slot left.
 ///

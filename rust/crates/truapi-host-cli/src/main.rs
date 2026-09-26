@@ -49,11 +49,11 @@ use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use truapi_platform::{
-    ChatPlatform, HostInfo, PermissionStatusHost, PlatformInfo, ProductExecutionKind,
-};
 use truapi_server::host_logic::dotns_gateway::{
     MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN, is_registrable_full_label,
+};
+use truapi_server::platform::{
+    ChatPlatform, HostInfo, PermissionStatusHost, PlatformInfo, ProductExecutionKind,
 };
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
@@ -134,9 +134,7 @@ impl LogLevel {
 
     fn scoped_filter(self) -> String {
         let level = self.as_filter();
-        format!(
-            "warn,truapi={level},truapi_host={level},truapi_platform={level},truapi_server={level}"
-        )
+        format!("warn,truapi={level},truapi_host={level},truapi_server={level}")
     }
 }
 
@@ -4349,7 +4347,7 @@ mod cli_tests {
         assert_eq!(LogLevel::Trace.as_filter(), "trace");
         assert_eq!(
             LogLevel::Trace.scoped_filter(),
-            "warn,truapi=trace,truapi_host=trace,truapi_platform=trace,truapi_server=trace"
+            "warn,truapi=trace,truapi_host=trace,truapi_server=trace"
         );
     }
 

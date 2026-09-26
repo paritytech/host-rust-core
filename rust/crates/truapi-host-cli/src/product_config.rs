@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use truapi_platform::CoreStorage;
 use truapi_server::encode_cached_root_manifest;
+use truapi_server::platform::CoreStorage;
 
 /// The developer-authored config for one product.
 ///

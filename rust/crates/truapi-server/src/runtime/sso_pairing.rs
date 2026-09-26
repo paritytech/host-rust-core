@@ -30,6 +30,7 @@ use crate::host_logic::statement_store::{
 };
 use crate::subscription::Spawner;
 
+use crate::platform::{CoreStorage, CoreStorageKey};
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, StreamExt, pin_mut};
 use parity_scale_codec::{Decode, Encode};
@@ -42,7 +43,6 @@ use truapi::v01;
 use truapi::versioned::account::HostRequestLoginError;
 #[cfg(test)]
 use truapi::versioned::account::HostRequestLoginResponse;
-use truapi_platform::{CoreStorage, CoreStorageKey};
 
 #[cfg(not(test))]
 const PAIRING_QUERY_INTERVAL: Duration = Duration::from_secs(2);
@@ -589,6 +589,7 @@ mod tests {
     use super::super::{PairingHostRole, ProductRuntimeHost};
     use super::*;
     use crate::host_rpc_client::HostRpcClient;
+    use crate::platform::{AuthState, ChainProvider, CoreStorageKey};
     use crate::test_support::{
         StubPlatform, core_storage_test_key, pairing_device_from_deeplink, peer_statement_keypair,
         runtime_config, session_info, signed_test_statement, stub_platform, subscribe_ack_frame,
@@ -599,7 +600,6 @@ mod tests {
     use truapi::versioned::account::{
         HostAccountConnectionStatusSubscribeItem, HostRequestLoginRequest,
     };
-    use truapi_platform::{AuthState, ChainProvider, CoreStorageKey};
     use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
     /// Cancel the login as soon as the host observes the `Pairing` state,

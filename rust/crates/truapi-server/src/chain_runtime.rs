@@ -28,6 +28,7 @@ use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use web_time::Duration;
 
+use crate::platform::JsonRpcConnection;
 use derive_more::{Display, Error};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable};
@@ -58,7 +59,6 @@ use truapi::v01::{
     RemoteChainTransactionBroadcastResponse, RemoteChainTransactionStopRequest, RuntimeApi,
     RuntimeSpec, RuntimeType, StorageQueryItem, StorageQueryType, StorageResultItem,
 };
-use truapi_platform::JsonRpcConnection;
 
 use crate::host_rpc_client::HostRpcClient;
 use crate::subscription::Spawner;

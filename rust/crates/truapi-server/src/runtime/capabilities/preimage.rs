@@ -3,6 +3,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
+use crate::platform::{PreimageSubmitReview, UserConfirmationReview};
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::Preimage;
@@ -12,7 +13,6 @@ use truapi::versioned::preimage::{
     RemotePreimageSubmitResponse,
 };
 use truapi::{CallContext, CallError, Subscription, v01};
-use truapi_platform::{PreimageSubmitReview, UserConfirmationReview};
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 

@@ -54,14 +54,14 @@ use crate::runtime::vrf;
 use crate::session_usernames::SessionUsernames;
 use crate::subscription::Spawner;
 
+use crate::platform::{
+    CoreStorageKey, PairingHostConfig, Platform, ProductContext, SignVrfReview,
+    UserConfirmationReview, normalize_product_identifier,
+};
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
-use truapi_platform::{
-    CoreStorageKey, PairingHostConfig, Platform, ProductContext, SignVrfReview,
-    UserConfirmationReview, normalize_product_identifier,
-};
 use zeroize::Zeroizing;
 
 use super::ring_vrf_registry::{RingVrfRegistryStore, validate_owner_listing};

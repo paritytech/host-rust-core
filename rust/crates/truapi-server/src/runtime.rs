@@ -70,6 +70,12 @@ pub use signing_host::{
 pub use vrf::ring_vrf_member;
 // `TrackedStatementRenewalTarget` is only read back by the native renewal
 // reporting, so re-exporting it on wasm leaves an unused import.
+use crate::platform::{
+    AccountAccessReview, ChatFieldError, IdentityDisclosureReview, PermissionAuthorizationRequest,
+    PermissionAuthorizationStatus, PermissionDecision, Platform, ProductContext, ProductStorageKey,
+    SessionUiInfo, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
+    validate_chat_icon, validate_chat_message_content, validate_chat_name,
+};
 pub use signing_host::StatementRenewalTarget;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::TrackedStatementRenewalTarget;
@@ -93,12 +99,6 @@ use truapi::versioned::renderer::{
     HostRendererActionSubscribeRequest,
 };
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
-use truapi_platform::{
-    AccountAccessReview, ChatFieldError, IdentityDisclosureReview, PermissionAuthorizationRequest,
-    PermissionAuthorizationStatus, PermissionDecision, Platform, ProductContext, ProductStorageKey,
-    SessionUiInfo, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
-    validate_chat_icon, validate_chat_message_content, validate_chat_name,
-};
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
@@ -283,9 +283,9 @@ fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) ->
 pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
-    chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    chat_platform: Option<Arc<dyn crate::platform::ChatPlatform>>,
     /// Live OS permission state for this connection, when the host serves it.
-    permission_status: Option<Arc<dyn truapi_platform::PermissionStatusHost>>,
+    permission_status: Option<Arc<dyn crate::platform::PermissionStatusHost>>,
     /// Permission requests and consuming operations can arrive on different connections.
     temporary_permissions: Arc<TemporaryPermissions>,
     authority: Arc<dyn ProductAuthority>,
@@ -295,7 +295,7 @@ pub struct ProductRuntimeHost {
     core_instance: u64,
     chat: Arc<ActionChannel<HostChatActionSubscribeItem>>,
     renderer: Arc<ActionChannel<HostRendererActionSubscribeItem>>,
-    pocket_platform: Option<Arc<dyn truapi_platform::PocketPlatform>>,
+    pocket_platform: Option<Arc<dyn crate::platform::PocketPlatform>>,
     /// Host-assigned ids of this connection's open pending operations, each
     /// holding one worker reference until it ends or the connection is torn
     /// down.
@@ -367,7 +367,7 @@ impl ProductRuntimeHost {
     }
 
     /// Trusted executable kind attached to this product connection.
-    pub fn execution_kind(&self) -> truapi_platform::ProductExecutionKind {
+    pub fn execution_kind(&self) -> crate::platform::ProductExecutionKind {
         self.product.execution_kind
     }
 
@@ -375,7 +375,7 @@ impl ProductRuntimeHost {
     #[cfg(test)]
     pub fn new<P>(
         platform: Arc<P>,
-        config: (truapi_platform::PairingHostConfig, ProductContext),
+        config: (crate::platform::PairingHostConfig, ProductContext),
         spawner: Spawner,
     ) -> Self
     where
@@ -394,15 +394,15 @@ impl ProductRuntimeHost {
     }
 
     #[cfg(test)]
-    fn compat_host_config() -> truapi_platform::PairingHostConfig {
-        truapi_platform::PairingHostConfig::new(
-            truapi_platform::HostInfo {
+    fn compat_host_config() -> crate::platform::PairingHostConfig {
+        crate::platform::PairingHostConfig::new(
+            crate::platform::HostInfo {
                 name: "Polkadot Web".to_string(),
                 icon: Some("https://example.invalid/dotli.png".to_string()),
                 version: None,
                 platform: truapi::latest::HostPlatform::Web,
             },
-            truapi_platform::PlatformInfo::default(),
+            crate::platform::PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
             [0xcc; 32],
@@ -442,7 +442,7 @@ impl ProductRuntimeHost {
     #[cfg(test)]
     fn new_pairing_for_tests(
         platform: Arc<dyn Platform>,
-        host_config: truapi_platform::PairingHostConfig,
+        host_config: crate::platform::PairingHostConfig,
         product: ProductContext,
         spawner: Spawner,
     ) -> (Self, Arc<PairingHost>) {
@@ -520,7 +520,7 @@ impl ProductRuntimeHost {
         // Localhost products are development-only wildcards once a host admits
         // them. Production hosts must reject localhost products before creating
         // the product runtime.
-        if truapi_platform::is_localhost_product_identifier(&product_id) {
+        if crate::platform::is_localhost_product_identifier(&product_id) {
             return normalize_product_identifier(dot_ns_identifier).ok();
         }
         // Bounded here rather than left to the lookup: it can reach dotNS on
@@ -1068,7 +1068,7 @@ impl ProductRuntimeHost {
     /// Chat access policy for this connection; see [`chat_platform_for`].
     pub fn native_chat_platform(
         &self,
-    ) -> Result<Arc<dyn truapi_platform::ChatPlatform>, crate::host_core::ProductRuntimeError> {
+    ) -> Result<Arc<dyn crate::platform::ChatPlatform>, crate::host_core::ProductRuntimeError> {
         chat_platform_for(
             self.product.execution_kind,
             self.authority.session_state().current().is_some(),
@@ -1076,7 +1076,7 @@ impl ProductRuntimeHost {
         )
     }
 
-    fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {
+    fn chat_platform<E>(&self) -> Result<Arc<dyn crate::platform::ChatPlatform>, CallError<E>> {
         self.native_chat_platform().map_err(|error| match error {
             crate::host_core::ProductRuntimeError::Denied => CallError::Denied,
             _ => CallError::Unsupported,
@@ -1228,8 +1228,8 @@ impl ProductRuntimeHost {
     /// host installed an adapter. The kind and session checks come first, so a
     /// connection that may never reach Pocket is told `Denied` even on a host
     /// that serves nothing.
-    fn pocket_platform<E>(&self) -> Result<Arc<dyn truapi_platform::PocketPlatform>, CallError<E>> {
-        if self.product.execution_kind != truapi_platform::ProductExecutionKind::Worker
+    fn pocket_platform<E>(&self) -> Result<Arc<dyn crate::platform::PocketPlatform>, CallError<E>> {
+        if self.product.execution_kind != crate::platform::ProductExecutionKind::Worker
             || self.authority.session_state().current().is_none()
         {
             return Err(CallError::Denied);
@@ -1238,7 +1238,7 @@ impl ProductRuntimeHost {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl Chat for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "chat.create_room"))]
     async fn create_room(
@@ -1346,7 +1346,7 @@ impl Chat for ProductRuntimeHost {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl Renderer for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "renderer.action_subscribe"))]
     async fn action_subscribe(
@@ -1425,7 +1425,7 @@ fn pocket_field_error(error: ChatFieldError) -> CallError<HostPocketRemoveCardEr
 
 /// Report a rejected chat bot field as a bot-registration domain error.
 fn chat_register_bot_field_error(
-    error: truapi_platform::ChatFieldError,
+    error: crate::platform::ChatFieldError,
 ) -> CallError<HostChatRegisterBotError> {
     CallError::Domain(HostChatRegisterBotError::V1(
         v01::HostChatRegisterBotError::Unknown {
@@ -1457,7 +1457,7 @@ fn chat_post_field_error(error: ChatFieldError) -> CallError<HostChatPostMessage
 
 /// Report a rejected chat room field as a room-creation domain error.
 fn chat_create_room_field_error(
-    error: truapi_platform::ChatFieldError,
+    error: crate::platform::ChatFieldError,
 ) -> CallError<HostChatCreateRoomError> {
     CallError::Domain(HostChatCreateRoomError::V1(
         v01::HostChatCreateRoomError::Unknown {

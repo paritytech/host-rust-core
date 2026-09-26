@@ -5,10 +5,10 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::platform::{PairingHostConfig, Platform, ProductContext};
 use parity_scale_codec::{Decode, Encode};
 use tracing::instrument;
 use truapi::api::TrUApi;
-use truapi_platform::{PairingHostConfig, Platform, ProductContext};
 
 use crate::dispatcher::Dispatcher;
 use crate::frame::ProtocolMessage;

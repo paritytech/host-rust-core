@@ -239,7 +239,7 @@ fn minted_node() -> [u8; 32] {
 /// `DotnsTransport` over plain RPC, the same two primitives the CLI uses.
 struct PlainRpc(alloc::rpc::RpcClient);
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl DotnsTransport for PlainRpc {
     async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
         self.0

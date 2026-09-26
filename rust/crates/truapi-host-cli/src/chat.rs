@@ -28,7 +28,7 @@ use truapi::latest::{
     HostChatRegisterBotResponse,
 };
 use truapi::v01::{ChatRoom, ChatRoomParticipation};
-use truapi_platform::{ChatPlatform, ProductContext, async_trait};
+use truapi_server::platform::{ChatPlatform, ProductContext, async_trait};
 
 /// Rooms, bots and posted messages for one process.
 #[derive(Default)]

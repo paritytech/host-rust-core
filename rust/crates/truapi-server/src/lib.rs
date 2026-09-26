@@ -8,7 +8,7 @@
 
 //! TrUAPI server runtime: dispatcher, frames, SCALE encoding, stream management.
 //!
-//! Hosts instantiate a role runtime around a [`truapi_platform::Platform`]
+//! Hosts instantiate a role runtime around a [`platform::Platform`]
 //! implementation, then create product-scoped [`ProductRuntime`] endpoints that
 //! expose the stable byte-frame API used from WASM, native mobile, or desktop
 //! shells.
@@ -35,6 +35,7 @@ pub mod host_logic;
 mod host_rpc_client;
 mod interrupt;
 pub mod logging;
+pub mod platform;
 mod protocol_error;
 mod runtime;
 mod session_usernames;
@@ -75,6 +76,11 @@ pub use host_logic::session::{
 pub use host_logic::worker::{WorkerLedger, WorkerTransition};
 #[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
 pub use native_debug::{DebugSinkError, WsDebugSink};
+pub use platform::{
+    CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,
+    PairingHostConfig, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
+    ProductContext, SigningHostConfig, describe_core_storage_key,
+};
 pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;
 pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
@@ -82,11 +88,6 @@ pub use runtime::statement_allowance;
 pub use runtime::{
     AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
     PairingProposal, PairingProposalMetadata, ResponderExit,
-};
-pub use truapi_platform::{
-    CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,
-    PairingHostConfig, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
-    ProductContext, SigningHostConfig, describe_core_storage_key,
 };
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
@@ -116,6 +117,3 @@ use truapi::Bytes32;
 
 #[cfg(not(target_arch = "wasm32"))]
 truapi::uniffi_reexport_scaffolding!();
-
-#[cfg(not(target_arch = "wasm32"))]
-truapi_platform::uniffi_reexport_scaffolding!();

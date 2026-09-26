@@ -3,7 +3,7 @@
 //!
 //! The browser side hands a `callbacks` object (a `JsBridge`) to the
 //! constructor. The bridge implements every host-side capability the
-//! [`truapi_platform::Platform`] trait set requires. Internally the bridge
+//! [`crate::platform::Platform`] trait set requires. Internally the bridge
 //! is wrapped in a [`SendWrapper`] so it satisfies the `Send` bound the
 //! platform trait set imposes; sound on wasm32 because the runtime is
 //! single-threaded.
@@ -16,6 +16,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(feature = "wasm-signing-host")]
+use crate::platform::SigningHostConfig;
+use crate::platform::{
+    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
+    PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
+    RuntimeConfigValidationError,
+};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable};
 use futures::stream::{self, BoxStream, Stream, StreamExt};
@@ -24,13 +31,6 @@ use parity_scale_codec::{Decode, Encode};
 use send_wrapper::SendWrapper;
 use truapi::latest::HostPlatform;
 use truapi::v01;
-#[cfg(feature = "wasm-signing-host")]
-use truapi_platform::SigningHostConfig;
-use truapi_platform::{
-    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
-    PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
-    RuntimeConfigValidationError,
-};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -128,7 +128,7 @@ impl WasmPlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl ChainProvider for WasmPlatform {
     async fn connect(
         &self,
@@ -1159,13 +1159,13 @@ impl WasmPairingHostRuntime {
 /// normalize, so an unknown spelling is never read as trusted.
 #[wasm_bindgen(js_name = hasTrustedRemotePermissions)]
 pub fn has_trusted_remote_permissions_for_wasm(product_id: String) -> bool {
-    truapi_platform::normalizes_to_trusted_remote_permissions(&product_id)
+    crate::platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
 /// Strictly decode a SCALE-encoded core-storage key for host storage policy.
 #[wasm_bindgen(js_name = describeCoreStorageKey)]
 pub fn describe_core_storage_key_for_wasm(encoded: Vec<u8>) -> Result<JsValue, JsValue> {
-    let description = truapi_platform::describe_core_storage_key(&encoded)
+    let description = crate::platform::describe_core_storage_key(&encoded)
         .map_err(|error| JsValue::from_str(&error.to_string()))?;
     let value = js_sys::Object::new();
     Reflect::set(
@@ -1380,7 +1380,7 @@ impl WasmProductRuntime {
 #[wasm_bindgen]
 impl WasmProductRuntime {
     /// Build the core from a JS callbacks object. The object must define
-    /// every host capability the [`truapi_platform::Platform`] trait set
+    /// every host capability the [`crate::platform::Platform`] trait set
     /// requires (camelCase property names; see the source for the full
     /// list).
     #[wasm_bindgen(constructor)]

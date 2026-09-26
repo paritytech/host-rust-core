@@ -92,9 +92,8 @@ rust/crates/
   truapi/                Rust traits, versioned envelopes, and latest payload re-exports
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
   truapi-macros/         TrUAPI wire annotations and inter-host SSO proc macros
-  truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
-  truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
-  truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
+  truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client) and chain-access traits
+  truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface, host syscall traits
   truapi-verifiable/     Ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
 js/packages/
   truapi/                  @parity/truapi TypeScript client
@@ -392,8 +391,8 @@ make ios-bootstrap
 ```
 
 Then open `hosts/ios/polkadot-app.xcodeproj`. Rerun it after changing anything
-the bindings are generated from, which is the `truapi`, `truapi-platform`,
-`truapi-server` or `truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
+the bindings are generated from, which is the `truapi`, `truapi-server` or
+`truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
 the device slice, which is enough for Simulator but not for an archive.
 
 Because the app builds against the core in this tree, a core change that breaks

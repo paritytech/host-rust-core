@@ -18,7 +18,6 @@ unsafe_code = "forbid"
 
 [dependencies]
 truapi = { path = "../truapi" }
-truapi-platform = { path = "../truapi-platform" }
 truapi-server = { path = "../truapi-server", features = ["debug-sink"] }
 anyhow = { workspace = true }
 arboard = { workspace = true, features = ["image-data"] }

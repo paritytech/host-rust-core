@@ -6,6 +6,7 @@
 //! Alias, proof, and ring-VRF operations reuse the request payloads in
 //! `host_internal::sso_messages` for both local calls and SSO transport.
 
+use crate::platform::ProductContext;
 use async_trait::async_trait;
 use std::sync::Arc;
 use truapi::latest::{
@@ -22,7 +23,6 @@ use truapi::latest::{
 };
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, CancellationReason};
-use truapi_platform::ProductContext;
 
 use crate::host_internal::extrinsic::LocalTransactionError;
 use crate::host_internal::sso_messages::{ProductRequest, RingVrfError};

@@ -1,5 +1,6 @@
 //! Product-facing resources capability adapters.
 
+use crate::platform::{ResourceAllocationReview, UserConfirmationReview};
 use tracing::instrument;
 use truapi::api::{Entropy, ResourceAllocation};
 use truapi::versioned::entropy::{
@@ -10,7 +11,6 @@ use truapi::versioned::resource_allocation::{
     HostRequestResourceAllocationResponse,
 };
 use truapi::{CallContext, CallError, v01};
-use truapi_platform::{ResourceAllocationReview, UserConfirmationReview};
 
 use crate::runtime::{
     ProductRuntimeHost, RESOURCE_ALLOCATION_REMOTE_AUTHORITY_RESPONSE_TIMEOUT,

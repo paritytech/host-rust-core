@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::platform::JsonRpcConnection;
 use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, pin_mut};
 use futures::{Stream, StreamExt};
@@ -20,7 +21,6 @@ use serde_json::value::RawValue;
 use subxt_rpcs::client::{RawRpcFuture, RawRpcSubscription, RpcClientT};
 use subxt_rpcs::{Error as RpcError, UserError};
 use tracing::instrument;
-use truapi_platform::JsonRpcConnection;
 
 use crate::subscription::Spawner;
 

@@ -305,7 +305,7 @@ the inclusion watch so the provider cannot spin the worker.
   errors.
 - `truapi-server/src/runtime/capabilities/preimage.rs` — `Preimage::submit` ordering + refresh/retry;
   `lookup_subscribe` cache + integrity check.
-- `truapi-platform` — `PreimageHost` keeps only `lookupPreimage`;
+- `truapi_server::platform` — `PreimageHost` keeps only `lookupPreimage`;
   `BulletinAllowanceKey` is zeroized on drop; configs gain an optional Bulletin
   genesis hash.
 - Host TS (`@parity/truapi-host`) + dotli — the signer bridge is removed; dotli

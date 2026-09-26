@@ -34,7 +34,7 @@ use truapi::api::{
     Worker,
 };
 use truapi::versioned::{self, Versioned};
-use truapi_platform::ProductExecutionKind;
+use crate::platform::ProductExecutionKind;
 
 use crate::dispatcher::Dispatcher;
 use crate::frame::downgrade_call_error;

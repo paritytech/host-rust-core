@@ -17,6 +17,7 @@ use crate::host_logic::statement_store::{
     statement_fields_from_v01, statement_proof_to_v01, unsigned_statement_signing_payload,
 };
 
+use crate::platform::{StatementStoreProductSignReview, UserConfirmationReview};
 use serde_json::Value;
 use subxt_rpcs::client::RpcSubscription;
 use tracing::instrument;
@@ -32,7 +33,6 @@ use truapi::versioned::statement_store::{
     RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest,
 };
 use truapi::{CallContext, CallError, Subscription};
-use truapi_platform::{StatementStoreProductSignReview, UserConfirmationReview};
 
 #[truapi::async_trait]
 impl StatementStore for ProductRuntimeHost {
@@ -478,6 +478,7 @@ mod tests {
         SR25519_SIGNING_CONTEXT, derive_product_keypair, derive_root_keypair_from_entropy,
         index_bytes,
     };
+    use crate::platform::ProductContext;
     use crate::test_support::{
         StubPlatform, account_id, new_statements_frame, runtime_config, signed_statement,
         sso_session_info, sso_success_response_script, statement, stub_platform,
@@ -487,7 +488,6 @@ mod tests {
     use parity_scale_codec::Encode;
     use schnorrkel::{ExpansionMode, MiniSecretKey, PublicKey, Signature};
     use std::sync::Arc;
-    use truapi_platform::ProductContext;
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
 
@@ -518,7 +518,7 @@ mod tests {
                 r#"{{"$v":1,"trustedProducts":{{"{grantee}":["context"]}}}}"#
             )),
         };
-        futures::executor::block_on(truapi_platform::CoreStorage::write_core_storage(
+        futures::executor::block_on(crate::platform::CoreStorage::write_core_storage(
             platform,
             crate::runtime::product_manifest::manifest_cache_key(owner),
             entry.encode(),
@@ -534,10 +534,10 @@ mod tests {
         product_id: &str,
         platform: Arc<StubPlatform>,
     ) -> (ProductRuntimeHost, Arc<SigningHostRole>) {
-        let platform: Arc<dyn truapi_platform::Platform> = platform;
+        let platform: Arc<dyn crate::platform::Platform> = platform;
         let services = RuntimeServices::new(
             platform.clone(),
-            truapi_platform::HostInfo {
+            crate::platform::HostInfo {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,

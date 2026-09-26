@@ -614,7 +614,7 @@ pub fn view_output(output: &[u8]) -> Result<Vec<u8>, DotnsViewError> {
 /// The surface is one storage read plus one contract view. The headless CLI
 /// implements it over plain RPC. The in-core runtime implements it over a
 /// `chainHead_v1` follow. The resolution steps below are written once.
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 pub trait DotnsTransport {
     /// Reads one storage value. `None` when the entry is absent.
     async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String>;
@@ -1296,7 +1296,7 @@ mod tests {
         pending_calls: usize,
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl DotnsTransport for RevertingSecondClaimPage {
         async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
             assert_eq!(key, timestamp_now_key());
@@ -1358,7 +1358,7 @@ mod tests {
             struct IssuedAll {
                 denied: Vec<&'static str>,
             }
-            #[truapi_platform::async_trait]
+            #[crate::platform::async_trait]
             impl DotnsTransport for IssuedAll {
                 async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
                     unreachable!("classify_labels reads no storage")
@@ -1527,7 +1527,7 @@ mod tests {
         protocol_registry: fn() -> Result<Vec<u8>, DotnsViewError>,
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl DotnsTransport for ScriptedDiscovery {
         async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
             Ok(Some(self.stored.to_vec()))
@@ -1637,7 +1637,7 @@ mod tests {
         dot_record_exists: bool,
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl DotnsTransport for ScriptedTld {
         async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
             Ok(None)
@@ -1717,7 +1717,7 @@ mod tests {
         exists: fn() -> Result<Vec<u8>, DotnsViewError>,
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl DotnsTransport for ScriptedAvailability {
         async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
             Ok(None)

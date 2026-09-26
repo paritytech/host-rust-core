@@ -922,6 +922,7 @@ mod tests {
         use super::*;
         use crate::chain_runtime::{RuntimeChainProvider, RuntimeFailure};
         use crate::host_internal::extrinsic::tests::BULLETIN_METADATA_BYTES;
+        use crate::platform::JsonRpcConnection;
         use crate::subscription::thread_per_subscription_spawner;
         use async_trait::async_trait;
         use futures::StreamExt;
@@ -935,7 +936,6 @@ mod tests {
         use subxt::events::Phase;
         use subxt::ext::scale_encode::{EncodeAsFields, Field};
         use subxt::ext::scale_value::{Primitive, Value as ScaleValue};
-        use truapi_platform::JsonRpcConnection;
 
         const FOLLOW_ID: &str = "bulletin-follow";
         const BLOCK_HASH: &str =

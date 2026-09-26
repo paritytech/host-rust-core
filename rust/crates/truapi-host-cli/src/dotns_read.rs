@@ -8,12 +8,12 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use subxt_rpcs::client::{RpcClient, rpc_params};
-use truapi_platform::async_trait;
 use truapi_server::host_logic::dotns_gateway::{
     DotnsIdentity, DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, account_alias_key,
     classify_labels, discover_pop_controller, encode_revive_call, label_available,
     lite_label_owner_key, resolve_labels, timestamp_now_key, view_output,
 };
+use truapi_server::platform::async_trait;
 
 /// Env var overriding the `DotnsPopController` H160 (hex), skipping on-chain
 /// discovery.

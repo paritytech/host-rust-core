@@ -45,15 +45,15 @@ import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.ThemeName
-import uniffi.truapi_platform.AuthState
-import uniffi.truapi_platform.HostChainSet
-import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi_server.AuthState
+import uniffi.truapi_server.HostChainSet
+import uniffi.truapi_server.UserConfirmationReview
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Instant
 import uniffi.truapi.ThemeVariant as NativeThemeVariant
-import uniffi.truapi_platform.PermissionDecision as TrUAPIPermissionDecision
+import uniffi.truapi_server.PermissionDecision as TrUAPIPermissionDecision
 
 /**
  * Native platform callbacks ([io.parity.truapi.HostBridge]) for one product

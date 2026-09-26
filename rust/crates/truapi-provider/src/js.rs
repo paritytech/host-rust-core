@@ -25,9 +25,9 @@
 
 use std::sync::Arc;
 
+use crate::platform::{ChainProvider as _, JsonRpcConnection};
 use futures::lock::Mutex;
 use futures::stream::{BoxStream, StreamExt};
-use truapi_platform::{ChainProvider as _, JsonRpcConnection};
 use wasm_bindgen::prelude::*;
 
 use crate::config::ChainSource;
@@ -530,7 +530,7 @@ fn describe_js(error: &JsValue) -> String {
 }
 
 #[cfg(feature = "smoldot")]
-#[truapi_platform::async_trait]
+#[async_trait::async_trait]
 impl crate::storage::StorageClient for HostStorageClient {
     async fn load(
         &self,

@@ -13,7 +13,7 @@ import type {
 } from "./generated/host-callbacks.js";
 
 // The typed capability interfaces below come straight from the
-// `truapi-platform` Rust crate via `truapi-codegen --platform-ts-output`.
+// `truapi_server::platform` Rust module via `truapi-codegen --platform-ts-output`.
 // They are the host-author-facing surface: each method takes/returns
 // typed wrappers (`HostDevicePermissionRequest`, etc.) rather than raw
 // SCALE bytes. The web worker pairing-host runtime adapts this typed surface

@@ -27,13 +27,13 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
+use crate::platform::JsonRpcConnection;
 use futures::channel::mpsc;
 use futures::stream::{self, BoxStream, StreamExt};
 use smoldot_light::{
     AddChainConfig, AddChainConfigJsonRpc, ChainId, Client, HandleRpcError, JsonRpcResponses,
     StatementProtocolConfig,
 };
-use truapi_platform::JsonRpcConnection;
 
 use crate::config::ChainSource;
 use crate::error::{ProviderError, synthetic_error_frame};
@@ -564,9 +564,9 @@ impl Drop for LightConnection {
 mod tests {
     use std::sync::Arc;
 
+    use crate::platform::ChainProvider;
     use futures::executor::block_on;
     use futures::stream::StreamExt;
-    use truapi_platform::ChainProvider;
 
     use crate::{ChainSource, EmbeddedChainProvider};
 

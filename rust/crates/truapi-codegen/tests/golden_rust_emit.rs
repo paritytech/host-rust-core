@@ -339,7 +339,8 @@ fn golden_host_callbacks_ts() {
 
     let tempdir = workspace_tempdir(&workspace);
     let truapi_json = produce_rustdoc_json(&workspace);
-    let platform_json = produce_rustdoc_json_for_package(&workspace, "truapi-platform");
+    let server_json = produce_rustdoc_json_for_package(&workspace, "truapi-server");
+    let provider_json = produce_rustdoc_json_for_package(&workspace, "truapi-provider");
 
     let out = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
         .args([
@@ -348,7 +349,9 @@ fn golden_host_callbacks_ts() {
             "--output",
             tempdir.path().join("ts").to_str().unwrap(),
             "--platform-input",
-            platform_json.to_str().unwrap(),
+            server_json.to_str().unwrap(),
+            "--platform-input",
+            provider_json.to_str().unwrap(),
             "--platform-ts-output",
             tempdir.path().join("host").to_str().unwrap(),
             "--platform-wasm-adapter-output",

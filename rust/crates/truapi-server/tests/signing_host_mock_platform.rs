@@ -24,8 +24,6 @@ use parity_scale_codec::{Decode, Encode};
 use schnorrkel::Signature;
 
 use truapi::v01;
-use truapi_platform::mock::{ConfirmKind, MockConfig, MockPlatform};
-use truapi_platform::{HostInfo, PlatformInfo, ProductContext, SigningHostConfig};
 use truapi_server::frame::{
     MESSAGE_TYPE_RECEIVE, MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, MESSAGE_TYPE_START, Payload,
     ProtocolMessage, request_ids, subscription_ids,
@@ -34,6 +32,8 @@ use truapi_server::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_product_keypair,
     derive_root_keypair_from_entropy,
 };
+use truapi_server::platform::mock::{ConfirmKind, MockConfig, MockPlatform};
+use truapi_server::platform::{HostInfo, PlatformInfo, ProductContext, SigningHostConfig};
 use truapi_server::{FrameSink, SigningHostRuntime};
 
 // Shared harness; this binary uses only the spawner.

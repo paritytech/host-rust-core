@@ -6,8 +6,8 @@
 //! because a regenerated key silently strands peers still addressing the old
 //! one.
 
+use crate::platform::{CoreStorage, CoreStorageKey};
 use tracing::{instrument, warn};
-use truapi_platform::{CoreStorage, CoreStorageKey};
 
 use crate::host_logic::sso::pairing::generate_x25519_keypair;
 
@@ -43,9 +43,9 @@ pub async fn read_or_create_device_encryption_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::Platform;
     use crate::test_support::StubPlatform;
     use std::sync::Arc;
-    use truapi_platform::Platform;
 
     #[test]
     fn secret_is_generated_once_and_then_reused() {

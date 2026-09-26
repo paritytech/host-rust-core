@@ -617,7 +617,7 @@ describe("createWasmRawCallbacks", () => {
 describe("ProductContext codec", () => {
   // Mirror of the Rust test
   // `product_context_encoding_matches_the_generated_host_codec` in
-  // `rust/crates/truapi-platform/src/lib.rs`, which pins these same bytes
+  // `rust/crates/truapi-server/src/platform.rs`, which pins these same bytes
   // through `parity-scale-codec`. Both halves must be edited together: a
   // ProductContext travels the wasm callback boundary encoded in Rust and
   // decoded here.

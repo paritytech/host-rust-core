@@ -29,7 +29,7 @@ use tokio_tungstenite::tungstenite::http::{StatusCode, header};
 use tracing::{debug, warn};
 
 use crate::bootstrap;
-use truapi_platform::ProductExecutionKind;
+use truapi_server::platform::ProductExecutionKind;
 use truapi_server::{
     ChannelId, DebugSink, FrameSink, PairingHostRuntime, ProductContext, ProductRuntime,
     ProductRuntimeError, SigningHostRuntime,
@@ -819,14 +819,14 @@ mod tests {
             crate::platform::ApprovalPolicy::AutoAccept,
             None,
         );
-        let config = truapi_platform::SigningHostConfig::new(
-            truapi_platform::HostInfo {
+        let config = truapi_server::platform::SigningHostConfig::new(
+            truapi_server::platform::HostInfo {
                 name: "Frame server test".into(),
                 icon: None,
                 version: None,
                 platform: truapi::latest::HostPlatform::Cli,
             },
-            truapi_platform::PlatformInfo {
+            truapi_server::platform::PlatformInfo {
                 kind: Some("test".into()),
                 version: None,
             },
@@ -1266,14 +1266,14 @@ mod tests {
                 crate::platform::ApprovalPolicy::AutoAccept,
                 None,
             );
-            let config = truapi_platform::SigningHostConfig::new(
-                truapi_platform::HostInfo {
+            let config = truapi_server::platform::SigningHostConfig::new(
+                truapi_server::platform::HostInfo {
                     name: "Cross-product storage test".into(),
                     icon: None,
                     version: None,
                     platform: truapi::latest::HostPlatform::Cli,
                 },
-                truapi_platform::PlatformInfo {
+                truapi_server::platform::PlatformInfo {
                     kind: Some("test".into()),
                     version: None,
                 },

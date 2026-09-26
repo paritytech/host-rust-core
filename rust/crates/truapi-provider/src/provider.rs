@@ -7,8 +7,8 @@ use std::collections::HashMap;
 #[cfg(feature = "smoldot")]
 use std::sync::Mutex;
 
+use crate::platform::{ChainProvider, JsonRpcConnection};
 use truapi::latest::GenericError;
-use truapi_platform::{ChainProvider, JsonRpcConnection};
 
 use crate::config::ChainSource;
 use crate::error::ProviderError;
@@ -317,7 +317,7 @@ impl EmbeddedChainProvider {
     /// later read could not take effect. A blob registered through
     /// [`EmbeddedChainProviderBuilder::database`] wins and is not overwritten.
     ///
-    /// Call this before [`connect`](truapi_platform::ChainProvider::connect),
+    /// Call this before [`connect`](crate::platform::ChainProvider::connect),
     /// not from inside a connection callback: on the native bindings `connect`
     /// blocks the calling thread, and a store that needs the main thread would
     /// deadlock underneath it.
@@ -514,7 +514,7 @@ impl EmbeddedChainProvider {
     }
 }
 
-#[truapi_platform::async_trait]
+#[async_trait::async_trait]
 impl ChainProvider for EmbeddedChainProvider {
     #[tracing::instrument(skip_all, fields(genesis = %hex::encode(genesis_hash)))]
     async fn connect(
@@ -565,7 +565,7 @@ impl ChainProvider for EmbeddedChainProvider {
 
 #[cfg(test)]
 mod tests {
-    use truapi_platform::ChainProvider;
+    use crate::platform::ChainProvider;
 
     use super::EmbeddedChainProvider;
     use crate::config::ChainSource;
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[cfg(feature = "smoldot")]
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl crate::storage::StorageClient for MemoryStorageClient {
         async fn load(
             &self,

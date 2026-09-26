@@ -1,6 +1,6 @@
 //! Swift/UniFFI bindings (the `uniffi` feature, native targets).
 //!
-//! Exposes the embedded smoldot [`ChainProvider`](truapi_platform::ChainProvider)
+//! Exposes the embedded smoldot [`ChainProvider`](crate::platform::ChainProvider)
 //! to Swift (and other UniFFI targets): build a provider, connect to a chain by
 //! genesis hash, and drive the raw JSON-RPC string pipe. Chain specs, relay
 //! topology, and statement-store placement come from the bundled network
@@ -21,10 +21,10 @@
 use std::fmt;
 use std::sync::{Arc, Weak};
 
+use crate::platform::{ChainProvider as _, JsonRpcConnection};
 use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
-use truapi_platform::{ChainProvider as _, JsonRpcConnection};
 
 use crate::EmbeddedChainProvider;
 use crate::storage::{StorageClient, StorageClientError};
@@ -935,7 +935,7 @@ mod tests {
         }
     }
 
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl StorageClient for RecordingStore {
         async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, StorageClientError> {
             self.calls

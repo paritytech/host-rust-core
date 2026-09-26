@@ -8,9 +8,9 @@
 //! a short-lived memory cache in `PairingHost`; this module owns the durable
 //! CoreStorage encoding.
 
+use crate::platform::{CoreStorage, CoreStorageKey};
 use parity_scale_codec::{Decode, Encode};
 use truapi::latest::GenericError;
-use truapi_platform::{CoreStorage, CoreStorageKey};
 
 use super::authority::AuthorityError;
 use super::sso_remote::SsoSessionKey;
@@ -237,7 +237,7 @@ mod tests {
         inner: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl CoreStorage for MemStorage {
         async fn read_core_storage(
             &self,

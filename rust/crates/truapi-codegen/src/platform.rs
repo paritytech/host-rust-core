@@ -1,11 +1,12 @@
-//! Parse `truapi-platform`-style "plain capability traits" from rustdoc JSON.
+//! Parse "plain capability traits" from the `platform` modules of rustdoc JSON.
 //!
-//! Unlike the `truapi` API crate, the platform crate has no `#[wire(id = N)]`
+//! Unlike the `truapi` API crate, a `platform` module has no `#[wire(id = N)]`
 //! annotations: it is a set of host-facing capability traits whose methods
 //! use `async_trait` (rustdoc exposes those as boxed `Future` trait objects) or
 //! plain synchronous functions returning trait objects / `BoxStream`. This
-//! module walks the rustdoc index for every public trait in the platform crate
-//! and produces a [`PlatformDefinition`] the TS emitter can render directly.
+//! module walks each crate's `platform` module (`truapi_server::platform` and
+//! `truapi_provider::platform`) for every public trait and produces one
+//! [`PlatformDefinition`] the TS emitter can render directly.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,7 +17,7 @@ use crate::rustdoc::{
     extract_enum, extract_struct, resolve_type, summarize_json,
 };
 
-/// Top-level extracted shape of a `truapi-platform`-style crate.
+/// Top-level extracted shape of the platform surface.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PlatformDefinition {
     /// Capability traits sorted alphabetically by name.
@@ -32,7 +33,7 @@ pub struct PlatformDefinition {
     pub optional_super_trait: Option<PlatformSuperTrait>,
 }
 
-/// Single capability trait extracted from the platform crate.
+/// Single capability trait extracted from a `platform` module.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PlatformTrait {
     /// Trait name as it appears in source.
@@ -108,8 +109,60 @@ pub struct PlatformSuperTrait {
     pub composes: Vec<String>,
 }
 
-/// Walk the platform crate and extract every public trait + its methods.
-pub fn extract(krate: &Crate) -> Result<PlatformDefinition> {
+/// Module whose public traits and types form the platform surface in each crate.
+const PLATFORM_MODULE: &str = "platform";
+
+/// Extract the platform surface spread across the `platform` modules of `krates`.
+pub fn extract_all(krates: &[Crate]) -> Result<PlatformDefinition> {
+    let mut merged = PlatformDefinition {
+        traits: Vec::new(),
+        types: Vec::new(),
+        super_trait: None,
+        optional_super_trait: None,
+    };
+    for krate in krates {
+        let definition = extract(krate)?;
+        merged.traits.extend(definition.traits);
+        merged.types.extend(definition.types);
+        for (slot, found) in [
+            (&mut merged.super_trait, definition.super_trait),
+            (
+                &mut merged.optional_super_trait,
+                definition.optional_super_trait,
+            ),
+        ] {
+            if let Some(found) = found {
+                if slot.is_some() {
+                    bail!(
+                        "Multiple `{}` super-traits found; only one is supported",
+                        found.name
+                    );
+                }
+                *slot = Some(found);
+            }
+        }
+    }
+    merged.traits.sort_by(|a, b| a.name.cmp(&b.name));
+    merged.types.sort_by(|a, b| a.name.cmp(&b.name));
+    if let Some(pair) = merged
+        .types
+        .windows(2)
+        .find(|pair| pair[0].name == pair[1].name)
+    {
+        bail!(
+            "platform type name `{}` is defined by more than one crate",
+            pair[0].name
+        );
+    }
+    Ok(merged)
+}
+
+fn in_platform_module(path: &[String]) -> bool {
+    path.get(1).is_some_and(|module| module == PLATFORM_MODULE)
+}
+
+/// Walk one crate's `platform` module and extract every public trait + its methods.
+fn extract(krate: &Crate) -> Result<PlatformDefinition> {
     let trait_ids = collect_local_trait_ids(krate);
     let names = NameContext::default();
 
@@ -191,7 +244,10 @@ fn collect_referenced_local_types(
 
     let mut local_type_candidates = BTreeMap::new();
     for (item_id, item_path) in &krate.paths {
-        if item_path.crate_id != 0 || !matches!(item_path.kind.as_str(), "struct" | "enum") {
+        if item_path.crate_id != 0
+            || !matches!(item_path.kind.as_str(), "struct" | "enum")
+            || !in_platform_module(&item_path.path)
+        {
             continue;
         }
         let Some(name) = item_path.path.last() else {
@@ -318,7 +374,10 @@ fn collect_named_types(ty: &TypeRef, out: &mut BTreeSet<String>) {
 fn collect_local_trait_ids(krate: &Crate) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for (item_id, item_path) in &krate.paths {
-        if item_path.crate_id != 0 || item_path.kind != "trait" {
+        if item_path.crate_id != 0
+            || item_path.kind != "trait"
+            || !in_platform_module(&item_path.path)
+        {
             continue;
         }
         out.insert(item_id.clone());
@@ -752,7 +811,8 @@ mod tests {
                     ItemPath {
                         crate_id: 0,
                         path: vec![
-                            "truapi_platform".to_string(),
+                            "truapi_server".to_string(),
+                            "platform".to_string(),
                             "one".to_string(),
                             "Shared".to_string(),
                         ],
@@ -764,7 +824,8 @@ mod tests {
                     ItemPath {
                         crate_id: 0,
                         path: vec![
-                            "truapi_platform".to_string(),
+                            "truapi_server".to_string(),
+                            "platform".to_string(),
                             "two".to_string(),
                             "Shared".to_string(),
                         ],
@@ -803,8 +864,8 @@ mod tests {
             "unexpected error: {msg}"
         );
         assert!(
-            msg.contains("truapi_platform::one::Shared")
-                && msg.contains("truapi_platform::two::Shared"),
+            msg.contains("truapi_server::platform::one::Shared")
+                && msg.contains("truapi_server::platform::two::Shared"),
             "unexpected error: {msg}"
         );
     }

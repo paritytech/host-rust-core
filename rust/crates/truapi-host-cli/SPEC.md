@@ -1973,7 +1973,6 @@ Without `RUST_LOG`, the selected CLI level applies to:
 
 - `truapi`
 - `truapi_host`
-- `truapi_platform`
 - `truapi_server`
 
 Other targets remain at `warn`.

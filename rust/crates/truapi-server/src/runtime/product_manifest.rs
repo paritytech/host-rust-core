@@ -11,12 +11,12 @@
 use core::future::Future;
 use core::time::Duration;
 
+use crate::platform::{
+    CoreStorageKey, PermissionAuthorizationStatus, Platform, normalize_product_identifier,
+};
 use parity_scale_codec::{Decode, Encode};
 use tracing::{info, instrument, warn};
 use truapi::v01;
-use truapi_platform::{
-    CoreStorageKey, PermissionAuthorizationStatus, Platform, normalize_product_identifier,
-};
 
 use crate::chain_runtime::ChainRuntime;
 use crate::dotns_views::{call_bytes32_string, network_tld, protocol_component, tld_node};
@@ -45,7 +45,7 @@ const MANIFEST_RECORD_KEY: &str = "manifest";
 /// [`DOTNS_TLDS`][tlds] spans them all, so `dim2.dot` reaching a `.paseo`
 /// deployment has to resolve there rather than hash a name no registry holds.
 ///
-/// [tlds]: truapi_platform::DOTNS_TLDS
+/// [tlds]: crate::platform::DOTNS_TLDS
 #[instrument(skip_all, fields(runtime.method = "product_manifest.fetch"))]
 pub async fn fetch_root_manifest(
     chain: &ChainRuntime,

@@ -82,12 +82,12 @@ use sso_replay::SsoReplayLocks;
 #[cfg(test)]
 const TEST_NETWORK_SUFFIX: &str = "dot";
 
-use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
-use truapi::{CallContext, CallError, v01};
-use truapi_platform::{
+use crate::platform::{
     PermissionAuthorizationStatus, Platform, ProductContext, SignVrfReview, UserConfirmationReview,
     normalize_product_identifier,
 };
+use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
+use truapi::{CallContext, CallError, v01};
 use zeroize::Zeroizing;
 
 #[derive(Default)]
@@ -120,7 +120,7 @@ pub struct SigningHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     /// The dotNS TLD of the network this wallet serves, from
-    /// [`truapi_platform::SigningHostConfig::network_suffix`]. Every reserved
+    /// [`crate::platform::SigningHostConfig::network_suffix`]. Every reserved
     /// RFC-0022 derivation (`uid.<suffix>`, `peopl.<suffix>`) ends in it.
     network_suffix: String,
     session_state: Arc<SessionState>,
@@ -211,7 +211,7 @@ impl SigningHost {
     ) -> Arc<Self> {
         let services = RuntimeServices::new(
             platform.clone(),
-            truapi_platform::HostInfo {
+            crate::platform::HostInfo {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
@@ -1461,6 +1461,7 @@ mod tests {
         derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
         derive_root_keypair_from_entropy, index_bytes,
     };
+    use crate::platform::{HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig};
     use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::test_support::{StubPlatform, test_spawner};
     use truapi::api::{Account, Entropy, ResourceAllocation, Signing};
@@ -1475,7 +1476,6 @@ mod tests {
     };
     use truapi::versioned::signing::{HostSignRawError, HostSignRawRequest, HostSignRawResponse};
     use truapi::{CallContext, CallError, v01};
-    use truapi_platform::{HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig};
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
 
@@ -1672,7 +1672,7 @@ mod tests {
             json: Some(json),
         };
         futures::executor::block_on(
-            <StubPlatform as truapi_platform::CoreStorage>::write_core_storage(
+            <StubPlatform as crate::platform::CoreStorage>::write_core_storage(
                 platform,
                 crate::runtime::product_manifest::manifest_cache_key(owner),
                 parity_scale_codec::Encode::encode(&entry),
@@ -1690,7 +1690,7 @@ mod tests {
                 platform,
                 crate::host_internal::product_manifest::bare_product_label(caller),
                 crate::host_internal::product_manifest::bare_product_label(target),
-                truapi_platform::PermissionAuthorizationStatus::Denied,
+                crate::platform::PermissionAuthorizationStatus::Denied,
             ),
         )
         .expect("stub core storage accepts the decision");
@@ -2127,7 +2127,7 @@ mod tests {
                 platform.as_ref(),
                 "dim2.dot",
                 "peopl.dot",
-                truapi_platform::PermissionAuthorizationStatus::Denied,
+                crate::platform::PermissionAuthorizationStatus::Denied,
             ),
         )
         .expect("stub core storage accepts the decision");
@@ -2735,7 +2735,7 @@ mod tests {
         // `uid.paseo` account: the ones a `peopl.paseo` product registers and the
         // ones the identity backend records a lite username for. The `.dot`
         // derivations of the same seed are a different person.
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let platform: Arc<dyn crate::platform::Platform> = Arc::new(StubPlatform::default());
         let authority = SigningHostRole::new_with_ring_resolver_on(
             platform,
             full_person_ring_resolver(),
@@ -2785,7 +2785,7 @@ mod tests {
     #[test]
     fn ring_alias_and_proof_share_the_explicit_registered_key() {
         let resolver = full_person_ring_resolver();
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let platform: Arc<dyn crate::platform::Platform> = Arc::new(StubPlatform::default());
         let authority = SigningHostRole::new_with_ring_resolver(platform, resolver);
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
@@ -2834,7 +2834,7 @@ mod tests {
 
     #[test]
     fn alias_checks_the_exact_registry_ring_before_resolving_it() {
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let platform: Arc<dyn crate::platform::Platform> = Arc::new(StubPlatform::default());
         let authority =
             SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
@@ -2868,7 +2868,7 @@ mod tests {
 
     #[test]
     fn direct_signing_rejects_registry_public_key_mismatched_with_wallet() {
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        let platform: Arc<dyn crate::platform::Platform> = Arc::new(StubPlatform::default());
         let authority =
             SigningHostRole::new_with_ring_resolver(platform, full_person_ring_resolver());
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
@@ -3587,7 +3587,7 @@ mod tests {
 
     #[test]
     fn create_transaction_v5_reaches_chain_metadata_resolution() {
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform {
+        let platform: Arc<dyn crate::platform::Platform> = Arc::new(StubPlatform {
             chain_connect_error: Some("fixture has no live chain"),
             ..StubPlatform::default()
         });

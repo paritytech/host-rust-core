@@ -7,13 +7,13 @@
 
 use super::*;
 
+use crate::platform::CoreStorage;
 use crate::runtime::product_manifest::{CachedManifest, manifest_cache_key};
 use crate::unix_time::current_unix_secs;
 use parity_scale_codec::Encode;
 use truapi::versioned::signing::{
     HostSignPayloadError, HostSignPayloadRequest, HostSignPayloadResponse,
 };
-use truapi_platform::CoreStorage;
 
 /// Seed `owner`'s manifest cache, so the grant resolves without a chain.
 fn cache_grant(platform: &StubPlatform, owner: &str, trusted: &str) {

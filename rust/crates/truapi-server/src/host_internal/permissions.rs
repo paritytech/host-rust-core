@@ -31,7 +31,7 @@
 //! special case.
 //!
 //! Remote permissions have one product-scoped exception. A product whose label
-//! is listed in [`truapi_platform::REMOTE_PERMISSION_TRUSTED_LABELS`] reads as
+//! is listed in [`crate::platform::REMOTE_PERMISSION_TRUSTED_LABELS`] reads as
 //! authorized for every remote permission while nothing is stored, and never
 //! reaches the prompt callback. A stored decision still wins, so a denial
 //! written through the admin surface revokes the grant. Device permissions,
@@ -42,14 +42,14 @@ use std::sync::Arc;
 
 use parity_scale_codec::{Decode, Encode};
 
-use truapi::latest::{
-    GenericError, HostDevicePermissionRequest, RemotePermission, RemotePermissionRequest,
-};
-use truapi_platform::{
+use crate::platform::{
     BLESSED_REMOTE_DOMAINS, CoreStorage, CoreStorageKey, DevicePermissionStatus,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision,
     PermissionStatusHost, Permissions, ProductContext, has_trusted_remote_permissions,
     is_valid_remote_domain_pattern, normalize_remote_domain, remote_domain_candidates,
+};
+use truapi::latest::{
+    GenericError, HostDevicePermissionRequest, RemotePermission, RemotePermissionRequest,
 };
 
 /// Persisted answer for a single permission request. Keep `Authorized` at
@@ -748,7 +748,7 @@ mod tests {
         inner: Mutex<HashMap<String, Vec<u8>>>,
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl CoreStorage for MemStorage {
         async fn read_core_storage(
             &self,
@@ -1226,7 +1226,7 @@ mod tests {
         }
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl Permissions for ScriptedPrompt {
         async fn device_permission(
             &self,
@@ -1305,7 +1305,7 @@ mod tests {
         }
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl PermissionStatusHost for ScriptedStatus {
         async fn device_permission_status(
             &self,
@@ -2224,7 +2224,7 @@ mod tests {
     /// path (fail closed for the current call, but do not persist the error).
     struct FailingPrompt;
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl Permissions for FailingPrompt {
         async fn device_permission(
             &self,
@@ -2326,7 +2326,7 @@ mod tests {
     #[derive(Default)]
     struct FailingStorage;
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl CoreStorage for FailingStorage {
         async fn read_core_storage(
             &self,

@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 use truapi::latest::ChainIdentifier;
-use truapi_platform::{HostChainEntry, HostChainSet};
+use truapi_server::platform::{HostChainEntry, HostChainSet};
 
 /// Supported live network presets for the headless hosts.
 ///
@@ -376,7 +376,7 @@ mod tests {
         for network in Network::value_variants() {
             let config = network.preset();
             assert!(
-                truapi_platform::DOTNS_TLDS.contains(&config.network_suffix),
+                truapi_server::platform::DOTNS_TLDS.contains(&config.network_suffix),
                 "preset `{}` derives reserved identities under `.{}`, a TLD navigation does not \
                  accept",
                 config.id,

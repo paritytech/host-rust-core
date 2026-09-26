@@ -60,7 +60,7 @@ the `iOS package (Swift + WebKit)` job instead, which builds a simulator-only
 debug XCFramework from the pull request source, compiles the package tests,
 and runs the network permission suite in WKWebView. It is path-filtered to pull requests touching `ios/`, `Package.swift`, the
 `Makefile`, `js/container/`, or any of the crates the bindings are generated
-from (`truapi`, `truapi-platform`, `truapi-server`, `truapi-provider`); the
+from (`truapi`, `truapi-server`, `truapi-provider`); the
 filter has to name them explicitly, since a protocol change no longer shows up
 as an `ios/` diff.
 The Android host job compiles `TrUAPIHost.kt` against generated bindings;

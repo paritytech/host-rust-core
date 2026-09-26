@@ -5,9 +5,6 @@
 
 use parity_scale_codec::{Decode, Encode};
 use schnorrkel::{ExpansionMode, MiniSecretKey};
-use truapi_platform::{
-    CoreStorageKey, HostDevicePermissionRequest, HostInfo, PairingHostConfig, PlatformInfo,
-};
 use truapi_server::host_logic::entropy::derive_product_entropy;
 use truapi_server::host_logic::product_account::{
     derive_product_public_key, derive_product_subtree_keypair, derive_root_keypair_from_entropy,
@@ -23,6 +20,9 @@ use truapi_server::host_logic::sso::pairing::{
 };
 use truapi_server::host_logic::statement_store::{
     build_signed_session_request_statement, decode_verified_statement_data,
+};
+use truapi_server::platform::{
+    CoreStorageKey, HostDevicePermissionRequest, HostInfo, PairingHostConfig, PlatformInfo,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};

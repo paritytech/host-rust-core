@@ -1,4 +1,4 @@
-//! In-memory mock [`Platform`](crate::Platform) for tests and host simulators.
+//! In-memory mock [`Platform`](crate::platform::Platform) for tests and host simulators.
 //!
 //! `MockPlatform` implements every capability trait with deterministic,
 //! configurable behavior and no OS, device, or network dependency: storage is
@@ -8,21 +8,21 @@
 //! `truapi-server`, a `MockPlatform` wired into the core yields a faithful host
 //! whose only mocked surface is the OS-primitive seam.
 //!
-//! Behavior is a [`MockConfig`](crate::mock::MockConfig) read on every call: per-capability permission
-//! policy, feature support, theme, confirmation answer, [`ChainBehavior`](crate::mock::ChainBehavior), and
-//! [`MockFaults`](crate::mock::MockFaults) error injection. Recordings (`navigations`,
+//! Behavior is a [`MockConfig`](crate::platform::mock::MockConfig) read on every call: per-capability permission
+//! policy, feature support, theme, confirmation answer, [`ChainBehavior`](crate::platform::mock::ChainBehavior), and
+//! [`MockFaults`](crate::platform::mock::MockFaults) error injection. Recordings (`navigations`,
 //! `pushed_notifications`, `confirmations`, `auth_states`, `sent_rpc`, …) are
 //! the test oracles.
 //!
 //! Signing and login require a paired wallet answering over the statement-store
-//! channel. With [`ChainBehavior::Silent`](crate::mock::ChainBehavior::Silent) the chain connection records
+//! channel. With [`ChainBehavior::Silent`](crate::platform::mock::ChainBehavior::Silent) the chain connection records
 //! outbound requests and never answers, so those flows park; use
-//! [`ChainBehavior::Scripted`](crate::mock::ChainBehavior::Scripted) to feed canned response frames.
+//! [`ChainBehavior::Scripted`](crate::platform::mock::ChainBehavior::Scripted) to feed canned response frames.
 //!
 //! Preimage submission is core-owned on current core (the core builds, signs,
 //! and submits the Bulletin `TransactionStorage.store` transaction itself), so
 //! the mock only implements host-side content retrieval via `lookup_preimage`.
-//! Seed retrievable content with [`MockPlatform::insert_preimage`](crate::mock::MockPlatform::insert_preimage).
+//! Seed retrievable content with [`MockPlatform::insert_preimage`](crate::platform::mock::MockPlatform::insert_preimage).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -35,8 +35,8 @@ use futures::stream::{self, BoxStream};
 
 use truapi::latest;
 
-use crate::async_trait;
-use crate::{
+use crate::platform::async_trait;
+use crate::platform::{
     AuthPresenter, AuthState, ChainProvider, ChatPlatform, CoreStorage, CoreStorageKey, Features,
     JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionDecision, Permissions,
     PreimageHost, ProductContext, ProductOperations, ProductStorage, ThemeHost, UserConfirmation,
@@ -233,7 +233,7 @@ pub struct MockConfig {
     /// TypeScript mock declares, so a suite written against either one is
     /// answered the same way. Replace it to exercise a host serving fewer
     /// chains, declaring each with the genesis hash its runtime config carries.
-    pub supported_chains: crate::HostChainSet,
+    pub supported_chains: crate::platform::HostChainSet,
     /// Chain connection behavior.
     pub chain: ChainBehavior,
     /// Error injection.
@@ -1003,20 +1003,20 @@ pub mod mock_genesis {
     pub const ASSET_HUB: truapi::Bytes32 = [0x33; 32];
 
     /// The chain set a mock host serves by default.
-    pub fn chain_set() -> crate::HostChainSet {
+    pub fn chain_set() -> crate::platform::HostChainSet {
         use truapi::latest::ChainIdentifier;
-        crate::HostChainSet {
+        crate::platform::HostChainSet {
             network: "mock".to_string(),
             chains: vec![
-                crate::HostChainEntry {
+                crate::platform::HostChainEntry {
                     identifier: ChainIdentifier::People,
                     genesis_hash: PEOPLE,
                 },
-                crate::HostChainEntry {
+                crate::platform::HostChainEntry {
                     identifier: ChainIdentifier::Bulletin,
                     genesis_hash: BULLETIN,
                 },
-                crate::HostChainEntry {
+                crate::platform::HostChainEntry {
                     identifier: ChainIdentifier::AssetHub,
                     genesis_hash: ASSET_HUB,
                 },
@@ -1110,7 +1110,9 @@ impl Permissions for MockPlatform {
 
 #[async_trait]
 impl Features for MockPlatform {
-    async fn supported_chains(&self) -> Result<crate::HostChainSet, latest::GenericError> {
+    async fn supported_chains(
+        &self,
+    ) -> Result<crate::platform::HostChainSet, latest::GenericError> {
         if let Some(reason) = &self.config.faults.feature_error {
             return Err(latest::GenericError {
                 reason: reason.clone(),
@@ -1462,7 +1464,7 @@ mod tests {
     }
 
     fn resource_review() -> UserConfirmationReview {
-        UserConfirmationReview::ResourceAllocation(crate::ResourceAllocationReview {
+        UserConfirmationReview::ResourceAllocation(crate::platform::ResourceAllocationReview {
             calling_product_id: "mock.dot".to_string(),
             resources: vec![],
         })
@@ -1470,7 +1472,7 @@ mod tests {
 
     #[test]
     fn implements_platform() {
-        fn assert_platform<P: crate::Platform>(_: &P) {}
+        fn assert_platform<P: crate::platform::Platform>(_: &P) {}
         assert_platform(&MockPlatform::new());
     }
 
@@ -1875,7 +1877,7 @@ mod tests {
     }
 
     fn allocation_review(product: &str) -> UserConfirmationReview {
-        UserConfirmationReview::ResourceAllocation(crate::ResourceAllocationReview {
+        UserConfirmationReview::ResourceAllocation(crate::platform::ResourceAllocationReview {
             calling_product_id: product.to_string(),
             resources: vec![],
         })
@@ -2387,9 +2389,9 @@ mod tests {
         );
 
         let p = MockPlatform::with_config(MockConfig {
-            supported_chains: crate::HostChainSet {
+            supported_chains: crate::platform::HostChainSet {
                 network: "paseo".to_string(),
-                chains: vec![crate::HostChainEntry {
+                chains: vec![crate::platform::HostChainEntry {
                     identifier: latest::ChainIdentifier::AssetHub,
                     genesis_hash: [0xaa; 32],
                 }],

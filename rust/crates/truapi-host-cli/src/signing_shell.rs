@@ -4,7 +4,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use truapi_platform::normalize_product_identifier;
+use truapi_server::platform::normalize_product_identifier;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::LogLevel;

@@ -288,15 +288,15 @@ import io.parity.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import uniffi.truapi_platform.AuthState
+import uniffi.truapi_server.AuthState
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.ThemeName
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_platform.UserConfirmationReview
-import uniffi.truapi_platform.PermissionDecision
+import uniffi.truapi_server.UserConfirmationReview
+import uniffi.truapi_server.PermissionDecision
 import uniffi.truapi.HostPushNotificationRequest
 
 class MyStorage : HostStorage {

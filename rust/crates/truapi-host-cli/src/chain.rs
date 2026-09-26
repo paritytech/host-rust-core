@@ -18,7 +18,7 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, warn};
 use truapi::latest as api;
-use truapi_platform::{ChainProvider, JsonRpcConnection};
+use truapi_server::platform::{ChainProvider, JsonRpcConnection};
 
 use crate::network::ChainEndpoint;
 

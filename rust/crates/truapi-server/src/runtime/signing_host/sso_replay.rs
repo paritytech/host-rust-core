@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::platform::{CoreStorage, CoreStorageKey};
 use futures::lock::Mutex as AsyncMutex;
 use parity_scale_codec::{Decode, Encode};
-use truapi_platform::{CoreStorage, CoreStorageKey};
 
 use crate::runtime::sso_remote::DEFAULT_SSO_STATEMENT_EXPIRY_SECS;
 

@@ -17,9 +17,9 @@ use std::sync::{Arc, Mutex};
 use parity_scale_codec::{Decode, Encode};
 
 use truapi::v01;
-use truapi_platform::{DevicePermissionStatus, PermissionStatusHost};
-use truapi_platform::{PermissionAuthorizationRequest, PermissionAuthorizationStatus};
 use truapi_server::frame::{Payload, ProtocolMessage, request_ids};
+use truapi_server::platform::{DevicePermissionStatus, PermissionStatusHost};
+use truapi_server::platform::{PermissionAuthorizationRequest, PermissionAuthorizationStatus};
 use truapi_server::{FrameSink, PairingHostRuntime};
 
 // Shared harness; this binary uses only part of it.
@@ -42,7 +42,7 @@ impl FrameSink for RecordingSink {
 /// Status adapter that reports one fixed answer for every capability.
 struct FixedStatus(DevicePermissionStatus);
 
-#[truapi_platform::async_trait]
+#[truapi_server::platform::async_trait]
 impl PermissionStatusHost for FixedStatus {
     async fn device_permission_status(
         &self,

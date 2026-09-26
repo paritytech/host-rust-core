@@ -8,8 +8,8 @@
 //! slot it already stores and derive product account addresses from it without
 //! decoding anything this module owns.
 
+use crate::platform::{CoreStorage, CoreStorageKey};
 use truapi::latest::GenericError;
-use truapi_platform::{CoreStorage, CoreStorageKey};
 
 use super::allowances::session_storage_id;
 use super::authority::AuthorityError;
@@ -90,7 +90,7 @@ mod tests {
         inner: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     }
 
-    #[truapi_platform::async_trait]
+    #[crate::platform::async_trait]
     impl CoreStorage for MemStorage {
         async fn read_core_storage(
             &self,

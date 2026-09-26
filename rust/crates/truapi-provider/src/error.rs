@@ -7,7 +7,7 @@ use truapi::latest::GenericError;
 /// Failure modes surfaced by the provider's backends.
 ///
 /// Converts to the trait's [`GenericError`] at the
-/// [`ChainProvider`](truapi_platform::ChainProvider) boundary while letting
+/// [`ChainProvider`](crate::platform::ChainProvider) boundary while letting
 /// in-crate callers match on the cause (e.g. for retry or telemetry).
 ///
 /// Which variants are constructed depends on the enabled backends and target

@@ -353,19 +353,19 @@ jobs:
             fi
           }
 
-          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
           gate workflows '^(\.github/workflows/|\.github/actions/|\.github/labeler\.yml$|\.github/CODEOWNERS$|hosts/[a-z]+/\.github/|scripts/(lint-composite-shell|check-path-routing)\.py$)'
-          gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
           # The provider AAR is generated from its own cdylib and compiles
           # without codegen output, so it moves on a narrower set than the host
-          # shell: the crate, the two it depends on, the bindings generator and
+          # shell: the crate, the one it depends on, the bindings generator and
           # the Gradle wiring that compiles the result.
-          gate sdk_provider_kotlin '^(android/truapi-provider/|rust/crates/truapi-provider/|rust/crates/truapi/|rust/crates/truapi-platform/|rust/crates/uniffi-bindgen-cli/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|\.github/workflows/ci\.yml$)'
+          gate sdk_provider_kotlin '^(android/truapi-provider/|rust/crates/truapi-provider/|rust/crates/truapi/|rust/crates/uniffi-bindgen-cli/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|\.github/workflows/ci\.yml$)'
           # The vendored Android host, plus the crates its bindings are
           # generated from. Nothing gated on this tree before, so a core change
           # that broke it reached a release with no gate in between.
-          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-platform/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
+          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
 
           # The packaging path has its own inputs: the archive layout in the
           # Makefile, the runner bundle, the generated sources cli-dist refuses
@@ -377,7 +377,7 @@ jobs:
 
           # Include generators, dependency pins and package build configuration:
           # these can change a published artifact without touching its sources.
-          gate needs_changeset '^(rust/crates/truapi(-server|-platform|-provider|-macros|-host-cli|-codegen)?/|js/packages/[^/]+/(src/|scripts/|package\.json$|tsconfig[^/]*\.json$)|Cargo\.(toml|lock)$|package(-lock)?\.json$|rust-toolchain(\.toml)?$|\.cargo/|Makefile$|scripts/(codegen\.sh|bundle-truapi-dts\.mjs|regen-explorer-versions\.mjs)$)'
+          gate needs_changeset '^(rust/crates/truapi(-server|-provider|-macros|-host-cli|-codegen)?/|js/packages/[^/]+/(src/|scripts/|package\.json$|tsconfig[^/]*\.json$)|Cargo\.(toml|lock)$|package(-lock)?\.json$|rust-toolchain(\.toml)?$|\.cargo/|Makefile$|scripts/(codegen\.sh|bundle-truapi-dts\.mjs|regen-explorer-versions\.mjs)$)'
 
           # Deleting, editing or renaming an old changeset does not declare a
           # new change. README.md is Changesets' documentation, not a release.

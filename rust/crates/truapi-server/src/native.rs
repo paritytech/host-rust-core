@@ -3,7 +3,7 @@
 //! that iOS and Android call into.
 //!
 //! The native side builds a `CallbackPlatform` that adapts every
-//! [`truapi_platform::Platform`] trait to a corresponding callback. The
+//! [`crate::platform::Platform`] trait to a corresponding callback. The
 //! resulting platform is fed into [`SigningHostRuntime`] so the rest of the
 //! dispatcher pipeline behaves identically to the WS-bridge and wasm flavors.
 //! A native host therefore owns the signer, so it never pairs itself with a
@@ -15,14 +15,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use futures::channel::mpsc;
-use futures::executor::ThreadPool;
-use futures::future::BoxFuture;
-use futures::stream::{self, BoxStream, StreamExt};
-use futures::task::SpawnExt;
-use parity_scale_codec::Encode;
-use truapi::{Bytes32, latest::HostPlatform, v01};
-use truapi_platform::{
+use crate::platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
     HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision, Permissions,
@@ -30,6 +23,13 @@ use truapi_platform::{
     ProductStorage, RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
+use futures::channel::mpsc;
+use futures::executor::ThreadPool;
+use futures::future::BoxFuture;
+use futures::stream::{self, BoxStream, StreamExt};
+use futures::task::SpawnExt;
+use parity_scale_codec::Encode;
+use truapi::{Bytes32, latest::HostPlatform, v01};
 
 use crate::host_internal::permissions::TemporaryPermissions;
 use crate::host_internal::sso_messages::{
@@ -497,12 +497,12 @@ fn reject_undecodable_deeplink(deeplink: &str) -> Result<(), NativePairingError>
 /// normalize, so an unknown spelling is never read as trusted.
 #[uniffi::export]
 pub fn has_trusted_remote_permissions(product_id: String) -> bool {
-    truapi_platform::normalizes_to_trusted_remote_permissions(&product_id)
+    crate::platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
 /// OS status of a device capability, as a native host reports it.
 ///
-/// Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
+/// Mirrors [`crate::platform::DevicePermissionStatus`], which cannot be used
 /// directly: an async callback method returning a type from another UniFFI
 /// namespace lowers into that namespace's `RustBuffer`, and the generated
 /// Kotlin then fails to compile. The conversion is total.
@@ -519,7 +519,7 @@ pub enum NativeDevicePermissionStatus {
     NotApplicable,
 }
 
-impl From<NativeDevicePermissionStatus> for truapi_platform::DevicePermissionStatus {
+impl From<NativeDevicePermissionStatus> for crate::platform::DevicePermissionStatus {
     fn from(status: NativeDevicePermissionStatus) -> Self {
         match status {
             NativeDevicePermissionStatus::Granted => Self::Granted,
@@ -722,7 +722,7 @@ pub trait HostCallbacks: Send + Sync {
     /// Enumerate the chains this host serves (RFC 0026): its environment plus
     /// one entry per chain role. Invoked on the dispatcher thread; must return
     /// promptly.
-    fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection>;
+    fn supported_chains(&self) -> Result<crate::platform::HostChainSet, HostRejection>;
 
     /// Observe demand on a product's worker crossing zero. `Start` means the
     /// host runs the worker now, `Stop` that nothing wants it any more. Every
@@ -924,18 +924,18 @@ impl NativeTrUApiHostRuntime {
             events: events.clone(),
             storage_events: self.events.clone(),
         });
-        let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
+        let permission_status: Arc<dyn crate::platform::PermissionStatusHost> =
             callback_platform.clone();
-        let platform: Arc<dyn truapi_platform::Platform> = callback_platform;
-        let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> =
-            chat_callbacks.map(|chat| -> Arc<dyn truapi_platform::ChatPlatform> {
+        let platform: Arc<dyn crate::platform::Platform> = callback_platform;
+        let chat: Option<Arc<dyn crate::platform::ChatPlatform>> =
+            chat_callbacks.map(|chat| -> Arc<dyn crate::platform::ChatPlatform> {
                 Arc::new(ChatCallbackPlatform {
                     chat,
                     events: events.clone(),
                 })
             });
-        let pocket: Option<Arc<dyn truapi_platform::PocketPlatform>> =
-            pocket_callbacks.map(|pocket| -> Arc<dyn truapi_platform::PocketPlatform> {
+        let pocket: Option<Arc<dyn crate::platform::PocketPlatform>> =
+            pocket_callbacks.map(|pocket| -> Arc<dyn crate::platform::PocketPlatform> {
                 Arc::new(PocketCallbackPlatform {
                     pocket,
                     events: events.clone(),
@@ -1486,12 +1486,12 @@ impl NativeTrUApiHostRuntime {
 pub struct NativeProductExecution {
     runtime: Arc<SigningHostRuntime>,
     product: ProductContext,
-    platform: Arc<dyn truapi_platform::Platform>,
-    chat: Option<Arc<dyn truapi_platform::ChatPlatform>>,
-    pocket: Option<Arc<dyn truapi_platform::PocketPlatform>>,
+    platform: Arc<dyn crate::platform::Platform>,
+    chat: Option<Arc<dyn crate::platform::ChatPlatform>>,
+    pocket: Option<Arc<dyn crate::platform::PocketPlatform>>,
     /// The same `CallbackPlatform` as `platform`, kept separately because
     /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
-    permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
+    permission_status: Arc<dyn crate::platform::PermissionStatusHost>,
     /// One-use grants follow this execution across its product and admin connections.
     permission_grants: Arc<TemporaryPermissions>,
     events: Arc<NativeEventBus>,
@@ -2189,11 +2189,11 @@ impl Notifications for CallbackPlatform {
 }
 
 #[async_trait]
-impl truapi_platform::PermissionStatusHost for CallbackPlatform {
+impl crate::platform::PermissionStatusHost for CallbackPlatform {
     async fn device_permission_status(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<truapi_platform::DevicePermissionStatus, v01::GenericError> {
+    ) -> Result<crate::platform::DevicePermissionStatus, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.device_permission_status".to_string(),
             format!("{request}"),
@@ -2263,7 +2263,7 @@ impl Features for CallbackPlatform {
         Ok(v01::HostFeatureSupportedResponse { supported })
     }
 
-    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
+    async fn supported_chains(&self) -> Result<crate::platform::HostChainSet, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.supported_chains".to_string(),
             String::new(),
@@ -2474,7 +2474,7 @@ impl ChainProvider for CallbackPlatform {
 }
 
 impl AuthPresenter for CallbackPlatform {
-    fn auth_state_changed(&self, state: truapi_platform::AuthState) {
+    fn auth_state_changed(&self, state: crate::platform::AuthState) {
         self.callbacks.on_core_log(
             "truapi.native.callback.auth_state_changed".to_string(),
             String::new(),
@@ -2558,7 +2558,7 @@ impl PreimageHost for CallbackPlatform {
     }
 }
 
-/// [`truapi_platform::ChatPlatform`] served by host-provided
+/// [`crate::platform::ChatPlatform`] served by host-provided
 /// [`NativeChatCallbacks`]; constructed only when the host passed one.
 struct ChatCallbackPlatform {
     chat: Arc<dyn NativeChatCallbacks>,
@@ -2566,7 +2566,7 @@ struct ChatCallbackPlatform {
 }
 
 #[async_trait]
-impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
+impl crate::platform::ChatPlatform for ChatCallbackPlatform {
     async fn create_chat_room(
         &self,
         _product: &ProductContext,
@@ -2643,7 +2643,7 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
     }
 }
 
-/// [`truapi_platform::PocketPlatform`] served by host-provided
+/// [`crate::platform::PocketPlatform`] served by host-provided
 /// [`NativePocketCallbacks`]; constructed only when the host passed one.
 struct PocketCallbackPlatform {
     pocket: Arc<dyn NativePocketCallbacks>,
@@ -2651,7 +2651,7 @@ struct PocketCallbackPlatform {
 }
 
 #[async_trait]
-impl truapi_platform::PocketPlatform for PocketCallbackPlatform {
+impl crate::platform::PocketPlatform for PocketCallbackPlatform {
     fn subscribe_pocket_cards(
         &self,
         _product: &ProductContext,
@@ -2698,10 +2698,10 @@ impl truapi_platform::PocketPlatform for PocketCallbackPlatform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::CreateTransactionReview;
     use futures::FutureExt;
     use truapi::Bytes32;
     use truapi::v01::LegacyAccountTxPayload;
-    use truapi_platform::CreateTransactionReview;
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
@@ -3219,8 +3219,8 @@ mod tests {
         ) -> Result<bool, HostRejection> {
             Ok(false)
         }
-        fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
-            Ok(truapi_platform::HostChainSet {
+        fn supported_chains(&self) -> Result<crate::platform::HostChainSet, HostRejection> {
+            Ok(crate::platform::HostChainSet {
                 network: "paseo".to_string(),
                 chains: Vec::new(),
             })
@@ -3844,7 +3844,7 @@ mod tests {
         };
         let product = ProductContext::new("pocket.dot".to_string()).expect("valid product id");
         let remove = |card_id: &str| {
-            futures::executor::block_on(truapi_platform::PocketPlatform::remove_pocket_card(
+            futures::executor::block_on(crate::platform::PocketPlatform::remove_pocket_card(
                 &platform,
                 &product,
                 v01::HostPocketRemoveCardRequest {
@@ -3853,7 +3853,7 @@ mod tests {
             ))
         };
         let mut cards =
-            truapi_platform::PocketPlatform::subscribe_pocket_cards(&platform, &product);
+            crate::platform::PocketPlatform::subscribe_pocket_cards(&platform, &product);
         let first = futures::executor::block_on(cards.next())
             .expect("the current list arrives on subscribe")
             .expect("no stream error");
@@ -3994,11 +3994,11 @@ mod tests {
     fn native_auth_presenter_forwards_states_across_the_ffi_mirror() {
         let (callbacks, _events, platform) = event_platform();
 
-        platform.auth_state_changed(truapi_platform::AuthState::Pairing {
+        platform.auth_state_changed(crate::platform::AuthState::Pairing {
             deeplink: "polkadotapp://pair?handshake=00".to_string(),
         });
-        platform.auth_state_changed(truapi_platform::AuthState::Connected(
-            truapi_platform::SessionUiInfo {
+        platform.auth_state_changed(crate::platform::AuthState::Connected(
+            crate::platform::SessionUiInfo {
                 public_key: [7; 32],
                 identity_account_id: None,
                 chat_public_key: None,
@@ -4009,7 +4009,7 @@ mod tests {
                 full_username: None,
             },
         ));
-        platform.auth_state_changed(truapi_platform::AuthState::Disconnected);
+        platform.auth_state_changed(crate::platform::AuthState::Disconnected);
 
         assert_eq!(
             callbacks
@@ -4021,7 +4021,7 @@ mod tests {
                 AuthState::Pairing {
                     deeplink: "polkadotapp://pair?handshake=00".to_string(),
                 },
-                AuthState::Connected(truapi_platform::SessionUiInfo {
+                AuthState::Connected(crate::platform::SessionUiInfo {
                     public_key: [7; 32],
                     identity_account_id: None,
                     chat_public_key: None,
@@ -4113,7 +4113,7 @@ mod tests {
             ProductExecutionKind::Worker,
         )
         .unwrap();
-        let mut stream = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
+        let mut stream = crate::platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
 
         let first = ready_rooms(stream.as_mut(), "initial room list");
         events.notify_chat_rooms_changed(vec![v01::ChatRoom {
@@ -4203,7 +4203,7 @@ mod tests {
         ];
 
         for payload in &variants {
-            futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
+            futures::executor::block_on(crate::platform::ChatPlatform::post_chat_message(
                 &platform,
                 &product,
                 v01::HostChatPostMessageRequest {
@@ -4252,7 +4252,7 @@ mod tests {
         .unwrap();
         let connection = crate::runtime::ActionChannel::chat();
 
-        let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
+        let posted = futures::executor::block_on(crate::platform::ChatPlatform::post_chat_message(
             &platform,
             &product,
             v01::HostChatPostMessageRequest {
@@ -4383,7 +4383,7 @@ mod tests {
             .expect("post rejection mutex poisoned") =
             Some("cannot render a file card".to_string());
 
-        let error = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
+        let error = futures::executor::block_on(crate::platform::ChatPlatform::post_chat_message(
             &platform,
             &product,
             v01::HostChatPostMessageRequest {
@@ -4434,7 +4434,7 @@ mod tests {
             .lock()
             .expect("bot rejection mutex poisoned") = Some("keychain locked".to_string());
 
-        let error = futures::executor::block_on(truapi_platform::ChatPlatform::register_chat_bot(
+        let error = futures::executor::block_on(crate::platform::ChatPlatform::register_chat_bot(
             &platform,
             &product,
             v01::HostChatRegisterBotRequest {
@@ -4481,7 +4481,7 @@ mod tests {
             icon: String::new(),
         };
 
-        let mut rooms = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
+        let mut rooms = crate::platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
         assert!(
             ready_rooms(rooms.as_mut(), "initial room list")
                 .rooms
@@ -4489,7 +4489,7 @@ mod tests {
         );
 
         let registered = futures::executor::block_on(
-            truapi_platform::ChatPlatform::register_chat_bot(&platform, &product, request.clone()),
+            crate::platform::ChatPlatform::register_chat_bot(&platform, &product, request.clone()),
         )
         .unwrap();
 
@@ -4498,7 +4498,7 @@ mod tests {
             .lock()
             .expect("bot status mutex poisoned") = NativeChatBotRegistrationStatus::Exists;
         let existing = futures::executor::block_on(
-            truapi_platform::ChatPlatform::register_chat_bot(&platform, &product, request),
+            crate::platform::ChatPlatform::register_chat_bot(&platform, &product, request),
         )
         .unwrap();
 
@@ -4554,14 +4554,14 @@ mod tests {
             name: "Support".to_string(),
             icon: String::new(),
         };
-        let mut rooms = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
+        let mut rooms = crate::platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
         assert!(
             ready_rooms(rooms.as_mut(), "initial room list")
                 .rooms
                 .is_empty()
         );
 
-        let created = futures::executor::block_on(truapi_platform::ChatPlatform::create_chat_room(
+        let created = futures::executor::block_on(crate::platform::ChatPlatform::create_chat_room(
             &platform,
             &product,
             request.clone(),
@@ -4573,10 +4573,10 @@ mod tests {
             .lock()
             .expect("room status mutex poisoned") = NativeChatRoomRegistrationStatus::Exists;
         let existing = futures::executor::block_on(
-            truapi_platform::ChatPlatform::create_chat_room(&platform, &product, request),
+            crate::platform::ChatPlatform::create_chat_room(&platform, &product, request),
         )
         .unwrap();
-        let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
+        let posted = futures::executor::block_on(crate::platform::ChatPlatform::post_chat_message(
             &platform,
             &product,
             v01::HostChatPostMessageRequest {
@@ -4992,8 +4992,8 @@ mod tests {
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
-            fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
-                Ok(truapi_platform::HostChainSet {
+            fn supported_chains(&self) -> Result<crate::platform::HostChainSet, HostRejection> {
+                Ok(crate::platform::HostChainSet {
                     network: "paseo".to_string(),
                     chains: Vec::new(),
                 })
@@ -5169,8 +5169,8 @@ mod tests {
             ) -> Result<bool, HostRejection> {
                 Ok(true)
             }
-            fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
-                Ok(truapi_platform::HostChainSet {
+            fn supported_chains(&self) -> Result<crate::platform::HostChainSet, HostRejection> {
+                Ok(crate::platform::HostChainSet {
                     network: "paseo".to_string(),
                     chains: Vec::new(),
                 })
@@ -5790,7 +5790,7 @@ mod tests {
                     storage_events: Arc::default(),
                 };
                 let review = UserConfirmationReview::IdentityDisclosure(
-                    truapi_platform::IdentityDisclosureReview {
+                    crate::platform::IdentityDisclosureReview {
                         product_id: "product.dot".to_string(),
                     },
                 );

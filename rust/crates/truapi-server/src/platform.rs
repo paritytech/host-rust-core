@@ -1,8 +1,3 @@
-#![allow(
-    clippy::double_must_use,
-    reason = "async-trait generates must_use futures for async trait methods"
-)]
-
 //! Capability traits a TrUAPI host must implement.
 //!
 //! Each trait covers a single OS-primitive surface the Rust core cannot reach
@@ -21,12 +16,7 @@ use parity_scale_codec::{Decode, Encode};
 use unicode_normalization::UnicodeNormalization;
 
 pub use async_trait::async_trait;
-
-#[cfg(feature = "uniffi")]
-uniffi::setup_scaffolding!();
-
-#[cfg(feature = "uniffi")]
-uniffi::use_remote_type!(truapi::Bytes32);
+pub use truapi_provider::platform::{ChainProvider, JsonRpcConnection};
 
 use truapi::Bytes32;
 
@@ -144,7 +134,7 @@ pub struct ProductContext {
 /// capability and differ only in how the host presents them, and `Worker` is
 /// the only kind that may serve the Chat modality.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum ProductExecutionKind {
     /// Visible full-page entrypoint such as `app/index.html`.
     #[default]
@@ -1170,7 +1160,7 @@ pub trait Notifications: Send + Sync {
 
 /// User decision including how long an authorization should last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum PermissionDecision {
     /// Authorize the next operation without saving a durable grant.
     AllowOnce,
@@ -1203,7 +1193,7 @@ pub trait Permissions: Send + Sync {
 /// Permission request whose authorization status can be inspected or updated
 /// by host administration UI.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum PermissionAuthorizationRequest {
     /// Device-level permission such as camera, microphone, or location.
     Device(HostDevicePermissionRequest),
@@ -1223,7 +1213,7 @@ pub enum PermissionAuthorizationRequest {
 /// `NotDetermined` means the core has no saved or one-use answer and will prompt the
 /// host the next time the product requests this permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum PermissionAuthorizationStatus {
     /// No persisted authorization exists.
     NotDetermined,
@@ -1345,7 +1335,7 @@ pub trait PairingHostAdmin: Send + Sync {
 /// One chain a host serves: a protocol chain role mapped to the concrete
 /// chain of the host's configured environment.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct HostChainEntry {
     /// Protocol role this entry answers for.
     pub identifier: ChainIdentifier,
@@ -1355,7 +1345,7 @@ pub struct HostChainEntry {
 
 /// The chain set a host serves: its environment plus one entry per chain role.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct HostChainSet {
     /// Ecosystem the host is configured for, e.g. "polkadot", "paseo".
     pub network: String,
@@ -1376,38 +1366,6 @@ pub trait Features: Send + Sync {
     /// Enumerate the chains this host serves (RFC 0026). The core resolves
     /// `get_chain_info` requests against the returned set.
     async fn supported_chains(&self) -> Result<HostChainSet, GenericError>;
-}
-
-/// JSON-RPC provider factory for chain access.
-///
-/// The platform provides a way to get a JSON-RPC connection for a given chain.
-/// The server runtime manages the chainHead v1 state machine on top of this.
-/// Host-spec N.6 requires products to access chains through host-mediated
-/// providers:
-/// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/N-shared-infrastructure.md?plain=1#L91-L102>
-#[async_trait]
-pub trait ChainProvider: Send + Sync {
-    /// Open a JSON-RPC connection for the chain identified by `genesis_hash`.
-    /// Drop the returned connection to disconnect.
-    async fn connect(
-        &self,
-        genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, GenericError>;
-}
-
-/// A live JSON-RPC connection to a chain.
-pub trait JsonRpcConnection: Send + Sync {
-    /// Send a JSON-RPC request string.
-    fn send(&self, request: String);
-
-    /// Stream of JSON-RPC response strings.
-    fn responses(&self) -> BoxStream<'static, String>;
-
-    /// Close the connection lease.
-    ///
-    /// Hosts may keep a shared underlying transport alive, but this handle
-    /// must stop receiving responses and release any per-caller resources.
-    fn close(&self);
 }
 
 /// Core-owned host-private storage slots. Products never address these slots;
@@ -2901,7 +2859,7 @@ pub trait CoreStorage: Send + Sync {
 /// Decoded session fields a host shell needs to render account UI without
 /// parsing the opaque session blob the core persists through [`CoreStorage`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct SessionUiInfo {
     /// 32-byte sr25519 root public key of the active session.
     pub public_key: Bytes32,
@@ -2935,7 +2893,7 @@ pub struct SessionUiInfo {
 // A uniffi `Enum` cannot box a variant.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum AuthState {
     /// No active session and no login in progress.
     #[default]
@@ -2966,7 +2924,7 @@ pub enum AuthState {
 /// Why a login attempt failed, for hosts that need to act on the cause rather
 /// than only display it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum LoginFailureKind {
     /// The wallet has no free statement-store allowance slot for this period,
     /// so it cannot register the device — which normally holds until the period
@@ -2995,7 +2953,7 @@ pub trait AuthPresenter: Send + Sync {
 
 /// Review shown before a sign-payload request is sent to the paired wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum SignPayloadReview {
     /// Product-account signing request.
     Product {
@@ -3015,7 +2973,7 @@ pub enum SignPayloadReview {
 /// Hosts must display the payload according to `watermarked` and warn that
 /// unwatermarked signatures can authorize transactions.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum SignRawReview {
     /// Product-account raw signing request.
     Product {
@@ -3041,7 +2999,7 @@ pub enum SignRawReview {
 /// unsigned statement, signed as-is (no `<Bytes>` envelope), so the host must
 /// not present it with the raw-signing convention.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct StatementStoreProductSignReview {
     /// Product that asked, when the request carries a caller. See
     /// [`SignPayloadReview::Product`].
@@ -3054,7 +3012,7 @@ pub struct StatementStoreProductSignReview {
 
 /// Review shown before a transaction-creation request is sent to the paired wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum CreateTransactionReview {
     /// Product-account transaction request.
     Product {
@@ -3070,7 +3028,7 @@ pub enum CreateTransactionReview {
 
 /// Review shown before a product derives a contextual alias (RFC 0004).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct AccountAliasReview {
     /// Product requesting the alias.
     pub calling_product_id: String,
@@ -3082,7 +3040,7 @@ pub struct AccountAliasReview {
 
 /// Review shown before a product creates a ring-VRF proof (RFC 0004).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct CreateProofReview {
     /// Product requesting the proof.
     pub calling_product_id: String,
@@ -3096,7 +3054,7 @@ pub struct CreateProofReview {
 
 /// Review shown before signing an RFC-0023 VRF transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct SignVrfReview {
     /// Product making the request.
     pub calling_product_id: String,
@@ -3108,7 +3066,7 @@ pub struct SignVrfReview {
 /// beneficiary product so the user knows which product receives the
 /// (signing-capable) allowance key they are approving.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct ResourceAllocationReview {
     /// Product the allocation is requested for.
     pub calling_product_id: String,
@@ -3118,7 +3076,7 @@ pub struct ResourceAllocationReview {
 
 /// Review shown before a product asks to access another product account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct AccountAccessReview {
     /// Product currently handling the request.
     pub requesting_product_id: String,
@@ -3128,7 +3086,7 @@ pub struct AccountAccessReview {
 
 /// Review shown before a product learns the user's primary identity.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct IdentityDisclosureReview {
     /// Product currently handling the request.
     pub product_id: String,
@@ -3137,7 +3095,7 @@ pub struct IdentityDisclosureReview {
 /// Review shown before a product resolves its own account subtree over SSO,
 /// when the value is not cached and the core must ask the Account Holder.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct ProductSubtreeReview {
     /// Product resolving its own account.
     pub product_id: String,
@@ -3145,7 +3103,7 @@ pub struct ProductSubtreeReview {
 
 /// Review shown before a preimage is submitted.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct PreimageSubmitReview {
     /// Size of the preimage in bytes.
     pub size: u64,
@@ -3154,7 +3112,7 @@ pub struct PreimageSubmitReview {
 /// Review shown before a user-confirmed core action continues.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum UserConfirmationReview {
     /// Sign a SCALE payload with a product or legacy account.
     SignPayload(SignPayloadReview),
@@ -3320,7 +3278,7 @@ pub trait PocketPlatform: Send + Sync {
 /// and are combined rather than substituted: a capability is usable only when
 /// the product holds a grant *and* the OS still allows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum DevicePermissionStatus {
     /// The OS grants this capability to the host application.
     Granted,

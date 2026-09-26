@@ -8,11 +8,11 @@ use crate::host_core::ProductRuntimeError;
 /// only a Chat-kind execution with an active session may use Chat, and the
 /// host must have installed a native adapter.
 pub fn chat_platform_for(
-    execution_kind: truapi_platform::ProductExecutionKind,
+    execution_kind: crate::platform::ProductExecutionKind,
     has_session: bool,
-    chat: Option<&Arc<dyn truapi_platform::ChatPlatform>>,
-) -> Result<Arc<dyn truapi_platform::ChatPlatform>, ProductRuntimeError> {
-    if execution_kind != truapi_platform::ProductExecutionKind::Worker || !has_session {
+    chat: Option<&Arc<dyn crate::platform::ChatPlatform>>,
+) -> Result<Arc<dyn crate::platform::ChatPlatform>, ProductRuntimeError> {
+    if execution_kind != crate::platform::ProductExecutionKind::Worker || !has_session {
         return Err(ProductRuntimeError::Denied);
     }
     chat.cloned().ok_or(ProductRuntimeError::Unsupported)

@@ -3,6 +3,10 @@
 //! Account management uses shared session state and the account authority
 //! for alias, proof, and login operations.
 
+use crate::platform::{
+    PermissionAuthorizationStatus, ProductSubtreeReview, UserConfirmationReview,
+    normalize_product_identifier,
+};
 use futures::StreamExt;
 use tracing::instrument;
 use truapi::api::Account;
@@ -22,10 +26,6 @@ use truapi::versioned::account::{
     HostRequestLoginResponse,
 };
 use truapi::{CallContext, CallError, Subscription, latest, v01};
-use truapi_platform::{
-    PermissionAuthorizationStatus, ProductSubtreeReview, UserConfirmationReview,
-    normalize_product_identifier,
-};
 
 use crate::host_internal::product_manifest::Granted;
 use crate::host_internal::sso_messages::ProductRequest;

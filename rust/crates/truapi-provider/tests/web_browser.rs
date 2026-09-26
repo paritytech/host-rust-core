@@ -16,7 +16,7 @@
 #![cfg(all(target_arch = "wasm32", feature = "ws"))]
 
 use futures::stream::StreamExt;
-use truapi_platform::ChainProvider;
+use truapi_provider::platform::ChainProvider;
 use truapi_provider::{ChainSource, EmbeddedChainProvider};
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 

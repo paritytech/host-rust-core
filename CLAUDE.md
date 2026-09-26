@@ -13,9 +13,11 @@ rust/crates/
   truapi-macros/         #[wire_trait(id = N)] and #[wire(id = N)] proc-macros;
                          #[sso_service] for truapi-server's inter-host SSO protocol
                          One implementation module per macro; lib.rs holds entry points
-  truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
-  truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
-  truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
+  truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client);
+                         its `platform` module holds the chain-access traits
+  truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node);
+                         its `platform` module holds the host syscall traits
+                         (storage, navigation, consent, ...)
   truapi-verifiable/     ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
   truapi-host-cli/       CLI pairing/signing hosts; Bun scripts share the container web API gates
 js/packages/
@@ -84,8 +86,8 @@ scripts/cli-runner-package.test.ts
 ### Crate + binding invariants
 
 - `truapi` is canonical; runtime crates re-export rather than redefine. New
-  syscall traits and host-side runtime types live in `truapi-platform` and
-  `truapi-server`, not in `truapi`. Any additions to `truapi` itself are limited
+  syscall traits and host-side runtime types live in `truapi-server` (syscall
+  traits in its `platform` module), not in `truapi`. Any additions to `truapi` itself are limited
   to additive `Display` impls.
 - Treat concrete modules such as `truapi::v01` as implementation details of
   the canonical `truapi` crate and its version-conversion impls. Everywhere

@@ -1,5 +1,6 @@
 //! Product-facing platform capability adapters.
 
+use crate::platform::PermissionAuthorizationStatus;
 use futures::StreamExt;
 use tracing::{instrument, warn};
 use truapi::api::{LocalStorage, Locale, Notifications, Permissions, System, Theme, Worker};
@@ -37,7 +38,6 @@ use truapi::versioned::worker::{
     HostWorkerEndOperationResponse,
 };
 use truapi::{CallContext, CallError, Subscription, v01, v02};
-use truapi_platform::PermissionAuthorizationStatus;
 
 use crate::host_internal::product_manifest::Granted;
 use crate::host_logic::dotns::{NavigateDecision, parse_navigate};

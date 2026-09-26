@@ -11,12 +11,12 @@ use std::sync::Arc;
 use core::time::Duration;
 use serde_json::{Value, json};
 
+use crate::platform::{JsonRpcConnection, Platform};
 use subxt_rpcs::RpcClient;
 use subxt_rpcs::client::{RpcSubscription, rpc_params};
 use thiserror::Error;
 use tracing::warn;
 use truapi::latest::GenericError;
-use truapi_platform::{JsonRpcConnection, Platform};
 
 use crate::host_logic::statement_store::{
     SUBMIT_STATEMENT_METHOD, SUBSCRIBE_STATEMENT_METHOD, TopicFilterKind,

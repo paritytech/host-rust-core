@@ -73,7 +73,7 @@ impl From<StorageClientError> for truapi::latest::GenericError {
     all(feature = "uniffi", not(target_arch = "wasm32")),
     uniffi::export(with_foreign)
 )]
-#[truapi_platform::async_trait]
+#[async_trait::async_trait]
 pub trait StorageClient: Send + Sync {
     /// Read the blob stored for `genesis_hash`, if any.
     async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, StorageClientError>;

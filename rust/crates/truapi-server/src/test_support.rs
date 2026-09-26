@@ -17,14 +17,7 @@ use crate::subscription::Spawner;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::subscription::thread_per_subscription_spawner;
 
-use futures::Stream;
-use futures::stream::{self, BoxStream, StreamExt};
-use parity_scale_codec::{Decode, Encode};
-use schnorrkel::{ExpansionMode, MiniSecretKey};
-use truapi::v01;
-use truapi::versioned::account::{HostAccountCreateProofRequest, HostAccountGetAliasRequest};
-use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest;
-use truapi_platform::{
+use crate::platform::{
     AccountAccessReview, AuthPresenter, AuthState, ChainProvider,
     CoreStorage as PlatformCoreStorage, CoreStorageKey, CreateTransactionReview,
     Features as PlatformFeatures, HostInfo, JsonRpcConnection, LocaleHost,
@@ -35,6 +28,13 @@ use truapi_platform::{
     SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
     UserConfirmationReview,
 };
+use futures::Stream;
+use futures::stream::{self, BoxStream, StreamExt};
+use parity_scale_codec::{Decode, Encode};
+use schnorrkel::{ExpansionMode, MiniSecretKey};
+use truapi::v01;
+use truapi::versioned::account::{HostAccountCreateProofRequest, HostAccountGetAliasRequest};
+use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
 /// Block until `condition` holds, failing with `message` after two seconds.
@@ -77,13 +77,13 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 pub struct StubPlatform {
     pub device_permission_decisions:
-        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
+        Mutex<std::collections::VecDeque<crate::platform::PermissionDecision>>,
     pub device_permission_requests: Mutex<Vec<v01::HostDevicePermissionRequest>>,
     /// Product passed to each permission prompt, in order.
     pub permission_prompt_products: Mutex<Vec<ProductContext>>,
     pub remote_permission_denied: bool,
     pub remote_permission_decisions:
-        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
+        Mutex<std::collections::VecDeque<crate::platform::PermissionDecision>>,
     /// Every `remote_permission` request, in order, so a test can assert which
     /// domains reached the prompt and that a stored grant suppresses a re-ask.
     pub remote_permission_requests: Arc<Mutex<Vec<v01::RemotePermissionRequest>>>,
@@ -99,7 +99,7 @@ pub struct StubPlatform {
     pub account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
     /// Permission answers retain their lifetime separately from action confirmations.
     pub permission_confirmation_decisions:
-        Mutex<std::collections::VecDeque<truapi_platform::PermissionDecision>>,
+        Mutex<std::collections::VecDeque<crate::platform::PermissionDecision>>,
     /// Inverted so the derived default (`false`) approves, matching the
     /// pre-consent behavior where a cold own-account resolve was not gated.
     pub product_subtree_denied: bool,
@@ -373,7 +373,7 @@ pub fn sso_host_and_responder_sessions() -> (SsoSessionInfo, SsoSessionInfo) {
         ResponderIdentity, create_pairing_bootstrap, derive_x25519_keypair_from_entropy,
         establish_responder_session_info, establish_sso_session_info,
     };
-    use truapi_platform::{HostInfo, PairingHostConfig, PlatformInfo};
+    use crate::platform::{HostInfo, PairingHostConfig, PlatformInfo};
 
     let config = PairingHostConfig::new(
         HostInfo {
@@ -921,7 +921,7 @@ pub fn signed_statement(topic: [u8; 32]) -> v01::SignedStatement {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl PlatformProductStorage for StubPlatform {
     async fn read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
         if let Some(reason) = self.local_storage_error {
@@ -992,7 +992,7 @@ impl PlatformProductStorage for StubPlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl PlatformProductOperations for StubPlatform {
     async fn begin_operation(
         &self,
@@ -1048,7 +1048,7 @@ impl PlatformProductOperations for StubPlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl PlatformCoreStorage for StubPlatform {
     async fn read_core_storage(
         &self,
@@ -1143,7 +1143,7 @@ pub fn core_storage_test_key(key: CoreStorageKey) -> String {
     format!("core:{}", hex::encode(key.encode()))
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl PlatformNavigation for StubPlatform {
     async fn navigate_to(&self, url: String) -> Result<(), v01::HostNavigateToError> {
         self.navigations
@@ -1154,7 +1154,7 @@ impl PlatformNavigation for StubPlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl PlatformNotifications for StubPlatform {
     async fn push_notification(
         &self,
@@ -1178,13 +1178,13 @@ impl PlatformNotifications for StubPlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl PlatformPermissions for StubPlatform {
     async fn device_permission(
         &self,
         product: &ProductContext,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+    ) -> Result<crate::platform::PermissionDecision, v01::GenericError> {
         self.permission_prompt_products
             .lock()
             .expect("permission prompt products mutex poisoned")
@@ -1198,14 +1198,14 @@ impl PlatformPermissions for StubPlatform {
             .lock()
             .expect("device permission decisions mutex poisoned")
             .pop_front()
-            .unwrap_or(truapi_platform::PermissionDecision::AllowAlways))
+            .unwrap_or(crate::platform::PermissionDecision::AllowAlways))
     }
 
     async fn remote_permission(
         &self,
         product: &ProductContext,
         request: v01::RemotePermissionRequest,
-    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+    ) -> Result<crate::platform::PermissionDecision, v01::GenericError> {
         self.permission_prompt_products
             .lock()
             .expect("permission prompt products mutex poisoned")
@@ -1223,14 +1223,14 @@ impl PlatformPermissions for StubPlatform {
             return Ok(decision);
         }
         Ok(if self.remote_permission_denied {
-            truapi_platform::PermissionDecision::Deny
+            crate::platform::PermissionDecision::Deny
         } else {
-            truapi_platform::PermissionDecision::AllowAlways
+            crate::platform::PermissionDecision::AllowAlways
         })
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl PlatformFeatures for StubPlatform {
     async fn feature_supported(
         &self,
@@ -1239,15 +1239,15 @@ impl PlatformFeatures for StubPlatform {
         Ok(v01::HostFeatureSupportedResponse { supported: true })
     }
 
-    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
-        Ok(truapi_platform::HostChainSet {
+    async fn supported_chains(&self) -> Result<crate::platform::HostChainSet, v01::GenericError> {
+        Ok(crate::platform::HostChainSet {
             network: "paseo".to_string(),
             chains: vec![
-                truapi_platform::HostChainEntry {
+                crate::platform::HostChainEntry {
                     identifier: v01::ChainIdentifier::AssetHub,
                     genesis_hash: [0xaa; 32],
                 },
-                truapi_platform::HostChainEntry {
+                crate::platform::HostChainEntry {
                     identifier: v01::ChainIdentifier::People,
                     genesis_hash: [0x22; 32],
                 },
@@ -1753,7 +1753,7 @@ impl Drop for DropFlagGuard {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl ChainProvider for StubPlatform {
     async fn connect(
         &self,
@@ -1808,12 +1808,12 @@ impl AuthPresenter for StubPlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl UserConfirmation for StubPlatform {
     async fn confirm_permission(
         &self,
         review: UserConfirmationReview,
-    ) -> Result<truapi_platform::PermissionDecision, v01::GenericError> {
+    ) -> Result<crate::platform::PermissionDecision, v01::GenericError> {
         let confirmed = self.confirm_user_action(review).await?;
         Ok(self
             .permission_confirmation_decisions
@@ -1821,9 +1821,9 @@ impl UserConfirmation for StubPlatform {
             .expect("permission confirmation mutex poisoned")
             .pop_front()
             .unwrap_or(if confirmed {
-                truapi_platform::PermissionDecision::AllowAlways
+                crate::platform::PermissionDecision::AllowAlways
             } else {
-                truapi_platform::PermissionDecision::Deny
+                crate::platform::PermissionDecision::Deny
             }))
     }
 
@@ -1968,7 +1968,7 @@ impl LocaleHost for StubPlatform {
     }
 }
 
-#[truapi_platform::async_trait]
+#[crate::platform::async_trait]
 impl PreimageHost for StubPlatform {
     fn lookup_preimage(
         &self,

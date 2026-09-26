@@ -4,7 +4,7 @@
 //! same categorization and the `navigate_to` callback only receives
 //! already-validated input.
 
-use truapi_platform::{has_dotns_tld, normalize_chat_identifier};
+use crate::platform::{has_dotns_tld, normalize_chat_identifier};
 use unicode_normalization::UnicodeNormalization;
 use url::{Url, form_urlencoded};
 
@@ -121,7 +121,7 @@ fn normalize_host(host: &str) -> String {
 
 /// dotNS TLD check, applied to the [`normalize_host`] form so `Example.DOT`
 /// and the trailing-dot FQDN `example.dot.` classify like `example.dot`.
-/// Shares [`truapi_platform::DOTNS_TLDS`] with product-identifier validation
+/// Shares [`crate::platform::DOTNS_TLDS`] with product-identifier validation
 /// so navigation and derivation accept the same per-network names.
 fn is_dotns_domain(host: &str) -> bool {
     has_dotns_tld(&normalize_host(host))
