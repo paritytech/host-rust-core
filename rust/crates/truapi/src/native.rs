@@ -820,17 +820,6 @@ pub struct NativeAnnouncedPairing {
     inner: AnnouncedPairing,
 }
 
-/// A refused renewal-ledger call: tracking, untracking or reading it back.
-#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
-pub enum NativeRenewalTargetError {
-    /// The core refused to record the targets.
-    #[error("{reason}")]
-    Rejected {
-        /// Human-readable rejection reason.
-        reason: String,
-    },
-}
-
 #[uniffi::export]
 impl NativeTrUApiHostRuntime {
     /// Construct one host-level runtime and optionally activate its local session.
@@ -997,9 +986,9 @@ impl NativeTrUApiHostRuntime {
     pub fn track_statement_renewal_targets(
         &self,
         targets: Vec<crate::runtime::StatementRenewalTarget>,
-    ) -> Result<(), NativeRenewalTargetError> {
+    ) -> Result<(), HostRejection> {
         futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
-            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+            .map_err(HostRejection::from)
     }
 
     /// Every account the ledger tracks, in the order it was tracked.
@@ -1009,9 +998,9 @@ impl NativeTrUApiHostRuntime {
     /// [`Self::untrack_statement_renewal_account`].
     pub fn statement_renewal_targets(
         &self,
-    ) -> Result<Vec<crate::runtime::TrackedStatementRenewalTarget>, NativeRenewalTargetError> {
+    ) -> Result<Vec<crate::runtime::TrackedStatementRenewalTarget>, HostRejection> {
         futures::executor::block_on(self.runtime.statement_renewal_targets())
-            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+            .map_err(HostRejection::from)
     }
 
     /// Root public key the active identity records its fixed entries under.
@@ -1020,10 +1009,10 @@ impl NativeTrUApiHostRuntime {
     /// An entry from [`Self::statement_renewal_targets`] whose owner is this
     /// key, or which has no owner at all, is one a pass will renew; any other
     /// is one a pass will prune.
-    pub fn statement_renewal_owner_key(&self) -> Result<Bytes32, NativeRenewalTargetError> {
+    pub fn statement_renewal_owner_key(&self) -> Result<Bytes32, HostRejection> {
         self.runtime
             .statement_renewal_owner_key()
-            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+            .map_err(HostRejection::from)
     }
 
     /// Stop renewing one fixed statement account, returning whether the ledger
@@ -1034,9 +1023,9 @@ impl NativeTrUApiHostRuntime {
     pub fn untrack_statement_renewal_account(
         &self,
         account_id: Bytes32,
-    ) -> Result<bool, NativeRenewalTargetError> {
+    ) -> Result<bool, HostRejection> {
         futures::executor::block_on(self.runtime.untrack_statement_renewal_account(&account_id))
-            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+            .map_err(HostRejection::from)
     }
 
     /// Run one renewal pass now and report what each tracked target got.

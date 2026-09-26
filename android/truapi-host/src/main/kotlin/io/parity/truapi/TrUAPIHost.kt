@@ -73,7 +73,6 @@ import uniffi.truapi.HostNavigateToException
 import uniffi.truapi.HostRejection
 import uniffi.truapi.HostLocalStorageReadException
 import uniffi.truapi.localhostBridgeBootstrapScript
-import uniffi.truapi.NativeRenewalTargetException
 import uniffi.truapi.NativeRuntimeConfigException
 import uniffi.truapi.StatementRenewalTarget
 import uniffi.truapi.TrackedStatementRenewalTarget
@@ -778,7 +777,7 @@ class TrUAPIHostRuntime @Throws(NativeRuntimeConfigException::class) constructor
      * [StatementRenewalTarget.Account] does not, so re-track those
      * whenever the active identity changes.
      */
-    @Throws(NativeRenewalTargetException::class)
+    @Throws(HostRejection::class)
     fun trackStatementRenewalTargets(targets: List<StatementRenewalTarget>) {
         inner.trackStatementRenewalTargets(targets)
     }
@@ -788,7 +787,7 @@ class TrUAPIHostRuntime @Throws(NativeRuntimeConfigException::class) constructor
      * active session, so a worker can read it on a cold start before deciding
      * whether a pass is worth running.
      */
-    @Throws(NativeRenewalTargetException::class)
+    @Throws(HostRejection::class)
     fun statementRenewalTargets(): List<TrackedStatementRenewalTarget> =
         inner.statementRenewalTargets()
 
@@ -797,7 +796,7 @@ class TrUAPIHostRuntime @Throws(NativeRuntimeConfigException::class) constructor
      * An entry from [statementRenewalTargets] whose owner is this key, or which
      * has no owner, is one a pass will renew; any other is one it will prune.
      */
-    @Throws(NativeRenewalTargetException::class)
+    @Throws(HostRejection::class)
     fun statementRenewalOwnerKey(): ByteArray = inner.statementRenewalOwnerKey()
 
     /**
@@ -805,7 +804,7 @@ class TrUAPIHostRuntime @Throws(NativeRuntimeConfigException::class) constructor
      * held it. Scoped to the active identity, so it never removes an entry
      * another identity promised.
      */
-    @Throws(NativeRenewalTargetException::class)
+    @Throws(HostRejection::class)
     fun untrackStatementRenewalAccount(accountId: ByteArray): Boolean =
         inner.untrackStatementRenewalAccount(accountId)
 
