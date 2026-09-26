@@ -29,6 +29,13 @@ pub trait Signing: Send + Sync {
     /// with a proof in a later extension — encodes the given bytes verbatim and
     /// returns an unsigned transaction.
     ///
+    /// `txExtVersion` is the version of the transaction extensions in
+    /// `extensions`, as the runtime numbers them; current runtimes only define
+    /// version 0. The host picks the extrinsic format from it. V4 always uses
+    /// version 0, so a non-zero version builds a V5 general transaction.
+    /// Version 0 builds V5 when it includes `VerifyMultiSignature`, and a
+    /// signed V4 transaction otherwise.
+    ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
     /// assert(productContext.isOk(), "getProductContext failed:", productContext);
@@ -46,24 +53,15 @@ pub trait Signing: Send + Sync {
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
     ///
-    /// for (const txExtVersion of [0, 5]) {
-    ///   const version = txExtVersion === 0 ? "V4" : "V5";
-    ///   // V5 leaves VerifyMultiSignature to the host, which signs. V4 keeps
-    ///   // it: that body is a plain concatenation, so dropping one shifts the rest.
-    ///   const extensions =
-    ///     txExtVersion === 5
-    ///       ? payload.value.extensions.filter(
-    ///           (ext) => ext.id !== "VerifyMultiSignature",
-    ///         )
-    ///       : payload.value.extensions;
-    ///   const result = await truapi.signing.createTransaction({
-    ///     ...payload.value,
-    ///     extensions,
-    ///     txExtVersion,
-    ///   });
-    ///   assert(result.isOk(), `${version} createTransaction failed:`, result);
-    ///   console.log(`${version} transaction created:`, result.value);
-    /// }
+    /// // Leaving VerifyMultiSignature to the host lets it sign.
+    /// const result = await truapi.signing.createTransaction({
+    ///   ...payload.value,
+    ///   extensions: payload.value.extensions.filter(
+    ///     (ext) => ext.id !== "VerifyMultiSignature",
+    ///   ),
+    /// });
+    /// assert(result.isOk(), "createTransaction failed:", result);
+    /// console.log("transaction created:", result.value);
     /// ```
     #[wire(id = 0)]
     async fn create_transaction(
@@ -105,18 +103,11 @@ pub trait Signing: Send + Sync {
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
     ///
-    /// // Host-owned under V5 only: a V4 body is a plain concatenation, so
-    /// // dropping a declared extension there shifts every one after it.
-    /// const extensions =
-    ///   payload.value.txExtVersion === 5
-    ///     ? payload.value.extensions.filter(
-    ///         (ext) => ext.id !== "VerifyMultiSignature",
-    ///       )
-    ///     : payload.value.extensions;
-    ///
     /// const result = await truapi.signing.createTransactionWithLegacyAccount({
     ///   ...payload.value,
-    ///   extensions,
+    ///   extensions: payload.value.extensions.filter(
+    ///     (ext) => ext.id !== "VerifyMultiSignature",
+    ///   ),
     ///   signer: accountResult.value.account.publicKey,
     /// });
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);

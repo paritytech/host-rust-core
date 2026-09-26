@@ -4528,41 +4528,6 @@ fn auto_signing_serves_sign_raw_locally_without_prompt_or_sso() {
 }
 
 #[test]
-fn auto_signing_serves_create_transaction_v4_locally_without_prompt() {
-    let (platform, host) = granted_pairing_host();
-
-    let HostCreateTransactionResponse::V1(response) =
-        futures::executor::block_on(host.create_transaction(
-            &CallContext::default(),
-            HostCreateTransactionRequest::V1(v01::ProductAccountTxPayload {
-                signer: account_id("myapp.dot", 0),
-                genesis_hash: [1; 32],
-                call_data: vec![0x04, 0x00],
-                extensions: vec![],
-                // V4 needs no chain metadata, so the whole assembly is local.
-                tx_ext_version: 0,
-            }),
-        ))
-        .expect("a V4 transaction assembles locally under the capability");
-
-    assert!(
-        platform
-            .create_transaction_reviews
-            .lock()
-            .expect("create transaction review list mutex poisoned")
-            .is_empty(),
-        "the grant waives the prompt",
-    );
-    let (signer, _, call) = crate::host_logic::extrinsic::tests::split_v4(&response.transaction);
-    assert_eq!(
-        signer,
-        granted_keypair().public.to_bytes(),
-        "the product account signed it",
-    );
-    assert_eq!(call, vec![0x04, 0x00]);
-}
-
-#[test]
 fn auto_signing_serves_sign_payload_locally_without_prompt() {
     let (platform, host) = granted_pairing_host();
     let payload = crate::test_support::sign_payload_data();

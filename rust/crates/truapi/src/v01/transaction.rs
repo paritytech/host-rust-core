@@ -36,7 +36,8 @@ pub struct ProductAccountTxPayload {
     pub call_data: Vec<u8>,
     /// Transaction extensions supplied by the caller.
     pub extensions: Vec<TxPayloadExtension>,
-    /// 0 for Extrinsic V4, runtime-supported value for V5.
+    /// Version of the transaction extensions in `extensions`, as the runtime
+    /// numbers them. Current runtimes only define version 0.
     pub tx_ext_version: u8,
 }
 
@@ -55,7 +56,8 @@ pub struct LegacyAccountTxPayload {
     pub call_data: Vec<u8>,
     /// Transaction extensions supplied by the caller.
     pub extensions: Vec<TxPayloadExtension>,
-    /// 0 for Extrinsic V4, runtime-supported value for V5.
+    /// Version of the transaction extensions in `extensions`, as the runtime
+    /// numbers them. Current runtimes only define version 0.
     pub tx_ext_version: u8,
 }
 

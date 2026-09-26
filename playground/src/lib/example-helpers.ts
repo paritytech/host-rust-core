@@ -275,7 +275,7 @@ export function createBuildCreateTransactionPayload(
         builder,
         chainState,
       ),
-      txExtVersion: txExtVersionFromMetadata(unified),
+      txExtVersion: 0,
     });
   };
 }
@@ -531,14 +531,6 @@ function nonceFromRuntimeApiOutput(output: HexString): number {
     bytes.byteOffset,
     bytes.byteLength,
   ).getUint32(0, true);
-}
-
-function txExtVersionFromMetadata(metadata: UnifiedMetadata): number {
-  const latestVersion = metadata.extrinsic.version.reduce(
-    (max, version) => Math.max(max, version),
-    0,
-  );
-  return latestVersion === 4 ? 0 : latestVersion;
 }
 
 function encodeSignedExtensions(
