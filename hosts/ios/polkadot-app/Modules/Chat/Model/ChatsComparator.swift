@@ -9,11 +9,14 @@ enum ChatsComparator {
             return chat1.message != nil ? true : false
         }
 
-        guard message1.timestamp != message2.timestamp else {
+        let pair1 = (message1.order, message1.timestamp)
+        let pair2 = (message2.order, message2.timestamp)
+
+        guard pair1 != pair2 else {
             return chat1.identifier.localizedCompare(chat2.identifier) == .orderedAscending
         }
 
-        return message1.timestamp >= message2.timestamp
+        return pair1 > pair2
     }
 
     static func lastMessageAndPinnedComparator(
