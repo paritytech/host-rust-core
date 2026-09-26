@@ -181,7 +181,7 @@ public protocol HostBridge: AnyObject, Sendable {
     /// governing. Defaults to `.notApplicable`, so an app that does not
     /// implement it keeps today's behaviour.
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> NativeDevicePermissionStatus
+        -> DevicePermissionStatus
 
     /// Prompt for a remote permission bundle `product` requested on the main
     /// actor, suspending until the user decides.
@@ -369,7 +369,7 @@ public extension HostBridge {
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
     func devicePaired(device: PairedSsoPeer) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> NativeDevicePermissionStatus { .notApplicable }
+        -> DevicePermissionStatus { .notApplicable }
     /// Defaults opt out of worker keep-alive; override to run background work
     /// past the product's surface. The id is still distinct per call, because
     /// an `OperationId` names one operation: a host overriding only
@@ -479,16 +479,6 @@ private final class PocketCallbackAdapter: NativePocketCallbacks, @unchecked Sen
     }
 }
 
-private extension PermissionDecision {
-    var native: NativePermissionDecision {
-        switch self {
-        case .allowOnce: .allowOnce
-        case .allowAlways: .allowAlways
-        case .deny: .deny
-        }
-    }
-}
-
 /// Adapter that bridges the public `HostBridge` to the generated UniFFI
 /// `HostCallbacks` protocol. Kept private so the generated names never
 /// leak into consumers.
@@ -532,17 +522,17 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func devicePermission(
         product: NativeProductExecutionConfig,
         request: HostDevicePermissionRequest
-    ) async throws -> NativePermissionDecision {
+    ) async throws -> PermissionDecision {
         try await withHostRejection {
             try await bridge.devicePermission(
                 product: ProductExecutionConfig(native: product),
                 request: request
-            ).native
+            )
         }
     }
 
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> NativeDevicePermissionStatus
+        -> DevicePermissionStatus
     {
         try await withHostRejection {
             try await bridge.devicePermissionStatus(request: request)
@@ -552,12 +542,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func remotePermission(
         product: NativeProductExecutionConfig,
         request: RemotePermission
-    ) async throws -> NativePermissionDecision {
+    ) async throws -> PermissionDecision {
         try await withHostRejection {
             try await bridge.remotePermission(
                 product: ProductExecutionConfig(native: product),
                 request: request
-            ).native
+            )
         }
     }
 
@@ -607,9 +597,9 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func confirmPermission(review: UserConfirmationReview) async throws -> NativePermissionDecision {
+    func confirmPermission(review: UserConfirmationReview) async throws -> PermissionDecision {
         try await withHostRejection {
-            try await bridge.confirmPermission(review: review).native
+            try await bridge.confirmPermission(review: review)
         }
     }
 

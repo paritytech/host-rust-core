@@ -72,7 +72,7 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         ).hostDecision
     }
 
-    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws -> NativeDevicePermissionStatus {
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws -> DevicePermissionStatus {
         switch request {
         case .camera,
              .microphone,

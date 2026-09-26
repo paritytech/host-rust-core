@@ -65,8 +65,7 @@ import uniffi.truapi_server.NativeChatRoomRegistrationStatus
 import uniffi.truapi_server.NativePocketCallbacks
 import uniffi.truapi_server.NativePocketRemoval
 import uniffi.truapi_server.NativeRendererObserver
-import uniffi.truapi_server.NativeDevicePermissionStatus
-import uniffi.truapi_server.NativePermissionDecision
+import uniffi.truapi_server.DevicePermissionStatus
 import uniffi.truapi_server.NativeProductExecution
 import uniffi.truapi_server.NativeTrUApiHostRuntime
 import uniffi.truapi_server.NativeAnnouncedPairing
@@ -303,19 +302,19 @@ interface HostBridge {
      *
      * The core calls this before every device-permission request and status
      * read, so it must not show UI. A capability with no OS gate on Android
-     * answers [NativeDevicePermissionStatus.NOT_APPLICABLE], which leaves the stored
+     * answers [DevicePermissionStatus.NOT_APPLICABLE], which leaves the stored
      * product decision governing.
      *
      * Note that Android auto-revokes runtime permissions for unused apps, which
-     * surfaces here as [NativeDevicePermissionStatus.NOT_DETERMINED]. The core does not
+     * surfaces here as [DevicePermissionStatus.NOT_DETERMINED]. The core does not
      * treat that as a refusal, so re-requesting is the host's call.
      *
-     * Defaults to [NativeDevicePermissionStatus.NOT_APPLICABLE], so an app that does
+     * Defaults to [DevicePermissionStatus.NOT_APPLICABLE], so an app that does
      * not implement it keeps today's behaviour.
      */
     suspend fun devicePermissionStatus(
         request: HostDevicePermissionRequest,
-    ): NativeDevicePermissionStatus = NativeDevicePermissionStatus.NOT_APPLICABLE
+    ): DevicePermissionStatus = DevicePermissionStatus.NOT_APPLICABLE
 
     /**
      * Prompt for a remote permission bundle [product] requested on the main
@@ -527,12 +526,6 @@ interface PocketHostBridge {
     fun removeCard(cardId: String): NativePocketRemoval
 }
 
-private fun PermissionDecision.toNative(): NativePermissionDecision = when (this) {
-    PermissionDecision.ALLOW_ONCE -> NativePermissionDecision.ALLOW_ONCE
-    PermissionDecision.ALLOW_ALWAYS -> NativePermissionDecision.ALLOW_ALWAYS
-    PermissionDecision.DENY -> NativePermissionDecision.DENY
-}
-
 /**
  * Adapter from the public [HostBridge] surface to the generated UniFFI
  * [HostCallbacks] interface. Keeps the public API stable even if uniffi-bindgen
@@ -568,21 +561,21 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override suspend fun devicePermission(
         product: UniFfiNativeProductExecutionConfig,
         request: HostDevicePermissionRequest,
-    ): NativePermissionDecision =
+    ): PermissionDecision =
         withHostRejection {
-            bridge.devicePermission(ProductExecutionConfig.fromNative(product), request).toNative()
+            bridge.devicePermission(ProductExecutionConfig.fromNative(product), request)
         }
 
     override suspend fun devicePermissionStatus(
         request: HostDevicePermissionRequest,
-    ): NativeDevicePermissionStatus = withHostRejection { bridge.devicePermissionStatus(request) }
+    ): DevicePermissionStatus = withHostRejection { bridge.devicePermissionStatus(request) }
 
     override suspend fun remotePermission(
         product: UniFfiNativeProductExecutionConfig,
         request: RemotePermission,
-    ): NativePermissionDecision =
+    ): PermissionDecision =
         withHostRejection {
-            bridge.remotePermission(ProductExecutionConfig.fromNative(product), request).toNative()
+            bridge.remotePermission(ProductExecutionConfig.fromNative(product), request)
         }
 
     override fun authStateChanged(state: AuthState) {
@@ -616,8 +609,8 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
         withHostRejection { bridge.confirmUserAction(review) }
 
-    override suspend fun confirmPermission(review: UserConfirmationReview): NativePermissionDecision =
-        withHostRejection { bridge.confirmPermission(review).toNative() }
+    override suspend fun confirmPermission(review: UserConfirmationReview): PermissionDecision =
+        withHostRejection { bridge.confirmPermission(review) }
 
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         withHostRejection { bridge.lookupPreimage(key) }

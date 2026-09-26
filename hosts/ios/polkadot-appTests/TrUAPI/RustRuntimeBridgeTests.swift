@@ -151,7 +151,7 @@ struct RustRuntimeBridgeTests {
                 osAsker.statusToReturn = status
                 let guard_ = MockPermissionGuard()
                 let bridge = makeBridge(permissionGuard: guard_, osPermissionAsker: osAsker)
-                let expected: NativeDevicePermissionStatus = switch status {
+                let expected: DevicePermissionStatus = switch status {
                 case .allowed: .granted
                 case .denied: .denied
                 case .notDetermined: .notDetermined
@@ -166,7 +166,7 @@ struct RustRuntimeBridgeTests {
     }
 
     @Test(arguments: [
-        (HostDevicePermissionRequest.openUrl, NativeDevicePermissionStatus.notApplicable),
+        (HostDevicePermissionRequest.openUrl, DevicePermissionStatus.notApplicable),
         (.bluetooth, .notApplicable),
         (.nfc, .notApplicable),
         (.location, .notDetermined),
@@ -175,7 +175,7 @@ struct RustRuntimeBridgeTests {
     ])
     func devicePermissionStatusWithoutOSQuery(
         request: HostDevicePermissionRequest,
-        expected: NativeDevicePermissionStatus
+        expected: DevicePermissionStatus
     ) async throws {
         let osAsker = MockOSPermissionAsker()
         let bridge = makeBridge(osPermissionAsker: osAsker)

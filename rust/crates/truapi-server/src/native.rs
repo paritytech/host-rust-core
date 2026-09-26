@@ -16,12 +16,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::platform::{
-    AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
-    HostInfo, JsonRpcConnection, LocaleHost, Navigation, Notifications,
-    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionDecision, Permissions,
-    PlatformInfo, PreimageHost, ProductContext, ProductExecutionKind, ProductOperations,
-    ProductStorage, RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
-    UserConfirmationReview, async_trait, normalize_product_identifier,
+    AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey,
+    DevicePermissionStatus, Features, HostInfo, JsonRpcConnection, LocaleHost, Navigation,
+    Notifications, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
+    PermissionDecision, Permissions, PlatformInfo, PreimageHost, ProductContext,
+    ProductExecutionKind, ProductOperations, ProductStorage, RuntimeConfigValidationError,
+    SigningHostConfig, ThemeHost, UserConfirmation, UserConfirmationReview, async_trait,
+    normalize_product_identifier,
 };
 use futures::channel::mpsc;
 use futures::executor::ThreadPool;
@@ -500,61 +501,12 @@ pub fn has_trusted_remote_permissions(product_id: String) -> bool {
     crate::platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
-/// OS status of a device capability, as a native host reports it.
+/// Outcome of a native room registration.
 ///
-/// Mirrors [`crate::platform::DevicePermissionStatus`], which cannot be used
-/// directly: an async callback method returning a type from another UniFFI
-/// namespace lowers into that namespace's `RustBuffer`, and the generated
-/// Kotlin then fails to compile. The conversion is total.
-/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativeDevicePermissionStatus {
-    /// The OS grants this capability to the host application.
-    Granted,
-    /// The OS refuses it; only system settings can change that.
-    Denied,
-    /// The OS has not been asked, or reset its own answer.
-    NotDetermined,
-    /// This platform has no OS gate for the capability.
-    NotApplicable,
-}
-
-impl From<NativeDevicePermissionStatus> for crate::platform::DevicePermissionStatus {
-    fn from(status: NativeDevicePermissionStatus) -> Self {
-        match status {
-            NativeDevicePermissionStatus::Granted => Self::Granted,
-            NativeDevicePermissionStatus::Denied => Self::Denied,
-            NativeDevicePermissionStatus::NotDetermined => Self::NotDetermined,
-            NativeDevicePermissionStatus::NotApplicable => Self::NotApplicable,
-        }
-    }
-}
-
-/// Keeps async permission callbacks in this UniFFI namespace for the same
-/// Kotlin `RustBuffer` constraint as [`NativeDevicePermissionStatus`].
-/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativePermissionDecision {
-    /// Approves one operation in this execution.
-    AllowOnce,
-    /// Approves subsequent operations until the setting changes.
-    AllowAlways,
-    /// Refuses subsequent operations until the setting changes.
-    Deny,
-}
-
-impl From<NativePermissionDecision> for PermissionDecision {
-    fn from(decision: NativePermissionDecision) -> Self {
-        match decision {
-            NativePermissionDecision::AllowOnce => Self::AllowOnce,
-            NativePermissionDecision::AllowAlways => Self::AllowAlways,
-            NativePermissionDecision::Deny => Self::Deny,
-        }
-    }
-}
-
-/// Outcome of a native room registration, kept in this UniFFI namespace for the
-/// same Kotlin `RustBuffer` constraint as [`NativeDevicePermissionStatus`].
+/// Mirrors [`v01::ChatRoomRegistrationStatus`], which cannot be used directly:
+/// an async callback method returning a type from another UniFFI namespace
+/// lowers into that namespace's `RustBuffer`, and the generated Kotlin then
+/// fails to compile. The conversion is total.
 /// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum NativeChatRoomRegistrationStatus {
@@ -633,7 +585,7 @@ pub trait HostCallbacks: Send + Sync {
         &self,
         product: NativeProductExecutionConfig,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<NativePermissionDecision, HostRejection>;
+    ) -> Result<PermissionDecision, HostRejection>;
 
     /// Report the OS status of a device capability without prompting.
     ///
@@ -648,14 +600,14 @@ pub trait HostCallbacks: Send + Sync {
     async fn device_permission_status(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<NativeDevicePermissionStatus, HostRejection>;
+    ) -> Result<DevicePermissionStatus, HostRejection>;
 
     /// Prompt the user for a remote permission `product` requested.
     async fn remote_permission(
         &self,
         product: NativeProductExecutionConfig,
         request: v01::RemotePermission,
-    ) -> Result<NativePermissionDecision, HostRejection>;
+    ) -> Result<PermissionDecision, HostRejection>;
 
     /// Observe an auth state change, in transition order: render `Pairing` as
     /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
@@ -699,7 +651,7 @@ pub trait HostCallbacks: Send + Sync {
     async fn confirm_permission(
         &self,
         review: UserConfirmationReview,
-    ) -> Result<NativePermissionDecision, HostRejection>;
+    ) -> Result<PermissionDecision, HostRejection>;
 
     /// Look up one preimage value by key. The native shim emits this as the
     /// current item in its subscription stream.
@@ -2193,7 +2145,7 @@ impl crate::platform::PermissionStatusHost for CallbackPlatform {
     async fn device_permission_status(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<crate::platform::DevicePermissionStatus, v01::GenericError> {
+    ) -> Result<DevicePermissionStatus, v01::GenericError> {
         self.callbacks.on_core_log(
             "truapi.native.callback.device_permission_status".to_string(),
             format!("{request}"),
@@ -2202,7 +2154,6 @@ impl crate::platform::PermissionStatusHost for CallbackPlatform {
         self.callbacks
             .device_permission_status(request)
             .await
-            .map(Into::into)
             .map_err(v01::GenericError::from)
     }
 }
@@ -2222,7 +2173,6 @@ impl Permissions for CallbackPlatform {
         self.callbacks
             .device_permission(product.into(), request)
             .await
-            .map(Into::into)
             .map_err(v01::GenericError::from)
     }
 
@@ -2239,7 +2189,6 @@ impl Permissions for CallbackPlatform {
         self.callbacks
             .remote_permission(product.into(), request.permission)
             .await
-            .map(Into::into)
             .map_err(v01::GenericError::from)
     }
 }
@@ -2496,7 +2445,6 @@ impl UserConfirmation for CallbackPlatform {
         self.callbacks
             .confirm_permission(review)
             .await
-            .map(PermissionDecision::from)
             .map_err(v01::GenericError::from)
     }
 
@@ -3017,17 +2965,13 @@ mod tests {
         /// Capability this host reports as refused by the OS, if any.
         os_refused: Option<v01::HostDevicePermissionRequest>,
         /// Configurable prompt outcome for grant, denial, and callback failure tests.
-        remote_permission_result: Result<NativePermissionDecision, HostRejection>,
+        remote_permission_result: Result<PermissionDecision, HostRejection>,
         remote_permission_reply: Mutex<
-            Option<
-                futures::channel::oneshot::Receiver<
-                    Result<NativePermissionDecision, HostRejection>,
-                >,
-            >,
+            Option<futures::channel::oneshot::Receiver<Result<PermissionDecision, HostRejection>>>,
         >,
         core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
         /// Disclosure consent is distinct from boolean action confirmation.
-        permission_confirmation_result: NativePermissionDecision,
+        permission_confirmation_result: PermissionDecision,
         /// Counts prompts across the execution's separate connections.
         remote_permission_calls: std::sync::atomic::AtomicUsize,
         remote_permission_products: Mutex<Vec<(String, ProductExecutionKind)>>,
@@ -3071,10 +3015,10 @@ mod tests {
                 worker_demand: Mutex::new(Vec::new()),
                 paired_devices: Mutex::new(Vec::new()),
                 os_refused: None,
-                remote_permission_result: Ok(NativePermissionDecision::Deny),
+                remote_permission_result: Ok(PermissionDecision::Deny),
                 remote_permission_reply: Mutex::new(None),
                 core_storage: Mutex::default(),
-                permission_confirmation_result: NativePermissionDecision::Deny,
+                permission_confirmation_result: PermissionDecision::Deny,
                 remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
                 remote_permission_products: Mutex::new(Vec::new()),
             }
@@ -3115,24 +3059,24 @@ mod tests {
             &self,
             _product: NativeProductExecutionConfig,
             _request: v01::HostDevicePermissionRequest,
-        ) -> Result<NativePermissionDecision, HostRejection> {
-            Ok(NativePermissionDecision::Deny)
+        ) -> Result<PermissionDecision, HostRejection> {
+            Ok(PermissionDecision::Deny)
         }
         async fn device_permission_status(
             &self,
             request: v01::HostDevicePermissionRequest,
-        ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+        ) -> Result<DevicePermissionStatus, HostRejection> {
             Ok(if self.os_refused == Some(request) {
-                NativeDevicePermissionStatus::Denied
+                DevicePermissionStatus::Denied
             } else {
-                NativeDevicePermissionStatus::NotApplicable
+                DevicePermissionStatus::NotApplicable
             })
         }
         async fn remote_permission(
             &self,
             product: NativeProductExecutionConfig,
             _request: v01::RemotePermission,
-        ) -> Result<NativePermissionDecision, HostRejection> {
+        ) -> Result<PermissionDecision, HostRejection> {
             self.remote_permission_calls.fetch_add(1, Ordering::SeqCst);
             self.remote_permission_products
                 .lock()
@@ -3195,7 +3139,7 @@ mod tests {
         async fn confirm_permission(
             &self,
             _review: UserConfirmationReview,
-        ) -> Result<NativePermissionDecision, HostRejection> {
+        ) -> Result<PermissionDecision, HostRejection> {
             Ok(self.permission_confirmation_result)
         }
         async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -4897,8 +4841,8 @@ mod tests {
             async fn confirm_permission(
                 &self,
                 _review: UserConfirmationReview,
-            ) -> Result<NativePermissionDecision, HostRejection> {
-                Ok(NativePermissionDecision::Deny)
+            ) -> Result<PermissionDecision, HostRejection> {
+                Ok(PermissionDecision::Deny)
             }
 
             fn on_core_log(&self, _marker: String, _detail: String) {}
@@ -4920,21 +4864,21 @@ mod tests {
                 &self,
                 _product: NativeProductExecutionConfig,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<NativePermissionDecision, HostRejection> {
-                Ok(NativePermissionDecision::Deny)
+            ) -> Result<PermissionDecision, HostRejection> {
+                Ok(PermissionDecision::Deny)
             }
             async fn device_permission_status(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<NativeDevicePermissionStatus, HostRejection> {
-                Ok(NativeDevicePermissionStatus::NotApplicable)
+            ) -> Result<DevicePermissionStatus, HostRejection> {
+                Ok(DevicePermissionStatus::NotApplicable)
             }
             async fn remote_permission(
                 &self,
                 _product: NativeProductExecutionConfig,
                 _request: v01::RemotePermission,
-            ) -> Result<NativePermissionDecision, HostRejection> {
-                Ok(NativePermissionDecision::Deny)
+            ) -> Result<PermissionDecision, HostRejection> {
+                Ok(PermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
             fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -5067,8 +5011,8 @@ mod tests {
             async fn confirm_permission(
                 &self,
                 _review: UserConfirmationReview,
-            ) -> Result<NativePermissionDecision, HostRejection> {
-                Ok(NativePermissionDecision::Deny)
+            ) -> Result<PermissionDecision, HostRejection> {
+                Ok(PermissionDecision::Deny)
             }
 
             fn on_core_log(&self, _marker: String, _detail: String) {}
@@ -5090,7 +5034,7 @@ mod tests {
                 &self,
                 _product: NativeProductExecutionConfig,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<NativePermissionDecision, HostRejection> {
+            ) -> Result<PermissionDecision, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
                 self.release
                     .lock()
@@ -5098,20 +5042,20 @@ mod tests {
                     .recv()
                     .await
                     .expect("release signal");
-                Ok(NativePermissionDecision::AllowAlways)
+                Ok(PermissionDecision::AllowAlways)
             }
             async fn device_permission_status(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<NativeDevicePermissionStatus, HostRejection> {
-                Ok(NativeDevicePermissionStatus::NotApplicable)
+            ) -> Result<DevicePermissionStatus, HostRejection> {
+                Ok(DevicePermissionStatus::NotApplicable)
             }
             async fn remote_permission(
                 &self,
                 _product: NativeProductExecutionConfig,
                 _request: v01::RemotePermission,
-            ) -> Result<NativePermissionDecision, HostRejection> {
-                Ok(NativePermissionDecision::Deny)
+            ) -> Result<PermissionDecision, HostRejection> {
+                Ok(PermissionDecision::Deny)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
             fn core_storage_read(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
@@ -5726,8 +5670,8 @@ mod tests {
     #[test]
     fn native_remote_authorization_uses_the_execution_permission_callback() {
         for (answer, granted) in [
-            (Ok(NativePermissionDecision::AllowAlways), true),
-            (Ok(NativePermissionDecision::Deny), false),
+            (Ok(PermissionDecision::AllowAlways), true),
+            (Ok(PermissionDecision::Deny), false),
             (
                 Err(HostRejection::Rejected {
                     reason: "permission UI unavailable".to_string(),
@@ -5777,9 +5721,9 @@ mod tests {
     fn native_permission_confirmation_preserves_consent_lifetime() {
         futures::executor::block_on(async {
             for decision in [
-                NativePermissionDecision::AllowOnce,
-                NativePermissionDecision::AllowAlways,
-                NativePermissionDecision::Deny,
+                PermissionDecision::AllowOnce,
+                PermissionDecision::AllowAlways,
+                PermissionDecision::Deny,
             ] {
                 let platform = CallbackPlatform {
                     callbacks: Arc::new(EventCallbacks {
@@ -5799,7 +5743,7 @@ mod tests {
                         platform.confirm_permission(review.clone()).await.unwrap(),
                         platform.confirm_user_action(review).await.unwrap(),
                     ),
-                    (PermissionDecision::from(decision), false),
+                    (decision, false),
                 );
             }
         });
@@ -5810,7 +5754,7 @@ mod tests {
         use truapi::api::Permissions;
 
         let callbacks = Arc::new(EventCallbacks {
-            remote_permission_result: Ok(NativePermissionDecision::AllowOnce),
+            remote_permission_result: Ok(PermissionDecision::AllowOnce),
             ..EventCallbacks::new()
         });
         let host = NativeTrUApiHostRuntime::with_runtime_config(
@@ -5905,8 +5849,8 @@ mod tests {
     #[test]
     fn native_remote_authorization_reuses_stored_product_decisions() {
         for (decision, granted) in [
-            (NativePermissionDecision::AllowAlways, true),
-            (NativePermissionDecision::Deny, false),
+            (PermissionDecision::AllowAlways, true),
+            (PermissionDecision::Deny, false),
         ] {
             let callbacks = Arc::new(EventCallbacks {
                 remote_permission_result: Ok(decision),
@@ -5996,7 +5940,7 @@ mod tests {
                     assert!(futures::poll!(&mut request).is_pending());
                 }
                 execution.shutdown();
-                reply.send(Ok(NativePermissionDecision::AllowOnce)).unwrap();
+                reply.send(Ok(PermissionDecision::AllowOnce)).unwrap();
                 assert_eq!(
                     (
                         request.await.err().map(|error| error.to_string()),
