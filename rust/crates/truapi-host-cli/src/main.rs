@@ -24,6 +24,7 @@ mod network;
 mod platform;
 mod pocket;
 mod product_config;
+mod profile;
 mod qr_scanner;
 mod register_name;
 mod script_project;
@@ -1262,6 +1263,7 @@ async fn run_pairing_host(
     if let Some(pocket) = pocket_host {
         pairing_runtime.set_pocket_platform(pocket);
     }
+    pairing_runtime.set_profile_platform(profile::CliProfileHost::from_env());
 
     // Resolved before the port is bound, so a bad URL still fails on the argument
     // rather than half-way through startup - but reported below, once the UI
@@ -1796,6 +1798,7 @@ fn build_signing_runtime(
     if let Some(pocket) = pocket {
         runtime.set_pocket_platform(pocket);
     }
+    runtime.set_profile_platform(profile::CliProfileHost::from_env());
     runtime.start_statement_allowance_renewal();
     Ok((runtime, platform))
 }
