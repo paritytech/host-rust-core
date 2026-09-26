@@ -460,8 +460,9 @@ tester group rather than anyone holding a link. That matters beyond
 convenience: these builds carry configuration that should not be public, so
 attaching them to a release is not an option.
 
-`android-nightly.yml` runs on weekdays at 22:00 UTC, two hours after the iOS
-nightly starts, so the two never overlap. `android-debug-distribution.yml` runs
+`android-nightly.yml` runs daily at 22:00 UTC, two hours after the iOS
+nightly starts, so the two never overlap. Both nightlies skip a scheduled night
+when `main` has not moved past what their last successful run built. `android-debug-distribution.yml` runs
 when a pull request merges to `main`, and answers what `main` does right now.
 It builds the merge commit rather than the pull request's merge preview, which
 is computed while the request is open and would otherwise ship a tree missing
