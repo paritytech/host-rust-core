@@ -88,28 +88,6 @@ public struct HostRuntimeConfig: Sendable, Equatable {
     }
 }
 
-/// Host-selected identity and trusted kind for one executable connection.
-public struct ProductExecutionConfig: Sendable, Equatable {
-    public let productId: String
-    public let executionKind: ProductExecutionKind
-
-    public init(productId: String, executionKind: ProductExecutionKind) {
-        self.productId = productId
-        self.executionKind = executionKind
-    }
-
-    fileprivate init(native: NativeProductExecutionConfig) {
-        self.init(productId: native.productId, executionKind: native.executionKind)
-    }
-
-    fileprivate var native: NativeProductExecutionConfig {
-        NativeProductExecutionConfig(
-            productId: productId,
-            executionKind: executionKind
-        )
-    }
-}
-
 /// Bootstrap helper for the native localhost WebSocket bridge that a product
 /// execution starts when the cdylib is built with the `ws-bridge` feature.
 public enum LocalhostBridgeBootstrap {
@@ -520,12 +498,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     }
 
     func devicePermission(
-        product: NativeProductExecutionConfig,
+        product: ProductExecutionConfig,
         request: HostDevicePermissionRequest
     ) async throws -> PermissionDecision {
         try await withHostRejection {
             try await bridge.devicePermission(
-                product: ProductExecutionConfig(native: product),
+                product: product,
                 request: request
             )
         }
@@ -540,12 +518,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     }
 
     func remotePermission(
-        product: NativeProductExecutionConfig,
+        product: ProductExecutionConfig,
         request: RemotePermission
     ) async throws -> PermissionDecision {
         try await withHostRejection {
             try await bridge.remotePermission(
-                product: ProductExecutionConfig(native: product),
+                product: product,
                 request: request
             )
         }
@@ -773,7 +751,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
             callbacks: adapter,
             chatCallbacks: chatAdapter,
             pocketCallbacks: pocketAdapter,
-            executionConfig: configuration.native
+            executionConfig: configuration
         )
         return TrUAPIProductExecution(
             inner: execution,
@@ -914,7 +892,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// dropped by the next pass after ``activateLocalSession(secret:liteUsername:)``
     /// installs a different identity. Re-track those whenever the identity changes.
     public func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws {
-        try inner.trackStatementRenewalTargets(targets: targets.map(\.native))
+        try inner.trackStatementRenewalTargets(targets: targets)
     }
 
     /// The accounts the ledger tracks, in the order they were tracked.
@@ -922,7 +900,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// Needs no active session, so a `BGTaskScheduler` wake can read it on a
     /// cold start before deciding whether a pass is worth running.
     public func statementRenewalTargets() throws -> [TrackedStatementRenewalTarget] {
-        try inner.statementRenewalTargets().map(TrackedStatementRenewalTarget.init(native:))
+        try inner.statementRenewalTargets()
     }
 
     /// The root public key the active identity records its fixed entries under.
@@ -979,56 +957,6 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// fix and a person may need telling about.
     public func lastStatementRenewalReport() -> StatementRenewalReport? {
         inner.lastStatementRenewalReport()
-    }
-}
-
-/// An account renewal should keep allowed on the Statement Store.
-public enum StatementRenewalTarget: Sendable {
-    /// The statement-store allowance account derived for one product. Resolves
-    /// under whatever root entropy is active, so it survives a rotation.
-    case productStatementAllowance(productId: String)
-    /// The wallet's own SSO account. Also a derivation, so it survives a rotation.
-    case walletSso
-    /// A fixed account, such as a pairing peer's device statement key. Must be
-    /// exactly 32 bytes, and is dropped when the promising identity changes.
-    case account(accountId: Data, label: String)
-
-    var native: NativeStatementRenewalTarget {
-        switch self {
-        case let .productStatementAllowance(productId):
-            .productStatementAllowance(productId: productId)
-        case .walletSso:
-            .walletSso
-        case let .account(accountId, label):
-            .account(accountId: accountId, label: label)
-        }
-    }
-
-    init(native: NativeStatementRenewalTarget) {
-        switch native {
-        case let .productStatementAllowance(productId):
-            self = .productStatementAllowance(productId: productId)
-        case .walletSso:
-            self = .walletSso
-        case let .account(accountId, label):
-            self = .account(accountId: accountId, label: label)
-        }
-    }
-}
-
-/// One entry the renewal ledger holds, as a host reads it back.
-public struct TrackedStatementRenewalTarget: Sendable {
-    /// The account, or the recipe for one, that the host promised to renew.
-    public let target: StatementRenewalTarget
-    /// Root public key that promised a fixed account. A recipe carries none and
-    /// resolves under whichever identity is active. Compare it against
-    /// ``TrUAPIHostRuntime/statementRenewalOwnerKey()`` to tell an entry a pass
-    /// will renew from one it will prune.
-    public let owner: Data?
-
-    init(native: NativeTrackedStatementRenewalTarget) {
-        target = StatementRenewalTarget(native: native.target)
-        owner = native.owner
     }
 }
 

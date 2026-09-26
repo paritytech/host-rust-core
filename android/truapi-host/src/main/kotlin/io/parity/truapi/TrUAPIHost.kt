@@ -76,44 +76,20 @@ import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_server.localhostBridgeBootstrapScript
-import uniffi.truapi_server.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
-import uniffi.truapi_server.NativeStatementRenewalTarget
-import uniffi.truapi_server.NativeTrackedStatementRenewalTarget
+import uniffi.truapi_server.StatementRenewalTarget
+import uniffi.truapi_server.TrackedStatementRenewalTarget
 import uniffi.truapi_server.StatementRenewalReport
 import uniffi.truapi_server.WorkerTransition
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
 import uniffi.truapi_server.NativeHostRuntimeConfig as UniFfiNativeHostRuntimeConfig
-import uniffi.truapi_server.NativeProductExecutionConfig as UniFfiNativeProductExecutionConfig
+import uniffi.truapi_server.ProductExecutionConfig
 
 /** Package metadata. */
 object TrUAPIHost {
     const val VERSION = "0.1.0"
-}
-
-/** Trusted kind of executable attached to a product connection. */
-enum class ProductExecutionKind {
-    APP,
-    WIDGET,
-    WORKER;
-
-    internal fun toNative(): UniFfiProductExecutionKind =
-        when (this) {
-            APP -> UniFfiProductExecutionKind.APP
-            WIDGET -> UniFfiProductExecutionKind.WIDGET
-            WORKER -> UniFfiProductExecutionKind.WORKER
-        }
-
-    internal companion object {
-        fun fromNative(kind: UniFfiProductExecutionKind): ProductExecutionKind =
-            when (kind) {
-                UniFfiProductExecutionKind.APP -> APP
-                UniFfiProductExecutionKind.WIDGET -> WIDGET
-                UniFfiProductExecutionKind.WORKER -> WORKER
-            }
-    }
 }
 
 /**
@@ -187,26 +163,6 @@ data class HostRuntimeConfig(
         result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
         result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
         return result
-    }
-}
-
-/** Host-selected identity and trusted kind for one executable connection. */
-data class ProductExecutionConfig(
-    val productId: String,
-    val executionKind: ProductExecutionKind,
-) {
-    internal fun toNative(): UniFfiNativeProductExecutionConfig =
-        UniFfiNativeProductExecutionConfig(
-            productId = productId,
-            executionKind = executionKind.toNative(),
-        )
-
-    internal companion object {
-        fun fromNative(config: UniFfiNativeProductExecutionConfig): ProductExecutionConfig =
-            ProductExecutionConfig(
-                productId = config.productId,
-                executionKind = ProductExecutionKind.fromNative(config.executionKind),
-            )
     }
 }
 
@@ -559,11 +515,11 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
         withHostRejection { bridge.cancelNotification(id) }
 
     override suspend fun devicePermission(
-        product: UniFfiNativeProductExecutionConfig,
+        product: ProductExecutionConfig,
         request: HostDevicePermissionRequest,
     ): PermissionDecision =
         withHostRejection {
-            bridge.devicePermission(ProductExecutionConfig.fromNative(product), request)
+            bridge.devicePermission(product, request)
         }
 
     override suspend fun devicePermissionStatus(
@@ -571,11 +527,11 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     ): DevicePermissionStatus = withHostRejection { bridge.devicePermissionStatus(request) }
 
     override suspend fun remotePermission(
-        product: UniFfiNativeProductExecutionConfig,
+        product: ProductExecutionConfig,
         request: RemotePermission,
     ): PermissionDecision =
         withHostRejection {
-            bridge.remotePermission(ProductExecutionConfig.fromNative(product), request)
+            bridge.remotePermission(product, request)
         }
 
     override fun authStateChanged(state: AuthState) {
@@ -780,7 +736,7 @@ class TrUAPIHostRuntime private constructor(
                 adapter,
                 chatAdapter,
                 pocketAdapter,
-                configuration.toNative(),
+                configuration,
             )
         return TrUAPIProductExecution(execution, adapter, chatAdapter, pocketAdapter)
     }
@@ -904,11 +860,11 @@ class TrUAPIHostRuntime private constructor(
      * pairing, not at construction.
      *
      * Recipe-shaped targets survive a change of root entropy; a raw
-     * [NativeStatementRenewalTarget.Account] does not, so re-track those
+     * [StatementRenewalTarget.Account] does not, so re-track those
      * whenever the active identity changes.
      */
     @Throws(NativeRenewalTargetException::class)
-    fun trackStatementRenewalTargets(targets: List<NativeStatementRenewalTarget>) {
+    fun trackStatementRenewalTargets(targets: List<StatementRenewalTarget>) {
         inner.trackStatementRenewalTargets(targets)
     }
 
@@ -918,7 +874,7 @@ class TrUAPIHostRuntime private constructor(
      * whether a pass is worth running.
      */
     @Throws(NativeRenewalTargetException::class)
-    fun statementRenewalTargets(): List<NativeTrackedStatementRenewalTarget> =
+    fun statementRenewalTargets(): List<TrackedStatementRenewalTarget> =
         inner.statementRenewalTargets()
 
     /**

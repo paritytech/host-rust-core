@@ -400,7 +400,7 @@ Scheduling is one of three layers, and only the first needs the OS:
 
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call. A pass has no cancellation, so several targets can outlast a short background budget; targets registered before the process is killed are not lost, and read back as already allocated next time.
 
-An account id must be exactly 32 bytes. Anything else is rejected as `NativeRenewalTargetError.InvalidAccountId` before any chain work happens.
+An account id must be exactly 32 bytes. Anything else is rejected where the bindings convert it, before any chain work happens.
 
 ## Example
 

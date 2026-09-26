@@ -205,8 +205,8 @@ Record the accounts to keep allowed. This needs an active session, so call it af
 ```kotlin
 runtime.trackStatementRenewalTargets(
     listOf(
-        NativeStatementRenewalTarget.WalletSso,
-        NativeStatementRenewalTarget.Account(deviceStatementKey, "device"),
+        StatementRenewalTarget.WalletSso,
+        StatementRenewalTarget.Account(deviceStatementKey, "device"),
     ),
 )
 ```
@@ -254,7 +254,7 @@ Scheduling is one of three layers, and only the first needs the OS:
 
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
 
-An account id must be exactly 32 bytes. Anything else throws `NativeRenewalTargetException.InvalidAccountId` before any chain work happens.
+An account id must be exactly 32 bytes. Anything else is rejected where the bindings convert it, before any chain work happens.
 
 ## Example
 
@@ -283,8 +283,8 @@ import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
 import io.parity.truapi.HostRuntimeConfig
-import io.parity.truapi.ProductExecutionConfig
-import io.parity.truapi.ProductExecutionKind
+import uniffi.truapi_server.ProductExecutionConfig
+import uniffi.truapi_server.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

@@ -22,7 +22,7 @@ use crate::platform::{
     PermissionDecision, Permissions, PlatformInfo, PreimageHost, ProductContext,
     ProductExecutionKind, ProductOperations, ProductStorage, ProviderError,
     RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
-    UserConfirmationReview, async_trait, normalize_product_identifier,
+    UserConfirmationReview, async_trait,
 };
 use futures::channel::mpsc;
 use futures::executor::ThreadPool;
@@ -223,7 +223,7 @@ pub struct NativeHostRuntimeConfig {
 
 /// Trusted identity attached by a native host to one executable connection.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct NativeProductExecutionConfig {
+pub struct ProductExecutionConfig {
     /// Canonical product identifier used for policy, storage, and derivation.
     pub product_id: String,
     /// Trusted executable kind selected before product code starts.
@@ -364,7 +364,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     }
 }
 
-impl From<&ProductContext> for NativeProductExecutionConfig {
+impl From<&ProductContext> for ProductExecutionConfig {
     fn from(product: &ProductContext) -> Self {
         Self {
             product_id: product.product_id.clone(),
@@ -373,10 +373,10 @@ impl From<&ProductContext> for NativeProductExecutionConfig {
     }
 }
 
-impl TryFrom<NativeProductExecutionConfig> for ProductContext {
+impl TryFrom<ProductExecutionConfig> for ProductContext {
     type Error = NativeRuntimeConfigError;
 
-    fn try_from(config: NativeProductExecutionConfig) -> Result<Self, Self::Error> {
+    fn try_from(config: ProductExecutionConfig) -> Result<Self, Self::Error> {
         ProductContext::new_with_execution(config.product_id, config.execution_kind)
             .map_err(NativeRuntimeConfigError::from)
     }
@@ -583,7 +583,7 @@ pub trait HostCallbacks: Send + Sync {
     /// or always.
     async fn device_permission(
         &self,
-        product: NativeProductExecutionConfig,
+        product: ProductExecutionConfig,
         request: v01::HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, HostRejection>;
 
@@ -605,7 +605,7 @@ pub trait HostCallbacks: Send + Sync {
     /// Prompt the user for a remote permission `product` requested.
     async fn remote_permission(
         &self,
-        product: NativeProductExecutionConfig,
+        product: ProductExecutionConfig,
         request: v01::RemotePermission,
     ) -> Result<PermissionDecision, HostRejection>;
 
@@ -934,28 +934,6 @@ impl NativeTrUApiHostRuntime {
     }
 }
 
-/// An account the host wants kept allowed on the Statement Store across
-/// periods. Mirrors [`crate::runtime::StatementRenewalTarget`] with a
-/// length-checked `account_id`, because UniFFI carries byte arrays as `Vec<u8>`
-/// rather than a fixed width.
-#[derive(Debug, Clone, uniffi::Enum)]
-pub enum NativeStatementRenewalTarget {
-    /// The statement-store allowance account derived for one product.
-    ProductStatementAllowance {
-        /// Product the allowance account belongs to.
-        product_id: String,
-    },
-    /// The wallet's own SSO account.
-    WalletSso,
-    /// A fixed account, such as a pairing peer's device statement key.
-    Account {
-        /// Account to keep allowed; exactly 32 bytes.
-        account_id: Vec<u8>,
-        /// Human-readable name used in logs and reports.
-        label: String,
-    },
-}
-
 /// A refused pairing call on the signing host's responder side.
 ///
 /// The two variants differ in what the host still owes the peer, which is why
@@ -1011,88 +989,12 @@ pub struct NativeAnnouncedPairing {
 /// A refused renewal-ledger call: tracking, untracking or reading it back.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum NativeRenewalTargetError {
-    /// `account_id` was not exactly 32 bytes.
-    #[error("account_id must be exactly 32 bytes, got {actual}")]
-    InvalidAccountId {
-        /// Supplied byte length.
-        actual: u64,
-    },
-    /// `product_id` is not a usable product identifier.
-    #[error("product_id {product_id} is not a valid product identifier")]
-    InvalidProductId {
-        /// The identifier as supplied.
-        product_id: String,
-    },
     /// The core refused to record the targets.
     #[error("{reason}")]
     Rejected {
         /// Human-readable rejection reason.
         reason: String,
     },
-}
-
-impl TryFrom<NativeStatementRenewalTarget> for crate::runtime::StatementRenewalTarget {
-    type Error = NativeRenewalTargetError;
-
-    fn try_from(target: NativeStatementRenewalTarget) -> Result<Self, Self::Error> {
-        Ok(match target {
-            NativeStatementRenewalTarget::ProductStatementAllowance { product_id } => {
-                // The renewal account is derived from this string, and a product
-                // connection derives its own from the normalized form. Skipping
-                // the normalization here renews an account no product uses, and
-                // the real one lapses at the next boundary.
-                Self::ProductStatementAllowance {
-                    product_id: normalize_product_identifier(&product_id)
-                        .map_err(|_| NativeRenewalTargetError::InvalidProductId { product_id })?,
-                }
-            }
-            NativeStatementRenewalTarget::WalletSso => Self::WalletSso,
-            NativeStatementRenewalTarget::Account { account_id, label } => {
-                let account_id: [u8; 32] = account_id.as_slice().try_into().map_err(|_| {
-                    NativeRenewalTargetError::InvalidAccountId {
-                        actual: account_id.len() as u64,
-                    }
-                })?;
-                Self::Account { account_id, label }
-            }
-        })
-    }
-}
-
-/// One entry the renewal ledger holds, as a host reads it back.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct NativeTrackedStatementRenewalTarget {
-    /// The account, or the recipe for one, that the host promised to renew.
-    pub target: NativeStatementRenewalTarget,
-    /// Root public key that promised a raw account id. A recipe carries none
-    /// and resolves under whichever identity is active.
-    pub owner: Option<Bytes32>,
-}
-
-impl From<crate::runtime::StatementRenewalTarget> for NativeStatementRenewalTarget {
-    fn from(target: crate::runtime::StatementRenewalTarget) -> Self {
-        match target {
-            crate::runtime::StatementRenewalTarget::ProductStatementAllowance { product_id } => {
-                Self::ProductStatementAllowance { product_id }
-            }
-            crate::runtime::StatementRenewalTarget::WalletSso => Self::WalletSso,
-            crate::runtime::StatementRenewalTarget::Account { account_id, label } => {
-                Self::Account {
-                    account_id: account_id.to_vec(),
-                    label,
-                }
-            }
-        }
-    }
-}
-
-impl From<crate::runtime::TrackedStatementRenewalTarget> for NativeTrackedStatementRenewalTarget {
-    fn from(entry: crate::runtime::TrackedStatementRenewalTarget) -> Self {
-        Self {
-            target: entry.target.into(),
-            owner: entry.owner,
-        }
-    }
 }
 
 #[uniffi::export]
@@ -1121,7 +1023,7 @@ impl NativeTrUApiHostRuntime {
         callbacks: Arc<dyn HostCallbacks>,
         chat_callbacks: Option<Arc<dyn NativeChatCallbacks>>,
         pocket_callbacks: Option<Arc<dyn NativePocketCallbacks>>,
-        execution_config: NativeProductExecutionConfig,
+        execution_config: ProductExecutionConfig,
     ) -> Result<Arc<NativeProductExecution>, NativeRuntimeConfigError> {
         let product: ProductContext = execution_config.try_into()?;
         Ok(self.open_product_execution_with_callbacks(
@@ -1260,12 +1162,8 @@ impl NativeTrUApiHostRuntime {
     /// tracked.
     pub fn track_statement_renewal_targets(
         &self,
-        targets: Vec<NativeStatementRenewalTarget>,
+        targets: Vec<crate::runtime::StatementRenewalTarget>,
     ) -> Result<(), NativeRenewalTargetError> {
-        let targets = targets
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect::<Result<Vec<_>, _>>()?;
         futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
             .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
@@ -1277,9 +1175,8 @@ impl NativeTrUApiHostRuntime {
     /// [`Self::untrack_statement_renewal_account`].
     pub fn statement_renewal_targets(
         &self,
-    ) -> Result<Vec<NativeTrackedStatementRenewalTarget>, NativeRenewalTargetError> {
+    ) -> Result<Vec<crate::runtime::TrackedStatementRenewalTarget>, NativeRenewalTargetError> {
         futures::executor::block_on(self.runtime.statement_renewal_targets())
-            .map(|entries| entries.into_iter().map(Into::into).collect())
             .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
 
@@ -1302,13 +1199,8 @@ impl NativeTrUApiHostRuntime {
     /// identity promised. Needs an active session to resolve that identity.
     pub fn untrack_statement_renewal_account(
         &self,
-        account_id: Vec<u8>,
+        account_id: Bytes32,
     ) -> Result<bool, NativeRenewalTargetError> {
-        let account_id: [u8; 32] = account_id.as_slice().try_into().map_err(|_| {
-            NativeRenewalTargetError::InvalidAccountId {
-                actual: account_id.len() as u64,
-            }
-        })?;
         futures::executor::block_on(self.runtime.untrack_statement_renewal_account(&account_id))
             .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
     }
@@ -2767,32 +2659,6 @@ mod tests {
         );
     }
 
-    /// UniFFI hands `account_id` over as a length-free `Vec<u8>`, so the width
-    /// the ledger depends on is only enforced here. A short id that converted
-    /// anyway would renew an allowance for the wrong account.
-    #[test]
-    fn a_renewal_target_account_id_must_be_exactly_32_bytes() {
-        let target = |len: usize| NativeStatementRenewalTarget::Account {
-            account_id: vec![0x11; len],
-            label: "device".to_string(),
-        };
-
-        assert!(matches!(
-            crate::runtime::StatementRenewalTarget::try_from(target(32)),
-            Ok(crate::runtime::StatementRenewalTarget::Account { account_id, .. })
-                if account_id == [0x11; 32]
-        ));
-        for len in [0, 31, 33] {
-            assert!(
-                matches!(
-                    crate::runtime::StatementRenewalTarget::try_from(target(len)),
-                    Err(NativeRenewalTargetError::InvalidAccountId { actual }) if actual == len as u64
-                ),
-                "a {len}-byte account id must be rejected, and report its length"
-            );
-        }
-    }
-
     #[test]
     fn an_unexpected_foreign_error_converts_instead_of_panicking() {
         // A host that throws an exception its trait does not declare lands in
@@ -2832,102 +2698,6 @@ mod tests {
                 reason: reason.to_string(),
             }
         );
-    }
-
-    /// The renewal account is derived from `product_id`, and a product
-    /// connection derives its own from the normalized form, so an unnormalized
-    /// id here renews an account no product uses while the real one lapses.
-    #[test]
-    fn a_product_target_normalizes_its_identifier() {
-        for supplied in [
-            "  truapi-playground.dot  ",
-            "TruAPI-Playground.dot",
-            "TRUAPI-PLAYGROUND.DOT",
-        ] {
-            let converted = crate::runtime::StatementRenewalTarget::try_from(
-                NativeStatementRenewalTarget::ProductStatementAllowance {
-                    product_id: supplied.to_string(),
-                },
-            );
-            assert!(
-                matches!(
-                    converted,
-                    Ok(crate::runtime::StatementRenewalTarget::ProductStatementAllowance {
-                        ref product_id
-                    }) if product_id == "truapi-playground.dot"
-                ),
-                "{supplied:?} did not normalize: {converted:?}"
-            );
-        }
-
-        assert!(matches!(
-            crate::runtime::StatementRenewalTarget::try_from(
-                NativeStatementRenewalTarget::ProductStatementAllowance {
-                    product_id: "not a product".to_string(),
-                }
-            ),
-            Err(NativeRenewalTargetError::InvalidProductId { .. })
-        ));
-    }
-
-    // The read direction is the one a host audits its slots through, so a
-    // dropped account id or owner there is a silent wrong answer rather than a
-    // compile error.
-    #[test]
-    fn a_tracked_entry_survives_the_trip_out_to_the_native_boundary() {
-        let entry = crate::runtime::TrackedStatementRenewalTarget {
-            target: crate::runtime::StatementRenewalTarget::Account {
-                account_id: [7; 32],
-                label: "device".to_string(),
-            },
-            owner: Some([9; 32]),
-        };
-
-        let native = NativeTrackedStatementRenewalTarget::from(entry);
-
-        assert_eq!(native.owner, Some([9; 32]));
-        assert!(matches!(
-            native.target,
-            NativeStatementRenewalTarget::Account { account_id, label }
-                if account_id == vec![7; 32] && label == "device"
-        ));
-    }
-
-    #[test]
-    fn a_recipe_entry_reports_no_owner_across_the_boundary() {
-        let entry = crate::runtime::TrackedStatementRenewalTarget {
-            target: crate::runtime::StatementRenewalTarget::WalletSso,
-            owner: None,
-        };
-
-        let native = NativeTrackedStatementRenewalTarget::from(entry);
-
-        assert!(native.owner.is_none());
-        assert!(matches!(
-            native.target,
-            NativeStatementRenewalTarget::WalletSso
-        ));
-    }
-
-    /// The other two variants carry no bytes to validate, so they must convert
-    /// rather than share the `Account` arm's failure path.
-    #[test]
-    fn byteless_renewal_targets_convert() {
-        assert!(matches!(
-            crate::runtime::StatementRenewalTarget::try_from(
-                NativeStatementRenewalTarget::WalletSso
-            ),
-            Ok(crate::runtime::StatementRenewalTarget::WalletSso)
-        ));
-        assert!(matches!(
-            crate::runtime::StatementRenewalTarget::try_from(
-                NativeStatementRenewalTarget::ProductStatementAllowance {
-                    product_id: "truapi-playground.dot".to_string(),
-                }
-            ),
-            Ok(crate::runtime::StatementRenewalTarget::ProductStatementAllowance { product_id })
-                if product_id == "truapi-playground.dot"
-        ));
     }
 
     fn text_chat_action(text: &str) -> v01::HostChatActionSubscribeItem {
@@ -3059,7 +2829,7 @@ mod tests {
         }
         async fn device_permission(
             &self,
-            _product: NativeProductExecutionConfig,
+            _product: ProductExecutionConfig,
             _request: v01::HostDevicePermissionRequest,
         ) -> Result<PermissionDecision, HostRejection> {
             Ok(PermissionDecision::Deny)
@@ -3076,7 +2846,7 @@ mod tests {
         }
         async fn remote_permission(
             &self,
-            product: NativeProductExecutionConfig,
+            product: ProductExecutionConfig,
             _request: v01::RemotePermission,
         ) -> Result<PermissionDecision, HostRejection> {
             self.remote_permission_calls.fetch_add(1, Ordering::SeqCst);
@@ -3448,8 +3218,8 @@ mod tests {
     fn native_execution_config(
         product_id: &str,
         execution_kind: ProductExecutionKind,
-    ) -> NativeProductExecutionConfig {
-        NativeProductExecutionConfig {
+    ) -> ProductExecutionConfig {
+        ProductExecutionConfig {
             product_id: product_id.to_string(),
             execution_kind,
         }
@@ -4790,7 +4560,7 @@ mod tests {
 
     #[test]
     fn product_execution_config_rejects_empty_product_id() {
-        let err = ProductContext::try_from(NativeProductExecutionConfig {
+        let err = ProductContext::try_from(ProductExecutionConfig {
             product_id: " ".to_string(),
             ..native_execution_config("app.dot", ProductExecutionKind::App)
         })
@@ -4864,7 +4634,7 @@ mod tests {
             }
             async fn device_permission(
                 &self,
-                _product: NativeProductExecutionConfig,
+                _product: ProductExecutionConfig,
                 _request: v01::HostDevicePermissionRequest,
             ) -> Result<PermissionDecision, HostRejection> {
                 Ok(PermissionDecision::Deny)
@@ -4877,7 +4647,7 @@ mod tests {
             }
             async fn remote_permission(
                 &self,
-                _product: NativeProductExecutionConfig,
+                _product: ProductExecutionConfig,
                 _request: v01::RemotePermission,
             ) -> Result<PermissionDecision, HostRejection> {
                 Ok(PermissionDecision::Deny)
@@ -5034,7 +4804,7 @@ mod tests {
             }
             async fn device_permission(
                 &self,
-                _product: NativeProductExecutionConfig,
+                _product: ProductExecutionConfig,
                 _request: v01::HostDevicePermissionRequest,
             ) -> Result<PermissionDecision, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
@@ -5054,7 +4824,7 @@ mod tests {
             }
             async fn remote_permission(
                 &self,
-                _product: NativeProductExecutionConfig,
+                _product: ProductExecutionConfig,
                 _request: v01::RemotePermission,
             ) -> Result<PermissionDecision, HostRejection> {
                 Ok(PermissionDecision::Deny)

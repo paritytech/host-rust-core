@@ -8,8 +8,8 @@ import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
-import io.parity.truapi.ProductExecutionConfig
-import io.parity.truapi.ProductExecutionKind
+import uniffi.truapi_server.ProductExecutionConfig
+import uniffi.truapi_server.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import io.parity.truapi.TrUAPIProductExecution
 import io.parity.truapi.WebSocketChainProvider

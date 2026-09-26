@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::platform::{CoreStorage, CoreStorageKey};
+use crate::platform::{CoreStorage, CoreStorageKey, normalize_product_identifier};
 use futures::lock::Mutex;
 use parity_scale_codec::{Decode, Encode};
 use tracing::{debug, info, warn};
@@ -40,6 +40,7 @@ const CLOCK_FAILURE_TICK_DELAY: Duration = Duration::from_secs(3_600);
 /// survives root-entropy rotation (the CLI rotates auto-managed accounts on
 /// slot exhaustion).
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum StatementRenewalTarget {
     /// `//allowance//statement-store//{product_id}` from the active root entropy.
     ProductStatementAllowance {
@@ -57,24 +58,18 @@ pub enum StatementRenewalTarget {
     },
 }
 
-/// One persisted ledger entry.
+/// One persisted ledger entry, which is also what a host reads back.
 ///
 /// A derivation recipe resolves under whatever root entropy is active, so it
 /// carries no owner and keeps working across a rotation. A raw account id does
 /// not re-derive, so it records the root public key that promised it and is
 /// ignored under any other identity: without that, a later account would spend
 /// its own slot-table capacity keeping a previous account's peer allowed.
-#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
-struct LedgerEntry {
-    target: StatementRenewalTarget,
-    owner: Option<[u8; 32]>,
-}
-
-/// One ledger entry as a host reads it back.
 ///
-/// Mirrors the persisted entry rather than resolving it: resolution needs root
-/// entropy, and a host inspecting its slots may hold none.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Reading it back does not resolve it: resolution needs root entropy, and a
+/// host inspecting its slots may hold none.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct TrackedStatementRenewalTarget {
     /// The account, or the recipe for one, that the host promised to renew.
     pub target: StatementRenewalTarget,
@@ -83,7 +78,28 @@ pub struct TrackedStatementRenewalTarget {
     pub owner: Option<[u8; 32]>,
 }
 
-impl LedgerEntry {
+impl StatementRenewalTarget {
+    /// This target with its product identifier in canonical form.
+    ///
+    /// The renewal account is derived from `product_id`, and a product
+    /// connection derives its own from the normalized form, so an unnormalized
+    /// id renews an account no product uses while the real one lapses.
+    fn normalized(self) -> Result<Self, String> {
+        match self {
+            Self::ProductStatementAllowance { product_id } => {
+                let normalized = normalize_product_identifier(&product_id).map_err(|_| {
+                    format!("product_id {product_id} is not a valid product identifier")
+                })?;
+                Ok(Self::ProductStatementAllowance {
+                    product_id: normalized,
+                })
+            }
+            target @ (Self::WalletSso | Self::Account { .. }) => Ok(target),
+        }
+    }
+}
+
+impl TrackedStatementRenewalTarget {
     /// Record `target` under `owner`, which only raw account ids retain.
     fn new(target: StatementRenewalTarget, owner: [u8; 32]) -> Self {
         let owner = match &target {
@@ -155,7 +171,9 @@ impl RenewalState {
 /// the pass: the entries are recipes and raw account ids that
 /// [`track_targets`] rebuilds on the next allocation or pairing, so refusing to
 /// renew anything is strictly worse than starting over.
-async fn read_entries(storage: &(impl CoreStorage + ?Sized)) -> Result<Vec<LedgerEntry>, String> {
+async fn read_entries(
+    storage: &(impl CoreStorage + ?Sized),
+) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
     let Some(blob) = storage
         .read_core_storage(CoreStorageKey::StatementRenewalTargets)
         .await
@@ -184,7 +202,7 @@ async fn track_targets(
     let mut entries = read_entries(storage).await?;
     let mut changed = false;
     for target in new_targets {
-        let entry = LedgerEntry::new(target, owner);
+        let entry = TrackedStatementRenewalTarget::new(target, owner);
         if !entries.contains(&entry) {
             entries.push(entry);
             changed = true;
@@ -205,14 +223,7 @@ async fn list_entries(
     ledger_lock: &Mutex<()>,
 ) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
     let _guard = ledger_lock.lock().await;
-    Ok(read_entries(storage)
-        .await?
-        .into_iter()
-        .map(|entry| TrackedStatementRenewalTarget {
-            target: entry.target,
-            owner: entry.owner,
-        })
-        .collect())
+    read_entries(storage).await
 }
 
 async fn untrack_account(
@@ -243,7 +254,7 @@ async fn untrack_account(
 
 async fn write_entries(
     storage: &(impl CoreStorage + ?Sized),
-    entries: &[LedgerEntry],
+    entries: &[TrackedStatementRenewalTarget],
 ) -> Result<(), String> {
     storage
         .write_core_storage(CoreStorageKey::StatementRenewalTargets, entries.encode())
@@ -251,9 +262,9 @@ async fn write_entries(
         .map_err(|err| format!("renewal ledger write failed: {}", err.reason))
 }
 
-fn decode_entries(blob: &[u8]) -> Result<Vec<LedgerEntry>, String> {
+fn decode_entries(blob: &[u8]) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
     let mut input = blob;
-    let entries = Vec::<LedgerEntry>::decode(&mut input)
+    let entries = Vec::<TrackedStatementRenewalTarget>::decode(&mut input)
         .map_err(|err| format!("invalid persisted renewal targets: {err}"))?;
     if !input.is_empty() {
         return Err("invalid persisted renewal targets: trailing bytes".to_string());
@@ -312,6 +323,10 @@ pub async fn track(
     signing_host: &SigningHost,
     targets: Vec<StatementRenewalTarget>,
 ) -> Result<(), String> {
+    let targets = targets
+        .into_iter()
+        .map(StatementRenewalTarget::normalized)
+        .collect::<Result<Vec<_>, _>>()?;
     let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
     track_targets(
         signing_host.platform.as_ref(),
@@ -842,7 +857,7 @@ mod tests {
             // Dropped, not merely skipped, so the cost is paid once.
             assert_eq!(
                 read_entries(&storage).await.unwrap(),
-                vec![LedgerEntry::new(product("a.dot"), OWNER)]
+                vec![TrackedStatementRenewalTarget::new(product("a.dot"), OWNER)]
             );
         });
     }
@@ -1095,7 +1110,7 @@ mod tests {
 
     #[test]
     fn ledger_rejects_trailing_bytes() {
-        let mut blob = vec![LedgerEntry::new(product("a.dot"), OWNER)].encode();
+        let mut blob = vec![TrackedStatementRenewalTarget::new(product("a.dot"), OWNER)].encode();
         blob.push(0xff);
         assert!(decode_entries(&blob).is_err());
     }
@@ -1334,5 +1349,35 @@ mod tests {
             owner_key(&[7u8; 32]).unwrap(),
             owner_key(&[8u8; 32]).unwrap()
         );
+    }
+
+    // A product connection derives its allowance account from the normalized
+    // id, so tracking any other spelling renews an account no product uses.
+    #[test]
+    fn a_product_target_normalizes_its_identifier() {
+        for supplied in [
+            "  truapi-playground.dot  ",
+            "TruAPI-Playground.dot",
+            "TRUAPI-PLAYGROUND.DOT",
+        ] {
+            assert_eq!(
+                product(supplied).normalized(),
+                Ok(product("truapi-playground.dot")),
+                "{supplied:?} did not normalize"
+            );
+        }
+        assert_eq!(
+            product("not a product").normalized(),
+            Err("product_id not a product is not a valid product identifier".to_string())
+        );
+        for target in [
+            StatementRenewalTarget::WalletSso,
+            StatementRenewalTarget::Account {
+                account_id: [0x11; 32],
+                label: "device".to_string(),
+            },
+        ] {
+            assert_eq!(target.clone().normalized(), Ok(target));
+        }
     }
 }

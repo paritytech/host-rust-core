@@ -5,7 +5,7 @@ import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostRuntimeConfig
 import io.parity.truapi.HostStorage
-import io.parity.truapi.ProductExecutionConfig
+import uniffi.truapi_server.ProductExecutionConfig
 import io.parity.truapi.TrUAPIHostRuntime
 import io.parity.truapi.WebSocketChainProvider
 import io.paritytech.polkadotapp.chains.multiNetwork.ChainRegistry
