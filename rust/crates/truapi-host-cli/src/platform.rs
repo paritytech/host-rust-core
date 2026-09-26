@@ -26,8 +26,8 @@ use truapi_server::platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, CreateTransactionReview,
     DevicePermissionStatus, Features, JsonRpcConnection, LocaleHost, Navigation, Notifications,
     PermissionDecision, PermissionStatusHost, Permissions, PreimageHost, ProductContext,
-    ProductOperations, ProductStorage, ProductStorageKey, SessionUiInfo, SignPayloadReview,
-    SignRawReview, ThemeHost, UserConfirmation, UserConfirmationReview,
+    ProductOperations, ProductStorage, ProductStorageKey, ProviderError, SessionUiInfo,
+    SignPayloadReview, SignRawReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
@@ -610,7 +610,7 @@ impl ChainProvider for CliPlatform {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, api::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         self.chain.connect(genesis_hash).await
     }
 }

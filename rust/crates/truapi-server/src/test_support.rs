@@ -24,8 +24,8 @@ use crate::platform::{
     Navigation as PlatformNavigation, Notifications as PlatformNotifications, PairingHostConfig,
     Permissions as PlatformPermissions, PlatformInfo, PreimageHost, ProductContext,
     ProductOperations as PlatformProductOperations, ProductStorage as PlatformProductStorage,
-    ProductSubtreeReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
-    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
+    ProductSubtreeReview, ProviderError, ResourceAllocationReview, SignPayloadReview,
+    SignRawReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
     UserConfirmationReview,
 };
 use futures::Stream;
@@ -1758,7 +1758,7 @@ impl ChainProvider for StubPlatform {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         // Recorded before the failure branches: a test asserting which chain
         // was dialled needs the attempt even when the connect never succeeds.
         self.chain_connects
@@ -1766,7 +1766,7 @@ impl ChainProvider for StubPlatform {
             .expect("chain connect mutex poisoned")
             .push(genesis_hash);
         if let Some(reason) = self.chain_connect_error {
-            return Err(v01::GenericError {
+            return Err(ProviderError::Host {
                 reason: reason.to_string(),
             });
         }

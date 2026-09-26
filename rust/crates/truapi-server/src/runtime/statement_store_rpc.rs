@@ -11,12 +11,11 @@ use std::sync::Arc;
 use core::time::Duration;
 use serde_json::{Value, json};
 
-use crate::platform::{JsonRpcConnection, Platform};
+use crate::platform::{JsonRpcConnection, Platform, ProviderError};
 use subxt_rpcs::RpcClient;
 use subxt_rpcs::client::{RpcSubscription, rpc_params};
 use thiserror::Error;
 use tracing::warn;
-use truapi::latest::GenericError;
 
 use crate::host_logic::statement_store::{
     SUBMIT_STATEMENT_METHOD, SUBSCRIBE_STATEMENT_METHOD, TopicFilterKind,
@@ -36,8 +35,8 @@ pub enum StatementStoreRpcClientError {
     Connect {
         /// Operation label requesting the connection.
         label: &'static str,
-        /// Host platform error.
-        error: GenericError,
+        /// Chain provider error.
+        error: ProviderError,
     },
 }
 

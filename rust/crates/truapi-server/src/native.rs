@@ -20,9 +20,9 @@ use crate::platform::{
     DevicePermissionStatus, Features, HostInfo, JsonRpcConnection, LocaleHost, Navigation,
     Notifications, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
     PermissionDecision, Permissions, PlatformInfo, PreimageHost, ProductContext,
-    ProductExecutionKind, ProductOperations, ProductStorage, RuntimeConfigValidationError,
-    SigningHostConfig, ThemeHost, UserConfirmation, UserConfirmationReview, async_trait,
-    normalize_product_identifier,
+    ProductExecutionKind, ProductOperations, ProductStorage, ProviderError,
+    RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
+    UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 use futures::channel::mpsc;
 use futures::executor::ThreadPool;
@@ -2393,14 +2393,16 @@ impl ChainProvider for CallbackPlatform {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         let close_generation = self.events.chain_close_generation();
         let Some(connection_id) = self
             .callbacks
             .chain_connect(genesis_hash.to_vec())
-            .map_err(v01::GenericError::from)?
+            .map_err(|rejection| ProviderError::Host {
+                reason: v01::GenericError::from(rejection).reason,
+            })?
         else {
-            return Err(v01::GenericError {
+            return Err(ProviderError::Host {
                 reason: "chain provider unavailable".to_string(),
             });
         };
@@ -2414,7 +2416,7 @@ impl ChainProvider for CallbackPlatform {
             closed: AtomicBool::new(false),
         };
         if !registered {
-            return Err(v01::GenericError {
+            return Err(ProviderError::Host {
                 reason: "chain connection closed during setup".to_string(),
             });
         }
@@ -4575,7 +4577,7 @@ mod tests {
         let closed = futures::executor::block_on(ChainProvider::connect(&platform, [9; 32]));
         assert_eq!(
             closed.map(|_| ()),
-            Err(v01::GenericError {
+            Err(ProviderError::Host {
                 reason: "chain connection closed during setup".to_string(),
             })
         );

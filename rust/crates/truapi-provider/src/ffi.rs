@@ -295,7 +295,7 @@ impl ChainProvider {
             // this reason, so it is unbounded at the source and crosses the
             // boundary twice.
             .map_err(|error| ChainProviderError::Storage {
-                reason: bounded_reason(error.reason),
+                reason: bounded_reason(error.to_string()),
             })
     }
 
@@ -317,7 +317,7 @@ impl ChainProvider {
             // this reason, so it is unbounded at the source and crosses the
             // boundary twice.
             .map_err(|error| ChainProviderError::Storage {
-                reason: bounded_reason(error.reason),
+                reason: bounded_reason(error.to_string()),
             })
     }
 
@@ -344,7 +344,7 @@ impl ChainProvider {
         let genesis = genesis_from(genesis_hash)?;
         let connection =
             block_on(self.inner.connect(genesis)).map_err(|error| ChainProviderError::Connect {
-                reason: error.reason,
+                reason: error.to_string(),
             })?;
         let connection: Arc<dyn JsonRpcConnection> = Arc::from(connection);
 

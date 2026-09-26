@@ -20,7 +20,7 @@
 ///
 /// An enum with one variant rather than a struct because the native bindings
 /// export this type, and uniffi errors must be enums.
-#[derive(Debug, Clone, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
 #[cfg_attr(
     all(feature = "uniffi", not(target_arch = "wasm32")),
     derive(uniffi::Error)
@@ -50,14 +50,6 @@ impl StorageClientError {
 }
 
 impl std::error::Error for StorageClientError {}
-
-impl From<StorageClientError> for truapi::latest::GenericError {
-    fn from(error: StorageClientError) -> Self {
-        Self {
-            reason: error.to_string(),
-        }
-    }
-}
 
 /// Where warm-start blobs are kept between runs.
 ///

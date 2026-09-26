@@ -10,8 +10,8 @@ use truapi_server::frame::ProtocolMessage;
 use truapi_server::platform::{
     AuthPresenter, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
     JsonRpcConnection, LocaleHost, Navigation, Notifications, PairingHostConfig, Permissions,
-    PlatformInfo, PreimageHost, ProductContext, ProductOperations, ProductStorage, ThemeHost,
-    UserConfirmation, UserConfirmationReview,
+    PlatformInfo, PreimageHost, ProductContext, ProductOperations, ProductStorage, ProviderError,
+    ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 use truapi_server::transport::Transport;
 
@@ -209,7 +209,7 @@ impl ChainProvider for WireShapePlatform {
     async fn connect(
         &self,
         _genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         Ok(Box::new(DeadConnection))
     }
 }

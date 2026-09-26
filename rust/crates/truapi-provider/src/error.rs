@@ -2,19 +2,19 @@
 
 #[cfg(feature = "smoldot")]
 use serde_json::{Value, json};
-use truapi::latest::GenericError;
 
-/// Failure modes surfaced by the provider's backends.
-///
-/// Converts to the trait's [`GenericError`] at the
-/// [`ChainProvider`](crate::platform::ChainProvider) boundary while letting
-/// in-crate callers match on the cause (e.g. for retry or telemetry).
+#[cfg(feature = "smoldot")]
+use crate::storage::StorageClientError;
+
+/// Failure modes of a [`ChainProvider`](crate::platform::ChainProvider) and of
+/// the embedded provider's own API, so callers can match on the cause (e.g.
+/// for retry or telemetry).
 ///
 /// Which variants are constructed depends on the enabled backends and target
 /// (e.g. `MissingRuntime` is native-WebSocket only), so the enum as a whole
 /// allows dead variants rather than cfg-gating each one.
 #[allow(dead_code)]
-#[derive(Debug, derive_more::Display, derive_more::Error)]
+#[derive(Debug, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 pub enum ProviderError {
     /// No backend is registered — and no bundled network defines — this
     /// genesis hash.
@@ -63,6 +63,43 @@ pub enum ProviderError {
         /// The underlying failure.
         reason: String,
     },
+    /// A host's own [`ChainProvider`](crate::platform::ChainProvider)
+    /// implementation refused or failed to open the connection.
+    #[display("{reason}")]
+    Host {
+        /// The reason the host reported.
+        reason: String,
+    },
+    /// Warm start was asked of a provider built without a store.
+    #[display(
+        "this provider was built without storage, so there is nowhere to keep finalized state"
+    )]
+    NoStorage,
+    /// The warm store could not read or write a blob.
+    #[cfg(feature = "smoldot")]
+    #[display("{_0}")]
+    Storage(StorageClientError),
+    /// No bundled network has this name.
+    #[display("unknown network \"{name}\"; bundled: {known}")]
+    UnknownNetwork {
+        /// The requested name.
+        name: String,
+        /// Comma-separated names of the bundled networks.
+        known: String,
+    },
+    /// A bundled genesis hash does not decode to 32 bytes.
+    #[display("bundled genesis hash {hex} is malformed")]
+    MalformedGenesis {
+        /// The catalog entry as written.
+        hex: String,
+    },
+}
+
+#[cfg(feature = "smoldot")]
+impl From<StorageClientError> for ProviderError {
+    fn from(error: StorageClientError) -> Self {
+        Self::Storage(error)
+    }
 }
 
 /// `url` without its userinfo, for an error that will be logged.
@@ -84,14 +121,6 @@ pub fn redacted(url: &url::Url) -> String {
     let _ = stripped.set_username("");
     let _ = stripped.set_password(None);
     stripped.to_string()
-}
-
-impl From<ProviderError> for GenericError {
-    fn from(error: ProviderError) -> Self {
-        GenericError {
-            reason: error.to_string(),
-        }
-    }
 }
 
 /// JSON-RPC internal-error code (per the spec's reserved range).

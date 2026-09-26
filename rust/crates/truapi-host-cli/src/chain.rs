@@ -17,8 +17,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, warn};
-use truapi::latest as api;
-use truapi_server::platform::{ChainProvider, JsonRpcConnection};
+use truapi_server::platform::{ChainProvider, JsonRpcConnection, ProviderError};
 
 use crate::network::ChainEndpoint;
 
@@ -92,12 +91,12 @@ impl ChainProvider for WsChainProvider {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, api::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         let url = self.url_for(&genesis_hash);
         debug!(genesis = %hex::encode(genesis_hash), %url, "chain connect");
         let connection = WsJsonRpcConnection::connect(url)
             .await
-            .map_err(|reason| api::GenericError { reason })?;
+            .map_err(|reason| ProviderError::Transport { reason })?;
         Ok(Box::new(connection))
     }
 }

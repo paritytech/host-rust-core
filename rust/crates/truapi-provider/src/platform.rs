@@ -1,8 +1,8 @@
 //! Chain access interfaces a host implements and the server runtime consumes.
 
+use crate::ProviderError;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use truapi::latest::GenericError;
 
 /// JSON-RPC provider factory for chain access.
 ///
@@ -18,7 +18,7 @@ pub trait ChainProvider: Send + Sync {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, GenericError>;
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError>;
 }
 
 /// A live JSON-RPC connection to a chain.

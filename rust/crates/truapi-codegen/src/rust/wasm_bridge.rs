@@ -20,7 +20,12 @@ pub fn generate_wasm_bridge(
     let traits = composed_traits(definition);
     let trait_names = platform_trait_names(definition);
     let optional_traits = optional_trait_names(definition);
-    validate_errors(&traits, &ctx)?;
+    let generated_traits: Vec<&PlatformTrait> = traits
+        .iter()
+        .copied()
+        .filter(|trait_def| !requires_manual_trait_impl(trait_def, &trait_names))
+        .collect();
+    validate_errors(&generated_traits, &ctx)?;
     let mut out = String::new();
     writedoc!(
         out,
@@ -122,10 +127,7 @@ pub fn generate_wasm_bridge(
     out.push_str("}\n\n");
 
     let mut parse_fns = BTreeMap::new();
-    for trait_def in traits {
-        if requires_manual_trait_impl(trait_def, &trait_names) {
-            continue;
-        }
+    for trait_def in generated_traits {
         out.push_str(&emit_trait_impl(trait_def, &ctx, &mut parse_fns)?);
         out.push('\n');
     }

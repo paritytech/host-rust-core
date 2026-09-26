@@ -54,7 +54,7 @@ async fn unknown_genesis_is_an_error() {
         .await
         .err()
         .expect("connect must fail for an unregistered genesis");
-    assert!(error.reason.contains(&"09".repeat(32)));
+    assert!(error.to_string().contains(&"09".repeat(32)));
 }
 
 #[wasm_bindgen_test]
@@ -65,9 +65,8 @@ async fn handshake_failure_is_an_error() {
         .err()
         .expect("connecting to a closed port must fail");
     assert!(
-        error.reason.contains("WebSocket"),
-        "unexpected: {}",
-        error.reason
+        error.to_string().contains("WebSocket"),
+        "unexpected: {error}"
     );
 }
 

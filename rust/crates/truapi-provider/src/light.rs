@@ -658,7 +658,7 @@ mod tests {
             .err()
             .expect("a connect over the cap must fail");
         assert_eq!(
-            error.reason,
+            error.to_string(),
             format!(
                 "the light client already holds {} connections",
                 super::MAX_CONNECTIONS
@@ -712,7 +712,7 @@ mod tests {
             .err()
             .expect("a connect over the cap must fail");
         assert_eq!(
-            error.reason,
+            error.to_string(),
             format!(
                 "the light client already holds {} connections",
                 super::MAX_CONNECTIONS
@@ -739,7 +739,7 @@ mod tests {
         let error = block_on(provider.connect([1; 32]))
             .err()
             .expect("a malformed chain spec must fail to connect");
-        assert!(error.reason.contains("failed to add a chain"));
+        assert!(error.to_string().contains("failed to add a chain"));
     }
 
     #[test]
@@ -754,7 +754,11 @@ mod tests {
         let error = block_on(provider.connect(RELAY_GENESIS))
             .err()
             .expect("an unregistered relay must fail to connect");
-        assert!(error.reason.contains("not a registered light-client chain"));
+        assert!(
+            error
+                .to_string()
+                .contains("not a registered light-client chain")
+        );
     }
 
     #[test]

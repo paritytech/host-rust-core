@@ -21,7 +21,7 @@ use crate::platform::SigningHostConfig;
 use crate::platform::{
     ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
     PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
-    RuntimeConfigValidationError,
+    ProviderError, RuntimeConfigValidationError,
 };
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable};
@@ -133,7 +133,7 @@ impl ChainProvider for WasmPlatform {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, v01::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         let chain_connect = self.bridge.chain_connect.clone();
         let chain_connect = SendWrapper::new(chain_connect);
         SendWrapper::new(async move {
@@ -159,19 +159,19 @@ impl ChainProvider for WasmPlatform {
                     &genesis_arg,
                     on_response.as_ref().unchecked_ref(),
                 )
-                .map_err(|err| generic(js_to_string(err)))?;
-            let resolved = await_optional_promise(returned).await.map_err(generic)?;
+                .map_err(|err| host_error(js_to_string(err)))?;
+            let resolved = await_optional_promise(returned).await.map_err(host_error)?;
             if resolved.is_null() || resolved.is_undefined() {
-                return Err(generic("chainConnect returned no connection".into()));
+                return Err(host_error("chainConnect returned no connection".into()));
             }
             let send_fn = Reflect::get(&resolved, &JsValue::from_str("send"))
-                .map_err(|_| generic("chainConnect must return { send, close }".into()))?
+                .map_err(|_| host_error("chainConnect must return { send, close }".into()))?
                 .dyn_into::<Function>()
-                .map_err(|_| generic("chainConnect.send must be a function".into()))?;
+                .map_err(|_| host_error("chainConnect.send must be a function".into()))?;
             let close_fn = Reflect::get(&resolved, &JsValue::from_str("close"))
-                .map_err(|_| generic("chainConnect.close must be a function".into()))?
+                .map_err(|_| host_error("chainConnect.close must be a function".into()))?
                 .dyn_into::<Function>()
-                .map_err(|_| generic("chainConnect.close must be a function".into()))?;
+                .map_err(|_| host_error("chainConnect.close must be a function".into()))?;
 
             Ok(Box::new(JsCallbackJsonRpcConnection {
                 send_fn: SendWrapper::new(send_fn),
@@ -319,6 +319,10 @@ impl Drop for JsCallbackJsonRpcConnection {
 
 fn generic(reason: String) -> v01::GenericError {
     v01::GenericError { reason }
+}
+
+fn host_error(reason: String) -> ProviderError {
+    ProviderError::Host { reason }
 }
 
 fn parse_generic_error(value: JsValue) -> v01::GenericError {

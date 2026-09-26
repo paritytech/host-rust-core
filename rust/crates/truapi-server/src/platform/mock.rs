@@ -39,8 +39,8 @@ use crate::platform::async_trait;
 use crate::platform::{
     AuthPresenter, AuthState, ChainProvider, ChatPlatform, CoreStorage, CoreStorageKey, Features,
     JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionDecision, Permissions,
-    PreimageHost, ProductContext, ProductOperations, ProductStorage, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    PreimageHost, ProductContext, ProductOperations, ProductStorage, ProviderError, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
 
 /// How the mock answers a permission prompt for one capability.
@@ -1178,14 +1178,14 @@ impl ChainProvider for MockPlatform {
     async fn connect(
         &self,
         _genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, latest::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         if self.chain_status() == ChainStatus::Disconnected {
-            return Err(latest::GenericError {
+            return Err(ProviderError::Host {
                 reason: "mock chain is disconnected".to_string(),
             });
         }
         if let ChainBehavior::ConnectError(reason) = &self.config.chain {
-            return Err(latest::GenericError {
+            return Err(ProviderError::Host {
                 reason: reason.clone(),
             });
         }

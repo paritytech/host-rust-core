@@ -37,7 +37,6 @@
 // which is how truapi-server depends on it.
 #[cfg(any(feature = "ws", feature = "smoldot"))]
 mod config;
-#[cfg(any(feature = "ws", feature = "smoldot"))]
 mod error;
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
 mod ffi;
@@ -72,6 +71,7 @@ mod wss_tunnel;
 pub use config::ChainSource;
 #[cfg(feature = "smoldot")]
 pub use config::LightClientBuilder;
+pub use error::ProviderError;
 #[cfg(feature = "networks")]
 pub use networks::{NetworkChains, known_networks};
 #[cfg(any(feature = "ws", feature = "smoldot"))]

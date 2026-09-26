@@ -10,8 +10,7 @@
 
 use std::collections::HashMap;
 
-use truapi::latest::GenericError;
-
+use crate::ProviderError;
 use crate::config::ChainSource;
 use crate::provider::EmbeddedChainProviderBuilder;
 
@@ -103,12 +102,12 @@ pub fn known_networks() -> impl Iterator<Item = &'static str> {
     CATALOG.iter().map(|network| network.name)
 }
 
-fn genesis(chain: &ChainDef) -> Result<[u8; 32], GenericError> {
+fn genesis(chain: &ChainDef) -> Result<[u8; 32], ProviderError> {
     hex::decode(chain.genesis_hex.trim_start_matches("0x"))
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| GenericError {
-            reason: format!("bundled genesis hash {} is malformed", chain.genesis_hex),
+        .ok_or_else(|| ProviderError::MalformedGenesis {
+            hex: chain.genesis_hex.to_owned(),
         })
 }
 
@@ -122,7 +121,7 @@ type ResolvedNetwork = (HashMap<[u8; 32], ChainSource>, Option<[u8; 32]>);
 
 /// Genesis hashes and standalone per-chain [`ChainSource`]s of one network; the
 /// caller pairs each parachain with the network's relay genesis.
-fn network_sources(network: &NetworkDef) -> Result<NetworkSources, GenericError> {
+fn network_sources(network: &NetworkDef) -> Result<NetworkSources, ProviderError> {
     let chains = NetworkChains {
         relay: genesis(&network.relay)?,
         assethub: genesis(&network.assethub)?,
@@ -144,15 +143,13 @@ fn network_sources(network: &NetworkDef) -> Result<NetworkSources, GenericError>
 pub fn add_network(
     builder: EmbeddedChainProviderBuilder,
     name: &str,
-) -> Result<(EmbeddedChainProviderBuilder, NetworkChains), GenericError> {
+) -> Result<(EmbeddedChainProviderBuilder, NetworkChains), ProviderError> {
     let network = CATALOG
         .iter()
         .find(|network| network.name == name)
-        .ok_or_else(|| GenericError {
-            reason: format!(
-                "unknown network \"{name}\"; bundled: {}",
-                known_networks().collect::<Vec<_>>().join(", ")
-            ),
+        .ok_or_else(|| ProviderError::UnknownNetwork {
+            name: name.to_owned(),
+            known: known_networks().collect::<Vec<_>>().join(", "),
         })?;
 
     let (chains, sources) = network_sources(network)?;
@@ -217,7 +214,7 @@ impl EmbeddedChainProviderBuilder {
     /// Register every chain of the bundled network `name` (see
     /// [`known_networks`]). Returns the builder and the network's genesis
     /// hashes. Errors when `name` is not bundled.
-    pub fn add_network(self, name: &str) -> Result<(Self, NetworkChains), GenericError> {
+    pub fn add_network(self, name: &str) -> Result<(Self, NetworkChains), ProviderError> {
         add_network(self, name)
     }
 }
@@ -334,7 +331,7 @@ mod tests {
         let error = EmbeddedChainProviderBuilder::new()
             .add_network("mainnet")
             .expect_err("an unbundled network must fail");
-        assert!(error.reason.contains("paseo-next-v2"));
+        assert!(error.to_string().contains("paseo-next-v2"));
     }
 
     #[test]

@@ -143,10 +143,7 @@ mod imp {
         let connection = match provider.connect(*genesis).await {
             Ok(connection) => connection,
             Err(err) => {
-                eprintln!(
-                    "[gateway] {peer}: connect for {path} failed: {}",
-                    err.reason
-                );
+                eprintln!("[gateway] {peer}: connect for {path} failed: {err}");
                 return;
             }
         };

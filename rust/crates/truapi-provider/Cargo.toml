@@ -68,7 +68,6 @@ uniffi = ["smoldot", "networks", "dep:uniffi"]
 cli = ["uniffi", "uniffi/cli"]
 
 [dependencies]
-truapi = { path = "../truapi" }
 async-trait = { workspace = true }
 derive_more = { workspace = true, features = ["display", "error"] }
 futures = { workspace = true }

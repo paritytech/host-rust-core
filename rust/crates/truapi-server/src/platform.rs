@@ -16,6 +16,7 @@ use parity_scale_codec::{Decode, Encode};
 use unicode_normalization::UnicodeNormalization;
 
 pub use async_trait::async_trait;
+pub use truapi_provider::ProviderError;
 pub use truapi_provider::platform::{ChainProvider, JsonRpcConnection};
 
 use truapi::Bytes32;
