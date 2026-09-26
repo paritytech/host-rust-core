@@ -74,7 +74,7 @@ impl<'a> DotnsLookup<'a> {
         // fails closed into a refusal a caller cannot tell from "you were not
         // granted this", so say what it did.
         debug!(
-            target: "truapi_server::dotns",
+            target: "truapi::dotns",
             %follow_id,
             genesis = %hex::encode(&genesis_hash),
             "opening the Asset Hub follow for a dotNS lookup"
@@ -88,7 +88,7 @@ impl<'a> DotnsLookup<'a> {
         .await
         .inspect_err(|reason| {
             info!(
-                target: "truapi_server::dotns",
+                target: "truapi::dotns",
                 %follow_id, %reason,
                 "the Asset Hub follow never initialized; every grant behind \
                  this lookup is refused"
@@ -142,7 +142,7 @@ impl DotnsTransport for DotnsLookup<'_> {
         match value {
             ChainHeadStorageValue::Found(value) => {
                 debug!(
-                    target: "truapi_server::dotns",
+                    target: "truapi::dotns",
                     follow_id = %self.follow_id,
                     bytes = value.len(),
                     "dotNS storage read found a value"
@@ -151,7 +151,7 @@ impl DotnsTransport for DotnsLookup<'_> {
             }
             ChainHeadStorageValue::Missing => {
                 debug!(
-                    target: "truapi_server::dotns",
+                    target: "truapi::dotns",
                     follow_id = %self.follow_id,
                     "dotNS storage read: no such entry"
                 );
@@ -159,7 +159,7 @@ impl DotnsTransport for DotnsLookup<'_> {
             }
             ChainHeadStorageValue::Inaccessible => {
                 info!(
-                    target: "truapi_server::dotns",
+                    target: "truapi::dotns",
                     follow_id = %self.follow_id,
                     "dotNS storage was inaccessible, which is not the same as absent"
                 );
@@ -197,7 +197,7 @@ impl DotnsTransport for DotnsLookup<'_> {
         .map_err(DotnsViewError::Failed)?;
         let result = view_output(&output);
         debug!(
-            target: "truapi_server::dotns",
+            target: "truapi::dotns",
             follow_id = %self.follow_id,
             dest = %hex::encode(dest),
             outcome = match &result {

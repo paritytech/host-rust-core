@@ -726,7 +726,7 @@ fn log_request_received(incoming: &IncomingSsoRequest) {
             message.message_id
         );
         tracing::event!(
-            target: "truapi_server::sso_transcript",
+            target: "truapi::sso_transcript",
             tracing::Level::DEBUG,
             cli_summary = cli_summary.as_str(),
             cli_event = "request_received",
@@ -836,7 +836,7 @@ async fn serve_request(
                     elapsed_ms,
                 );
                 tracing::event!(
-                    target: "truapi_server::sso_transcript",
+                    target: "truapi::sso_transcript",
                     tracing::Level::DEBUG,
                     cli_summary = cli_summary.as_str(),
                     cli_event = "response_sent",
@@ -864,7 +864,7 @@ async fn serve_request(
                     elapsed_ms,
                 );
                 tracing::event!(
-                    target: "truapi_server::sso_transcript",
+                    target: "truapi::sso_transcript",
                     tracing::Level::WARN,
                     cli_summary = cli_summary.as_str(),
                     cli_event = "response_failed",

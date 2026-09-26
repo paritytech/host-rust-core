@@ -1,7 +1,7 @@
 //! Wiring test for OS revalidation of device permissions.
 //!
 //! The decision matrix itself is unit-tested in
-//! `truapi_server::host_logic::permissions`. What that cannot reach is the path
+//! `truapi::host_logic::permissions`. What that cannot reach is the path
 //! a real request takes: a product frame through the generated dispatcher into
 //! the runtime, which has to hand the permission service the adapter installed
 //! on the host runtime. A break anywhere along it — an installer that stores
@@ -16,11 +16,11 @@ use std::sync::{Arc, Mutex};
 
 use parity_scale_codec::{Decode, Encode};
 
+use truapi::frame::{Payload, ProtocolMessage, request_ids};
+use truapi::platform::{DevicePermissionStatus, PermissionStatusHost};
+use truapi::platform::{PermissionAuthorizationRequest, PermissionAuthorizationStatus};
 use truapi::v01;
-use truapi_server::frame::{Payload, ProtocolMessage, request_ids};
-use truapi_server::platform::{DevicePermissionStatus, PermissionStatusHost};
-use truapi_server::platform::{PermissionAuthorizationRequest, PermissionAuthorizationStatus};
-use truapi_server::{FrameSink, PairingHostRuntime};
+use truapi::{FrameSink, PairingHostRuntime};
 
 // Shared harness; this binary uses only part of it.
 #[allow(dead_code)]
@@ -42,7 +42,7 @@ impl FrameSink for RecordingSink {
 /// Status adapter that reports one fixed answer for every capability.
 struct FixedStatus(DevicePermissionStatus);
 
-#[truapi_server::platform::async_trait]
+#[truapi::platform::async_trait]
 impl PermissionStatusHost for FixedStatus {
     async fn device_permission_status(
         &self,
@@ -77,7 +77,7 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
         payload: Payload {
             trait_id: ids.trait_id,
             method_id: ids.method_id,
-            message_type: truapi_server::frame::MESSAGE_TYPE_REQUEST,
+            message_type: truapi::frame::MESSAGE_TYPE_REQUEST,
             value,
         },
     };
@@ -95,7 +95,7 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
 
     assert_eq!(
         response.payload.message_type,
-        truapi_server::frame::MESSAGE_TYPE_RESPONSE
+        truapi::frame::MESSAGE_TYPE_RESPONSE
     );
     // Assert the whole thing against each possible answer rather than
     // splicing bytes out by index.

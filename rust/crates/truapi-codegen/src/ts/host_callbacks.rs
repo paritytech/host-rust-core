@@ -1828,7 +1828,7 @@ mod tests {
             traits: Vec::new(),
             types: vec![TypeDef {
                 name: "SessionUiInfo".to_string(),
-                module_path: vec!["truapi_server".to_string(), "platform".to_string()],
+                module_path: vec!["truapi".to_string(), "platform".to_string()],
                 generic_params: Vec::new(),
                 kind: TypeDefKind::Struct(vec![FieldDef {
                     name: "public_key".to_string(),

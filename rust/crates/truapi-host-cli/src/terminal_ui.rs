@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context as LayerContext, Layer};
-use truapi_server::platform::PermissionDecision;
+use truapi::platform::PermissionDecision;
 use unicode_width::UnicodeWidthChar;
 
 use crate::LogLevel;
@@ -88,7 +88,7 @@ impl ApprovalKind {
 }
 
 /// Tracing target reserved for SSO summaries that must remain visible at every log level.
-pub const SSO_TRANSCRIPT_TARGET: &str = "truapi_server::sso_transcript";
+pub const SSO_TRANSCRIPT_TARGET: &str = "truapi::sso_transcript";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoticeTone {

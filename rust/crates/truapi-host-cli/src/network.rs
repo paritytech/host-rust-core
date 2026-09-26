@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 use truapi::latest::ChainIdentifier;
-use truapi_server::platform::{HostChainEntry, HostChainSet};
+use truapi::platform::{HostChainEntry, HostChainSet};
 
 /// Supported live network presets for the headless hosts.
 ///
@@ -376,7 +376,7 @@ mod tests {
         for network in Network::value_variants() {
             let config = network.preset();
             assert!(
-                truapi_server::platform::DOTNS_TLDS.contains(&config.network_suffix),
+                truapi::platform::DOTNS_TLDS.contains(&config.network_suffix),
                 "preset `{}` derives reserved identities under `.{}`, a TLD navigation does not \
                  accept",
                 config.id,
@@ -446,7 +446,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs network access to the preset's chains"]
     async fn the_advertised_genesis_matches_what_each_chain_reports() {
-        use truapi_server::statement_allowance as alloc;
+        use truapi::statement_allowance as alloc;
 
         let mut checked = 0usize;
         let mut drifted = Vec::new();

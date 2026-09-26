@@ -5,23 +5,23 @@
 
 use parity_scale_codec::{Decode, Encode};
 use schnorrkel::{ExpansionMode, MiniSecretKey};
-use truapi_server::host_logic::entropy::derive_product_entropy;
-use truapi_server::host_logic::product_account::{
+use truapi::host_logic::entropy::derive_product_entropy;
+use truapi::host_logic::product_account::{
     derive_product_public_key, derive_product_subtree_keypair, derive_root_keypair_from_entropy,
     index_bytes,
 };
-use truapi_server::host_logic::session::SsoSessionInfo;
-use truapi_server::host_logic::sso::pairing::{
+use truapi::host_logic::session::SsoSessionInfo;
+use truapi::host_logic::sso::pairing::{
     self, AEAD_NONCE_LEN, PairingBootstrap, SsoStatementData, VersionedHandshakeProposal,
     VersionedHandshakeResponse, bootstrap_topic, build_pairing_deeplink, decode_app_handshake_data,
     decrypt_session_statement_data, decrypt_v2_handshake_response,
     encrypt_session_statement_data_with_nonce, encrypt_v2_handshake_response,
     establish_sso_session_info,
 };
-use truapi_server::host_logic::statement_store::{
+use truapi::host_logic::statement_store::{
     build_signed_session_request_statement, decode_verified_statement_data,
 };
-use truapi_server::platform::{
+use truapi::platform::{
     CoreStorageKey, HostDevicePermissionRequest, HostInfo, PairingHostConfig, PlatformInfo,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -200,8 +200,7 @@ fn wasm_core_storage_descriptors_are_strict_and_stable() {
         &HostDevicePermissionRequest::Camera,
     )
     .encode();
-    let described =
-        truapi_server::wasm::describe_core_storage_key_for_wasm(encoded).expect("valid key");
+    let described = truapi::wasm::describe_core_storage_key_for_wasm(encoded).expect("valid key");
     assert_eq!(
         js_sys::Reflect::get(&described, &wasm_bindgen::JsValue::from_str("kind"))
             .expect("kind property")
@@ -217,8 +216,8 @@ fn wasm_core_storage_descriptors_are_strict_and_stable() {
         Some("product.dot")
     );
 
-    assert!(truapi_server::wasm::describe_core_storage_key_for_wasm(Vec::new()).is_err());
+    assert!(truapi::wasm::describe_core_storage_key_for_wasm(Vec::new()).is_err());
     let mut trailing = CoreStorageKey::AuthSession.encode();
     trailing.push(0);
-    assert!(truapi_server::wasm::describe_core_storage_key_for_wasm(trailing).is_err());
+    assert!(truapi::wasm::describe_core_storage_key_for_wasm(trailing).is_err());
 }

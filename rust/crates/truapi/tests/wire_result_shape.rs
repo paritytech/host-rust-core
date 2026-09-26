@@ -30,8 +30,8 @@ use parity_scale_codec::{Decode, Encode};
 
 use truapi::{CallError, v01};
 
-use truapi_server::TrUApiCore;
-use truapi_server::frame::{
+use truapi::TrUApiCore;
+use truapi::frame::{
     MESSAGE_TYPE_INTERRUPT, MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, MESSAGE_TYPE_START,
     PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload, ProtocolErrorV1, ProtocolMessage,
     VersionedProtocolError, request_ids, subscription_ids,
@@ -583,8 +583,8 @@ fn unknown_wire_discriminant_returns_correlated_protocol_error() {
 #[test]
 fn subscription_start_receive_stop_through_wire_boundary() {
     use std::time::{Duration, Instant};
-    use truapi_server::frame::MESSAGE_TYPE_STOP;
-    use truapi_server::transport::Transport;
+    use truapi::frame::MESSAGE_TYPE_STOP;
+    use truapi::transport::Transport;
 
     let core = make_core();
     let transport = Arc::new(RecordingTransport::default());
@@ -634,7 +634,7 @@ fn subscription_start_receive_stop_through_wire_boundary() {
     std::thread::sleep(Duration::from_millis(50));
 
     core.session_state()
-        .set_session(truapi_server::host_logic::session::SessionInfo {
+        .set_session(truapi::host_logic::session::SessionInfo {
             public_key: [7u8; 32],
             sso: None,
             root_entropy_source: None,

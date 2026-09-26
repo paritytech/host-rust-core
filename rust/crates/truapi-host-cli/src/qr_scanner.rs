@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result as AnyResult, bail, ensure};
 use image::{ImageReader, Limits};
-use truapi_server::host_logic::sso::pairing::decode_pairing_deeplink;
+use truapi::host_logic::sso::pairing::decode_pairing_deeplink;
 
 const MAX_IMAGE_EDGE: usize = 8_192;
 const MAX_IMAGE_PIXELS: usize = 24 * 1024 * 1024;
@@ -422,7 +422,7 @@ mod tests {
     use parity_scale_codec::Encode;
     use qrcode::{Color, QrCode};
     use tempfile::tempdir;
-    use truapi_server::host_logic::sso::pairing::{
+    use truapi::host_logic::sso::pairing::{
         VersionedHandshakeProposal,
         v2::{Device, MetadataEntry, MetadataKey, Proposal},
     };

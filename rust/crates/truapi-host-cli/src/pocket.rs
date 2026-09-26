@@ -21,8 +21,8 @@ use truapi::latest::{
     GenericError, HostPocketListSubscribeItem, HostPocketRemoveCardError,
     HostPocketRemoveCardRequest,
 };
+use truapi::platform::{PocketPlatform, ProductContext, async_trait};
 use truapi::v01;
-use truapi_server::platform::{PocketPlatform, ProductContext, async_trait};
 
 /// Cards and list subscribers for one product.
 #[derive(Default)]

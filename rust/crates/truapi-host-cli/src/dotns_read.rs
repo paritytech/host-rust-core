@@ -1,19 +1,19 @@
 //! Asset Hub dotNS reads over plain RPC (`state_getStorage` / `state_call`).
 //!
 //! The transport half of username resolution. This module supplies the two RPC
-//! primitives. `truapi_server::host_logic::dotns_gateway` walks the contract
+//! primitives. `truapi::host_logic::dotns_gateway` walks the contract
 //! chain over them. The CLI and the in-core `chainHead_v1` lookup therefore
 //! resolve identically.
 
 use anyhow::{Context, Result};
 use serde_json::Value;
 use subxt_rpcs::client::{RpcClient, rpc_params};
-use truapi_server::host_logic::dotns_gateway::{
+use truapi::host_logic::dotns_gateway::{
     DotnsIdentity, DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, account_alias_key,
     classify_labels, discover_pop_controller, encode_revive_call, label_available,
     lite_label_owner_key, resolve_labels, timestamp_now_key, view_output,
 };
-use truapi_server::platform::async_trait;
+use truapi::platform::async_trait;
 
 /// Env var overriding the `DotnsPopController` H160 (hex), skipping on-chain
 /// discovery.

@@ -29,8 +29,8 @@ use tokio_tungstenite::tungstenite::http::{StatusCode, header};
 use tracing::{debug, warn};
 
 use crate::bootstrap;
-use truapi_server::platform::ProductExecutionKind;
-use truapi_server::{
+use truapi::platform::ProductExecutionKind;
+use truapi::{
     ChannelId, DebugSink, FrameSink, PairingHostRuntime, ProductContext, ProductRuntime,
     ProductRuntimeError, SigningHostRuntime,
 };
@@ -819,14 +819,14 @@ mod tests {
             crate::platform::ApprovalPolicy::AutoAccept,
             None,
         );
-        let config = truapi_server::platform::SigningHostConfig::new(
-            truapi_server::platform::HostInfo {
+        let config = truapi::platform::SigningHostConfig::new(
+            truapi::platform::HostInfo {
                 name: "Frame server test".into(),
                 icon: None,
                 version: None,
                 platform: truapi::latest::HostPlatform::Cli,
             },
-            truapi_server::platform::PlatformInfo {
+            truapi::platform::PlatformInfo {
                 kind: Some("test".into()),
                 version: None,
             },
@@ -835,7 +835,7 @@ mod tests {
             network.asset_hub_genesis,
             network.network_suffix.to_string(),
         )?;
-        let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
+        let spawner: truapi::subscription::Spawner = Arc::new(|_| {});
         Ok(Arc::new(SigningHostRuntime::new(platform, config, spawner)))
     }
 
@@ -1214,14 +1214,14 @@ mod tests {
         use crate::product_config::{self, LocalProductConfig};
         use parity_scale_codec::{Decode, Encode};
         use std::sync::Mutex;
+        use truapi::frame::{
+            MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, Payload, ProtocolMessage, request_ids,
+        };
         use truapi::versioned::local_storage::{
             HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
             HostLocalStorageWriteRequest,
         };
         use truapi::{v01, v02};
-        use truapi_server::frame::{
-            MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, Payload, ProtocolMessage, request_ids,
-        };
 
         const OWNER: &str = "peopl.paseo";
         const CALLER: &str = "dim2.paseo";
@@ -1266,14 +1266,14 @@ mod tests {
                 crate::platform::ApprovalPolicy::AutoAccept,
                 None,
             );
-            let config = truapi_server::platform::SigningHostConfig::new(
-                truapi_server::platform::HostInfo {
+            let config = truapi::platform::SigningHostConfig::new(
+                truapi::platform::HostInfo {
                     name: "Cross-product storage test".into(),
                     icon: None,
                     version: None,
                     platform: truapi::latest::HostPlatform::Cli,
                 },
-                truapi_server::platform::PlatformInfo {
+                truapi::platform::PlatformInfo {
                     kind: Some("test".into()),
                     version: None,
                 },
@@ -1289,7 +1289,7 @@ mod tests {
                 "ws://127.0.0.1:1",
                 "the Asset Hub genesis must route to the closed port, not to live Paseo"
             );
-            let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
+            let spawner: truapi::subscription::Spawner = Arc::new(|_| {});
             Ok((
                 platform.clone(),
                 SigningHostRuntime::new(platform, config, spawner),
@@ -1433,7 +1433,7 @@ mod tests {
     struct SilentSink;
 
     impl DebugSink for SilentSink {
-        fn emit(&self, _event: truapi_server::DebugEvent) {}
+        fn emit(&self, _event: truapi::DebugEvent) {}
     }
 
     /// A factory that reports a reset signal and refuses to build runtimes, so a
@@ -1494,14 +1494,14 @@ mod tests {
     /// effect rather than on the wiring call not panicking.
     #[derive(Default)]
     struct RecordingDebugSink {
-        frames: std::sync::Mutex<Vec<(String, truapi_server::FrameDirection, Vec<u8>)>>,
+        frames: std::sync::Mutex<Vec<(String, truapi::FrameDirection, Vec<u8>)>>,
     }
 
     impl DebugSink for RecordingDebugSink {
-        fn emit(&self, event: truapi_server::DebugEvent) {
+        fn emit(&self, event: truapi::DebugEvent) {
             // `DebugEvent` is `#[non_exhaustive]` so host-internal events can be
             // added without a break; a tap that only wants frames ignores the rest.
-            if let truapi_server::DebugEvent::Frame {
+            if let truapi::DebugEvent::Frame {
                 channel_id,
                 dir,
                 bytes,
@@ -1516,7 +1516,7 @@ mod tests {
     }
 
     impl RecordingDebugSink {
-        fn taken(&self) -> Vec<(String, truapi_server::FrameDirection, Vec<u8>)> {
+        fn taken(&self) -> Vec<(String, truapi::FrameDirection, Vec<u8>)> {
             self.frames
                 .lock()
                 .expect("recording debug sink mutex poisoned")
@@ -1554,7 +1554,7 @@ mod tests {
             sink.taken(),
             vec![(
                 "localhost:3000#0".to_string(),
-                truapi_server::FrameDirection::In,
+                truapi::FrameDirection::In,
                 frame
             )]
         );

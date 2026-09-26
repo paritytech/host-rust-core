@@ -49,15 +49,15 @@ use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use truapi_server::host_logic::dotns_gateway::{
+use truapi::host_logic::dotns_gateway::{
     MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN, is_registrable_full_label,
 };
-use truapi_server::platform::{
+use truapi::platform::{
     ChatPlatform, HostInfo, PermissionStatusHost, PlatformInfo, ProductExecutionKind,
 };
-use truapi_server::statement_allowance as alloc;
-use truapi_server::subscription::Spawner;
-use truapi_server::{
+use truapi::statement_allowance as alloc;
+use truapi::subscription::Spawner;
+use truapi::{
     AnnouncedPairing, DebugSink, PairedSsoPeer, PairingHostConfig, PairingHostRuntime,
     PairingProposal, ResponderExit, SigningHostConfig, SigningHostRuntime, StatementRenewalTarget,
     WsDebugSink,
@@ -134,7 +134,7 @@ impl LogLevel {
 
     fn scoped_filter(self) -> String {
         let level = self.as_filter();
-        format!("warn,truapi={level},truapi_host={level},truapi_server={level}")
+        format!("warn,truapi={level},truapi_host={level}")
     }
 }
 
@@ -663,7 +663,7 @@ async fn run_pgas_check(
 ) -> Result<()> {
     use std::sync::Arc;
 
-    use truapi_server::statement_allowance::pgas;
+    use truapi::statement_allowance::pgas;
 
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
@@ -1156,7 +1156,7 @@ fn tap_for_debugger(
 #[cfg(test)]
 mod debugger_tap_tests {
     use super::*;
-    use truapi_server::{DebugEvent, FrameSink, ProductContext, ProductRuntime};
+    use truapi::{DebugEvent, FrameSink, ProductContext, ProductRuntime};
 
     struct SilentSink;
 
@@ -2355,7 +2355,7 @@ async fn activate_current_signer(session: &mut SigningHostSession) -> Result<()>
 /// device-slot pass renews the same target, and can rotate the signer to get
 /// it. It only means there is no way to say anything in the meantime.
 async fn prepare_own_allowance(session: &mut SigningHostSession) -> bool {
-    use truapi_server::statement_allowance::renewal::TargetRenewalStatus;
+    use truapi::statement_allowance::renewal::TargetRenewalStatus;
 
     if let Err(error) = ensure_signer(session).await {
         tracing::warn!(%error, "no signer to register the wallet allowance under");
@@ -2581,7 +2581,7 @@ async fn discard_new_pairing_candidate(
 }
 
 fn is_statement_slot_exhaustion(err: &anyhow::Error) -> bool {
-    truapi_server::reports_exhausted_period(&err.to_string())
+    truapi::reports_exhausted_period(&err.to_string())
 }
 
 fn signer_identity_may_rotate(auto_managed: bool, paired_host_count: usize) -> bool {
@@ -2603,7 +2603,7 @@ async fn renew_pairing_allowances(
     existing: &[PairedHost],
     candidate: &PairedHost,
 ) -> Result<()> {
-    use truapi_server::statement_allowance::renewal::TargetRenewalStatus;
+    use truapi::statement_allowance::renewal::TargetRenewalStatus;
 
     let candidate_id = candidate.statement_account_id();
     let candidate_is_existing = existing
@@ -2688,7 +2688,7 @@ async fn renew_pairing_allowances(
 
 /// Renew tracked statement-store allowances now, reporting each target.
 async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
-    use truapi_server::statement_allowance::renewal::TargetRenewalStatus;
+    use truapi::statement_allowance::renewal::TargetRenewalStatus;
 
     ensure_signer(session).await?;
     let report = session
@@ -4156,7 +4156,7 @@ mod cli_tests {
 
     #[test]
     fn pairing_deeplink_becomes_a_public_persistable_host_record() {
-        use truapi_server::host_logic::sso::pairing::{
+        use truapi::host_logic::sso::pairing::{
             VersionedHandshakeProposal,
             v2::{Device, MetadataEntry, MetadataKey, Proposal},
         };
@@ -4347,7 +4347,7 @@ mod cli_tests {
         assert_eq!(LogLevel::Trace.as_filter(), "trace");
         assert_eq!(
             LogLevel::Trace.scoped_filter(),
-            "warn,truapi=trace,truapi_host=trace,truapi_server=trace"
+            "warn,truapi=trace,truapi_host=trace"
         );
     }
 
@@ -4361,7 +4361,7 @@ mod cli_tests {
             "tungstenite::protocol::frame::socket"
         ));
         assert!(log_target_is_visible("tungstenite::handshake"));
-        assert!(log_target_is_visible("truapi_server::runtime"));
+        assert!(log_target_is_visible("truapi::runtime"));
     }
 
     #[test]
@@ -4430,9 +4430,9 @@ mod cli_tests {
         impl frame_server::ProductRuntimeFactory for UnusedRuntimeFactory {
             fn product_runtime(
                 &self,
-                _product: truapi_server::ProductContext,
-                _sink: Arc<dyn truapi_server::FrameSink>,
-            ) -> truapi_server::ProductRuntime {
+                _product: truapi::ProductContext,
+                _sink: Arc<dyn truapi::FrameSink>,
+            ) -> truapi::ProductRuntime {
                 panic!("the completed script must not open a product connection")
             }
         }

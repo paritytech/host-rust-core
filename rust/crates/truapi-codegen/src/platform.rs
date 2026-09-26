@@ -4,7 +4,7 @@
 //! annotations: it is a set of host-facing capability traits whose methods
 //! use `async_trait` (rustdoc exposes those as boxed `Future` trait objects) or
 //! plain synchronous functions returning trait objects / `BoxStream`. This
-//! module walks each crate's `platform` module (`truapi_server::platform` and
+//! module walks each crate's `platform` module (`truapi::platform` and
 //! `truapi_provider::platform`) for every public trait and produces one
 //! [`PlatformDefinition`] the TS emitter can render directly.
 
@@ -815,16 +815,13 @@ mod tests {
             paths: HashMap::from([
                 (
                     "1".to_string(),
-                    item_path(0, &["truapi_server", "platform", "Navigation"]),
+                    item_path(0, &["truapi", "platform", "Navigation"]),
                 ),
                 (
                     "2".to_string(),
-                    item_path(0, &["truapi_server", "transport", "Transport"]),
+                    item_path(0, &["truapi", "transport", "Transport"]),
                 ),
-                (
-                    "3".to_string(),
-                    item_path(0, &["truapi_server", "Platform"]),
-                ),
+                ("3".to_string(), item_path(0, &["truapi", "Platform"])),
                 (
                     "4".to_string(),
                     item_path(1, &["truapi_provider", "platform", "ChainProvider"]),
@@ -849,7 +846,7 @@ mod tests {
                     ItemPath {
                         crate_id: 0,
                         path: vec![
-                            "truapi_server".to_string(),
+                            "truapi".to_string(),
                             "platform".to_string(),
                             "one".to_string(),
                             "Shared".to_string(),
@@ -862,7 +859,7 @@ mod tests {
                     ItemPath {
                         crate_id: 0,
                         path: vec![
-                            "truapi_server".to_string(),
+                            "truapi".to_string(),
                             "platform".to_string(),
                             "two".to_string(),
                             "Shared".to_string(),
@@ -902,8 +899,8 @@ mod tests {
             "unexpected error: {msg}"
         );
         assert!(
-            msg.contains("truapi_server::platform::one::Shared")
-                && msg.contains("truapi_server::platform::two::Shared"),
+            msg.contains("truapi::platform::one::Shared")
+                && msg.contains("truapi::platform::two::Shared"),
             "unexpected error: {msg}"
         );
     }

@@ -37,10 +37,10 @@
 //! older `@parity/truapi`.
 
 use parity_scale_codec::{Decode, Encode};
+use truapi::frame::{MESSAGE_TYPE_REQUEST, Payload, ProtocolMessage};
+use truapi::generated::wire_table;
 use truapi::v01;
 use truapi::versioned::account::HostAccountGetRequest;
-use truapi_server::frame::{MESSAGE_TYPE_REQUEST, Payload, ProtocolMessage};
-use truapi_server::generated::wire_table;
 
 const GOLDEN: &[u8] = include_bytes!("snapshots/golden-account-get.bin");
 

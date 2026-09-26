@@ -1973,13 +1973,12 @@ Without `RUST_LOG`, the selected CLI level applies to:
 
 - `truapi`
 - `truapi_host`
-- `truapi_server`
 
 Other targets remain at `warn`.
 
 The following noisy targets are always hidden from the ordinary CLI log layer:
 
-- `truapi_server::sso_transcript` (handled by its dedicated layer);
+- `truapi::sso_transcript` (handled by its dedicated layer);
 - `rustls` and its children; and
 - `tungstenite::protocol` and its children.
 

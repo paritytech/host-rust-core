@@ -17,7 +17,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, warn};
-use truapi_server::platform::{ChainProvider, JsonRpcConnection, ProviderError};
+use truapi::platform::{ChainProvider, JsonRpcConnection, ProviderError};
 
 use crate::network::ChainEndpoint;
 

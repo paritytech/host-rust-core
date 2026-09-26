@@ -21,14 +21,14 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
-use truapi::v01;
-use truapi_server::platform::{
+use truapi::platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, CreateTransactionReview,
     DevicePermissionStatus, Features, JsonRpcConnection, LocaleHost, Navigation, Notifications,
     PermissionDecision, PermissionStatusHost, Permissions, PreimageHost, ProductContext,
     ProductOperations, ProductStorage, ProductStorageKey, ProviderError, SessionUiInfo,
     SignPayloadReview, SignRawReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
+use truapi::v01;
 
 use crate::chain::WsChainProvider;
 use crate::terminal_ui::{ApprovalKind, SystemEvent, UiHandle};
@@ -91,7 +91,7 @@ impl CliStoragePaths {
 pub struct CliPlatform {
     chain: WsChainProvider,
     /// Chain roles this host serves, answered by `Features::supported_chains`.
-    chains: truapi_server::platform::HostChainSet,
+    chains: truapi::platform::HostChainSet,
     product_storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
     core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     /// Device-scoped core slots, kept outside the per-user namespaces that
@@ -773,14 +773,12 @@ impl Features for CliPlatform {
         Ok(api::HostFeatureSupportedResponse { supported })
     }
 
-    async fn supported_chains(
-        &self,
-    ) -> Result<truapi_server::platform::HostChainSet, api::GenericError> {
+    async fn supported_chains(&self) -> Result<truapi::platform::HostChainSet, api::GenericError> {
         Ok(self.chains.clone())
     }
 }
 
-impl truapi_server::platform::AuthPresenter for CliPlatform {
+impl truapi::platform::AuthPresenter for CliPlatform {
     fn auth_state_changed(&self, state: AuthState) {
         if let AuthState::Connected(info) = &state
             && let Some(user_id) = storage_user_id(info)
@@ -1541,7 +1539,7 @@ mod tests {
     /// identity.
     #[tokio::test]
     async fn auth_state_changed_does_not_inherit_storage_on_a_rejected_username() {
-        use truapi_server::platform::AuthPresenter;
+        use truapi::platform::AuthPresenter;
 
         let dir = tempdir().expect("tempdir");
         let network_dir = dir.path().join("paseo");
@@ -1607,7 +1605,7 @@ mod tests {
     /// `AuthSession` is `00` and `PairingDeviceIdentity` is `01`.
     #[tokio::test]
     async fn cli_platform_preserves_unreadable_core_storage() {
-        use truapi_server::platform::CoreStorage;
+        use truapi::platform::CoreStorage;
 
         let dir = tempdir().expect("tempdir");
         let state_dir = dir.path().join("state");
@@ -1888,7 +1886,7 @@ mod tests {
     #[test]
     fn approval_summaries_are_concise_and_do_not_dump_payloads() {
         let review =
-            UserConfirmationReview::PreimageSubmit(truapi_server::platform::PreimageSubmitReview {
+            UserConfirmationReview::PreimageSubmit(truapi::platform::PreimageSubmitReview {
                 size: 4_096,
             });
 
@@ -1907,7 +1905,7 @@ mod tests {
     #[test]
     fn statement_proof_approval_names_both_products_without_dumping_payload() {
         let review = UserConfirmationReview::StatementStoreProductSign(
-            truapi_server::platform::StatementStoreProductSignReview {
+            truapi::platform::StatementStoreProductSignReview {
                 calling_product_id: Some("dim2next.paseo".to_string()),
                 account: api::ProductAccountId {
                     dot_ns_identifier: "dim2.paseo".to_string(),
@@ -1930,7 +1928,7 @@ mod tests {
 
     #[test]
     fn vrf_approval_names_both_products_without_dumping_transcript_values() {
-        let review = UserConfirmationReview::SignVrf(truapi_server::platform::SignVrfReview {
+        let review = UserConfirmationReview::SignVrf(truapi::platform::SignVrfReview {
             calling_product_id: "caller.dot".to_string(),
             request: truapi::v01::HostAccountSignVrfRequest {
                 account: truapi::v01::ProductAccountId {

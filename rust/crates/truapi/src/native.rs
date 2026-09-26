@@ -512,49 +512,6 @@ pub fn has_trusted_remote_permissions(product_id: String) -> bool {
     crate::platform::normalizes_to_trusted_remote_permissions(&product_id)
 }
 
-/// Outcome of a native room registration.
-///
-/// Mirrors [`v01::ChatRoomRegistrationStatus`], which cannot be used directly:
-/// an async callback method returning a type from another UniFFI namespace
-/// lowers into that namespace's `RustBuffer`, and the generated Kotlin then
-/// fails to compile. The conversion is total.
-/// See [UniFFI #2675](https://github.com/mozilla/uniffi-rs/issues/2675).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativeChatRoomRegistrationStatus {
-    /// The room was created.
-    New,
-    /// A room with this id already existed.
-    Exists,
-}
-
-impl From<NativeChatRoomRegistrationStatus> for v01::ChatRoomRegistrationStatus {
-    fn from(status: NativeChatRoomRegistrationStatus) -> Self {
-        match status {
-            NativeChatRoomRegistrationStatus::New => Self::New,
-            NativeChatRoomRegistrationStatus::Exists => Self::Exists,
-        }
-    }
-}
-
-/// Outcome of a native bot registration, mirrored for the same reason as
-/// [`NativeChatRoomRegistrationStatus`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativeChatBotRegistrationStatus {
-    /// The bot was registered.
-    New,
-    /// A bot with this id already existed.
-    Exists,
-}
-
-impl From<NativeChatBotRegistrationStatus> for v01::ChatBotRegistrationStatus {
-    fn from(status: NativeChatBotRegistrationStatus) -> Self {
-        match status {
-            NativeChatBotRegistrationStatus::New => Self::New,
-            NativeChatBotRegistrationStatus::Exists => Self::Exists,
-        }
-    }
-}
-
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback executes on the shared bridge
@@ -750,7 +707,7 @@ pub trait NativeChatCallbacks: Send + Sync {
         room_id: String,
         name: String,
         icon: String,
-    ) -> Result<NativeChatRoomRegistrationStatus, HostRejection>;
+    ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection>;
 
     /// Register or resolve a native product Chat bot.
     async fn register_bot(
@@ -758,7 +715,7 @@ pub trait NativeChatCallbacks: Send + Sync {
         bot_id: String,
         name: String,
         icon: String,
-    ) -> Result<NativeChatBotRegistrationStatus, HostRejection>;
+    ) -> Result<v01::ChatBotRegistrationStatus, HostRejection>;
 
     /// Persist a product-authored message in native Chat storage. A host that
     /// cannot render a given content variant returns a rejection for it.
@@ -2431,8 +2388,7 @@ impl crate::platform::ChatPlatform for ChatCallbackPlatform {
             .await
             .map_err(|error| v01::HostChatCreateRoomError::Unknown {
                 reason: error.to_string(),
-            })?
-            .into();
+            })?;
 
         if status == v01::ChatRoomRegistrationStatus::New
             && let Ok(rooms) = self.chat.list_rooms().await
@@ -2454,8 +2410,7 @@ impl crate::platform::ChatPlatform for ChatCallbackPlatform {
             .await
             .map_err(|error| v01::HostChatRegisterBotError::Unknown {
                 reason: error.to_string(),
-            })?
-            .into();
+            })?;
 
         // No room-list republish: a bot identity is not a room. A host that
         // joins the bot to one signals that via `notify_chat_rooms_changed`.
@@ -2723,9 +2678,9 @@ mod tests {
 
     struct EventCallbacks {
         logs: Mutex<Vec<String>>,
-        chat_room_status: Mutex<NativeChatRoomRegistrationStatus>,
+        chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
         chat_created_rooms: Mutex<Vec<(String, String, String)>>,
-        chat_bot_status: Mutex<NativeChatBotRegistrationStatus>,
+        chat_bot_status: Mutex<v01::ChatBotRegistrationStatus>,
         chat_registered_bots: Mutex<Vec<(String, String, String)>>,
         chat_bot_rejection: Mutex<Option<String>>,
         chat_post_rejection: Mutex<Option<String>>,
@@ -2772,9 +2727,9 @@ mod tests {
         fn new() -> Self {
             Self {
                 logs: Mutex::new(Vec::new()),
-                chat_room_status: Mutex::new(NativeChatRoomRegistrationStatus::New),
+                chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
-                chat_bot_status: Mutex::new(NativeChatBotRegistrationStatus::New),
+                chat_bot_status: Mutex::new(v01::ChatBotRegistrationStatus::New),
                 chat_registered_bots: Mutex::new(Vec::new()),
                 chat_bot_rejection: Mutex::new(None),
                 chat_post_rejection: Mutex::new(None),
@@ -3015,7 +2970,7 @@ mod tests {
             room_id: String,
             name: String,
             icon: String,
-        ) -> Result<NativeChatRoomRegistrationStatus, HostRejection> {
+        ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection> {
             self.chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
@@ -3031,7 +2986,7 @@ mod tests {
             bot_id: String,
             name: String,
             icon: String,
-        ) -> Result<NativeChatBotRegistrationStatus, HostRejection> {
+        ) -> Result<v01::ChatBotRegistrationStatus, HostRejection> {
             if let Some(reason) = self
                 .chat_bot_rejection
                 .lock()
@@ -4222,7 +4177,7 @@ mod tests {
         *callbacks
             .chat_bot_status
             .lock()
-            .expect("bot status mutex poisoned") = NativeChatBotRegistrationStatus::Exists;
+            .expect("bot status mutex poisoned") = v01::ChatBotRegistrationStatus::Exists;
         let existing = futures::executor::block_on(
             crate::platform::ChatPlatform::register_chat_bot(&platform, &product, request),
         )
@@ -4297,7 +4252,7 @@ mod tests {
         *callbacks
             .chat_room_status
             .lock()
-            .expect("room status mutex poisoned") = NativeChatRoomRegistrationStatus::Exists;
+            .expect("room status mutex poisoned") = v01::ChatRoomRegistrationStatus::Exists;
         let existing = futures::executor::block_on(
             crate::platform::ChatPlatform::create_chat_room(&platform, &product, request),
         )

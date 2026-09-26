@@ -74,8 +74,8 @@ ios/truapi-provider/Sources/truapi_providerFFI/
 ios/truapi-provider/Binaries/
 rust/crates/truapi-server/pkg/
 # truapi-codegen Rust outputs
-rust/crates/truapi-server/src/generated/
-rust/crates/truapi-server/src/wasm/generated_bridge.rs
+rust/crates/truapi/src/generated/
+rust/crates/truapi/src/wasm/generated_bridge.rs
 rust/crates/truapi-host-cli/js/script-types.d.ts
 js/packages/truapi/src/generated/
 js/packages/truapi/dist/generated/

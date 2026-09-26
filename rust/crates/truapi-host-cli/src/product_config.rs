@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use truapi_server::encode_cached_root_manifest;
-use truapi_server::platform::CoreStorage;
+use truapi::encode_cached_root_manifest;
+use truapi::platform::CoreStorage;
 
 /// The developer-authored config for one product.
 ///
@@ -121,7 +121,7 @@ pub async fn apply(
     for config in configs {
         platform
             .write_core_storage(
-                truapi_server::manifest_cache_key(&config.product_name),
+                truapi::manifest_cache_key(&config.product_name),
                 encode_cached_root_manifest(Some(&config.root_manifest_json()), now_secs),
             )
             .await

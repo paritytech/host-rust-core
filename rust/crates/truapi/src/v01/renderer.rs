@@ -5,14 +5,14 @@ use parity_scale_codec::{Compact, Decode, Encode, OptionBool};
 /// A size in logical pixels, SCALE-encoded as `Compact<u64>`.
 pub type Size = Compact<u64>;
 
-#[cfg(feature = "uniffi")]
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 uniffi::custom_type!(Size, u64, {
     remote,
     lower: |size| size.0,
     try_lift: |size| Ok(Compact(size)),
 });
 
-#[cfg(feature = "uniffi")]
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 uniffi::custom_type!(OptionBool, Option<bool>, {
     remote,
     lower: |value| value.0,
@@ -21,7 +21,10 @@ uniffi::custom_type!(OptionBool, Option<bool>, {
 
 /// Edge dimensions. `bottom` defaults to `top` and `start` to `end` when absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct Dimensions {
     /// Top edge.
     pub top: Size,
@@ -35,7 +38,10 @@ pub struct Dimensions {
 
 /// Typography presets, resolved by the host's design system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum TypographyStyle {
     /// Large headline text.
     HeadlineLarge,
@@ -51,7 +57,10 @@ pub enum TypographyStyle {
 
 /// Button emphasis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum ButtonVariant {
     /// Emphasized button for the primary action.
     Primary,
@@ -63,7 +72,10 @@ pub enum ButtonVariant {
 
 /// Semantic color tokens, resolved by the host's theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum ColorToken {
     /// Primary foreground.
     FgPrimary,
@@ -87,7 +99,10 @@ pub enum ColorToken {
 
 /// Placement of content within a `Box`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum ContentAlignment {
     /// Top edge, start side.
     TopStart,
@@ -111,7 +126,10 @@ pub enum ContentAlignment {
 
 /// Cross-axis alignment of `Column` children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum HorizontalAlignment {
     /// Align to the start edge.
     Start,
@@ -123,7 +141,10 @@ pub enum HorizontalAlignment {
 
 /// Cross-axis alignment of `Row` children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum VerticalAlignment {
     /// Align to the top.
     Top,
@@ -135,7 +156,10 @@ pub enum VerticalAlignment {
 
 /// Main-axis distribution of children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum Arrangement {
     /// Pack children at the start.
     Start,
@@ -153,7 +177,10 @@ pub enum Arrangement {
 
 /// Outline of a background or border.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum Shape {
     /// Rounded corners with the given radius.
     Rounded(Size),
@@ -165,7 +192,10 @@ pub enum Shape {
 
 /// Border styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct BorderStyle {
     /// Border width.
     pub width: Size,
@@ -177,7 +207,10 @@ pub struct BorderStyle {
 
 /// Background styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct Background {
     /// Background color.
     pub color: ColorToken,
@@ -188,7 +221,10 @@ pub struct Background {
 /// How a node composites with what is behind it. The values are those common
 /// to CSS `mix-blend-mode`, SwiftUI `BlendMode` and Compose `BlendMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum BlendingMode {
     /// Source over destination.
     Normal,
@@ -226,7 +262,10 @@ pub enum BlendingMode {
 
 /// Layout and styling applied to one node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum Modifier {
     /// Outer spacing.
     Margin(Dimensions),
@@ -256,7 +295,10 @@ pub enum Modifier {
 
 /// Properties of a `Box`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct BoxProps {
     /// Placement of content within the box.
     pub content_alignment: Option<ContentAlignment>,
@@ -264,7 +306,10 @@ pub struct BoxProps {
 
 /// Properties of a `Column`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct ColumnProps {
     /// Cross-axis alignment of children.
     pub horizontal_alignment: Option<HorizontalAlignment>,
@@ -274,7 +319,10 @@ pub struct ColumnProps {
 
 /// Properties of a `Row`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct RowProps {
     /// Cross-axis alignment of children.
     pub vertical_alignment: Option<VerticalAlignment>,
@@ -284,7 +332,10 @@ pub struct RowProps {
 
 /// Properties of a `Text`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct TextProps {
     /// Typography preset.
     pub style: Option<TypographyStyle>,
@@ -294,7 +345,10 @@ pub struct TextProps {
 
 /// Properties of a `Button`.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct ButtonProps {
     /// Button label.
     pub text: String,
@@ -311,7 +365,10 @@ pub struct ButtonProps {
 
 /// Where image bytes come from. The host fetches them; the tree carries no URL.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum ImageSource {
     /// A Bulletin chain blob, addressed by its CID.
     Bulletin(String),
@@ -322,7 +379,10 @@ pub enum ImageSource {
 
 /// How an image meets the box its modifiers size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum ImageFit {
     /// The image is not resized.
     None,
@@ -339,7 +399,10 @@ pub enum ImageFit {
 
 /// Properties of an `Image`.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct ImageProps {
     /// Where the image bytes come from.
     pub source: ImageSource,
@@ -349,7 +412,10 @@ pub struct ImageProps {
 
 /// A visual effect. Each variant names one effect and carries its parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum Effect {
     /// Animated rainbow tint over the children.
     Rainbow,
@@ -357,7 +423,10 @@ pub enum Effect {
 
 /// Properties of an `Effect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct EffectProps {
     /// The effect applied to the children.
     pub effect: Effect,
@@ -365,7 +434,10 @@ pub struct EffectProps {
 
 /// Properties of a `TextField`.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct TextFieldProps {
     /// Current value.
     pub text: String,
@@ -383,7 +455,10 @@ pub struct TextFieldProps {
 /// A node in a product-rendered tree. Container variants recurse through
 /// `children`.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum RendererNode {
     /// Draws nothing.
     Nil,
@@ -467,7 +542,10 @@ pub enum RendererNode {
 
 /// Where a product-rendered body lives, and the id that names it there.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum RenderContext {
     /// A message in a chat room.
     ChatMessage {
@@ -493,7 +571,10 @@ pub enum RenderContext {
 
 /// A body the host needs drawn.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct ProductRendererRenderRequest {
     /// Where the body lives.
     pub context: RenderContext,
@@ -503,7 +584,10 @@ pub struct ProductRendererRenderRequest {
 
 /// An action triggered inside a product-rendered body.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct HostRendererActionSubscribeItem {
     /// Where the body lives.
     pub context: RenderContext,
@@ -622,7 +706,7 @@ mod tests {
         assert_eq!(decoded, node);
     }
 
-    #[cfg(feature = "uniffi")]
+    #[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
     #[test]
     fn tree_round_trips_through_uniffi() {
         let node = renderer_node();

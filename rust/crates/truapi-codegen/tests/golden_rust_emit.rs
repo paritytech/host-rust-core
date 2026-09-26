@@ -53,15 +53,21 @@ fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
     strings
 }
 
-/// Path to `truapi`'s rustdoc JSON, building it on first use.
+/// Path to the rustdoc JSON of `truapi`'s protocol definitions alone, the
+/// input codegen reads the API from, building it on first use.
 fn produce_rustdoc_json(workspace_root: &Path) -> PathBuf {
-    produce_rustdoc_json_for_package(workspace_root, "truapi")
+    produce_rustdoc_json_for_package(workspace_root, "truapi", &["--no-default-features"])
 }
 
-/// Path to `package`'s rustdoc JSON, building it on first use and reusing
-/// that build for every later caller in this test binary. Panics with a
-/// clear message if nightly is unavailable so CI cannot pass vacuously.
-fn produce_rustdoc_json_for_package(workspace_root: &Path, package: &str) -> PathBuf {
+/// Path to `package`'s rustdoc JSON built with `cargo_args`, building it on
+/// first use and reusing that build for every later caller in this test
+/// binary. Panics with a clear message if nightly is unavailable so CI cannot
+/// pass vacuously.
+fn produce_rustdoc_json_for_package(
+    workspace_root: &Path,
+    package: &str,
+    cargo_args: &[&str],
+) -> PathBuf {
     static BUILT: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
     let built = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
     // Held across the build so two tests asking for the same package queue
@@ -69,25 +75,37 @@ fn produce_rustdoc_json_for_package(workspace_root: &Path, package: &str) -> Pat
     let mut built = built
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(json) = built.get(package) {
+    let key = [package]
+        .into_iter()
+        .chain(cargo_args.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(json) = built.get(&key) {
         return json.clone();
     }
 
     let target_dir = workspace_root
         .join("target/codegen-test-rustdoc")
-        .join(package);
-    let json = run_rustdoc_json(workspace_root, &target_dir, package);
-    built.insert(package.to_owned(), json.clone());
+        .join(key.replace(' ', "_"));
+    let json = run_rustdoc_json(workspace_root, &target_dir, package, cargo_args);
+    built.insert(key, json.clone());
     json
 }
 
 /// One `cargo +nightly rustdoc --output-format json` invocation, returning
 /// the path to the JSON it wrote.
-fn run_rustdoc_json(workspace_root: &Path, target_dir: &Path, package: &str) -> PathBuf {
+fn run_rustdoc_json(
+    workspace_root: &Path,
+    target_dir: &Path,
+    package: &str,
+    cargo_args: &[&str],
+) -> PathBuf {
     let mut command = Command::new("cargo");
     command
         .arg(format!("+{}", nightly_toolchain()))
-        .args(["rustdoc", "-p", package, "--target-dir"])
+        .args(["rustdoc", "-p", package])
+        .args(cargo_args)
+        .arg("--target-dir")
         .arg(target_dir)
         .args(["--", "-Z", "unstable-options", "--output-format", "json"])
         .current_dir(workspace_root);
@@ -222,9 +240,9 @@ fn golden_dispatcher_and_wire_table() {
 
     // Compare the emitted files against the goldens. We assert on
     // wire_table.rs first because it's small and the diff is easy to
-    // read when the wire ids drift. mod.rs is covered because
-    // truapi-server declares `pub mod generated;` unconditionally, so
-    // dropping it stops the crate parsing at all.
+    // read when the wire ids drift. mod.rs is covered because the
+    // runtime declares `pub mod generated;` unconditionally, so dropping
+    // it stops the crate parsing at all.
     let golden_dir = manifest_dir.join("tests/golden");
     let cases = [
         ("wire_table.rs", "wire_table.rs"),
@@ -339,8 +357,8 @@ fn golden_host_callbacks_ts() {
 
     let tempdir = workspace_tempdir(&workspace);
     let truapi_json = produce_rustdoc_json(&workspace);
-    let server_json = produce_rustdoc_json_for_package(&workspace, "truapi-server");
-    let provider_json = produce_rustdoc_json_for_package(&workspace, "truapi-provider");
+    let runtime_json = produce_rustdoc_json_for_package(&workspace, "truapi", &[]);
+    let provider_json = produce_rustdoc_json_for_package(&workspace, "truapi-provider", &[]);
 
     let out = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
         .args([
@@ -349,7 +367,7 @@ fn golden_host_callbacks_ts() {
             "--output",
             tempdir.path().join("ts").to_str().unwrap(),
             "--platform-input",
-            server_json.to_str().unwrap(),
+            runtime_json.to_str().unwrap(),
             "--platform-input",
             provider_json.to_str().unwrap(),
             "--platform-ts-output",

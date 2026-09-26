@@ -10,8 +10,8 @@
 //! are about the chain rather than about host wiring. The provider routes Asset Hub
 //! now that the preset serves it as a role.
 
-use truapi_server::statement_allowance::collection::PersonhoodCollection;
-use truapi_server::statement_allowance::{self as alloc, extension::AS_PGAS, pgas};
+use truapi::statement_allowance::collection::PersonhoodCollection;
+use truapi::statement_allowance::{self as alloc, extension::AS_PGAS, pgas};
 
 const ASSET_HUB_WS: &str = "wss://paseo-asset-hub-next-rpc.polkadot.io";
 
@@ -207,12 +207,12 @@ async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
 // dotNS gateway: the register_name authorization shape and the username reads.
 // ---------------------------------------------------------------------------
 
-use truapi_server::host_logic::dotns_gateway::{
+use truapi::host_logic::dotns_gateway::{
     DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, call_bytes32, classify_labels,
     decode_address, discover_pop_controller, encode_revive_call, is_dotted_lite_username,
     is_pop_issued, label_available, namehash_under, resolve_labels, selector, view_output,
 };
-use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
+use truapi::statement_allowance::extension::AS_DOTNS_GATEWAY;
 
 /// The `DotnsRegistrar` (ERC721), the same CREATE3 address on every network
 /// per dotns `DEPLOYMENTS.md`. Only used to find an account that holds a
@@ -239,7 +239,7 @@ fn minted_node() -> [u8; 32] {
 /// `DotnsTransport` over plain RPC, the same two primitives the CLI uses.
 struct PlainRpc(alloc::rpc::RpcClient);
 
-#[truapi_server::platform::async_trait]
+#[truapi::platform::async_trait]
 impl DotnsTransport for PlainRpc {
     async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
         self.0
