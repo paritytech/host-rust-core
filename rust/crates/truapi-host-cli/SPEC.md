@@ -1579,9 +1579,12 @@ core, product, and current selection files.
 
 ### 14.1 Network presets
 
-`--network` selects one of two presets. `paseo-next-v2` is the default. Every
-preset is a test network; the account store keeps BIP-39 entropy for
-disposable test identities only.
+`--network` selects one of two presets. `paseo-next-v2` is the default. Both
+are test networks whose identities are disposable, so the account store may
+keep their BIP-39 entropy. A preset whose identities are real never writes to
+the account store: it signs only with `--mnemonic` or
+`HOST_CLI_SIGNER_MNEMONIC`, and refuses auto accounts, stored accounts and
+mnemonic imports.
 
 Auto-account onboarding (§12.3) needs an identity backend that records the
 lite username on the dotNS gateway. Each preset points at its matching dotSpark
@@ -1892,7 +1895,7 @@ Transcript copies and submitted-command dividers redact it.
 
 Mnemonics are never intentionally printed, but auto-managed mnemonics are
 stored in plaintext `accounts.json`. That file is local test secret material,
-not production custody.
+not production custody, so only disposable-identity presets (§14.1) write it.
 
 `debug` and especially `trace` can include decoded product payloads and
 transport metadata. Do not publish trace logs from sensitive test accounts
