@@ -8,8 +8,8 @@ import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
-import uniffi.truapi_server.ProductExecutionConfig
-import uniffi.truapi_server.ProductExecutionKind
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import io.parity.truapi.TrUAPIProductExecution
 import io.parity.truapi.WebSocketChainProvider
@@ -40,20 +40,19 @@ import okhttp3.OkHttpClient
 import timber.log.Timber
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
-import uniffi.truapi.HostNavigateToError
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.ThemeName
-import uniffi.truapi_server.AuthState
-import uniffi.truapi_server.HostChainSet
-import uniffi.truapi_server.UserConfirmationReview
-import uniffi.truapi_server.HostNavigateRejection
-import uniffi.truapi_server.HostRejection
+import uniffi.truapi.AuthState
+import uniffi.truapi.HostChainSet
+import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.HostNavigateToException
+import uniffi.truapi.HostRejection
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Instant
 import uniffi.truapi.ThemeVariant as NativeThemeVariant
-import uniffi.truapi_server.PermissionDecision as TrUAPIPermissionDecision
+import uniffi.truapi.PermissionDecision as TrUAPIPermissionDecision
 
 /**
  * Native platform callbacks ([io.parity.truapi.HostBridge]) for one product
@@ -139,13 +138,13 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         override suspend fun navigateTo(url: String) {
             val destination = url.toUri()
             val tld = dotNsTldProvider.getTld().getOrElse {
-                throw HostNavigateRejection.Navigate(HostNavigateToError.Unknown(it.message.orEmpty()))
+                throw HostNavigateToException.Unknown(it.message.orEmpty())
             }
             val type = DotNsUtils.classifyNavigation(callingProductId.toUri(), destination, tld)
             withContext(Dispatchers.Main) {
                 runCatching { navigation.handleNavigation(type, destination) }
                     .getOrElse {
-                        throw HostNavigateRejection.Navigate(HostNavigateToError.Unknown(it.message.orEmpty()))
+                        throw HostNavigateToException.Unknown(it.message.orEmpty())
                     }
             }
         }

@@ -2509,7 +2509,7 @@ mod tests {
         let workspace_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
-            .expect("crate lives at <workspace>/rust/crates/truapi-server")
+            .expect("crate lives at <workspace>/rust/crates/truapi")
             .join("Cargo.toml");
         let manifest = std::fs::read_to_string(&workspace_manifest)
             .expect("workspace manifest is readable from the crate directory");

@@ -3,7 +3,7 @@
 - Status: as-built behavior reference
 - Binary: `truapi-host`
 - Implementation: `rust/crates/truapi-host-cli/`
-- Protocol implementation: `truapi` and `truapi-server`
+- Protocol implementation: `truapi`
 
 This document specifies the first complete version of the native headless
 TrUAPI host CLI. It was derived from the Rust and TypeScript implementation,
@@ -26,7 +26,7 @@ phone automation service, or external signing bot. It is intended for:
 - paired end-to-end tests; and
 - generation of CLI host compatibility reports.
 
-It embeds the real `truapi-server` dispatcher and host logic. Product scripts
+It embeds the real `truapi` dispatcher and host logic. Product scripts
 use the public `@parity/truapi` client and exchange the same SCALE protocol
 messages as a product connected to another host.
 
@@ -97,7 +97,7 @@ as the paired path.
 
 ### 2.3 Ownership boundaries
 
-`truapi-server` owns:
+`truapi` owns:
 
 - protocol dispatch and SCALE encoding;
 - product and role semantics;
@@ -2178,7 +2178,7 @@ The implementation is covered by:
   products, sessions, approvals, and platform behavior;
 - process-boundary tests for help, non-TTY rejection, product reporting,
   session restore, cached signer activation, and bare-script safety;
-- `truapi-server` runtime, protocol, cryptographic vector, and integration
+- `truapi` runtime, protocol, cryptographic vector, and integration
   tests;
 - shared container, script-runner/Bun diagnosis and packaged-runtime tests;
 - paired and direct `battery.ts` runs, both driven by `scripts/battery.sh`; and

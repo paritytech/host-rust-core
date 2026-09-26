@@ -3,8 +3,8 @@ import java.util.Properties
 
 // TrUAPI Android host adapter binding.
 //
-// Compiles the TrUAPI Rust core (`truapi-server`, from the sibling truapi
-// checkout) to `libtruapi_server.so` per Android ABI via the shared
+// Compiles the TrUAPI Rust core (`truapi`, from the sibling truapi
+// checkout) to `libtruapi.so` per Android ABI via the shared
 // `polkadotapp.android.rust` convention (mozilla rust-android-gradle), then
 // carries the UniFFI-generated Kotlin bindings + the `io.parity.truapi` host
 // adapter shell.
@@ -24,7 +24,7 @@ plugins {
     id("polkadotapp.android.rust")
 }
 
-// Resolve the truapi checkout that holds `rust/crates/truapi-server`, using the
+// Resolve the truapi checkout that holds `rust/crates/truapi`, using the
 // same `truapi.dir` / `TRUAPI_DIR` resolution as the settings-gradle include
 // guard, which has already run and accepted whatever this finds: a configured
 // checkout if there is one, otherwise the core in the enclosing repository.
@@ -51,7 +51,7 @@ val truapiDir: String = run {
         // extension on the project, and its generated accessor shadows the root
         // package, so the qualified name does not compile in a build script.
         rootProject.file("../..").takeIf {
-            File(it, "rust/crates/truapi-server").isDirectory
+            File(it, "rust/crates/truapi").isDirectory
         }?.path
             ?: error("truapi.dir / TRUAPI_DIR must be set to build :bindings:truapi-host")
     }
@@ -102,15 +102,15 @@ tasks.withType<KotlinCompile>().configureEach {
 }
 
 // Override the convention default (`module = "rust/"`) to point at the
-// external truapi-server crate, and build it with the localhost WS bridge.
+// external truapi crate, and build it with the localhost WS bridge.
 cargo {
-    module = "$truapiDir/rust/crates/truapi-server"
-    libname = "truapi_server"
+    module = "$truapiDir/rust/crates/truapi"
+    libname = "truapi"
     // Narrows the convention's four ABIs to the three truapi itself builds.
     // The core is ~9MB per ABI, by far the largest binding here, and 32-bit x86
     // only ever serves a long-obsolete emulator image.
     targets = listOf("arm", "arm64", "x86_64")
-    // truapi-server is a workspace member, so cargo emits artifacts to the
+    // truapi is a workspace member, so cargo emits artifacts to the
     // workspace target dir, not a crate-local one. Point the plugin there so it
     // can find and copy the per-ABI .so into rustJniLibs.
     targetDirectory = "$truapiDir/target"
@@ -137,7 +137,7 @@ val hostCdylib: String = run {
         os.contains("win") -> "dll"
         else -> "so"
     }
-    "$truapiDir/target/codegen/libtruapi_server.$ext"
+    "$truapiDir/target/codegen/libtruapi.$ext"
 }
 
 // codegen.sh formats what it emits with the core's own prettier, resolved with
@@ -154,7 +154,7 @@ val installCoreNodeDeps by tasks.registering(Exec::class) {
 }
 
 // Generate the core's wire dispatcher. host-rust-core stopped tracking
-// `truapi-server/src/generated` and generates it on demand, so a checkout of any
+// `truapi/src/generated` and generates it on demand, so a checkout of any
 // commit after that does not compile until this runs. Release tags do not carry
 // it either: the iOS tag script commits only the paths `Package.swift` declares.
 // Calling the core's own script rather than repeating its codegen invocation
@@ -170,8 +170,8 @@ val generateCoreDispatcher by tasks.registering(Exec::class) {
         fileTree("$truapiDir/rust/crates/truapi-codegen") { include("**/*.rs", "**/Cargo.toml") },
     ).withPropertyName("codegenSources")
     outputs.dirs(
-        "$truapiDir/rust/crates/truapi-server/src/generated",
-        "$truapiDir/rust/crates/truapi-server/src/wasm",
+        "$truapiDir/rust/crates/truapi/src/generated",
+        "$truapiDir/rust/crates/truapi/src/wasm",
     ).withPropertyName("generatedDispatcher")
 }
 
@@ -182,7 +182,7 @@ val generateCoreDispatcher by tasks.registering(Exec::class) {
 val buildHostCdylib by tasks.registering(Exec::class) {
     dependsOn(generateCoreDispatcher)
     workingDir = file(truapiDir)
-    commandLine("cargo", "build", "-p", "truapi-server", "--profile", "codegen", "--features", "ws-bridge")
+    commandLine("cargo", "build", "-p", "truapi", "--profile", "codegen", "--features", "ws-bridge")
     inputs.files(
         fileTree("$truapiDir/rust/crates") { include("**/*.rs", "**/*.js", "**/Cargo.toml") },
         "$truapiDir/Cargo.toml",
@@ -211,7 +211,7 @@ val generateUniffiKotlin by tasks.registering(Exec::class) {
     outputs.dir(outDir).withPropertyName("generatedBindings")
 }
 
-// The per-ABI cross-compiles build truapi-server too, so they need the
+// The per-ABI cross-compiles build truapi too, so they need the
 // dispatcher just as much as the host-native build does.
 tasks.matching { it.name.startsWith("cargoBuild") }
     .configureEach { dependsOn(generateCoreDispatcher) }

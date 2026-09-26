@@ -2,7 +2,7 @@
 
 *Kotlin wrapper around the TrUAPI Rust core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge.*
 
-Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature), the UniFFI Kotlin bindings (`uniffi.truapi_server.*`), the Kotlin host adapter (`io.parity.truapi.*`), and the browser container asset. Consumers need no Rust toolchain or NDK.
+Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature), the UniFFI Kotlin bindings (`uniffi.truapi.*`), the Kotlin host adapter (`io.parity.truapi.*`), and the browser container asset. Consumers need no Rust toolchain or NDK.
 
 ## Consume
 
@@ -57,7 +57,7 @@ configuration update in the embedding app's package upgrade.
 - **AGP**: built with 8.5.2; AGP 8.5+ consumers are fine. AAR is forward-compatible with newer AGPs.
 - **Kotlin**: built with 1.9.24. Newer Kotlin compilers (2.x) read 1.9 metadata fine.
 - **Transitive dependencies**: `net.java.dev.jna:jna:5.14.0` (UniFFI's runtime, ~1.5MB for consumers that don't already use it), `org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0` and `org.jetbrains.kotlin:kotlin-stdlib:1.9.24`.
-- **Size**: the AAR is ~20MB, one `libtruapi_server.so` per ABI. An app bundle ships only the ABI the device needs, so the installed cost is ~9MB on arm64.
+- **Size**: the AAR is ~20MB, one `libtruapi.so` per ABI. An app bundle ships only the ABI the device needs, so the installed cost is ~9MB on arm64.
 
 ## Public surface
 
@@ -83,7 +83,7 @@ import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatRoom
 import uniffi.truapi.ChatRoomParticipation
 import uniffi.truapi.ChatRoomRegistrationStatus
-import uniffi.truapi_server.HostRejection
+import uniffi.truapi.HostRejection
 
 // Called from a shared dispatch pool, so the backing store must be
 // thread-safe, and a slow call here stalls other product executions.
@@ -165,7 +165,7 @@ product app in WebView
            |
            v   ws://127.0.0.1:<port>/?t=<token>
 TrUAPIProductExecution.startWsBridge()
-  → libtruapi_server.so (tokio WS server)
+  → libtruapi.so (tokio WS server)
   → Rust dispatcher
 ```
 
@@ -282,21 +282,21 @@ import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
-import uniffi.truapi_server.HostRuntimeConfig
-import uniffi.truapi_server.ProductExecutionConfig
-import uniffi.truapi_server.ProductExecutionKind
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import uniffi.truapi_server.AuthState
+import uniffi.truapi.AuthState
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.ThemeName
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_server.UserConfirmationReview
-import uniffi.truapi_server.PermissionDecision
+import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.PermissionDecision
 import uniffi.truapi.HostPushNotificationRequest
 
 class MyStorage : HostStorage {
@@ -443,7 +443,7 @@ runtime.disconnect()
 
 ## The cdylib
 
-The released AAR bundles `libtruapi_server.so` for all three ABIs under its `jni/` directory; JNA loads it from there without any consumer setup.
+The released AAR bundles `libtruapi.so` for all three ABIs under its `jni/` directory; JNA loads it from there without any consumer setup.
 
 When iterating on the core from a source checkout instead of the published artifact, cross-compile into this module's `jniLibs` with:
 
@@ -451,7 +451,7 @@ When iterating on the core from a source checkout instead of the published artif
 make android-jni    # needs cargo-ndk, the NDK, and the three Android rust targets
 ```
 
-or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi-server` from the host app's own build (polkadot-app-android-v2 does this while it still builds from a checkout).
+or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi` from the host app's own build (polkadot-app-android-v2 does this while it still builds from a checkout).
 
 ## Maintainers: cutting a release
 

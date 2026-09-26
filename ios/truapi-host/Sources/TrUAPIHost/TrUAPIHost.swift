@@ -1,7 +1,7 @@
 // TrUAPIHost - iOS host adapter.
 //
-// The Rust core (compiled to `libtruapi_server`, surfaced through UniFFI in
-// the sibling `truapi_server.swift` file) owns wire decoding, request
+// The Rust core (compiled to `libtruapi`, surfaced through UniFFI in the
+// sibling `truapi.swift` file) owns wire decoding, request
 // routing, subscription lifecycle, and platform trait dispatch.
 //
 // This file exposes the process-owned `TrUAPIHostRuntime`, its independently
@@ -38,7 +38,7 @@ public protocol HostStorageBackend: AnyObject, Sendable {
 }
 
 /// Core-owned host-private storage backend. Keys are SCALE-encoded
-/// `truapi_server::platform::CoreStorageKey` values, so embedders can persist them
+/// `truapi::platform::CoreStorageKey` values, so embedders can persist them
 /// opaquely or decode them to choose a secure backing store per slot.
 public protocol HostCoreStorageBackend: AnyObject, Sendable {
     func read(key: Data) throws -> Data?
@@ -208,13 +208,13 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     /// normalized these arguments and screened the icon scheme; escaping them
     /// for the surface that renders them is still the host's job.
     func createRoom(roomId: String, name: String, icon: String) async throws
-        -> NativeChatRoomRegistrationStatus
+        -> ChatRoomRegistrationStatus
 
     /// Register or resolve a native product Chat bot. The core has bounded and
     /// normalized these arguments and screened the icon scheme; escaping them
     /// for the surface that renders them is still the host's job.
     func registerBot(botId: String, name: String, icon: String) async throws
-        -> NativeChatBotRegistrationStatus
+        -> ChatBotRegistrationStatus
 
     /// Persist a product-authored message in native Chat storage. Throw for a
     /// content variant this host cannot render.
@@ -324,7 +324,7 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         roomId: String,
         name: String,
         icon: String
-    ) async throws -> NativeChatRoomRegistrationStatus {
+    ) async throws -> ChatRoomRegistrationStatus {
         try await withHostRejection {
             try await bridge.createRoom(roomId: roomId, name: name, icon: icon)
         }
@@ -334,7 +334,7 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         botId: String,
         name: String,
         icon: String
-    ) async throws -> NativeChatBotRegistrationStatus {
+    ) async throws -> ChatBotRegistrationStatus {
         try await withHostRejection {
             try await bridge.registerBot(botId: botId, name: name, icon: icon)
         }
@@ -596,30 +596,30 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     private func withNavigationRejection<T>(_ operation: () throws -> T) throws -> T {
         do {
             return try operation()
-        } catch let error as HostNavigateRejection {
+        } catch let error as HostNavigateToError {
             throw error
         } catch {
-            throw HostNavigateRejection.Navigate(.unknown(reason: hostRejectionReason(error)))
+            throw HostNavigateToError.Unknown(reason: hostRejectionReason(error))
         }
     }
 
     private func withNavigationRejection<T>(_ operation: () async throws -> T) async throws -> T {
         do {
             return try await operation()
-        } catch let error as HostNavigateRejection {
+        } catch let error as HostNavigateToError {
             throw error
         } catch {
-            throw HostNavigateRejection.Navigate(.unknown(reason: hostRejectionReason(error)))
+            throw HostNavigateToError.Unknown(reason: hostRejectionReason(error))
         }
     }
 
     private func withStorageError<T>(_ operation: () throws -> T) throws -> T {
         do {
             return try operation()
-        } catch let error as HostStorageError {
+        } catch let error as HostLocalStorageReadError {
             throw error
         } catch {
-            throw HostStorageError.Storage(.unknown(reason: hostRejectionReason(error)))
+            throw HostLocalStorageReadError.Unknown(reason: hostRejectionReason(error))
         }
     }
 }

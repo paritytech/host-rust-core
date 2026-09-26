@@ -123,10 +123,10 @@ The product never embeds a hash. After a testnet wipe the host updates its confi
 
 ### Implementation shape
 
-The core does not own the chain set. `system.featureSupported(Chain { genesis_hash })` is already a thin shim in `rust/crates/truapi-server/src/host_logic/features.rs` delegating to `truapi_server::platform::Features`, and `ChainProvider::connect(genesis_hash)` opens JSON-RPC pipes on demand. This RFC follows the same delegation pattern:
+The core does not own the chain set. `system.featureSupported(Chain { genesis_hash })` is already a thin shim in `rust/crates/truapi/src/host_logic/features.rs` delegating to `truapi::platform::Features`, and `ChainProvider::connect(genesis_hash)` opens JSON-RPC pipes on demand. This RFC follows the same delegation pattern:
 
-- `truapi_server::platform` gains one syscall on `Features` returning the host's network string and its full identifier-to-chain mapping.
-- `truapi-server` answers `get_chain_info` in-core from that syscall, resolving the requested identifier and mapping a miss to `NotSupported`.
+- `truapi::platform` gains one syscall on `Features` returning the host's network string and its full identifier-to-chain mapping.
+- `truapi` answers `get_chain_info` in-core from that syscall, resolving the requested identifier and mapping a miss to `NotSupported`.
 
 Hosts therefore implement exactly one callback, backed by configuration they already maintain. dotli's per-environment named slots (`relay`, `assethub`, `bulletin`, `people`, each with a genesis hash) map one-to-one onto `ChainIdentifier` variants; the iOS `TrUAPIHost` and the host CLI expose their equivalent config the same way.
 

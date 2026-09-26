@@ -39,7 +39,7 @@ runs:
       with:
         shared-key: ${{ inputs.cache-key }}
 
-    # truapi-server declares its generated modules unconditionally and they are
+    # The truapi runtime declares its generated modules unconditionally and they are
     # gitignored, so the crate does not compile until codegen has run.
     - name: Generate the Rust codegen output
       shell: bash

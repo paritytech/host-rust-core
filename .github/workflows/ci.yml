@@ -69,7 +69,7 @@ jobs:
         run: cargo doc --workspace --lib --all-features --no-deps
 
       - name: cargo check wasm32
-        run: cargo check --target wasm32-unknown-unknown -p truapi-server
+        run: cargo check --target wasm32-unknown-unknown -p truapi
 
       - name: cargo +nightly clippy wasm32 (truapi-provider browser backends)
         run: cargo +nightly clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
@@ -140,7 +140,7 @@ jobs:
 
       - name: Build and install with stale generated sources
         run: |
-          printf '%s\n' 'compile_error!("stale generated dispatcher");' > rust/crates/truapi-server/src/generated/dispatcher.rs
+          printf '%s\n' 'compile_error!("stale generated dispatcher");' > rust/crates/truapi/src/generated/dispatcher.rs
           printf '%s\n' 'const staleGeneratedClient: never = "stale";' > js/packages/truapi/src/generated/client.ts
           make headless install
 
@@ -251,8 +251,8 @@ jobs:
             js/packages/truapi-host/src/generated
             playground/test/generated
             rust/crates/truapi-host-cli/js/script-types.d.ts
-            rust/crates/truapi-server/src/generated
-            rust/crates/truapi-server/src/wasm
+            rust/crates/truapi/src/generated
+            rust/crates/truapi/src/wasm
 
   ios-bindings:
     name: iOS bindings (uniffi)
@@ -272,7 +272,7 @@ jobs:
         with:
           save-if: ${{ github.event_name == 'push' }}
 
-      # truapi-server declares its generated modules unconditionally, so the
+      # The truapi runtime declares its generated modules unconditionally, so the
       # cdylib bindgen builds from does not compile without the codegen output.
       - name: Download codegen output
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -353,9 +353,9 @@ jobs:
             fi
           }
 
-          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-server/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
           gate workflows '^(\.github/workflows/|\.github/actions/|\.github/labeler\.yml$|\.github/CODEOWNERS$|hosts/[a-z]+/\.github/|scripts/(lint-composite-shell|check-path-routing)\.py$)'
-          gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
           # The provider AAR is generated from its own cdylib and compiles
           # without codegen output, so it moves on a narrower set than the host
@@ -365,7 +365,7 @@ jobs:
           # The vendored Android host, plus the crates its bindings are
           # generated from. Nothing gated on this tree before, so a core change
           # that broke it reached a release with no gate in between.
-          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-server/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
+          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
 
           # The packaging path has its own inputs: the archive layout in the
           # Makefile, the runner bundle, the generated sources cli-dist refuses
@@ -558,7 +558,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-      # truapi-server declares its generated modules unconditionally and they are
+      # The truapi runtime declares its generated modules unconditionally and they are
       # gitignored, so the crate does not compile until codegen has run.
       - name: Generate the Rust codegen output
         run: |

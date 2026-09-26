@@ -14,7 +14,7 @@ pub struct HostLocalStorageWriteRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
 #[cfg_attr(
     all(feature = "runtime", not(target_arch = "wasm32")),
-    derive(uniffi::Enum)
+    derive(uniffi::Error)
 )]
 pub enum HostLocalStorageReadError {
     /// Storage quota exceeded.

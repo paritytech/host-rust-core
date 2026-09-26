@@ -1,6 +1,6 @@
 # @parity/truapi-host
 
-WASM-backed TrUAPI host runtime. It embeds the `truapi-server` Rust core (compiled to WASM)
+WASM-backed TrUAPI host runtime. It embeds the `truapi` Rust core (compiled to WASM)
 behind a Web Worker provider, plus per-environment integration entry points. It is the
 counterpart to the native Android/iOS host shells.
 
@@ -233,7 +233,7 @@ the workspace size-optimized Rust profile plus `wasm-opt -Oz`, validate that
 debug/name/producers custom sections were stripped, and emit `.wasm.gz` and
 `.wasm.br` sidecars for hosts that serve precompressed assets.
 
-Build them after editing `rust/crates/truapi-server` and before packaging, publishing, or running
+Build them after editing `rust/crates/truapi` and before packaging, publishing, or running
 tests that load the raw WASM bundle (requires `wasm-pack` on PATH):
 
 ```bash
@@ -392,7 +392,7 @@ a LAN or public address, a non-loopback hostname — yields an inert link and a
 `wire debugger URL rejected` console warning; there is no certificate or `wss`
 path. Prefer the literal `127.0.0.1` over `localhost`: `localhost` passes the
 gate, but it resolves `::1` first on macOS while the debugger binds `127.0.0.1`
-alone, so the same URL handed to a native host (`truapi-server`'s `WsDebugSink`
+alone, so the same URL handed to a native host (`truapi`'s `WsDebugSink`
 dials the first resolved address) silently never connects.
 
 The debugger owns all decoding and decodes every frame it can, including signing

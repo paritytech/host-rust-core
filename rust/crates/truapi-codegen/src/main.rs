@@ -59,12 +59,12 @@ struct Cli {
     /// Output directory for the generated Rust dispatcher / wire-table (optional).
     ///
     /// When set, emits `dispatcher.rs` and `wire_table.rs` for the
-    /// `truapi-server` crate to include.
+    /// `truapi` crate to include.
     #[arg(long)]
     rust_output: Option<PathBuf>,
 
     /// Path to rustdoc JSON for a crate with a `platform` module; repeat for
-    /// each such crate (`truapi-server`, `truapi-provider`).
+    /// each such crate (`truapi`, `truapi-provider`).
     ///
     /// When provided together with `--platform-ts-output`, walks the
     /// `platform` modules' capability traits and emits the typed TS

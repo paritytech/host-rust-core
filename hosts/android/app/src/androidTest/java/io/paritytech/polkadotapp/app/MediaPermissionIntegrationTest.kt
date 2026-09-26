@@ -10,11 +10,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
-import uniffi.truapi_server.HostRuntimeConfig
+import uniffi.truapi.HostRuntimeConfig
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
-import uniffi.truapi_server.ProductExecutionConfig
-import uniffi.truapi_server.ProductExecutionKind
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import io.paritytech.polkadotapp.common.utils.permissions.PermissionAsker
 import io.paritytech.polkadotapp.common.utils.permissions.PermissionResult
@@ -34,9 +34,9 @@ import org.junit.runner.RunWith
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_server.PermissionAuthorizationRequest
-import uniffi.truapi_server.PermissionAuthorizationStatus
-import uniffi.truapi_server.PermissionDecision
+import uniffi.truapi.PermissionAuthorizationRequest
+import uniffi.truapi.PermissionAuthorizationStatus
+import uniffi.truapi.PermissionDecision
 import java.lang.reflect.Proxy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch

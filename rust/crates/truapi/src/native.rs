@@ -52,41 +52,6 @@ use crate::{
     DevicePairingObserver, PairedSsoPeer, PairingProposal, ResponderExit, SigningHostRuntime,
 };
 
-/// Host-thrown storage failure wrapping the canonical error payload, so its
-/// variants remain defined once in `truapi`.
-///
-/// [UniFFI 0.32 exposes `Result` failures as error enums or `Arc`-backed error
-/// objects](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html). Although
-/// the canonical enum can be exposed as an external error, Kotlin foreign-trait
-/// callbacks must lower thrown errors into this namespace's `RustBuffer`; the
-/// external converter returns the canonical namespace's distinct `RustBuffer`
-/// type. There is no derive-based bridge between them. `uniffi::remote(Error)`
-/// would instead duplicate every canonical variant and field, so this local
-/// one-variant wrapper preserves the canonical definition.
-#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
-pub enum HostStorageError {
-    /// Canonical storage failure payload.
-    #[error("{0}")]
-    Storage(v01::HostLocalStorageReadError),
-}
-
-impl From<uniffi::UnexpectedUniFFICallbackError> for HostStorageError {
-    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
-        tracing::warn!(
-            reason = %err.reason,
-            "host callback threw an undeclared error; reporting it as a rejection"
-        );
-        HostStorageError::Storage(v01::HostLocalStorageReadError::Unknown { reason: err.reason })
-    }
-}
-
-impl From<HostStorageError> for v01::HostLocalStorageReadError {
-    fn from(err: HostStorageError) -> Self {
-        let HostStorageError::Storage(err) = err;
-        err
-    }
-}
-
 /// Native-friendly rejection error returned by callback methods that map onto
 /// [`truapi::v01::GenericError`].
 ///
@@ -123,34 +88,31 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for HostRejection {
     }
 }
 
-impl From<v01::GenericError> for HostRejection {
-    fn from(err: v01::GenericError) -> Self {
-        HostRejection::Rejected { reason: err.reason }
-    }
-}
-
-/// Host-thrown navigation failure wrapping the canonical error payload.
-///
-/// As described for [`HostStorageError`], [UniFFI's supported error
-/// representations](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html)
-/// do not provide a derive-based way to bridge namespace-specific Kotlin
-/// `RustBuffer` types when an external error is thrown by a foreign-trait
-/// callback. The one-variant wrapper avoids mirroring the canonical navigation
-/// error enum locally.
-#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
-pub enum HostNavigateRejection {
-    /// Canonical navigation failure payload.
-    #[error("{0}")]
-    Navigate(v01::HostNavigateToError),
-}
-
-impl From<uniffi::UnexpectedUniFFICallbackError> for HostNavigateRejection {
+// Foreign callbacks that throw an undeclared exception land here; without these
+// conversions UniFFI panics, which `panic = "abort"` turns into a process abort.
+impl From<uniffi::UnexpectedUniFFICallbackError> for v01::HostLocalStorageReadError {
     fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
         tracing::warn!(
             reason = %err.reason,
             "host callback threw an undeclared error; reporting it as a rejection"
         );
-        HostNavigateRejection::Navigate(v01::HostNavigateToError::Unknown { reason: err.reason })
+        v01::HostLocalStorageReadError::Unknown { reason: err.reason }
+    }
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for v01::HostNavigateToError {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "host callback threw an undeclared error; reporting it as a rejection"
+        );
+        v01::HostNavigateToError::Unknown { reason: err.reason }
+    }
+}
+
+impl From<v01::GenericError> for HostRejection {
+    fn from(err: v01::GenericError) -> Self {
+        HostRejection::Rejected { reason: err.reason }
     }
 }
 
@@ -426,13 +388,6 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
     }
 }
 
-impl From<HostNavigateRejection> for v01::HostNavigateToError {
-    fn from(err: HostNavigateRejection) -> Self {
-        let HostNavigateRejection::Navigate(err) = err;
-        err
-    }
-}
-
 /// Classify a navigation input exactly like the core's internal navigate host
 /// call: dotNS first, then `localhost`, then normalized external, with
 /// everything else rejected. Pure and stateless; hosts call it on every
@@ -535,7 +490,7 @@ pub trait HostCallbacks: Send + Sync {
     fn on_core_log(&self, marker: String, detail: String);
 
     /// Open a URL in the system browser.
-    async fn navigate_to(&self, url: String) -> Result<(), HostNavigateRejection>;
+    async fn navigate_to(&self, url: String) -> Result<(), v01::HostNavigateToError>;
 
     /// Deliver a push notification.
     async fn push_notification(
@@ -675,11 +630,11 @@ pub trait HostCallbacks: Send + Sync {
     fn device_paired(&self, device: PairedSsoPeer);
 
     /// Read a value from the host's scoped key-value store.
-    fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
+    fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError>;
     /// Write a value to the host's scoped key-value store.
-    fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), HostStorageError>;
+    fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), v01::HostLocalStorageReadError>;
     /// Clear a value from the host's scoped key-value store.
-    fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
+    fn local_storage_clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError>;
 
     /// Record a pending operation, whose id keeps the product's worker alive
     /// until it ends.
@@ -1966,7 +1921,7 @@ impl Navigation for CallbackPlatform {
             "truapi.native.callback.navigate_to".to_string(),
             url.clone(),
         );
-        self.callbacks.navigate_to(url).await.map_err(Into::into)
+        self.callbacks.navigate_to(url).await
     }
 }
 
@@ -2087,7 +2042,7 @@ impl Features for CallbackPlatform {
 #[async_trait]
 impl ProductStorage for CallbackPlatform {
     async fn read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
-        self.callbacks.local_storage_read(key).map_err(Into::into)
+        self.callbacks.local_storage_read(key)
     }
 
     async fn write(
@@ -2096,17 +2051,14 @@ impl ProductStorage for CallbackPlatform {
         value: Vec<u8>,
     ) -> Result<(), v01::HostLocalStorageReadError> {
         self.callbacks
-            .local_storage_write(key.clone(), value.clone())
-            .map_err(v01::HostLocalStorageReadError::from)?;
+            .local_storage_write(key.clone(), value.clone())?;
         self.storage_events
             .notify_storage_changed(&key, Some(value));
         Ok(())
     }
 
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
-        self.callbacks
-            .local_storage_clear(key.clone())
-            .map_err(v01::HostLocalStorageReadError::from)?;
+        self.callbacks.local_storage_clear(key.clone())?;
         self.storage_events.notify_storage_changed(&key, None);
         Ok(())
     }
@@ -2124,11 +2076,8 @@ impl ProductStorage for CallbackPlatform {
             callbacks
                 .local_storage_read(key)
                 .map(|value| v01::HostLocalStorageChangeItem { value })
-                .map_err(|error| {
-                    let error: v01::HostLocalStorageReadError = error.into();
-                    v01::GenericError {
-                        reason: error.to_string(),
-                    }
+                .map_err(|error| v01::GenericError {
+                    reason: error.to_string(),
                 })
         };
         stream::once(current).chain(rx).boxed()
@@ -2640,24 +2589,23 @@ mod tests {
         let HostRejection::Rejected { reason: converted } = rejection;
         assert_eq!(converted, reason);
 
-        let storage = <HostStorageError as uniffi::ConvertError<crate::UniFfiTag>>::
+        let storage = <v01::HostLocalStorageReadError as uniffi::ConvertError<crate::UniFfiTag>>::
             try_convert_unexpected_callback_error(
                 uniffi::UnexpectedUniFFICallbackError::new(reason),
             )
             .expect("an unexpected foreign error must convert");
         assert_eq!(
-            v01::HostLocalStorageReadError::from(storage),
+            storage,
             v01::HostLocalStorageReadError::Unknown {
                 reason: reason.to_string(),
             }
         );
 
-        let navigate = <HostNavigateRejection as uniffi::ConvertError<crate::UniFfiTag>>::
+        let navigate = <v01::HostNavigateToError as uniffi::ConvertError<crate::UniFfiTag>>::
             try_convert_unexpected_callback_error(
                 uniffi::UnexpectedUniFFICallbackError::new(reason),
             )
             .expect("an unexpected foreign error must convert");
-        let HostNavigateRejection::Navigate(navigate) = navigate;
         assert_eq!(
             navigate,
             v01::HostNavigateToError::Unknown {
@@ -2781,7 +2729,7 @@ mod tests {
                 .expect("paired device mutex poisoned")
                 .push(device);
         }
-        async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+        async fn navigate_to(&self, _url: String) -> Result<(), v01::HostNavigateToError> {
             Ok(())
         }
         async fn push_notification(
@@ -2907,17 +2855,17 @@ mod tests {
                 chains: Vec::new(),
             })
         }
-        fn local_storage_read(&self, _key: String) -> Result<Option<Vec<u8>>, HostStorageError> {
+        fn local_storage_read(&self, _key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
             Ok(None)
         }
         fn local_storage_write(
             &self,
             _key: String,
             _value: Vec<u8>,
-        ) -> Result<(), HostStorageError> {
+        ) -> Result<(), v01::HostLocalStorageReadError> {
             Ok(())
         }
-        fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+        fn local_storage_clear(&self, _key: String) -> Result<(), v01::HostLocalStorageReadError> {
             Ok(())
         }
         async fn begin_operation(
@@ -4585,7 +4533,7 @@ mod tests {
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             fn device_paired(&self, _device: PairedSsoPeer) {}
-            async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+            async fn navigate_to(&self, _url: String) -> Result<(), v01::HostNavigateToError> {
                 Ok(())
             }
             async fn push_notification(
@@ -4682,17 +4630,17 @@ mod tests {
             fn local_storage_read(
                 &self,
                 _key: String,
-            ) -> Result<Option<Vec<u8>>, HostStorageError> {
+            ) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
                 Ok(None)
             }
             fn local_storage_write(
                 &self,
                 _key: String,
                 _value: Vec<u8>,
-            ) -> Result<(), HostStorageError> {
+            ) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
-            fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+            fn local_storage_clear(&self, _key: String) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
             async fn begin_operation(
@@ -4755,7 +4703,7 @@ mod tests {
             fn on_core_log(&self, _marker: String, _detail: String) {}
             fn worker_demand_changed(&self, _product_id: String, _transition: WorkerTransition) {}
             fn device_paired(&self, _device: PairedSsoPeer) {}
-            async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+            async fn navigate_to(&self, _url: String) -> Result<(), v01::HostNavigateToError> {
                 Ok(())
             }
             async fn push_notification(
@@ -4859,17 +4807,17 @@ mod tests {
             fn local_storage_read(
                 &self,
                 _key: String,
-            ) -> Result<Option<Vec<u8>>, HostStorageError> {
+            ) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
                 Ok(None)
             }
             fn local_storage_write(
                 &self,
                 _key: String,
                 _value: Vec<u8>,
-            ) -> Result<(), HostStorageError> {
+            ) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
-            fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
+            fn local_storage_clear(&self, _key: String) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
             async fn begin_operation(

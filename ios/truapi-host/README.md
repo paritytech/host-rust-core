@@ -11,7 +11,7 @@ The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 - [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostRuntime`, `TrUAPIProductExecution`, their configuration and bridge protocols, and `LocalhostBridgeBootstrap`.
 - [`Sources/TrUAPIHost/ProductScripts.swift`](Sources/TrUAPIHost/ProductScripts.swift) registers the shared container in every frame. Fetch, XHR and remote WebSockets ask Rust directly through the existing private bridge.
 - the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
-- `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
+- `Sources/TrUAPIHost/truapi.swift` and `Sources/truapiFFI/include/` — the generated UniFFI bindings.
 - [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
 - `Tests/` contains WS-bridge and WebKit network tests that boot the real Rust core.
 - `TestHost/` provides the UIKit app and XcodeGen project for simulator tests.
@@ -60,13 +60,13 @@ the `iOS package (Swift + WebKit)` job instead, which builds a simulator-only
 debug XCFramework from the pull request source, compiles the package tests,
 and runs the network permission suite in WKWebView. It is path-filtered to pull requests touching `ios/`, `Package.swift`, the
 `Makefile`, `js/container/`, or any of the crates the bindings are generated
-from (`truapi`, `truapi-server`, `truapi-provider`); the
+from (`truapi`, `truapi-provider`); the
 filter has to name them explicitly, since a protocol change no longer shows up
 as an `ios/` diff.
 The Android host job compiles `TrUAPIHost.kt` against generated bindings;
 the separate iOS CI workflow builds and tests the embedding app.
 
-Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostRuntime` or `NativeProductExecution` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — to refresh your local build outputs. Nothing to commit: CI regenerates them. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, cuts the `<version>` tag, and opens the `Package.swift` follow-up pull request only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostRuntime` or `NativeProductExecution` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi/src/native*`, or `js/container/src` — to refresh your local build outputs. Nothing to commit: CI regenerates them. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, cuts the `<version>` tag, and opens the `Package.swift` follow-up pull request only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
 
 For local iteration without publishing, set `TRUAPI_USE_LOCAL_BINARY=1` so the root `Package.swift` builds against `Binaries/` directly.
 
@@ -606,6 +606,6 @@ Build the generated JavaScript SDK before the container: from the repository roo
 
 `./scripts/rebuild.sh` orchestrates everything; the underlying pieces, should you need one in isolation:
 
-- **xcframework** — `make xcframework` (repo root) builds `truapi-server` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
-- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; `scripts/sync-bindings.sh` copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up. `rebuild.sh` calls it, and so does the `iOS package (Swift + WebKit)` job, which is what puts Swift sources into the package before `xcodebuild` runs.
+- **xcframework** — `make xcframework` (repo root) builds `truapi` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
+- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; `scripts/sync-bindings.sh` copies them into `Sources/TrUAPIHost/truapi.swift` and `Sources/truapiFFI/include/`, renaming the emitted `truapiFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up. `rebuild.sh` calls it, and so does the `iOS package (Swift + WebKit)` job, which is what puts Swift sources into the package before `xcodebuild` runs.
 - **container** — `npm run build` in `js/container/` (repo root) bundles `src/index.ts` into `Sources/TrUAPIHost/Resources/truapi-container.js`.

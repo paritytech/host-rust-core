@@ -515,14 +515,14 @@ struct RustRuntimeBridgeTests {
         bridge.chainDidClose(connectionId: 1)
     }
 
-    /// Plain Swift errors from storage surface as FFI `HostStorageError.Storage`.
+    /// Plain Swift errors from storage surface as FFI `HostLocalStorageReadError.Unknown`.
     @Test func storageErrorsAreMappedToFfiTypes() {
         let bridge = makeBridge(productStorageFails: true)
 
         #expect {
             try bridge.storage.read(key: "k")
         } throws: { error in
-            guard case HostStorageError.Storage(.unknown) = error else {
+            guard case HostLocalStorageReadError.Unknown = error else {
                 return false
             }
             return true

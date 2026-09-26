@@ -8,7 +8,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
-import uniffi.truapi_server.HostStorageException
+import uniffi.truapi.HostLocalStorageReadException
 
 class EncryptedTrUAPIStorageTest {
     private val prefs = FakeEncryptedPreferences()
@@ -28,7 +28,7 @@ class EncryptedTrUAPIStorageTest {
     fun `a silently failed write is reported`() {
         val storage = EncryptedHostStorage(prefs.swallowingWrites(), productStorageNamespace("a.dot"))
 
-        assertThrows(HostStorageException::class.java) { storage.write("k", byteArrayOf(9)) }
+        assertThrows(HostLocalStorageReadException::class.java) { storage.write("k", byteArrayOf(9)) }
     }
 
     @Test

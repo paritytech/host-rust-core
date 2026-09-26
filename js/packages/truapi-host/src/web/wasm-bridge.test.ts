@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createMockHost, mockRuntimeConfig } from "./create-mock-host.js";
 import { wasmIsBuilt } from "../testing/require-wasm.js";
 
-// Drives the REAL truapi-server WASM core against createMockHost's callbacks —
+// Drives the REAL truapi WASM core against createMockHost's callbacks —
 // headless, no browser, no worker — to prove the JS↔SCALE↔WASM callback bridge.
 // Requires the built WASM artifact (`npm run build:wasm`); skipped when it is
 // absent so a plain `bun test` on a fresh checkout stays green.

@@ -1,4 +1,4 @@
-//! The Bandersnatch ring-VRF operations truapi-server uses, over `verifiable`.
+//! The Bandersnatch ring-VRF operations truapi uses, over `verifiable`.
 //!
 //! Native builds link this crate. The browser core loads it as a WASM module of
 //! its own, off its startup path: `verifiable`'s ring prover compiles in

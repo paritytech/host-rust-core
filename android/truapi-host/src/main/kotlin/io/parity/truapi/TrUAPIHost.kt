@@ -1,7 +1,7 @@
 // TrUAPIHost - Android host adapter.
 //
-// The Rust core (compiled to `libtruapi_server.so` and surfaced via UniFFI in
-// `src/main/kotlin/generated/uniffi/truapi_server/truapi_server.kt`) owns the
+// The Rust core (compiled to `libtruapi.so` and surfaced via UniFFI in
+// `src/main/kotlin/generated/uniffi/truapi/truapi.kt`) owns the
 // wire protocol, request routing, subscription lifecycle, and platform trait
 // dispatch.
 //
@@ -49,42 +49,40 @@ import uniffi.truapi.RendererNode
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.ThemeName
 import uniffi.truapi.ThemeVariant
-import uniffi.truapi.HostLocalStorageReadError
-import uniffi.truapi.HostNavigateToError
-import uniffi.truapi_server.AuthState
-import uniffi.truapi_server.HostChainSet
-import uniffi.truapi_server.PermissionAuthorizationRequest
-import uniffi.truapi_server.PermissionAuthorizationStatus
-import uniffi.truapi_server.PermissionDecision
-import uniffi.truapi_server.UserConfirmationReview
-import uniffi.truapi_server.HostCallbacks
-import uniffi.truapi_server.NativeChatBotRegistrationStatus
-import uniffi.truapi_server.NativeChatCallbacks
-import uniffi.truapi_server.NativeChatRoomRegistrationStatus
-import uniffi.truapi_server.NativePocketCallbacks
-import uniffi.truapi_server.NativePocketRemoval
-import uniffi.truapi_server.NativeRendererObserver
-import uniffi.truapi_server.DevicePermissionStatus
-import uniffi.truapi_server.NativeProductExecution
-import uniffi.truapi_server.NativeTrUApiHostRuntime
-import uniffi.truapi_server.NativeAnnouncedPairing
-import uniffi.truapi_server.PairedSsoPeer
-import uniffi.truapi_server.ResponderExit
-import uniffi.truapi_server.ProductRuntimeException
-import uniffi.truapi_server.HostNavigateRejection
-import uniffi.truapi_server.HostRejection
-import uniffi.truapi_server.HostStorageException
-import uniffi.truapi_server.localhostBridgeBootstrapScript
-import uniffi.truapi_server.NativeRenewalTargetException
-import uniffi.truapi_server.NativeRuntimeConfigException
-import uniffi.truapi_server.StatementRenewalTarget
-import uniffi.truapi_server.TrackedStatementRenewalTarget
-import uniffi.truapi_server.StatementRenewalReport
-import uniffi.truapi_server.WorkerTransition
-import uniffi.truapi_server.WsBridgeEndpoint
-import uniffi.truapi_server.WsBridgeStartException
-import uniffi.truapi_server.HostRuntimeConfig
-import uniffi.truapi_server.ProductExecutionConfig
+import uniffi.truapi.AuthState
+import uniffi.truapi.HostChainSet
+import uniffi.truapi.PermissionAuthorizationRequest
+import uniffi.truapi.PermissionAuthorizationStatus
+import uniffi.truapi.PermissionDecision
+import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.HostCallbacks
+import uniffi.truapi.ChatBotRegistrationStatus
+import uniffi.truapi.NativeChatCallbacks
+import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi.NativePocketCallbacks
+import uniffi.truapi.NativePocketRemoval
+import uniffi.truapi.NativeRendererObserver
+import uniffi.truapi.DevicePermissionStatus
+import uniffi.truapi.NativeProductExecution
+import uniffi.truapi.NativeTrUApiHostRuntime
+import uniffi.truapi.NativeAnnouncedPairing
+import uniffi.truapi.PairedSsoPeer
+import uniffi.truapi.ResponderExit
+import uniffi.truapi.ProductRuntimeException
+import uniffi.truapi.HostNavigateToException
+import uniffi.truapi.HostRejection
+import uniffi.truapi.HostLocalStorageReadException
+import uniffi.truapi.localhostBridgeBootstrapScript
+import uniffi.truapi.NativeRenewalTargetException
+import uniffi.truapi.NativeRuntimeConfigException
+import uniffi.truapi.StatementRenewalTarget
+import uniffi.truapi.TrackedStatementRenewalTarget
+import uniffi.truapi.StatementRenewalReport
+import uniffi.truapi.WorkerTransition
+import uniffi.truapi.WsBridgeEndpoint
+import uniffi.truapi.WsBridgeStartException
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.ProductExecutionConfig
 
 /** Package metadata. */
 object TrUAPIHost {
@@ -93,17 +91,17 @@ object TrUAPIHost {
 
 /**
  * Product-scoped key-value storage the host provides to the Rust core. Throws
- * [HostStorageException] to signal quota exhaustion or unknown failure; the
- * core maps both onto the v0.1 `HostLocalStorageReadError` wire shape.
+ * [HostLocalStorageReadException] to signal quota exhaustion or unknown failure; the
+ * variants are the v0.1 `HostLocalStorageReadError` wire shape.
  */
 interface HostStorage {
-    @Throws(HostStorageException::class)
+    @Throws(HostLocalStorageReadException::class)
     fun read(key: String): ByteArray?
 
-    @Throws(HostStorageException::class)
+    @Throws(HostLocalStorageReadException::class)
     fun write(key: String, value: ByteArray)
 
-    @Throws(HostStorageException::class)
+    @Throws(HostLocalStorageReadException::class)
     fun clear(key: String)
 }
 
@@ -152,7 +150,7 @@ interface HostBridge {
     /**
      * Open a URL in the system browser, suspending for any approval on the main thread.
      */
-    @Throws(HostNavigateRejection::class)
+    @Throws(HostNavigateToException::class)
     suspend fun navigateTo(url: String)
 
     /**
@@ -350,7 +348,7 @@ interface ChatHostBridge {
      * for the surface that renders them is still the host's job.
      */
     @Throws(HostRejection::class)
-    suspend fun createRoom(roomId: String, name: String, icon: String): NativeChatRoomRegistrationStatus
+    suspend fun createRoom(roomId: String, name: String, icon: String): ChatRoomRegistrationStatus
 
     /**
      * Register or resolve a native product Chat bot. The core has bounded and
@@ -358,7 +356,7 @@ interface ChatHostBridge {
      * for the surface that renders them is still the host's job.
      */
     @Throws(HostRejection::class)
-    suspend fun registerBot(botId: String, name: String, icon: String): NativeChatBotRegistrationStatus
+    suspend fun registerBot(botId: String, name: String, icon: String): ChatBotRegistrationStatus
 
     /**
      * Persist a product-authored message in native Chat storage. Throw for a
@@ -550,27 +548,25 @@ private inline fun <T> withHostRejection(operation: () -> T): T =
 private inline fun <T> withNavigateRejection(operation: () -> T): T =
     try {
         operation()
-    } catch (rejection: HostNavigateRejection) {
+    } catch (rejection: HostNavigateToException) {
         throw rejection
     } catch (cancellation: CancellationException) {
         throw cancellation
     } catch (error: Throwable) {
-        throw HostNavigateRejection.Navigate(
-            HostNavigateToError.Unknown(hostRejectionReason(error)),
-        ).apply { initCause(error) }
+        throw HostNavigateToException.Unknown(hostRejectionReason(error))
+            .apply { initCause(error) }
     }
 
 private inline fun <T> withStorageException(operation: () -> T): T =
     try {
         operation()
-    } catch (storage: HostStorageException) {
+    } catch (storage: HostLocalStorageReadException) {
         throw storage
     } catch (cancellation: CancellationException) {
         throw cancellation
     } catch (error: Throwable) {
-        throw HostStorageException.Storage(
-            HostLocalStorageReadError.Unknown(hostRejectionReason(error)),
-        ).apply { initCause(error) }
+        throw HostLocalStorageReadException.Unknown(hostRejectionReason(error))
+            .apply { initCause(error) }
     }
 
 /**
@@ -582,13 +578,13 @@ private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeCh
         roomId: String,
         name: String,
         icon: String,
-    ): NativeChatRoomRegistrationStatus = withHostRejection { bridge.createRoom(roomId, name, icon) }
+    ): ChatRoomRegistrationStatus = withHostRejection { bridge.createRoom(roomId, name, icon) }
 
     override suspend fun registerBot(
         botId: String,
         name: String,
         icon: String,
-    ): NativeChatBotRegistrationStatus = withHostRejection { bridge.registerBot(botId, name, icon) }
+    ): ChatBotRegistrationStatus = withHostRejection { bridge.registerBot(botId, name, icon) }
 
     override suspend fun postMessage(roomId: String, content: ChatMessageContent): String =
         withHostRejection { bridge.postMessage(roomId, content) }
@@ -624,16 +620,10 @@ object LocalhostBridgeBootstrap {
  * Process-owned Rust host runtime. Product executables open independent
  * connections from this object and share its authentication and core services.
  */
-class TrUAPIHostRuntime private constructor(
+class TrUAPIHostRuntime @Throws(NativeRuntimeConfigException::class) constructor(
     bridge: HostBridge,
     runtimeConfig: HostRuntimeConfig,
 ) : AutoCloseable {
-    @Throws(NativeRuntimeConfigException::class)
-    constructor(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) : this(
-        bridge,
-        runtimeConfig,
-    )
-
     // Co-owns the adapter alongside the generated FfiConverter handle map,
     // which is what actually keeps the callback object alive for the runtime.
     private val callbackRetainer: HostCallbacks = HostCallbackAdapter(bridge)

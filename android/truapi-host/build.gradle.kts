@@ -3,7 +3,7 @@
 // Publishes `io.parity:truapi-host-android` to Maven. Products running in a
 // `WebView` connect to the Rust core via its localhost WebSocket bridge
 // (`TrUAPIProductExecution.startWsBridge`); the Rust core (compiled to
-// `libtruapi_server.so`) handles wire decoding, routing, subscription
+// `libtruapi.so`) handles wire decoding, routing, subscription
 // lifecycle, and host capability dispatch.
 
 plugins {
@@ -91,7 +91,7 @@ publishing {
                 description.set(
                     "Kotlin wrapper around the TrUAPI Rust core (UniFFI). " +
                         "Hosts integrating a `WebView`-based product link the " +
-                        "`libtruapi_server` cdylib and route product traffic " +
+                        "`libtruapi` cdylib and route product traffic " +
                         "through the localhost WebSocket bridge."
                 )
                 url.set("https://github.com/paritytech/host-rust-core")

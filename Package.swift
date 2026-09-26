@@ -84,17 +84,11 @@ let package = Package(
             pkgConfig: nil,
             providers: []
         ),
-        .systemLibrary(
-            name: "truapi_serverFFI",
-            path: "ios/truapi-host/Sources/truapi_serverFFI/include",
-            pkgConfig: nil,
-            providers: []
-        ),
         binaryTarget,
         .target(
             name: "TrUAPIHost",
             dependencies: [
-                "truapiFFI", "truapi_serverFFI", "truapi_serverFFI_binary",
+                "truapiFFI", "truapi_serverFFI_binary",
             ],
             path: "ios/truapi-host/Sources/TrUAPIHost",
             resources: [.copy("Resources/truapi-container.js")]

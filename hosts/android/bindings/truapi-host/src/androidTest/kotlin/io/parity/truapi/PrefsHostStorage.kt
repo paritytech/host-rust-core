@@ -1,16 +1,15 @@
 package io.parity.truapi
 
 import android.content.SharedPreferences
-import uniffi.truapi.HostLocalStorageReadError
-import uniffi.truapi_server.HostRejection
-import uniffi.truapi_server.HostStorageException
+import uniffi.truapi.HostRejection
+import uniffi.truapi.HostLocalStorageReadException
 
 /**
  * Test double for the diagnostics harness. Production hosts implement
  * [HostStorage] themselves, encrypted at rest.
  *
  * Product-scoped storage over [SharedPreferences], values stored hex-encoded. Uses `commit()` so a failed write surfaces as the declared
- * [HostStorageException] instead of being swallowed by async `apply()`. A
+ * [HostLocalStorageReadException] instead of being swallowed by async `apply()`. A
  * corrupt entry reads back as a miss.
  */
 class PrefsHostStorage(private val prefs: SharedPreferences) : HostStorage {
@@ -47,8 +46,8 @@ class PrefsHostCoreStorage(private val prefs: SharedPreferences) : HostCoreStora
     }
 }
 
-private fun storageFailure(reason: String): HostStorageException =
-    HostStorageException.Storage(HostLocalStorageReadError.Unknown(reason))
+private fun storageFailure(reason: String): HostLocalStorageReadException =
+    HostLocalStorageReadException.Unknown(reason)
 
 @OptIn(ExperimentalStdlibApi::class)
 private fun bytesToHex(bytes: ByteArray): String = bytes.toHexString()

@@ -8,16 +8,16 @@ This repo is the single source of truth for the TrUAPI protocol. It vendors `dot
 
 ```
 rust/crates/
-  truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2 (canonical)
+  truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2
+                         (canonical), plus the runtime hosts implement (default `runtime`
+                         feature); ships as WASM (browser/node); its `platform` module
+                         holds the host syscall traits (storage, navigation, consent, ...)
   truapi-codegen/        rustdoc JSON → TypeScript client + Rust dispatcher
   truapi-macros/         #[wire_trait(id = N)] and #[wire(id = N)] proc-macros;
-                         #[sso_service] for truapi-server's inter-host SSO protocol
+                         #[sso_service] for truapi's inter-host SSO protocol
                          One implementation module per macro; lib.rs holds entry points
   truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client);
                          its `platform` module holds the chain-access traits
-  truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node);
-                         its `platform` module holds the host syscall traits
-                         (storage, navigation, consent, ...)
   truapi-verifiable/     ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
   truapi-host-cli/       CLI pairing/signing hosts; Bun scripts share the container web API gates
 js/packages/
@@ -35,7 +35,7 @@ js/packages/
                           `test-host` Cargo features the test host needs
   truapi-debugger/        @parity/truapi-debugger (published to npm): the debugger.
                           Owns all decoding of the wire frames the Rust host tap
-                          (truapi-server's DebugSink) streams out, and decodes
+                          (truapi's DebugSink) streams out, and decodes
                           every frame by default (no denylist, no reveal toggle).
                           Holds the trace, envelope-decode, and value-decode
                           engines, the shared view model + renderers, and two
@@ -57,7 +57,7 @@ android/truapi-host/       truapi-host-android AAR (bindings + Kotlin shell + pe
                            PR title
 android/truapi-provider/   truapi-provider-android AAR; bundles the cdylib the same way,
                            so consumers need no Rust toolchain
-ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
+ios/truapi-host/           TrUAPIHost Swift package over the truapi UniFFI core;
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
@@ -85,16 +85,20 @@ scripts/cli-runner-package.test.ts
 
 ### Crate + binding invariants
 
-- `truapi` is canonical; runtime crates re-export rather than redefine. New
-  syscall traits and host-side runtime types live in `truapi-server` (syscall
-  traits in its `platform` module), not in `truapi`. Any additions to `truapi` itself are limited
-  to additive `Display` impls.
+- `truapi` holds the canonical protocol definitions and, behind its default
+  `runtime` feature, the host runtime. The protocol half builds without the
+  runtime (`--no-default-features`), which is what codegen links and reads, so
+  protocol modules never depend on runtime modules. Syscall traits live in the
+  `platform` module, host-side runtime types in the runtime modules. The whole
+  crate is one UniFFI namespace, `truapi`, so native bindings use protocol types
+  directly. The published binaries keep their `truapi_server` names
+  (`truapi_server.xcframework`, `dist/wasm/*/truapi_server*`).
 - Treat concrete modules such as `truapi::v01` as implementation details of
   the canonical `truapi` crate and its version-conversion impls. Everywhere
   else, import concrete protocol payload and error types from `truapi::latest`.
   This includes structs reused by host-internal APIs that are not exposed to
   products; if such a type is missing, re-export it through `truapi::latest`
-  rather than importing a concrete protocol version. Runtime crates may use
+  rather than importing a concrete protocol version. Runtime code may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
 - Inter-host SSO uses `#[sso_service]` as described
@@ -126,19 +130,19 @@ scripts/cli-runner-package.test.ts
   self-updates it against a loopback release server.
 - The browser core does not link `verifiable`, whose ring prover compiles in
   4.5 MiB of powers of tau. `truapi-verifiable` holds the four ring-VRF
-  operations truapi-server uses (member, sign, alias, prove). Native builds link
+  operations truapi uses (member, sign, alias, prove). Native builds link
   it; the browser core loads it as a separate WASM module,
   `truapi_verifiable.js` and `truapi_verifiable_bg.wasm` beside the core's own
   files in each bundle (`dist/wasm/web/` or `dist/wasm/testing/`), in the
   background once a pairing session connects or when one of them first runs,
-  through `truapi-server/src/runtime/vrf.rs`. Its loader names both files as
+  through `truapi/src/runtime/vrf.rs`. Its loader names both files as
   literal `new URL(…, import.meta.url)` specifiers, so bundlers such as Vite
   emit them. `make wasm` builds the module first and compiles its SHA-256 into
   both cores, which load no other.
-- `truapi-server` WASM artifacts live under
+- The runtime's WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever
-  `rust/crates/truapi-server/` changes). CI compiles the crate for
+  `rust/crates/truapi/` changes). CI compiles the crate for
   `wasm32-unknown-unknown` to guard the wasm bridge and its offline subxt
   surface, and the `@parity/truapi-host (wasm bridge)` job builds both bundles
   and runs the package's bun tests against them with `REQUIRE_WASM=1`, so a

@@ -28,7 +28,7 @@ pub enum HostFeatureSupportedRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
 #[cfg_attr(
     all(feature = "runtime", not(target_arch = "wasm32")),
-    derive(uniffi::Enum)
+    derive(uniffi::Error)
 )]
 pub enum HostNavigateToError {
     /// The target host is not authorized for outbound access: the user answered

@@ -11,15 +11,15 @@ import okhttp3.OkHttpClient
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import uniffi.truapi_server.AuthState
+import uniffi.truapi.AuthState
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_server.PermissionDecision
-import uniffi.truapi_server.UserConfirmationReview
-import uniffi.truapi_server.HostRuntimeConfig
-import uniffi.truapi_server.ProductExecutionConfig
-import uniffi.truapi_server.ProductExecutionKind
+import uniffi.truapi.PermissionDecision
+import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 

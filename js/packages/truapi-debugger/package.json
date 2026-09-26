@@ -2,7 +2,7 @@
   "name": "@parity/truapi-debugger",
   "version": "0.1.8",
   "private": true,
-  "description": "In-repo debugger consumer for TrUAPI wire frames: decodes and groups the frames the truapi-server host tap streams out",
+  "description": "In-repo debugger consumer for TrUAPI wire frames: decodes and groups the frames the truapi host tap streams out",
   "license": "MIT",
   "publishConfig": {
     "access": "public"

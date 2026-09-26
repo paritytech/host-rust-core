@@ -4,7 +4,7 @@
 //! [`EmbeddedChainProvider`] maps chain genesis hashes to a per-chain
 //! [`ChainSource`]. Backends hand the caller the raw JSON-RPC string pipe the
 //! trait demands; request correlation and subscription routing stay with the
-//! consumer (truapi-server's `HostRpcClient`).
+//! consumer (truapi's `HostRpcClient`).
 //!
 //! Per-target backend matrix:
 //!
@@ -34,7 +34,7 @@
 )]
 
 // Without a backend feature the crate carries only the `platform` interfaces,
-// which is how truapi-server depends on it.
+// which is how truapi depends on it.
 #[cfg(any(feature = "ws", feature = "smoldot"))]
 mod config;
 mod error;

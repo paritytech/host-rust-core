@@ -1,8 +1,8 @@
 // A deterministic, in-memory mock host. `createMockHost` returns a complete
-// `RequiredHostCallbacks` set (the JS sibling of `truapi_server::platform`'s
+// `RequiredHostCallbacks` set (the JS sibling of `truapi::platform`'s
 // `MockPlatform`) plus recordings for assertions. Hand `host.callbacks` to
 // `createWebWorkerPairingHostRuntime` (or `createWasmRawCallbacks` directly) to
-// run the real truapi-server WASM core against a mocked OS seam: storage is
+// run the real truapi WASM core against a mocked OS seam: storage is
 // in-memory, permissions answer from a fixed policy, navigation/notifications
 // are recorded, and the chain connection is silent (or replays canned frames).
 //

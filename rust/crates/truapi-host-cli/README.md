@@ -1,6 +1,6 @@
 # truapi-host-cli
 
-Headless TrUAPI hosts for local end-to-end testing, built on `truapi-server`.
+Headless TrUAPI hosts for local end-to-end testing, built on `truapi`.
 They replace the external signing-bot service: two CLI processes take the two
 host-spec §B roles and pair over the **real People-chain statement store** (the
 same node an iOS/web client uses), so tests run against a real signer with no
@@ -890,7 +890,7 @@ personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
 General (v5) `Resources.set_statement_store_account` extrinsic for each account
 that submits statements — its RFC-0022 `uid.<tld>` identity account and the
 pairing host's per-pairing device key. The shared native implementation lives in
-`truapi-server/src/runtime/statement_allowance/` (metadata-driven
+`truapi/src/runtime/statement_allowance/` (metadata-driven
 signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
 assembly, submit). The signing account must be an attested member of at least
 one personhood collection, and may sit in an old ring, so the signing host scans

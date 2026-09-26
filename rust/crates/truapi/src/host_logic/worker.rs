@@ -181,7 +181,7 @@ impl WorkerLedger {
 /// `release`. A drain that runs the queue dry clears the flag under the lock
 /// and disarms this guard.
 ///
-/// This protects only an unwinding panic. `truapi-server` also builds for
+/// This protects only an unwinding panic. `truapi` also builds for
 /// `wasm32-unknown-unknown`, where a trap has no unwind to run this guard's
 /// `Drop`: an observer that traps on that target still leaves `draining` set.
 struct DrainGuard<'a> {

@@ -1,7 +1,7 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker
 
 import dagger.Lazy
-import uniffi.truapi_server.ProductExecutionKind
+import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIProductExecution
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.childScope

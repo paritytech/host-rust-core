@@ -5,7 +5,7 @@
 //! an in-memory map, permission prompts answer from a fixed per-capability
 //! policy (no UI), navigation and notifications are recorded, and chain access
 //! returns a configurable connection. Because the protocol logic lives in
-//! `truapi-server`, a `MockPlatform` wired into the core yields a faithful host
+//! `truapi`, a `MockPlatform` wired into the core yields a faithful host
 //! whose only mocked surface is the OS-primitive seam.
 //!
 //! Behavior is a [`MockConfig`](crate::platform::mock::MockConfig) read on every call: per-capability permission

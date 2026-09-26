@@ -17,7 +17,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import uniffi.truapi_server.NativePocketRemoval
+import uniffi.truapi.NativePocketRemoval
 import uniffi.truapi.PocketCard as NativePocketCard
 
 class ProductPocketHostBridgeTest {

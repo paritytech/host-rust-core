@@ -1,9 +1,9 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 
-import uniffi.truapi_server.NavigateDecision
-import uniffi.truapi_server.parseNavigate
+import uniffi.truapi.NavigateDecision
+import uniffi.truapi.parseNavigate
 import javax.inject.Inject
-import uniffi.truapi_server.PocketDeeplinkAction as NativePocketDeeplinkAction
+import uniffi.truapi.PocketDeeplinkAction as NativePocketDeeplinkAction
 
 enum class PocketDeeplinkAction { ADD, OPEN }
 

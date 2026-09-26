@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-// Worker entrypoint. Loads the web-targeted truapi-server WASM bundle and
+// Worker entrypoint. Loads the web-targeted truapi WASM bundle and
 // bridges every host callback over postMessage. The main thread keeps the
 // state that needs DOM access (localStorage, prompts) while the core dispatcher
 // runs here off the page main thread.
@@ -127,7 +127,7 @@ interface WorkerChainConnection {
  *
  *   per-tab / sandboxed          core-owned (this Web Worker)       host-owned (main thread)
  *   +-------------------+  SCALE  +--------------------------+      +--------------------------------+
- *   | Product (iframe)  |<------->| truapi-server WASM core  |      | host.connect() (ChainProvider) |
+ *   | Product (iframe)  |<------->| truapi WASM core         |      | host.connect() (ChainProvider) |
  *   | speaks TrUAPI     |  frames | chainHead v1, SSO,       |      | host-owned JSON-RPC transport  |
  *   | never sees chains |         | dotNS identity (AH)      |      | remote RPC, native client, ... |
  *   +-------------------+         +--------------------------+      +--------------------------------+

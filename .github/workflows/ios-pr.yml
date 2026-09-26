@@ -34,7 +34,6 @@ on:
       - "rust/crates/truapi/**"
       - "rust/crates/truapi-codegen/**"
       - "rust/crates/truapi-macros/**"
-      - "rust/crates/truapi-server/**"
       - "rust/crates/truapi-provider/**"
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
@@ -66,7 +65,6 @@ on:
       - "rust/crates/truapi/**"
       - "rust/crates/truapi-codegen/**"
       - "rust/crates/truapi-macros/**"
-      - "rust/crates/truapi-server/**"
       - "rust/crates/truapi-provider/**"
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
@@ -197,7 +195,7 @@ jobs:
           set -euo pipefail
           tar -xzf "$RUNNER_TEMP/ios-core.tgz"
           test -d ios/truapi-host/Binaries/truapi_server.xcframework
-          test -d ios/truapi-host/Sources/truapi_serverFFI/include
+          test -d ios/truapi-host/Sources/truapiFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -309,7 +307,7 @@ jobs:
           set -euo pipefail
           tar -xzf "$RUNNER_TEMP/ios-core.tgz"
           test -d ios/truapi-host/Binaries/truapi_server.xcframework
-          test -d ios/truapi-host/Sources/truapi_serverFFI/include
+          test -d ios/truapi-host/Sources/truapiFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -446,7 +444,7 @@ jobs:
           set -euo pipefail
           tar -xzf "$RUNNER_TEMP/ios-core.tgz"
           test -d ios/truapi-host/Binaries/truapi_server.xcframework
-          test -d ios/truapi-host/Sources/truapi_serverFFI/include
+          test -d ios/truapi-host/Sources/truapiFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services

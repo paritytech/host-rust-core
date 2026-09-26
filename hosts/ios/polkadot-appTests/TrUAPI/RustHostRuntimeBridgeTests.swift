@@ -65,7 +65,7 @@ struct RustHostRuntimeBridgeTests {
     @Test func navigateToRejects() async {
         let bridge = makeHostBridge()
 
-        await #expect(throws: HostNavigateRejection.self) {
+        await #expect(throws: HostNavigateToError.self) {
             try await bridge.navigateTo(url: "https://example.com")
         }
     }

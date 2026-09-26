@@ -19,11 +19,11 @@ import uniffi.truapi.HostSignPayloadData
 import uniffi.truapi.RawPayload
 import uniffi.truapi.RingLocation
 import uniffi.truapi.TxPayloadExtension
-import uniffi.truapi_server.CreateTransactionReview
-import uniffi.truapi_server.SignPayloadReview
-import uniffi.truapi_server.SignRawReview
-import uniffi.truapi_server.SignVrfReview
-import uniffi.truapi_server.UserConfirmationReview
+import uniffi.truapi.CreateTransactionReview
+import uniffi.truapi.SignPayloadReview
+import uniffi.truapi.SignRawReview
+import uniffi.truapi.SignVrfReview
+import uniffi.truapi.UserConfirmationReview
 import uniffi.truapi.ProductAccountId as NativeProductAccountId
 
 /**

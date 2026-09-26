@@ -22,17 +22,17 @@ import uniffi.truapi.ProductAccountTxPayload
 import uniffi.truapi.RawPayload
 import uniffi.truapi.TxPayloadExtension
 import uniffi.truapi.VrfTranscriptItem
-import uniffi.truapi_server.AccountAccessReview
-import uniffi.truapi_server.CreateTransactionReview
-import uniffi.truapi_server.IdentityDisclosureReview
-import uniffi.truapi_server.PreimageSubmitReview
-import uniffi.truapi_server.ProductSubtreeReview
-import uniffi.truapi_server.ResourceAllocationReview
-import uniffi.truapi_server.SignPayloadReview
-import uniffi.truapi_server.SignRawReview
-import uniffi.truapi_server.SignVrfReview
-import uniffi.truapi_server.StatementStoreProductSignReview
-import uniffi.truapi_server.UserConfirmationReview
+import uniffi.truapi.AccountAccessReview
+import uniffi.truapi.CreateTransactionReview
+import uniffi.truapi.IdentityDisclosureReview
+import uniffi.truapi.PreimageSubmitReview
+import uniffi.truapi.ProductSubtreeReview
+import uniffi.truapi.ResourceAllocationReview
+import uniffi.truapi.SignPayloadReview
+import uniffi.truapi.SignRawReview
+import uniffi.truapi.SignVrfReview
+import uniffi.truapi.StatementStoreProductSignReview
+import uniffi.truapi.UserConfirmationReview
 import uniffi.truapi.ProductAccountId as NativeProductAccountId
 
 private const val ALICE_SS58 = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"

@@ -18,7 +18,7 @@
 //! registered for that `requestId` and threads it into its `CallContext`, so a
 //! `Cancel` frame reaches the trait method.
 //!
-//! The generated file expects to live inside a `truapi-server` crate
+//! The generated file expects to live inside a `truapi` crate
 //! and references `crate::dispatcher::Dispatcher`. The codegen itself
 //! does not compile the output; string-diff golden tests guard it.
 

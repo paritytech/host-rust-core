@@ -36,13 +36,13 @@ export VITE_NETWORKS
 # preview behavior.
 DOTLI_PREVIEW ?= preview:debug
 
-# truapi-server declares these modules unconditionally, so the crate does not
-# parse without them. They are gitignored and produced by scripts/codegen.sh.
+# The truapi runtime declares these modules unconditionally, so the crate does
+# not parse without them. They are gitignored and produced by scripts/codegen.sh.
 GENERATED_RUST := \
-	rust/crates/truapi-server/src/generated/mod.rs \
-	rust/crates/truapi-server/src/generated/dispatcher.rs \
-	rust/crates/truapi-server/src/generated/wire_table.rs \
-	rust/crates/truapi-server/src/wasm/generated_bridge.rs
+	rust/crates/truapi/src/generated/mod.rs \
+	rust/crates/truapi/src/generated/dispatcher.rs \
+	rust/crates/truapi/src/generated/wire_table.rs \
+	rust/crates/truapi/src/wasm/generated_bridge.rs
 
 check-generated:
 	@for file in $(GENERATED_RUST); do \
@@ -135,12 +135,12 @@ codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
 	./scripts/codegen.sh
 	cd $(PLAYGROUND) && rm -rf node_modules/@parity && yarn install
 
-wasm: check-generated ## Rebuild the truapi-server and truapi-provider WASM bundles under js/packages/*/dist/.
+wasm: check-generated ## Rebuild the truapi runtime and truapi-provider WASM bundles under js/packages/*/dist/.
 	cd $(HOST_WASM_PKG) && npm run build:wasm
 	cd $(PROVIDER_WASM_PKG) && npm run build
 
 wasm-crypto-test: ## Run crypto/vector tests on wasm32 via wasm-pack/node.
-	wasm-pack test --node rust/crates/truapi-server --test wasm_crypto_vectors --no-default-features
+	wasm-pack test --node rust/crates/truapi --test wasm_crypto_vectors --no-default-features --features runtime
 
 dotli-link: ## Link dotli to this checkout's local @parity/truapi packages.
 	cd $(DOTLI) && TRUAPI_REPO="$(CURDIR)" bun run link:truapi
@@ -150,18 +150,18 @@ dotli-link: ## Link dotli to this checkout's local @parity/truapi packages.
 UNIFFI_CDYLIB_DIR := target/codegen
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_server.dylib
+UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi.dylib
 PROVIDER_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_provider.dylib
 else
-UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_server.so
+UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi.so
 PROVIDER_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_provider.so
 endif
 
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
 PROVIDER_SWIFT_TMP := target/uniffi-provider-swift-out
 
-uniffi: check-generated ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
-	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
+uniffi: check-generated ## Generate Swift bindings from the truapi cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
+	$(CARGO) build -p truapi --profile codegen --features ws-bridge
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \
@@ -258,8 +258,8 @@ ios-chat-all: ios-chat-run ios-chat-host-playground-run ## Run both local iOS Ch
 
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 
-uniffi-kotlin: check-generated ## Regenerate Kotlin UniFFI bindings from the truapi-server cdylib.
-	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
+uniffi-kotlin: check-generated ## Regenerate Kotlin UniFFI bindings from the truapi cdylib.
+	$(CARGO) build -p truapi --profile codegen --features ws-bridge
 	rm -rf $(UNIFFI_KOTLIN_OUT)
 	mkdir -p $(UNIFFI_KOTLIN_OUT)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \
@@ -272,14 +272,14 @@ uniffi-kotlin: check-generated ## Regenerate Kotlin UniFFI bindings from the tru
 ANDROID_ABIS ?= arm64-v8a armeabi-v7a x86_64
 ANDROID_JNILIBS := android/truapi-host/src/main/jniLibs
 
-android-jni: check-generated ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs (needs cargo-ndk + NDK).
+android-jni: check-generated ## Cross-compile libtruapi.so for Android ABIs into jniLibs (needs cargo-ndk + NDK).
 	@command -v cargo-ndk >/dev/null || { echo "cargo-ndk not found: cargo install cargo-ndk"; exit 1; }
 	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
 		-o $(ANDROID_JNILIBS) \
-		build --release -p truapi-server --features ws-bridge
+		build --release -p truapi --features ws-bridge
 	# cargo-ndk also copies dependency cdylib intermediates (hash-suffixed,
-	# statically linked into libtruapi_server.so already); keep only ours.
-	find $(ANDROID_JNILIBS) -name '*.so' ! -name 'libtruapi_server.so' -delete
+	# statically linked into libtruapi.so already); keep only ours.
+	find $(ANDROID_JNILIBS) -name '*.so' ! -name 'libtruapi.so' -delete
 
 android-check: uniffi-kotlin ## Compile the Kotlin host adapter against freshly generated bindings (needs Gradle + Android SDK).
 	gradle :truapi-host:compileReleaseKotlin
@@ -336,7 +336,7 @@ test: check-generated ## Run Rust + TypeScript client tests.
 
 check: check-generated ## Full verification suite (build, fmt, clippy, test, TS tests, playground build + lint).
 	cargo build --workspace
-	cargo check --target wasm32-unknown-unknown -p truapi-server
+	cargo check --target wasm32-unknown-unknown -p truapi
 	cargo +nightly fmt --check
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 	cargo test --workspace --all-features --all-targets
@@ -507,17 +507,16 @@ XCFRAMEWORK_CARGO_FLAGS := $(if $(filter release,$(XCFRAMEWORK_PROFILE)),--relea
 # serial tail per slice, which the other slice fills.
 xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator (SIM_ONLY=1 for simulator only).
 	rustup target add $(XCFRAMEWORK_TARGETS)
-	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server \
+	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi \
 		$(XCFRAMEWORK_CARGO_FLAGS) --features ws-bridge \
 		$(XCFRAMEWORK_TARGETS:%=--target %)
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
-	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h \
-		$(XCFRAMEWORK_HEADERS)/
-	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
+	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(XCFRAMEWORK_HEADERS)/
+	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
 	slices=""; \
 	for target in $(XCFRAMEWORK_TARGETS); do \
-		slices="$$slices -library target/$$target/$(XCFRAMEWORK_PROFILE)/libtruapi_server.a \
+		slices="$$slices -library target/$$target/$(XCFRAMEWORK_PROFILE)/libtruapi.a \
 			-headers $(XCFRAMEWORK_HEADERS)"; \
 	done; \
 	xcodebuild -create-xcframework $$slices -output $(XCFRAMEWORK_OUT)

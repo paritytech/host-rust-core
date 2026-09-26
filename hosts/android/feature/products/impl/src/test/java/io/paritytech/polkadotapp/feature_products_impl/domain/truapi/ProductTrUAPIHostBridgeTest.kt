@@ -1,6 +1,6 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 
-import uniffi.truapi_server.ProductExecutionKind
+import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.EncryptedPreferences
 import io.paritytech.polkadotapp.common.presentation.AppLifecycleObserver
