@@ -51,10 +51,15 @@ jobs:
         with:
           github_token: ${{ github.token }}
           workflow: ios-nightly-distribution.yml
+          title: Nightly Distribution (main)
 
   prepare:
     needs: changed
-    if: github.event_name != 'schedule' || needs.changed.outputs.changed == 'true'
+    # !cancelled() so a failed check builds rather than skips, and != 'false'
+    # so an empty output does the same.
+    if: >-
+      !cancelled()
+      && (github.event_name != 'schedule' || needs.changed.outputs.changed != 'false')
     uses: ./.github/workflows/ios-prepare-pipeline.yml
     with:
       is_nightly: true

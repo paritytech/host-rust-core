@@ -17,6 +17,13 @@ inputs:
   workflow:
     description: File name of the workflow whose last success is the anchor.
     required: true
+  title:
+    description: >
+      Only anchor on runs with exactly this title. For a workflow whose runs all
+      record the same branch whatever they built, the title is what says which
+      ref a run actually built.
+    required: false
+    default: ""
   head_sha:
     description: The commit about to be built. Defaults to the commit this run is for.
     required: false
@@ -39,21 +46,26 @@ runs:
       env:
         INPUT_WORKFLOW: ${{ inputs.workflow }}
         INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+        INPUT_TITLE: ${{ inputs.title }}
       with:
         github-token: ${{ inputs.github_token }}
         script: |
           const { owner, repo } = context.repo;
           const head = process.env.INPUT_HEAD_SHA || context.sha;
           const workflow = process.env.INPUT_WORKFLOW;
+          const title = process.env.INPUT_TITLE || '';
           try {
             const { data } = await github.rest.actions.listWorkflowRuns({
               owner, repo,
               workflow_id: workflow,
               branch: 'main',
               status: 'success',
-              per_page: 5,
+              per_page: 30,
             });
-            const previous = data.workflow_runs.find((run) => run.id !== context.runId);
+            const previous = data.workflow_runs
+              .filter((run) => run.id !== context.runId)
+              .filter((run) => !title || run.display_title === title)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
             if (!previous) {
               core.info(`No earlier successful run of ${workflow}; building.`);
               core.setOutput('base_sha', '');

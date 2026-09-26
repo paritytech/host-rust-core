@@ -61,7 +61,11 @@ jobs:
   preflight:
     name: Check delivery is possible
     needs: changed
-    if: github.event_name != 'schedule' || needs.changed.outputs.changed == 'true'
+    # !cancelled() so a failed check builds rather than skips, and != 'false'
+    # so an empty output does the same.
+    if: >-
+      !cancelled()
+      && (github.event_name != 'schedule' || needs.changed.outputs.changed != 'false')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -387,6 +391,9 @@ jobs:
           # nothing. Anchoring on one would drop everything merged before it
           # from the next night's list, and nothing would ever report it.
           event: schedule
+          # A scheduled night that skipped its build still ends in success, and
+          # must not become the point the next night's list starts from.
+          required_job: Build and publish
 
       - name: Send nightly release notification
         uses: novasamatech/github-actions/send-release-notification@8c20aeac07cb19b3c2ce1310d1ef2947a373ca5e # v5
