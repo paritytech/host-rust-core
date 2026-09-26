@@ -198,56 +198,14 @@ struct NativeResolvedHostRuntimeConfig {
     local_session_lite_username: Option<String>,
 }
 
-/// Native runtime config validation error.
-#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
+/// Why a native runtime or product configuration was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, uniffi::Error)]
 pub enum NativeRuntimeConfigError {
-    /// Required string field was empty or whitespace-only.
-    #[error("{field} must not be empty")]
-    EmptyField {
-        /// Field name.
-        field: String,
-    },
-    /// People-chain genesis hash was not exactly 32 bytes.
-    #[error("people_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
-    InvalidPeopleChainGenesisHash {
-        /// Supplied byte length.
-        actual: u64,
-    },
-    /// Bulletin-chain genesis hash was not exactly 32 bytes.
-    #[error("bulletin_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
-    InvalidBulletinChainGenesisHash {
-        /// Supplied byte length.
-        actual: u64,
-    },
-    /// Host icon URL could not be parsed.
-    #[error("host_icon must be an absolute HTTPS URL: {reason}")]
-    InvalidHostIcon {
-        /// Parse failure reason.
+    /// A configuration field is invalid; `reason` names the field and value.
+    #[error("{reason}")]
+    Invalid {
+        /// Which field was refused, and why.
         reason: String,
-    },
-    /// Host icon URL used a non-HTTPS scheme.
-    #[error("host_icon must use https scheme, got {scheme:?}")]
-    InsecureHostIcon {
-        /// Actual URL scheme.
-        scheme: String,
-    },
-    /// Pairing deeplink scheme included a URL separator.
-    #[error("pairing_deeplink_scheme must not include ://, got {scheme:?}")]
-    InvalidDeeplinkScheme {
-        /// Actual deeplink scheme value.
-        scheme: String,
-    },
-    /// Network suffix was not a supported dotNS TLD.
-    #[error("network_suffix must be a supported dotNS TLD, got {network_suffix:?}")]
-    InvalidNetworkSuffix {
-        /// Actual network suffix value.
-        network_suffix: String,
-    },
-    /// Product id was not a valid host-spec product identifier.
-    #[error("invalid product_id: {product_id}")]
-    InvalidProductId {
-        /// Actual product id value.
-        product_id: String,
     },
     /// Local signing-host session activation failed.
     #[error("failed to activate local signing session: {reason}")]
@@ -255,28 +213,23 @@ pub enum NativeRuntimeConfigError {
         /// Activation failure reason.
         reason: String,
     },
-    /// Asset Hub genesis hash was not exactly 32 bytes.
-    ///
-    /// Appended, not grouped with the sibling genesis-hash variants: declaration
-    /// order is the FFI discriminant and the checksum does not cover it, so an
-    /// insert renumbers every variant below it.
-    #[error("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
-    InvalidAssetHubChainGenesisHash {
-        /// Supplied byte length.
-        actual: u64,
-    },
-    /// Product id was longer than `PRODUCT_ID_MAX_BYTES` after normalization.
-    ///
-    /// Appended for the same reason as the variant above. Carries lengths and
-    /// not the id: an id that trips this is unbounded in size, and this error
-    /// reaches the wire and the logs.
-    #[error("product_id must be at most {limit} bytes, got {actual}")]
-    ProductIdTooLong {
-        /// Accepted maximum, in bytes.
-        limit: u64,
-        /// Normalized length, in bytes.
-        actual: u64,
-    },
+}
+
+impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
+    fn from(err: RuntimeConfigValidationError) -> Self {
+        Self::Invalid {
+            reason: err.to_string(),
+        }
+    }
+}
+
+/// A 32-byte genesis hash handed over as bytes, or the error naming `field`.
+fn genesis_hash(field: &str, bytes: &[u8]) -> Result<[u8; 32], NativeRuntimeConfigError> {
+    bytes
+        .try_into()
+        .map_err(|_| NativeRuntimeConfigError::Invalid {
+            reason: format!("{field} must be exactly 32 bytes, got {}", bytes.len()),
+        })
 }
 
 /// The platform products see in `System::host_info`. The native library ships
@@ -296,23 +249,13 @@ impl TryFrom<HostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
 
     fn try_from(config: HostRuntimeConfig) -> Result<Self, Self::Error> {
         let people_chain_genesis_hash =
-            <[u8; 32]>::try_from(config.people_chain_genesis_hash.as_slice()).map_err(|_| {
-                NativeRuntimeConfigError::InvalidPeopleChainGenesisHash {
-                    actual: config.people_chain_genesis_hash.len() as u64,
-                }
-            })?;
+            genesis_hash("people_chain_genesis_hash", &config.people_chain_genesis_hash)?;
         let bulletin_chain_genesis_hash =
-            <[u8; 32]>::try_from(config.bulletin_chain_genesis_hash.as_slice()).map_err(|_| {
-                NativeRuntimeConfigError::InvalidBulletinChainGenesisHash {
-                    actual: config.bulletin_chain_genesis_hash.len() as u64,
-                }
-            })?;
-        let asset_hub_chain_genesis_hash =
-            <[u8; 32]>::try_from(config.asset_hub_chain_genesis_hash.as_slice()).map_err(|_| {
-                NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash {
-                    actual: config.asset_hub_chain_genesis_hash.len() as u64,
-                }
-            })?;
+            genesis_hash("bulletin_chain_genesis_hash", &config.bulletin_chain_genesis_hash)?;
+        let asset_hub_chain_genesis_hash = genesis_hash(
+            "asset_hub_chain_genesis_hash",
+            &config.asset_hub_chain_genesis_hash,
+        )?;
         let signing = SigningHostConfig::new(
             HostInfo {
                 name: config.host_name,
@@ -355,38 +298,6 @@ impl TryFrom<ProductExecutionConfig> for ProductContext {
     }
 }
 
-impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
-    fn from(err: RuntimeConfigValidationError) -> Self {
-        match err {
-            RuntimeConfigValidationError::EmptyField { field } => Self::EmptyField {
-                field: field.to_string(),
-            },
-            // `url::ParseError` cannot cross the UniFFI boundary, so the native
-            // error keeps a rendered string.
-            RuntimeConfigValidationError::InvalidHostIcon { source } => Self::InvalidHostIcon {
-                reason: source.to_string(),
-            },
-            RuntimeConfigValidationError::InsecureHostIcon { scheme } => {
-                Self::InsecureHostIcon { scheme }
-            }
-            RuntimeConfigValidationError::InvalidDeeplinkScheme { scheme } => {
-                Self::InvalidDeeplinkScheme { scheme }
-            }
-            RuntimeConfigValidationError::InvalidProductId { product_id } => {
-                Self::InvalidProductId { product_id }
-            }
-            RuntimeConfigValidationError::ProductIdTooLong { limit, actual } => {
-                Self::ProductIdTooLong {
-                    limit: limit as u64,
-                    actual: actual as u64,
-                }
-            }
-            RuntimeConfigValidationError::InvalidNetworkSuffix { network_suffix } => {
-                Self::InvalidNetworkSuffix { network_suffix }
-            }
-        }
-    }
-}
 
 /// Classify a navigation input exactly like the core's internal navigate host
 /// call: dotNS first, then `localhost`, then normalized external, with
@@ -4406,10 +4317,12 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(matches!(
+        assert_eq!(
             err,
-            NativeRuntimeConfigError::InvalidPeopleChainGenesisHash { actual: 31 }
-        ));
+            NativeRuntimeConfigError::Invalid {
+                reason: "people_chain_genesis_hash must be exactly 32 bytes, got 31".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -4445,13 +4358,11 @@ mod tests {
             })
             .unwrap_err();
 
-            assert!(
-                matches!(
-                    err,
-                    NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash { actual }
-                        if actual == len as u64
-                ),
-                "{len}-byte Asset Hub hash reported as {err:?}"
+            assert_eq!(
+                err,
+                NativeRuntimeConfigError::Invalid {
+                    reason: format!("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {len}"),
+                }
             );
         }
     }
@@ -4465,10 +4376,12 @@ mod tests {
             ..native_host_runtime_config()
         })
         .unwrap_err();
-        assert!(matches!(
+        assert_eq!(
             err,
-            NativeRuntimeConfigError::InvalidNetworkSuffix { network_suffix } if network_suffix == ".paseo"
-        ));
+            NativeRuntimeConfigError::Invalid {
+                reason: r#"network_suffix must be a supported dotNS TLD, got ".paseo""#.to_string(),
+            }
+        );
     }
 
     #[test]
@@ -4479,10 +4392,12 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(matches!(
+        assert_eq!(
             err,
-            NativeRuntimeConfigError::EmptyField { field } if field == "product_id"
-        ));
+            NativeRuntimeConfigError::Invalid {
+                reason: "product_id must not be empty".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -4493,10 +4408,13 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(matches!(
+        assert_eq!(
             err,
-            NativeRuntimeConfigError::InvalidHostIcon { .. }
-        ));
+            NativeRuntimeConfigError::Invalid {
+                reason: "host_info.icon must be an absolute HTTPS URL: relative URL without a base"
+                    .to_string(),
+            }
+        );
     }
 
     #[test]
@@ -4507,10 +4425,12 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(matches!(
+        assert_eq!(
             err,
-            NativeRuntimeConfigError::InsecureHostIcon { scheme } if scheme == "http"
-        ));
+            NativeRuntimeConfigError::Invalid {
+                reason: r#"host_info.icon must use https scheme, got "http""#.to_string(),
+            }
+        );
     }
 
     /// Calling `start_ws_bridge` twice on the same product execution

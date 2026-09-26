@@ -1002,8 +1002,7 @@ pub enum RuntimeConfigValidationError {
     },
     /// Product id was longer than [`PRODUCT_ID_MAX_BYTES`] after normalization.
     ///
-    /// Carries lengths rather than the id, which may be enormous. Appended
-    /// because the native mirror maps variants to FFI discriminants by order.
+    /// Carries lengths rather than the id, which may be enormous.
     #[display("product_id must be at most {limit} bytes, got {actual}")]
     ProductIdTooLong {
         /// Accepted maximum, in bytes.
