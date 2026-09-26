@@ -88,7 +88,8 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
              .nfc,
              .clipboard,
              .openUrl,
-             .biometrics:
+             .biometrics,
+             .motion:
             .notApplicable
         }
     }
@@ -225,6 +226,7 @@ extension HostDevicePermissionRequest {
         case .clipboard: .clipboard
         case .openUrl: .openUrl
         case .biometrics: .biometrics
+        case .motion: .motion
         }
     }
 }

@@ -327,6 +327,32 @@ extension WKWebViewJSEngine: WKUIDelegate {
             return .deny
         }
     }
+
+    /// Answers WebKit's `DeviceMotionEvent`/`DeviceOrientationEvent`
+    /// `requestPermission()` with the product's Motion decision, so WebKit
+    /// never shows its own per-launch prompt.
+    public func webView(
+        _: WKWebView,
+        requestDeviceOrientationAndMotionPermissionFor _: WKSecurityOrigin,
+        initiatedByFrame _: WKFrameInfo,
+        decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
+    ) {
+        guard let handler = jsDeviceCapabilityHandler else {
+            logger.warning("JSEngine: no device capability handler, denying motion")
+            decisionHandler(.deny)
+            return
+        }
+        Task { @MainActor in
+            do {
+                let decision = try await handler(.motion)
+                self.logger.debug("Motion decision: \(decision)")
+                decisionHandler(decision.toWKPermission)
+            } catch {
+                self.logger.error("JSEngine: motion capability handler failed: \(error)")
+                decisionHandler(.deny)
+            }
+        }
+    }
 }
 
 // MARK: - HTML Template

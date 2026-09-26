@@ -51,6 +51,27 @@ struct TrUAPIProductExecutionDeviceCapabilityTests {
         #expect(osAsker.requestedCapabilities.isEmpty)
     }
 
+    @Test(arguments: [true, false])
+    func motionResolvesThroughProductDecision(granted: Bool) async throws {
+        let osAsker = MockOSPermissionAsker()
+        let execution = MockProductExecution()
+        execution.devicePermissionGranted = granted
+        let handler = osAsker.makeDeviceCapabilityHandler(execution: execution)
+
+        #expect(try await handler(.motion) == (granted ? .allowed : .denied))
+        #expect(execution.devicePermissionRequests == [.motion])
+        #expect(osAsker.checkedCapabilities.isEmpty)
+        #expect(osAsker.requestedCapabilities.isEmpty)
+    }
+
+    @Test func motionIsDeniedWithoutProductExecution() async throws {
+        let osAsker = MockOSPermissionAsker()
+        let handler = osAsker.makeDeviceCapabilityHandler()
+
+        #expect(try await handler(.motion) == .denied)
+        #expect(osAsker.checkedCapabilities.isEmpty)
+    }
+
     @Test func restrictedCaptureIsDeniedByOS() {
         let statuses: [AVAuthorizationStatus] = [.authorized, .notDetermined, .denied, .restricted]
 

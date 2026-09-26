@@ -73,7 +73,9 @@ extension SPARustRuntime: SPARuntimeProtocol {
         let scriptsFactory = RustRuntimeScriptsFactory(bootstrapScript: bootstrapScript)
 
         await engine.registerJSDeviceCapabilityHandler(
-            executionModel.osPermissionAsker.makeDeviceCapabilityHandler()
+            executionModel.osPermissionAsker.makeDeviceCapabilityHandler(
+                execution: executionModel.execution
+            )
         )
 
         try await engine.initialize(with: scriptsFactory.makeScripts() + [.disableZoom])
