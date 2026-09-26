@@ -637,6 +637,28 @@ jobs:
           :feature:products:impl:testReleaseUnitTest
           :bindings:truapi-host:compileDebugAndroidTestKotlin
 
+  # An installable APK on every Android change, so a reviewer has something to
+  # put on a phone without asking for it. iOS attaches a simulator build to
+  # every pull request already; this is the same thing for Android, and the one
+  # artifact serves a phone and an emulator alike because no provisioning
+  # profile names the device.
+  #
+  # The build lives in its own workflow because the label that also starts it
+  # needs the `labeled` event, which has no business rerunning every gate here.
+  host-android-apk:
+    name: Android host app (installable APK)
+    needs: changes
+    if: needs.changes.outputs.host_android == 'true'
+    uses: ./.github/workflows/android-device-preview.yml
+    with:
+      always: true
+    secrets:
+      CI_GITHUB_KEYSTORE_KEY_FILE: ${{ secrets.CI_GITHUB_KEYSTORE_KEY_FILE }}
+      CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
+      CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
+      CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
+      GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+
   host-android-detekt:
     name: Android host (detekt)
     needs: changes
@@ -1265,6 +1287,7 @@ jobs:
         provider-android-bindings,
         host-android-bindings,
         host-android-detekt,
+        host-android-apk,
         cli-package,
         ts-client,
         ts-host,
