@@ -39,11 +39,11 @@ let publishedBinaryChecksum = "22d156b3736aec118d78fb7b9188a8ddfa0a2d78fb9d80226
 
 let binaryTarget: Target = useLocalBinary
     ? .binaryTarget(
-        name: "truapi_serverFFI_binary",
+        name: "truapiFFI_binary",
         path: "ios/truapi-host/Binaries/truapi_server.xcframework"
     )
     : .binaryTarget(
-        name: "truapi_serverFFI_binary",
+        name: "truapiFFI_binary",
         url: publishedBinaryURL,
         checksum: publishedBinaryChecksum
     )
@@ -88,7 +88,7 @@ let package = Package(
         .target(
             name: "TrUAPIHost",
             dependencies: [
-                "truapiFFI", "truapi_serverFFI_binary",
+                "truapiFFI", "truapiFFI_binary",
             ],
             path: "ios/truapi-host/Sources/TrUAPIHost",
             resources: [.copy("Resources/truapi-container.js")]

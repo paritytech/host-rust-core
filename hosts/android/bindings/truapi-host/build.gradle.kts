@@ -166,7 +166,7 @@ val generateCoreDispatcher by tasks.registering(Exec::class) {
     commandLine("./scripts/codegen.sh")
     inputs.files(
         fileTree("$truapiDir/rust/crates/truapi") { include("**/*.rs", "**/Cargo.toml") },
-        fileTree("$truapiDir/rust/crates/truapi-platform") { include("**/*.rs", "**/Cargo.toml") },
+        fileTree("$truapiDir/rust/crates/truapi-provider") { include("**/*.rs", "**/Cargo.toml") },
         fileTree("$truapiDir/rust/crates/truapi-codegen") { include("**/*.rs", "**/Cargo.toml") },
     ).withPropertyName("codegenSources")
     outputs.dirs(
