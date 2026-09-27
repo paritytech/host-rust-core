@@ -97,9 +97,11 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         product _: ProductExecutionConfig,
         request: RemotePermission
     ) async throws -> TrUAPIPermissionDecision {
-        try await dependencies.permissionGuard.requestPermissionsDecision(
+        // This app has no JAM peer transport, so it has nothing to grant.
+        guard let domainRequest = request.toDomainRequest() else { return .deny }
+        return try await dependencies.permissionGuard.requestPermissionsDecision(
             productId: dependencies.productId,
-            permissions: request.toDomainRequest().toDomainPermissions()
+            permissions: domainRequest.toDomainPermissions()
         ).hostDecision
     }
 
@@ -230,14 +232,16 @@ extension HostDevicePermissionRequest {
 }
 
 extension RemotePermission {
-    /// Maps the TrUAPI remote permission to the Products domain request.
-    func toDomainRequest() -> Products.RemotePermissionRequest {
+    /// Maps the TrUAPI remote permission to the Products domain request, or
+    /// `nil` for one this app has no surface for.
+    func toDomainRequest() -> Products.RemotePermissionRequest? {
         switch self {
         case let .remote(domains): .remote(domains: domains)
         case .webRtc: .webRTC
         case .chainSubmit: .chainSubmit
         case .preimageSubmit: .preimageSubmit
         case .statementSubmit: .statementSubmit
+        case .jamPeers: nil
         }
     }
 }

@@ -49,8 +49,9 @@ pub enum HostDevicePermissionRequest {
 
 /// One remote-operation permission requested by the product (RFC 0002).
 ///
-/// `ChainSubmit`, `PreimageSubmit`, and `StatementSubmit` are also triggered
-/// implicitly by the corresponding business calls when not yet granted.
+/// `ChainSubmit`, `PreimageSubmit`, `StatementSubmit` and `JamPeers` are also
+/// triggered implicitly by the corresponding business calls when not yet
+/// granted (`PeerTransport::dial` for `JamPeers`).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RemotePermission {
@@ -83,6 +84,23 @@ pub enum RemotePermission {
     /// Submitting statements on behalf of the user via `remote_statement_store_submit`.
     #[display("submit statements")]
     StatementSubmit,
+    /// Read-only peer access over JAMNP-S QUIC/WebTransport to the validators
+    /// of one JAM chain, through the `PeerTransport` service.
+    ///
+    /// The app names the endpoints it dials; the grant covers only peers of
+    /// `genesis`. Every byte received is untrusted, and the grant carries no
+    /// account, signing or submission authority.
+    #[display(
+        "connections to JAM network 0x{:02x}{:02x}{:02x}{:02x}…",
+        genesis[0],
+        genesis[1],
+        genesis[2],
+        genesis[3]
+    )]
+    JamPeers {
+        /// Genesis header hash of the JAM chain whose peers may be dialed.
+        genesis: [u8; 32],
+    },
 }
 
 /// remote-permission request (RFC 0002).
