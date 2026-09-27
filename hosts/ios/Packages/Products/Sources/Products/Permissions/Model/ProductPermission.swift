@@ -31,14 +31,16 @@ public enum ProductPermission: Equatable, Sendable {
     ///
     /// The distinction exists because the core grants a first-party product
     /// every remote permission without prompting, and nothing else. Device
-    /// capabilities, account access, balance and identity disclosure always
-    /// prompt, whoever asks, so they must not ride along on that trust.
+    /// capabilities, account access, balance, identity disclosure and Chat
+    /// authority always prompt, whoever asks, so they must not ride along on
+    /// that trust.
     public var isRemoteAccess: Bool {
         switch self {
         case .networkAccess, .webRtcAccess, .chainSubmitAccess, .preimageSubmitAccess,
              .statementSubmitAccess:
             true
-        case .deviceCapability, .accountAccess, .balanceAccess, .userIdentityAccess:
+        case .deviceCapability, .accountAccess, .balanceAccess, .userIdentityAccess,
+             .chatAuthority:
             false
         }
     }
