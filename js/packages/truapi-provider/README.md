@@ -66,9 +66,9 @@ at a moment the host chooses.
 ## Native hosts
 
 Android and iOS do not consume this package. The same `truapi-provider` crate is
-published for them as its own artifacts over UniFFI — a `TrUAPIProvider` Swift
-package and a `truapi-provider-android` AAR — exposing the same `ChainProvider`
-contract with the same bundled catalog, so the wiring differs only in language.
+built for them from source over UniFFI, as a `TrUAPIProvider` Swift package and
+a `truapi-provider-android` AAR, exposing the same `ChainProvider` contract with
+the same bundled catalog, so the wiring differs only in language.
 
 ## Building
 

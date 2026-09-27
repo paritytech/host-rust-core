@@ -109,8 +109,8 @@ js/packages/
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
-                           published to GitHub Packages as io.parity:truapi-host-android
-                           (AAR with per-ABI cdylibs; see android/truapi-host/README.md)
+                           built from source, published to Maven Local as
+                           io.parity:truapi-host-android (see android/truapi-host/README.md)
 android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
@@ -152,8 +152,7 @@ See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO ha
 
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
-manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
-dependency. The UniFFI bindings and the container bundle are gitignored build
+manifest at the repo root (`Package.swift`). The UniFFI bindings and the container bundle are gitignored build
 outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
@@ -196,14 +195,13 @@ client holds at most 32 connections at once and refuses a `connect` past that, s
 consumer that leaks them fails instead of growing; closing one hands its slot back.
 Connections to a remote node, which only the WASM build compiles, are not counted
 against it. The crate
-compiles to one binary artifact per platform, each exposing the same
-`ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
-dependency on the crate:
+compiles to one artifact per platform, each exposing the same
+`ChainProvider` contract:
 
 - [`@parity/truapi-provider`](js/packages/truapi-provider) is the WASM build for
   browser and webview hosts, rebuilt by `make wasm` alongside the host bundle.
-- [`TrUAPIProvider`](ios/truapi-provider) is the second product of the root
-  `Package.swift`, an xcframework plus generated Swift bindings, built by
+- [`TrUAPIProvider`](ios/truapi-provider) is a Swift package with its own
+  manifest, an xcframework plus generated Swift bindings, built by
   `make provider-ios`.
 - [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
   Kotlin bindings and the cdylib per ABI, built by
@@ -386,8 +384,7 @@ pull request means running the command above and deleting the file.
 
 ### Working on the iOS host
 
-`hosts/ios/` is the iOS app, and it resolves the core from this tree rather than
-from a published version. The core's bindings, xcframework and FFI headers are
+`hosts/ios/` is the iOS app, and it resolves the core from this tree. The core's bindings, xcframework and FFI headers are
 gitignored build outputs, so a fresh clone cannot load the app's package graph
 until they exist. Generate them once:
 
@@ -396,8 +393,8 @@ make ios-bootstrap
 ```
 
 Then open `hosts/ios/polkadot-app.xcodeproj`. Rerun it after changing anything
-the bindings are generated from, which is the `truapi`, `truapi-platform`,
-`truapi-server` or `truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
+the bindings are generated from, which is the `truapi`, `truapi-platform` or
+`truapi-server` crates. `SIM_ONLY=1` halves it by skipping
 the device slice, which is enough for Simulator but not for an archive.
 
 Because the app builds against the core in this tree, a core change that breaks
@@ -525,68 +522,6 @@ Each job removes what it materialised, and the last verdict is carried into the
 pull request summary, so it is visible before someone starts a release rather
 than after. A workflow that has never run reports as never run, not as healthy.
 
-### Building the standalone iOS host app
-
-The targets below build `polkadot-app-ios-v2`, a separate checkout set by
-`IOS_HOST`, not `hosts/ios`. To build the playground in Simulator against it:
-
-```bash
-make ios-run
-```
-
-The target regenerates the UniFFI Swift bindings, builds the matching Rust
-simulator library, and builds the sibling `polkadot-app-ios-v2` checkout with the Nightly feature
-flags and release Firebase app used by the Nightly TestFlight build. Native
-Chat and the Paseo chain catalog come from the same Nightly Remote Config as
-TestFlight. The executable keeps the development bundle and app-group identity
-so Simulator can reuse its already registered wallet; keychain data cannot be
-transferred to the production bundle. The simulator also adds the
-`IOS_PASEO_E2E` conveniences needed to start on the real `browse.dot` Browse tab
-and activate the embedded signing host. Embedded product host sessions use the
-same Paseo People and Bulletin chains selected by the Nightly app
-configuration. The launcher starts the playground at `http://localhost:3100`
-when needed and uses that local source only after Browse opens
-`truapi-playground.dot`. It refuses to launch if the local URL belongs to a
-different app. Override the product, URL, or simulator with `IOS_PRODUCT_HOST`,
-`IOS_PRODUCT_URL`, or `TRUAPI_IOS_E2E_DEVICE`. The simulator launch reuses the
-wallet and registered username already stored by the iOS app. Opening a product
-activates the embedded `truapi-host` signing-host session from that wallet; it
-does not provision or pair a signer-bot user.
-
-To exercise the shared-core Chat path with the first-party TrUAPI Playground
-worker, build and serve the local product, install its worker into the
-simulator app's product storage, and open its native Chat application. The
-worker drives all five Chat methods and both Renderer methods, so a host
-without bot registration reports that row red:
-
-```bash
-make ios-chat-run
-```
-
-The launcher verifies the Chat connection and runs a correlated Chat-only
-diagnosis. The worker proves create-room idempotency, observes the new room on
-the live list subscription, posts text and custom messages, receives
-`!diagnose` through `chat_action_subscribe`, and serves live renderer trees.
-The launcher also verifies that a renderer update reaches native code and that
-the final Markdown report reaches CoreData. It writes the host-labelled report
-to `playground/test-results/ios-chat/diagnosis-report.md`. The product builds
-against the workspace-linked `@parity/truapi`. Override the product source,
-identity, SPA URL, room, input, or report path with
-`IOS_CHAT_PRODUCT_DIR`, `IOS_CHAT_PRODUCT_HOST`, `IOS_CHAT_PRODUCT_URL`,
-`TRUAPI_IOS_E2E_CHAT_ROOM_ID`, `TRUAPI_IOS_E2E_CHAT_MESSAGE`, or
-`TRUAPI_IOS_E2E_CHAT_REPORT`.
-
-The same harness can run the legacy Product SDK worker from the sibling
-`host-playground` checkout. This target builds the current TrUAPI client, links
-it over Host Playground's transitive `@parity/truapi`, then builds and runs
-that product:
-
-```bash
-make ios-chat-host-playground-run
-```
-
-Run both integrations with one iOS build using `make ios-chat-all`.
-
 ## Regenerate the TypeScript client
 
 When the Rust trait surface changes:
@@ -621,8 +556,7 @@ Pushes to `main` build and deploy:
 ## Release
 
 See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
-`@parity/truapi` and `@parity/truapi-host` to npm, and the iOS host and
-Android host artifacts alongside them. A release also opens a bump issue on each
+`@parity/truapi` and `@parity/truapi-host` to npm. A release also opens a bump issue on each
 repository listed in [`.github/consumers.json`](.github/consumers.json) that pins
 one of the published packages.
 

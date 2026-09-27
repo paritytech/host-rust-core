@@ -2,11 +2,11 @@
 
 *Kotlin wrapper around the TrUAPI Rust core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge.*
 
-Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature), the UniFFI Kotlin bindings (`uniffi.truapi_server.*`), the Kotlin host adapter (`io.parity.truapi.*`), and the browser container asset. Consumers need no Rust toolchain or NDK.
+Distribution: built from source. `hosts/android` compiles the core and this module's Kotlin shell from the enclosing tree. Other hosts build the AAR from a checkout and publish it to Maven Local (see [Local AAR](#local-aar)): it carries the UniFFI Kotlin bindings (`uniffi.truapi_server.*`), the Kotlin host adapter (`io.parity.truapi.*`), the browser container asset and, when built with `make android-jni`, `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature).
 
 ## Consume
 
-Add the GitHub Packages repository and the artifact to your app's Gradle build (GitHub Packages requires authentication even for public repos — any GitHub account token with `read:packages` works):
+Resolve the locally published AAR from Maven Local:
 
 ```kotlin
 // settings.gradle.kts
@@ -14,13 +14,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven {
-            url = uri("https://maven.pkg.github.com/paritytech/host-rust-core")
-            credentials {
-                username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
-                password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
-            }
-        }
+        mavenLocal()
     }
 }
 ```
@@ -28,11 +22,9 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("io.parity:truapi-host-android:0.1.0")
+    implementation("io.parity:truapi-host-android:0.0.0-local")
 }
 ```
-
-The package is public, so any authenticated GitHub identity can read it. In GitHub Actions that means the built-in `GITHUB_TOKEN` with a `permissions: packages: read` block, no secret to create or rotate. Locally it means a personal access token with `read:packages`, set once as `gpr.user` / `gpr.key` in `~/.gradle/gradle.properties`. A token without that scope fails with 401 even though the package is public, which is how GitHub Packages treats Maven.
 
 The consuming app must declare `android.permission.INTERNET` — the localhost WebSocket bridge binds a `127.0.0.1` TCP socket, which requires it even for loopback.
 
@@ -443,25 +435,17 @@ runtime.disconnect()
 
 ## The cdylib
 
-The released AAR bundles `libtruapi_server.so` for all three ABIs under its `jni/` directory; JNA loads it from there without any consumer setup.
-
-When iterating on the core from a source checkout instead of the published artifact, cross-compile into this module's `jniLibs` with:
+An AAR built after `make android-jni` bundles `libtruapi_server.so` for all three ABIs under its `jni/` directory; JNA loads it from there without any consumer setup. Cross-compile into this module's `jniLibs` with:
 
 ```bash
 make android-jni    # needs cargo-ndk, the NDK, and the three Android rust targets
 ```
 
-or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi-server` from the host app's own build (polkadot-app-android-v2 does this while it still builds from a checkout).
+or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi-server` from the host app's own build, as `hosts/android` does.
 
-## Maintainers: cutting a release
+## Local AAR
 
-Include `@parity/android-host <version>` in the `release:` PR title, the same flow the npm packages and the iOS host use. On merge, `release.yml` calls `release-android.yml` for the release commit, which cross-compiles the cdylib for all three ABIs, regenerates the Kotlin bindings via the `codegen` cargo profile, and publishes `io.parity:truapi-host-android:<version>` to GitHub Packages.
-
-A manual `release-android` run with a version input reaches the same workflow, as an escape hatch. There is deliberately no tag trigger: a tag push cannot use `release.yml`'s gate on green CI, so it would be an unverified path to the registry.
-
-The version lives only in the release subject. Nothing in the tree records it, so there is no committed version to keep in sync.
-
-For local development, publish into `~/.m2`:
+Publish into `~/.m2`:
 
 ```bash
 make android-jni            # optional: bundle the cdylibs into the local AAR
@@ -472,7 +456,7 @@ The artifact lands under `~/.m2/repository/io/parity/truapi-host-android/0.0.0-l
 
 ## Regenerating the UniFFI bindings
 
-The ignored Kotlin bindings under `src/main/kotlin/generated/uniffi/` are produced from the workspace `uniffi-bindgen-cli`. Regenerate them before building or publishing the Android host package:
+The ignored Kotlin bindings under `src/main/kotlin/generated/uniffi/` are produced from the workspace `uniffi-bindgen-cli`. Regenerate them before building or publishing the Android host package locally:
 
 ```bash
 make uniffi-kotlin

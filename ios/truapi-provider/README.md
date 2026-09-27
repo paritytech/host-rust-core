@@ -2,47 +2,41 @@
 
 *Swift shell over the `truapi-provider` crate (UniFFI). An embedded smoldot light client and the bundled chain-spec catalog stay in Rust; the host addresses a chain by genesis hash and exchanges JSON-RPC strings.*
 
-The package lives in the truapi repo next to the Rust crate it wraps. `Package.swift` sits at the **repo root** (SPM requires that for git-URL dependencies) and declares two products: [`TrUAPIHost`](../truapi-host) and `TrUAPIProvider`. They are independent — a host depends on whichever it needs — and release on separate tags, so each has its own local-binary toggle.
+The package lives in the truapi repo next to the Rust crate it wraps, with its own `Package.swift` in this directory. It is independent of [`TrUAPIHost`](../truapi-host), whose manifest sits at the repo root: a host depends on whichever it needs.
 
 ## What this package is for
 
 The `TrUAPIProvider` SPM product an iOS host imports when it wants to serve chain traffic itself rather than proxying it. It carries:
 
 - `Sources/TrUAPIProvider/truapi_provider.swift` and `Sources/truapi_providerFFI/include/` — the generated UniFFI bindings. There is no hand-written Swift shell: the crate's [`ffi.rs`](../../rust/crates/truapi-provider/src/ffi.rs) is the whole surface.
-- the crate as a binary target — a GitHub release asset by default (`providerBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_provider.xcframework` when `TRUAPI_PROVIDER_USE_LOCAL_BINARY=1`.
+- the crate as a binary target: the locally built `Binaries/truapi_provider.xcframework`.
 
-The bindings and the xcframework are both **gitignored** build outputs, so the package's Swift target does not exist until `rebuild.sh` has run; the xcframework is additionally distributed as a GitHub release asset. Three scripts split the lifecycle:
+The bindings and the xcframework are both **gitignored** build outputs, so the package's Swift target does not exist until `rebuild.sh` has run. Two scripts split the lifecycle:
 
 ```bash
 ./scripts/rebuild.sh            # build the crate for device + simulator, regenerate
                                 # the bindings, and stage Binaries/truapi_provider.xcframework
 ./scripts/stage-xcframework.sh  # copy the built xcframework into Binaries/ and strip the
                                 # per-slice module.modulemap (rebuild.sh calls it for you)
-./scripts/publish.sh <version>  # zip the staged xcframework, upload it to the
-                                # "@parity/ios-provider <version>" GitHub release,
-                                # and point the root Package.swift at it
-                                # (URL + checksum)
 ```
 
 The strip matters because module resolution comes from the `systemLibrary` target; a slice copy collides with other xcframeworks in Xcode's flat include dir, which is what stops a host embedding both this and its own UniFFI framework.
 
-Run `rebuild.sh` after changing anything in the crate's `uniffi` surface — the `ChainProvider` methods, `ChainMessageListener`, `ChainProviderError`, `ChainCloseReason` — or after a chain-spec refresh, to refresh your local build outputs; the bindings are gitignored and CI regenerates them. Pass `--sim-only` (or `make provider-ios SIM_ONLY=1`) to skip the device slice while iterating; `publish.sh` refuses a simulator-only xcframework.
+Run `rebuild.sh` after changing anything in the crate's `uniffi` surface — the `ChainProvider` methods, `ChainMessageListener`, `ChainProviderError`, `ChainCloseReason` — or after a chain-spec refresh, to refresh your local build outputs; the bindings are gitignored and CI regenerates them. Pass `--sim-only` (or `make provider-ios SIM_ONLY=1`) to skip the device slice while iterating.
 
 ## Integrating in an iOS app
 
-Add the package as an SPM dependency and link the `TrUAPIProvider` product into the app target:
+Depend on the package by path and link the `TrUAPIProvider` product into the app target. Run `rebuild.sh` first, since the package has no Swift sources or binary until then:
 
 ```swift
-.package(url: "https://github.com/paritytech/host-rust-core.git", branch: "main")
+.package(name: "TrUAPIProvider", path: "<path to the repository root>/ios/truapi-provider")
 ```
 
 ```swift
-.product(name: "TrUAPIProvider", package: "truapi")
+.product(name: "TrUAPIProvider", package: "TrUAPIProvider")
 ```
 
-Release tags follow the repo-wide `@parity/ios-provider@<version>` naming, which SPM's semver resolution does not consume — depend by `branch:` or `revision:` instead, as with `TrUAPIHost`.
-
-No Rust toolchain is needed: the xcframework carries the compiled crate, and the chain specs are compiled into it, so the app ships no spec files of its own and never refreshes them. Picking up a spec refresh means taking a newer release.
+The chain specs are compiled into the xcframework, so the app ships no spec files of its own. Picking up a spec refresh means rebuilding from a newer checkout.
 
 ## Public surface
 
@@ -121,14 +115,3 @@ connection.disconnect()
 - **static libraries** — `cargo build -p truapi-provider --no-default-features --features uniffi` for `aarch64-apple-ios` and `aarch64-apple-ios-sim`. The `ws` backend is off, so the build carries the light client only.
 - **bindings** — the workspace `uniffi-bindgen-cli` reads the built `libtruapi_provider.a` and emits `truapi_provider.swift` plus `truapi_providerFFI.h`/`.modulemap`. The script copies them into `Sources/`, renaming the emitted `truapi_providerFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up.
 - **xcframework** — `xcodebuild -create-xcframework` bundles the slices with those same headers, and the result is copied into `Binaries/`.
-
-## Maintainers: cutting a release
-
-```bash
-make provider-ios                             # must include the device slice
-./ios/truapi-provider/scripts/publish.sh 0.1.0
-```
-
-`publish.sh` creates the `@parity/ios-provider@<version>` release if the tag does not exist yet (targeting `IOS_RELEASE_TARGET` when set, otherwise the current branch), uploads the zipped xcframework, and rewrites `providerBinaryURL` and `providerBinaryChecksum` in the root `Package.swift`. Commit that manifest change **after** the upload succeeds: a manifest pointing at an asset that is not live yet breaks every consumer resolving in that window.
-
-The provider and the host use separate tag namespaces, so releasing one never moves the other.

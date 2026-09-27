@@ -47,20 +47,19 @@ js/packages/
 js/container/              Shared TS lockdown container for native web views and CLI dev; scripts reuse its web API gates
                            `npm run build` bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
 ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over UniFFI);
-                           second product of the root Package.swift, released on its
-                           own tag (@parity/ios-provider@<v>) via its scripts/
+                           own manifest (ios/truapi-provider/Package.swift), rebuild via
+                           its scripts/rebuild.sh
 android/truapi-host/       truapi-host-android AAR (bindings + Kotlin shell + per-ABI
-                           cdylib), published to GitHub Packages by release-android;
-                           include `@parity/android-host <version>` in the `release:`
-                           PR title
+                           cdylib), published to Maven Local only; hosts/android syncs
+                           its Kotlin shell and applies its container build
 android/truapi-provider/   truapi-provider-android AAR; bundles the cdylib the same way,
-                           so consumers need no Rust toolchain
+                           published to Maven Local only
 ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
 hosts/ios/                 iOS host app; resolves the core from this tree
-hosts/android/             Android host app
+hosts/android/             Android host app; resolves the core from this tree
 hosts/imports.json         source repository and imported revision per host,
                            read and updated by scripts/refresh-host-import.sh
 hosts/dotli/               dotli submodule
@@ -172,21 +171,6 @@ scripts/cli-runner-package.test.ts
   label setup and release recovery.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
-  To publish, include `@parity/ios-host <version>` in the `release:` PR title.
-  `release-ios.yml` rebuilds and simulator-tests the XCFramework, uploads it,
-  then cuts the plain semver tag `<version>` whose commit carries the generated
-  sources and a manifest pointing at that asset. That tag is the SwiftPM
-  contract: consumers pin `exact("<version>")`, and a branch cannot be consumed
-  directly because the generated sources are ignored there. The job clones and
-  compiles the tag before pushing it, then opens a pull request against the
-  release branch that points `Package.swift` at the new asset. Dispatching
-  `release-ios` manually with a pre-release version cuts a tag for app-side
-  testing of an unmerged change without touching any branch. When the title
-  also names an npm package, the iOS job waits on that publish being confirmed
-  on npm. `publish.sh <version>` is the manual fallback.
-  `Package.swift` reads `TRUAPI_USE_LOCAL_BINARY` from the environment to build
-  against the rebuilt XCFramework; the tag script refuses a manifest that pins
-  the local binary.
 
 ## Code style
 

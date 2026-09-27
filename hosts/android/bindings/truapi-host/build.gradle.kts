@@ -1,61 +1,28 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-import java.util.Properties
 
 // TrUAPI Android host adapter binding.
 //
-// Compiles the TrUAPI Rust core (`truapi-server`, from the sibling truapi
-// checkout) to `libtruapi_server.so` per Android ABI via the shared
+// Compiles the TrUAPI Rust core (`truapi-server`, from the enclosing
+// host-rust-core tree) to `libtruapi_server.so` per Android ABI via the shared
 // `polkadotapp.android.rust` convention (mozilla rust-android-gradle), then
 // carries the UniFFI-generated Kotlin bindings + the `io.parity.truapi` host
 // adapter shell.
 //
-// The core crate is read from `truapi.dir`
-// in root `local.properties` (or the `TRUAPI_DIR` env var). Point it at any
-// local truapi worktree to iterate on the core.
-//
 // The module is NOT optional: `:feature:products:impl` depends on it in every
 // build variant, so the core (and JNA) ship in release APKs too, even though
-// the runtime toggle keeps release on the native host. A build without a
-// truapi checkout fails at configuration. CI provides the checkout by cloning
-// paritytech/host-rust-core at the `truapi_ref` pin
-// (.github/actions/install/action.yaml) before any compile task runs.
+// the runtime toggle keeps release on the native host.
 
 plugins {
     id("polkadotapp.android.rust")
 }
 
-// Resolve the truapi checkout that holds `rust/crates/truapi-server`, using the
-// same `truapi.dir` / `TRUAPI_DIR` resolution as the settings-gradle include
-// guard, which has already run and accepted whatever this finds: a configured
-// checkout if there is one, otherwise the core in the enclosing repository.
+// The core, two levels up in the repository this tree is vendored into.
 //
 // Declared above `android { }` because the source sets below interpolate it. A
 // `.kts` top-level val read before its initializer yields null, and Gradle
 // silently drops a source directory that does not exist, so using it earlier
 // produces missing sources rather than an error.
-val truapiDir: String = run {
-    val localProps = Properties().apply {
-        val f = rootProject.file("local.properties")
-        if (f.exists()) f.inputStream().use { load(it) }
-    }
-    val configured = (localProps.getProperty("truapi.dir") ?: System.getenv("TRUAPI_DIR"))
-        ?.takeIf { it.isNotBlank() }
-    if (configured != null) {
-        file(configured).takeIf { it.isAbsolute }?.path
-            ?: rootProject.file(configured).path
-    } else {
-        // Vendored into the core's own repository, where it is two levels up.
-        // Same rule as the settings-gradle guard, which has already accepted it.
-        //
-        // Bare File, not java.io.File: the Android plugin registers a `java`
-        // extension on the project, and its generated accessor shadows the root
-        // package, so the qualified name does not compile in a build script.
-        rootProject.file("../..").takeIf {
-            File(it, "rust/crates/truapi-server").isDirectory
-        }?.path
-            ?: error("truapi.dir / TRUAPI_DIR must be set to build :bindings:truapi-host")
-    }
-}
+val truapiDir: String = rootProject.file("../..").path
 
 // Generated source root that `syncHostShell` populates with truapi's canonical
 // `io.parity.truapi` shell.
@@ -84,8 +51,8 @@ android {
     packaging.resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
 }
 
-// truapi owns the `io.parity.truapi` host shell. Sync it from the checkout at
-// build time so this repo holds no copy of it and the two cannot drift.
+// truapi owns the `io.parity.truapi` host shell. Sync it from the core at
+// build time so this tree holds no copy of it and the two cannot drift.
 //
 // Only the package directory is taken. truapi's `src/main/kotlin` root also holds
 // its own generated UniFFI bindings, which would collide with the ones generated
@@ -101,8 +68,8 @@ tasks.withType<KotlinCompile>().configureEach {
     dependsOn(syncHostShell, generateUniffiKotlin)
 }
 
-// Override the convention default (`module = "rust/"`) to point at the
-// external truapi-server crate, and build it with the localhost WS bridge.
+// Override the convention default (`module = "rust/"`) to point at the core's
+// truapi-server crate, and build it with the localhost WS bridge.
 cargo {
     module = "$truapiDir/rust/crates/truapi-server"
     libname = "truapi_server"
@@ -153,12 +120,10 @@ val installCoreNodeDeps by tasks.registering(Exec::class) {
     outputs.dir("$truapiDir/node_modules").withPropertyName("coreNodeModules")
 }
 
-// Generate the core's wire dispatcher. host-rust-core stopped tracking
-// `truapi-server/src/generated` and generates it on demand, so a checkout of any
-// commit after that does not compile until this runs. Release tags do not carry
-// it either: the iOS tag script commits only the paths `Package.swift` declares.
-// Calling the core's own script rather than repeating its codegen invocation
-// keeps this from drifting when that pipeline changes.
+// Generate the core's wire dispatcher. `truapi-server/src/generated` is
+// gitignored, so the core does not compile until this runs. Calling the core's
+// own script rather than repeating its codegen invocation keeps this from
+// drifting when that pipeline changes.
 val generateCoreDispatcher by tasks.registering(Exec::class) {
     dependsOn(installCoreNodeDeps)
     workingDir = file(truapiDir)

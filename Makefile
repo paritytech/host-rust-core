@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap debugger dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cross-product-ringvrf e2e-cross-product-signing e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
+.PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap debugger dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cross-product-ringvrf e2e-cross-product-signing e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -169,92 +169,10 @@ uniffi: check-generated ## Generate Swift bindings from the truapi-server cdylib
 		--language swift \
 		--out-dir $(UNIFFI_SWIFT_TMP)
 
-IOS_HOST ?= ../polkadot-app-ios-v2
-IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
-IOS_CONFIGURATION ?= Debug
-IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E -DTRUAPI_RUNTIME_DEFAULT
-IOS_SIMULATOR_DEVICE ?=
-IOS_XCODE_DESTINATION ?= generic/platform=iOS Simulator
-IOS_BUNDLE ?= io.parity.polkadotapp.develop
-IOS_GOOGLE_SERVICE_PLIST ?= $(IOS_HOST)/polkadot-app/GoogleService/GoogleService-Info-Release.plist
-IOS_PRODUCT_HOST ?= truapi-playground.dot
-IOS_PRODUCT_URL ?= http://localhost:3100
-IOS_CHAT_PRODUCT_DIR ?= playground
-IOS_CHAT_PRODUCT_HOST ?= truapi-playground.dot
-IOS_CHAT_PRODUCT_NAME ?= TrUAPI Playground
-IOS_CHAT_PRODUCT_URL ?= http://127.0.0.1:3100
-IOS_HOST_PLAYGROUND_DIR ?= ../host-playground
-IOS_HOST_PLAYGROUND_HOST ?= host-playground.dot
-IOS_HOST_PLAYGROUND_NAME ?= Host Playground
-IOS_HOST_PLAYGROUND_URL ?= http://127.0.0.1:3101
-IOS_APP := $(abspath $(IOS_DERIVED_DATA)/Build/Products/$(IOS_CONFIGURATION)-iphonesimulator/polkadot-app.app)
-
 ios-bootstrap: ## Generate everything hosts/ios needs before Xcode can load its package graph (SIM_ONLY=1 for simulator slices only).
 	./scripts/codegen.sh
 	./ios/truapi-host/scripts/rebuild.sh
-	$(MAKE) provider-swift
-	sh ios/truapi-provider/scripts/sync-bindings.sh
 	@echo "hosts/ios can now be opened in Xcode."
-
-ios-build: ## Rebuild the local Rust package and the TestFlight-configured iOS simulator app.
-	@test -d "$(IOS_HOST)/.git" || { \
-		echo "Missing iOS checkout at $(IOS_HOST); set IOS_HOST to polkadot-app-ios-v2"; \
-		exit 1; \
-	}
-	./ios/truapi-host/scripts/rebuild.sh
-	cd $(IOS_HOST) && \
-		TRUAPI_LOCAL_PATH="$(CURDIR)" \
-		TRUAPI_USE_LOCAL_BINARY=1 \
-		RUN_IN_CI=true xcodebuild \
-		-project polkadot-app.xcodeproj \
-		-scheme polkadot-app \
-		-configuration $(IOS_CONFIGURATION) \
-		-destination '$(IOS_XCODE_DESTINATION)' \
-		-derivedDataPath $(abspath $(IOS_DERIVED_DATA)) \
-		ARCHS=arm64 \
-		ONLY_ACTIVE_ARCH=YES \
-		BASE_SWIFT_FLAGS='$(IOS_SWIFT_FLAGS)' \
-		clean build
-	cp "$(IOS_GOOGLE_SERVICE_PLIST)" "$(IOS_APP)/GoogleService-Info.plist"
-	codesign --force --sign - --preserve-metadata=entitlements "$(IOS_APP)"
-
-ios-run: ios-build ## Build and launch the local TrUAPI playground in an iPhone simulator.
-	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
-	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
-	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
-	TRUAPI_IOS_E2E_PRODUCT_HOST="$(IOS_PRODUCT_HOST)" \
-	TRUAPI_IOS_E2E_PRODUCT_URL="$(IOS_PRODUCT_URL)" \
-	node scripts/launch-ios-playground.mjs
-
-ios-chat-run: ios-build ## Run the TrUAPI Playground Chat diagnosis in an iPhone simulator.
-	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
-	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
-	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
-	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(IOS_CHAT_PRODUCT_DIR)" \
-	TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST="$(IOS_CHAT_PRODUCT_HOST)" \
-	TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME="$(IOS_CHAT_PRODUCT_NAME)" \
-	TRUAPI_IOS_E2E_CHAT_PRODUCT_URL="$(IOS_CHAT_PRODUCT_URL)" \
-	node scripts/launch-ios-chat-playground.mjs
-
-ios-chat-host-playground-run: ios-build ## Verify Host Playground Chat through the workspace-linked TrUAPI client.
-	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
-	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
-	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
-	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(abspath $(IOS_HOST_PLAYGROUND_DIR))" \
-	TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST="$(IOS_HOST_PLAYGROUND_HOST)" \
-	TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME="$(IOS_HOST_PLAYGROUND_NAME)" \
-	TRUAPI_IOS_E2E_CHAT_PRODUCT_URL="$(IOS_HOST_PLAYGROUND_URL)" \
-	TRUAPI_IOS_E2E_CHAT_ROOM_ID="host-playground-room" \
-	TRUAPI_IOS_E2E_CHAT_MESSAGE="!flip" \
-	TRUAPI_IOS_E2E_CHAT_EXPECTED_REPLY="Flipping the coin!" \
-	TRUAPI_IOS_E2E_CHAT_DIAGNOSIS="0" \
-	TRUAPI_IOS_E2E_CHAT_EXPECTED_STARTUP_MESSAGE="" \
-	TRUAPI_IOS_E2E_CHAT_EXPECT_CUSTOM_RENDERER="1" \
-	TRUAPI_IOS_E2E_CHAT_SCREENSHOT="artifacts/host-playground-coin-flip-chat.png" \
-	TRUAPI_IOS_E2E_CHAT_TRUAPI_DIR="$(abspath js/packages/truapi)" \
-	node scripts/launch-ios-chat-playground.mjs
-
-ios-chat-all: ios-chat-run ios-chat-host-playground-run ## Run both local iOS Chat playground integrations.
 
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 
@@ -492,8 +410,7 @@ XCFRAMEWORK_HEADERS := target/xcframework-headers
 # what a release needs; a compile-only consumer overrides both for speed. The
 # profile name doubles as cargo's output directory.
 # SIM_ONLY=1 drops the device slice while iterating, which halves the target
-# builds. publish.sh refuses a framework missing either slice, so this cannot
-# reach a release asset. XCFRAMEWORK_TARGETS still overrides both.
+# builds. XCFRAMEWORK_TARGETS still overrides both.
 #
 # 0, false, no and off mean off. Make treats any non-empty value as true, so
 # without this SIM_ONLY=0 would drop the device slice.

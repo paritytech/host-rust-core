@@ -1,6 +1,6 @@
 // TrUAPI Android host adapter.
 //
-// Publishes `io.parity:truapi-host-android` to Maven. Products running in a
+// Publishes `io.parity:truapi-host-android` to Maven Local. Products running in a
 // `WebView` connect to the Rust core via its localhost WebSocket bridge
 // (`TrUAPIProductExecution.startWsBridge`); the Rust core (compiled to
 // `libtruapi_server.so`) handles wire decoding, routing, subscription
@@ -65,9 +65,8 @@ dependencies {
 extra["truapiSourceDir"] = rootProject.projectDir
 apply(from = rootProject.file("android/truapi-container.gradle"))
 
-// Coordinates for the Maven publication. Releases are published to GitHub
-// Packages by .github/workflows/release-android.yml, which passes the real
-// version via -PtruapiHostVersion; local publishes default to 0.0.0-local.
+// Coordinates for the Maven Local publication; -PtruapiHostVersion overrides
+// the default 0.0.0-local.
 val publicationGroup = "io.parity"
 val publicationArtifact = "truapi-host-android"
 val publicationVersion = (findProperty("truapiHostVersion") as String?) ?: "0.0.0-local"
@@ -119,17 +118,6 @@ publishing {
     }
 
     repositories {
-        // Maven Local for `gradle publishToMavenLocal` during development.
         mavenLocal()
-        // Release target: the release-android workflow publishes here with
-        // the workflow's GITHUB_TOKEN.
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/paritytech/host-rust-core")
-            credentials {
-                username = System.getenv("GITHUB_ACTOR")
-                password = System.getenv("GITHUB_TOKEN")
-            }
-        }
     }
 }

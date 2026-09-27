@@ -2,7 +2,7 @@
 
 _Thin Swift shell over the Rust TrUAPI core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge._
 
-The package lives in the truapi repo next to the Rust core it wraps. `Package.swift` sits at the **repo root** (SPM requires that for git-URL dependencies), with all target paths pointing into `ios/truapi-host/`; the build scripts regenerate those target paths from this repo's workspace, because none of them are committed.
+The package lives in the truapi repo next to the Rust core it wraps. `Package.swift` sits at the **repo root**, with all target paths pointing into `ios/truapi-host/`; the build scripts regenerate those target paths from this repo's workspace, because none of them are committed.
 
 ## What this package is for
 
@@ -10,36 +10,18 @@ The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 
 - [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostRuntime`, `TrUAPIProductExecution`, their configuration and bridge protocols, and `LocalhostBridgeBootstrap`.
 - [`Sources/TrUAPIHost/ProductScripts.swift`](Sources/TrUAPIHost/ProductScripts.swift) registers the shared container in every frame. Fetch, XHR and remote WebSockets ask Rust directly through the existing private bridge.
-- the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
+- the Rust core as a binary target: the locally built `Binaries/truapi_server.xcframework`.
 - `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
 - [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
 - `Tests/` contains WS-bridge and WebKit network tests that boot the real Rust core.
 - `TestHost/` provides the UIKit app and XcodeGen project for simulator tests.
 
-The generated bindings, the container bundle and the xcframework are all **gitignored** build outputs, so a fresh checkout has no Swift sources for the package's targets. Run `rebuild.sh` before opening it. The xcframework is additionally distributed as a GitHub release asset. Two scripts split the lifecycle:
+The generated bindings, the container bundle and the xcframework are all **gitignored** build outputs, so a fresh checkout has no Swift sources for the package's targets. Run `rebuild.sh` before opening it:
 
 ```bash
 ./scripts/rebuild.sh            # regenerate xcframework + bindings + container
                                 # from this repo (make xcframework at the root)
-./scripts/publish.sh <version>  # zip the built xcframework, upload it to the
-                                # "@parity/ios-host <version>" GitHub release,
-                                # and point the root Package.swift at it
-                                # (URL + checksum)
-./scripts/tag-release.sh <version>
-                                # commit the generated sources plus that
-                                # manifest and tag it <version>: the tag a
-                                # SwiftPM consumer resolves
 ```
-
-A consumer pins the plain semver tag, not the `@parity/ios-host@<version>` one,
-which SwiftPM cannot see:
-
-```swift
-.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.12.0")
-```
-
-`release-ios.yml` runs all three in order and clones and compiles the tag
-before pushing it. Run them by hand only as a fallback.
 
 When only the bindings need refreshing — a Rust surface change with no container
 or xcframework impact — skip the full rebuild, which needs Xcode and the iOS
@@ -66,30 +48,24 @@ as an `ios/` diff.
 The Android host job compiles `TrUAPIHost.kt` against generated bindings;
 the separate iOS CI workflow builds and tests the embedding app.
 
-Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostRuntime` or `NativeProductExecution` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — to refresh your local build outputs. Nothing to commit: CI regenerates them. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, cuts the `<version>` tag, and opens the `Package.swift` follow-up pull request only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
-
-For local iteration without publishing, set `TRUAPI_USE_LOCAL_BINARY=1` so the root `Package.swift` builds against `Binaries/` directly.
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostRuntime` or `NativeProductExecution` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — to refresh your local build outputs. Nothing to commit: CI regenerates them.
 
 The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, feature support, and the served chain set. UI-decision callbacks are `async` and awaited by the Rust core. `HostCallbackAdapter` translates it to the UniFFI-generated `HostCallbacks` protocol; `TrUAPIHostRuntime` and each product execution retain their own adapter. Conform to `HostBridge` rather than to the generated protocol: its extension defaults the optional callbacks, so a newly added one does not break the build. Storage arrives as the `storage` and `coreStorage` sub-objects, which the adapter flattens.
 
 ## Integrating in an iOS app
 
-Add the package as an SPM dependency and link the `TrUAPIHost` product into the app target:
+Apps in this repository depend on the package by path, as `hosts/ios` does in
+`Packages/AppDependencies/Package.swift`, and link the `TrUAPIHost` product
+into the app target. Run `rebuild.sh` first, since the package has no Swift
+sources or binary until then:
 
 ```swift
-.package(url: "https://github.com/paritytech/host-rust-core.git", exact: "0.12.0")
+.package(name: "host-rust-core", path: "<path to the repository root>")
 ```
 
 ```swift
-.product(name: "TrUAPIHost", package: "truapi")
+.product(name: "TrUAPIHost", package: "host-rust-core")
 ```
-
-The release workflow publishes the asset under `@parity/ios-host@<version>`,
-creates a bare `<version>` tag from a manifest containing its URL and checksum,
-and builds that tag from a clean clone before pushing it. It also opens a
-manifest PR to keep `main` current. SPM pins the resolved revision in the app's
-`Package.resolved`; update it with File > Packages > Update in Xcode or
-`xcodebuild -resolvePackageDependencies` after the tag is published.
 
 `HostRuntimeConfig.networkSuffix` is required. Supply the bare TLD (`dot`,
 `paseo`, or `testnet`) from the same network configuration used by onboarding

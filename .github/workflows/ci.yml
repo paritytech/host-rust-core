@@ -391,10 +391,6 @@ jobs:
     if: needs.changes.outputs.sdk_swift == 'true'
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      # Resolving the package resolves both binary targets, whichever scheme builds.
-      TRUAPI_USE_LOCAL_BINARY: "1"
-      TRUAPI_PROVIDER_USE_LOCAL_BINARY: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -420,9 +416,7 @@ jobs:
           name: codegen-output
 
       # Simulator slice only, debug profile. This gate tests Swift and ships
-      # no binary, so the device slice and release codegen are waste. The
-      # published binary is older than the current Rust surface, so
-      # TRUAPI_USE_LOCAL_BINARY points the manifest at this build instead.
+      # no binary, so the device slice and release codegen are waste.
       - name: Build the simulator XCFramework
         run: make xcframework XCFRAMEWORK_TARGETS=aarch64-apple-ios-sim XCFRAMEWORK_PROFILE=debug
 
@@ -448,46 +442,21 @@ jobs:
       - name: Build the simulator XCFramework for TrUAPIProvider
         run: PROFILE=debug ./ios/truapi-provider/scripts/rebuild.sh --sim-only
 
-      # Build the tag a release would cut, then compile from a clean clone of
-      # it. Compiling in place would pass on generated files that the tag does
-      # not carry, which is exactly the failure this guards: a consumer only
-      # ever sees the tag.
-      - name: Build the SwiftPM consumer tag
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          ./ios/truapi-host/scripts/tag-release.sh 0.0.0-ci
-
-      - name: Check the tag carries every generated file
-        run: |
-          set -euo pipefail
-          probe="$RUNNER_TEMP/tag-probe"
-          rm -rf "$probe"
-          git clone --quiet --branch 0.0.0-ci "file://$PWD" "$probe"
-          while read -r path; do
-            diff -u <(cd "$probe" && find "$path" -type f | sort) \
-                    <(find "$path" -type f | sort)
-          done <<< "$(sed -n -E 's/^[[:space:]]*path: "([^"]+)".*/\1/p' Package.swift | grep -v '/Binaries/')"
-
-      # The xcframework ships as a release asset rather than in the tag, so the
-      # locally built one stands in for it here.
-      - name: Compile the package and its tests from the tag
+      - name: Compile the package and its tests
         run: |
           set -euo pipefail
           simulator="$(node --input-type=module -e 'import { selectSimulator } from "./scripts/lib/ios-simulator.mjs"; console.log(selectSimulator().udid)')"
           echo "TRUAPI_TEST_SIMULATOR=$simulator" >> "$GITHUB_ENV"
-          probe="$RUNNER_TEMP/tag-probe"
-          mkdir -p "$probe/ios/truapi-host/Binaries" "$probe/ios/truapi-provider/Binaries"
-          cp -R ios/truapi-host/Binaries/truapi_server.xcframework "$probe/ios/truapi-host/Binaries/"
-          cp -R ios/truapi-provider/Binaries/truapi_provider.xcframework "$probe/ios/truapi-provider/Binaries/"
-          cd "$probe"
           TRUAPI_TEST_SIMULATOR="$simulator" ./ios/truapi-host/scripts/test.sh build-for-testing \
             -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost"
-          # Built for the simulator like TrUAPIHost above, not with `swift build`,
-          # which targets macOS: the xcframeworks carry iOS slices only, and the
-          # generated bindings use Swift concurrency, which the package's macOS
-          # floor would have to declare purely to satisfy a host-platform build.
+
+      # Built for the simulator like TrUAPIHost above, not with `swift build`,
+      # which targets macOS: the xcframeworks carry iOS slices only, and the
+      # generated bindings use Swift concurrency, which the package's macOS
+      # floor would have to declare purely to satisfy a host-platform build.
+      - name: Compile TrUAPIProvider
+        working-directory: ios/truapi-provider
+        run: |
           xcodebuild build \
             -scheme TrUAPIProvider \
             -destination 'generic/platform=iOS Simulator' \
@@ -497,7 +466,6 @@ jobs:
       - name: Test native product network permissions in WKWebView
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/tag-probe"
           ./ios/truapi-host/scripts/test.sh test-without-building \
             -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost" \
             -only-testing:NetworkPermissionTests/ProductNetworkAccessTests \
@@ -600,9 +568,6 @@ jobs:
         with:
           save_cache: ${{ github.event_name == 'push' }}
 
-      # No truapi.dir: the core resolves two levels up, which is one of the
-      # properties this job keeps true.
-      #
       # The target is the module that consumes the bindings, not the module that
       # produces them. Generated bindings cannot disagree with the library they
       # were generated from, so compiling them proves nothing; the signal is in
