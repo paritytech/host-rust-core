@@ -47,7 +47,7 @@ private val TopBarHeight = 64.dp
 
 enum class TopBarTitleAlignment { Start, Center }
 
-enum class TopBarTitleSize { Standard, Large }
+enum class TopBarTitleSize { Standard, Medium, Large }
 
 @Composable
 fun PolkadotTopBar(
@@ -65,6 +65,7 @@ fun PolkadotTopBar(
 
     val titleStyle = when (titleSize) {
         TopBarTitleSize.Standard -> PolkadotTheme.typography.title.medium
+        TopBarTitleSize.Medium -> PolkadotTheme.typography.title.large
         TopBarTitleSize.Large -> PolkadotTheme.typography.headline.small
     }
     val hasLeading = navigationAction != null || leadingContent != null
@@ -310,6 +311,13 @@ private fun PolkadotTopBarPreview() {
                 title = "Label",
                 titleSize = TopBarTitleSize.Large,
                 actions = persistentListOf(rememberTopBarAction(action = {}, icon = NovaIcons.More)),
+            )
+
+            PolkadotTopBar(
+                navigationAction = rememberTopBarAction(action = {}, icon = NovaIcons.ArrowLeft),
+                title = "Label",
+                titleAlignment = TopBarTitleAlignment.Center,
+                titleSize = TopBarTitleSize.Medium,
             )
 
             // Back, centered title + subtitle + action

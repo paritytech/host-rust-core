@@ -2,8 +2,8 @@ import DesignSystem
 import PolkadotUI
 import SwiftUI
 
-/// Value-weighted picture of the three balance figures shown above it: available now, gaining
-/// privacy, and pending.
+/// Value-weighted picture of the two balance figures shown above it: available now and gaining
+/// privacy.
 ///
 /// Each section is the same bucket as the row above it, so the bar is a legend-free depiction of
 /// those numbers rather than a second, differently-cut summary. Coins and vouchers land in
@@ -15,16 +15,14 @@ struct CoinageCompositionBar: View {
     struct Model: Equatable {
         let availableNowShare: Double
         let gainingPrivacyShare: Double
-        let pendingShare: Double
 
         static let empty = Model(
             availableNowShare: 0,
-            gainingPrivacyShare: 0,
-            pendingShare: 0
+            gainingPrivacyShare: 0
         )
 
         var isEmpty: Bool {
-            availableNowShare + gainingPrivacyShare + pendingShare <= 0
+            availableNowShare + gainingPrivacyShare <= 0
         }
     }
 
@@ -35,7 +33,8 @@ struct CoinageCompositionBar: View {
             segments: Self.segments(for: model),
             height: CoinageStatusMetrics.summaryBarHeight,
             outlineColor: CoinageStatusMetrics.markFrame,
-            outlineWidth: CoinageStatusMetrics.markFrameWidth
+            outlineWidth: CoinageStatusMetrics.markFrameWidth,
+            isAnimated: false
         )
     }
 }
@@ -47,8 +46,7 @@ private extension CoinageCompositionBar {
             .init(
                 share: model.gainingPrivacyShare,
                 fill: .stripes(color: Color.fgError, background: Color.fgStaticWhite)
-            ),
-            .init(share: model.pendingShare, fill: .solid(Color.fgError))
+            )
         ]
     }
 }

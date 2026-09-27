@@ -105,6 +105,10 @@ extension ChatContactDataProviderFactory: ChatContactDataProviderMaking {
         request.predicate = predicate
         request.sortDescriptors = [
             NSSortDescriptor(
+                key: #keyPath(CDChat.lastDisplayMessage.order),
+                ascending: false
+            ),
+            NSSortDescriptor(
                 key: #keyPath(CDChat.lastDisplayMessage.timestamp),
                 ascending: false
             ),

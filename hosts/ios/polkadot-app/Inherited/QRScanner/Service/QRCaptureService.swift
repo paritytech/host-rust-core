@@ -7,6 +7,7 @@ protocol QRCaptureServiceProtocol: AnyObject {
 
     func start()
     func stop()
+    func setRecognitionArmed(_ armed: Bool)
 }
 
 enum QRCaptureServiceError: Error {
@@ -26,6 +27,8 @@ final class QRCaptureService: NSObject {
     static let processingQueue = DispatchQueue(label: "nova.qr.capture.service.queue")
 
     private(set) var captureSession: AVCaptureSession?
+    private var metadataOutput: AVCaptureMetadataOutput?
+    private var isRecognitionArmed = true
 
     weak var delegate: QRCaptureServiceDelegate?
     var delegateQueue: DispatchQueue
@@ -38,6 +41,10 @@ final class QRCaptureService: NSObject {
         self.delegateQueue = delegateQueue ?? QRCaptureService.processingQueue
 
         super.init()
+    }
+
+    private func applyRecognitionArmed() {
+        metadataOutput?.metadataObjectTypes = isRecognitionArmed ? [.qr] : []
     }
 
     private func configureSessionIfNeeded() throws {
@@ -67,9 +74,11 @@ final class QRCaptureService: NSObject {
         captureSession.addOutput(output)
 
         self.captureSession = captureSession
+        metadataOutput = output
 
         output.setMetadataObjectsDelegate(self, queue: QRCaptureService.processingQueue)
-        output.metadataObjectTypes = [AVMetadataObject.ObjectType.qr]
+        // A disarm requested before the session exists survives here until the session is built.
+        applyRecognitionArmed()
     }
 
     private func startAuthorizedSession() {
@@ -148,6 +157,13 @@ extension QRCaptureService: QRCaptureServiceProtocol {
     func stop() {
         QRCaptureService.processingQueue.async {
             self.captureSession?.stopRunning()
+        }
+    }
+
+    func setRecognitionArmed(_ armed: Bool) {
+        QRCaptureService.processingQueue.async {
+            self.isRecognitionArmed = armed
+            self.applyRecognitionArmed()
         }
     }
 }

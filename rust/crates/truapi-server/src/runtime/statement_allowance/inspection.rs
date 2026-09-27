@@ -521,14 +521,10 @@ impl<'a> ReadOnlyChain<'a> {
                 .map(|bytes| self.decode_storage("Members", "CurrentRingIndex", bytes))
                 .transpose()?
                 .unwrap_or(0);
+            let member = proof::member_key(candidate.entropy).await.map_err(reason)?;
             result.push(
-                self.has_including_ring(
-                    candidate.collection,
-                    &proof::member_key(candidate.entropy),
-                    exponent,
-                    current,
-                )
-                .await?,
+                self.has_including_ring(candidate.collection, &member, exponent, current)
+                    .await?,
             );
         }
         Ok(result)
@@ -615,13 +611,13 @@ impl<'a> ReadOnlyChain<'a> {
             for start in (0..limit).step_by(STORAGE_BATCH) {
                 (self.guard)()?;
                 let end = (start + STORAGE_BATCH as u32).min(limit);
-                let keys = (start..end)
-                    .map(|index| {
-                        slot::slot_alias(candidate.entropy, suffix, period, index)
-                            .map(|alias| slot::statement_store_allowance_key(period, &alias))
-                            .map_err(reason)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let mut keys = Vec::with_capacity((end - start) as usize);
+                for index in start..end {
+                    let alias = slot::slot_alias(candidate.entropy, suffix, period, index)
+                        .await
+                        .map_err(reason)?;
+                    keys.push(slot::statement_store_allowance_key(period, &alias));
+                }
                 for (index, bytes) in (start..end).zip(self.storage_many(&keys).await?) {
                     let Some(bytes) = bytes else {
                         continue;
@@ -674,25 +670,22 @@ impl<'a> ReadOnlyChain<'a> {
         for start in (0..limit).step_by(STORAGE_BATCH) {
             (self.guard)()?;
             let end = (start + STORAGE_BATCH as u32).min(limit);
-            let keys = (start..end)
-                .map(|index| {
-                    if bulletin {
-                        let counter = u8::try_from(index).map_err(reason)?;
-                        let alias = slot::long_term_storage_alias(
-                            candidate.entropy,
-                            suffix,
-                            period,
-                            counter,
-                        )
-                        .map_err(reason)?;
-                        Ok(slot::spent_long_term_storage_alias_key(period, &alias))
-                    } else {
-                        let alias = slot::pgas_alias(candidate.entropy, suffix, period, index)
+            let mut keys = Vec::with_capacity((end - start) as usize);
+            for index in start..end {
+                keys.push(if bulletin {
+                    let counter = u8::try_from(index).map_err(reason)?;
+                    let alias =
+                        slot::long_term_storage_alias(candidate.entropy, suffix, period, counter)
+                            .await
                             .map_err(reason)?;
-                        Ok(slot::claimed_gas_alias_key(period, &alias))
-                    }
-                })
-                .collect::<Result<Vec<_>, String>>()?;
+                    slot::spent_long_term_storage_alias_key(period, &alias)
+                } else {
+                    let alias = slot::pgas_alias(candidate.entropy, suffix, period, index)
+                        .await
+                        .map_err(reason)?;
+                    slot::claimed_gas_alias_key(period, &alias)
+                });
+            }
             for (index, bytes) in (start..end).zip(self.storage_many(&keys).await?) {
                 if let Some(bytes) = bytes {
                     self.decode_storage::<()>(pallet, entry, &bytes)?;
@@ -1153,7 +1146,7 @@ mod tests {
             Ok(())
         }
         let collection = PersonhoodCollection::LitePeople;
-        let member = proof::member_key([7; 32]);
+        let member = futures::executor::block_on(proof::member_key([7; 32])).unwrap();
         let block = account_hex(&[1; 32]);
         let response = |key: Vec<u8>, bytes: Vec<u8>| {
             json!([{

@@ -10,6 +10,8 @@ struct CoinageDatabaseDependencyFactory: DatabaseDependencyFactoring, @unchecked
     private let storageFacade: StorageFacadeProtocol
     private let operationQueue: OperationQueue
     private let logger: LoggerProtocol
+    /// One per factory: the current installation never changes, so every tracked mapper shares the read.
+    private let currentInstallation = CoinageCurrentInstallationContextReader()
 
     init(
         storageFacade: StorageFacadeProtocol,
@@ -41,7 +43,7 @@ struct CoinageDatabaseDependencyFactory: DatabaseDependencyFactoring, @unchecked
     }
 
     func makeTrackedCoinRepository() -> AnyDataProviderRepository<TrackedCoin> {
-        let mapper = TrackedCoinMapper()
+        let mapper = makeTrackedCoinMapper()
         let repository = storageFacade.createRepository(
             filter: nil,
             sortDescriptors: [],
@@ -96,7 +98,7 @@ struct CoinageDatabaseDependencyFactory: DatabaseDependencyFactoring, @unchecked
         let repository = storageFacade.createRepository(
             filter: filter,
             sortDescriptors: [],
-            mapper: AnyCoreDataMapper(TrackedVoucherMapper())
+            mapper: AnyCoreDataMapper(makeTrackedVoucherMapper())
         )
         return AnyDataProviderRepository(repository)
     }
@@ -112,7 +114,7 @@ struct CoinageDatabaseDependencyFactory: DatabaseDependencyFactoring, @unchecked
 
     func makeTrackedCoinSnapshotStream() -> AnyAsyncSequence<[TrackedCoin]> {
         storageFacade.databaseService.subscribeSnapshot(
-            mapper: AnyCoreDataMapper(TrackedCoinMapper())
+            mapper: AnyCoreDataMapper(makeTrackedCoinMapper())
         )
     }
 
@@ -121,18 +123,28 @@ struct CoinageDatabaseDependencyFactory: DatabaseDependencyFactoring, @unchecked
             return AsyncStream<[TrackedCoin]> { $0.finish() }.eraseToAnyAsyncSequence()
         }
         return storageFacade.databaseService.subscribeSnapshot(
-            mapper: AnyCoreDataMapper(TrackedCoinMapper()),
+            mapper: AnyCoreDataMapper(makeTrackedCoinMapper()),
             filter: NSPredicate(format: "%K IN %@", #keyPath(CDCoin.publicKey), publicKeys.map { $0.toHex() })
         )
     }
 
     func makeTrackedVoucherSnapshotStream() -> AnyAsyncSequence<[TrackedVoucher]> {
         storageFacade.databaseService.subscribeSnapshot(
-            mapper: AnyCoreDataMapper(TrackedVoucherMapper())
+            mapper: AnyCoreDataMapper(makeTrackedVoucherMapper())
         )
     }
 
     func makeInstallationRepository() -> any CoinageInstallationRepositoryProtocol {
         CoinageInstallationCoreDataRepository(storageFacade: storageFacade)
+    }
+}
+
+private extension CoinageDatabaseDependencyFactory {
+    func makeTrackedCoinMapper() -> TrackedCoinMapper {
+        TrackedCoinMapper(currentInstallation: currentInstallation)
+    }
+
+    func makeTrackedVoucherMapper() -> TrackedVoucherMapper {
+        TrackedVoucherMapper(currentInstallation: currentInstallation)
     }
 }

@@ -51,7 +51,7 @@ struct NativeTransferCustodyTests {
         let retained = custody("native", indices: [1])
         try await store.ledger.retainNativeTransfer(retained, authorization: { try Task.checkCancellation() })
         let ordinary = MockCoinageTxService(store: store)
-        await #expect(throws: CoinageTxError.handoffAlreadyReserved(testKey(1).toHex())) {
+        await #expect(throws: CoinageTxError.handoffOfHandedOffAsset(testKey(1).toHex())) {
             try await ordinary.preCommitHandoff(retained.assets)
         }
         try await store.releaseUncommittedHandoffs()

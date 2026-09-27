@@ -57,6 +57,10 @@ struct Inner {
 
 impl HostCoinageChain {
     /// Keep root entropy Host-private and bind all secret use to the active session.
+    ///
+    /// `vrf` is loaded by the caller: Coinage runs its voucher proofs
+    /// synchronously, and the browser core fetches `verifiable` on demand.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         platform: Arc<dyn Platform>,
         genesis_hash: [u8; 32],
@@ -65,8 +69,9 @@ impl HostCoinageChain {
         session_valid: Arc<dyn Fn() -> bool + Send + Sync>,
         spawner: Spawner,
         wal: Arc<dyn WalStore>,
+        vrf: crate::runtime::vrf::Vrf,
     ) -> Self {
-        let crypto = Arc::new(HostVoucherCryptography::new(session_valid.clone()));
+        let crypto = Arc::new(HostVoucherCryptography::new(session_valid.clone(), vrf));
         let coins = CoinKeypairFactory::new(&entropy);
         let vouchers = VoucherKeypairFactory::new(&entropy);
         Self {

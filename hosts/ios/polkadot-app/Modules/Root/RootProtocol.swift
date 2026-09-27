@@ -2,12 +2,13 @@ import UIKit
 
 @MainActor
 protocol RootViewProtocol: AnyObject {
-    func didReceive(viewModel: RootInitViewLayout.ViewModel)
+    func didReceive(viewModel: RootViewLayout.ViewModel)
 }
 
 @MainActor
 protocol RootPresenterProtocol: AnyObject {
     func loadOnLaunch(onComplete: @escaping () -> Void)
+    func retry()
 }
 
 @MainActor
@@ -28,6 +29,7 @@ protocol RootWireframeProtocol: AnyObject {
 @MainActor
 protocol RootInteractorInputProtocol: AnyObject {
     func setup()
+    func retrySetup()
     func reevaluate()
     func completeWalletsCreation()
     func completeWalletsRecovery()
@@ -36,7 +38,9 @@ protocol RootInteractorInputProtocol: AnyObject {
 @MainActor
 protocol RootInteractorOutputProtocol: AnyObject {
     func didDecide(destination: RootDestination)
-    func didExceedSetupTimeout()
+    func didFailSetup(kind: RootSetupFailureKind)
+    /// The network path recovered after a connectivity failure, so setup can be attempted again.
+    func didRecoverConnectivity()
     #if TESTNET_FEATURE
         func didRequireAppFactoryReset()
     #endif

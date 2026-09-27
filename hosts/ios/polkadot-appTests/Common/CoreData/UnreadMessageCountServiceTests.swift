@@ -76,6 +76,30 @@ struct UnreadMessageCountServiceTests {
 
         #expect(count == 3)
     }
+
+    @Test("counts a notified but unsaved message once")
+    func countsUnsavedMessageOnce() async throws {
+        try await seedChats()
+        try await seedMessages()
+
+        let service = UnreadMessageCountService(databaseService: facade.databaseService)
+
+        let count = try await service.totalUnreadBadgeMessageCount(unsavedMessageId: "stripped-message")
+
+        #expect(count == 4)
+    }
+
+    @Test("does not add an unsaved message that already has a row")
+    func doesNotDoubleCountSavedMessage() async throws {
+        try await seedChats()
+        try await seedMessages()
+
+        let service = UnreadMessageCountService(databaseService: facade.databaseService)
+
+        let count = try await service.totalUnreadBadgeMessageCount(unsavedMessageId: "text-message")
+
+        #expect(count == 3)
+    }
 }
 
 private extension UnreadMessageCountServiceTests {

@@ -90,6 +90,7 @@ xcuserdata
 
 .claude/PLAN.md
 .claude/worktrees
+docs/superpowers/
 
 # Secrets
 polkadot-app/env-vars.sh

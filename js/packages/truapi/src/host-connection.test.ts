@@ -417,6 +417,50 @@ describe("shared SDK connection failure timing", () => {
         expect(fixture.sockets).toHaveLength(2);
     });
 
+    function visibleDocument() {
+        const previousDocument = globalThis.document;
+        const document = Object.assign(new EventTarget(), { visibilityState: "visible" });
+        globalThis.document = document as unknown as Document;
+        cleanup.push(() => {
+            if (previousDocument) globalThis.document = previousDocument;
+            else delete (globalThis as { document?: Document }).document;
+        });
+    }
+
+    // A reconnect can be refused for a moment while the host rebinds its
+    // listener; a visible page must not stay offline until its next call.
+    it("retries a reconnect that fails while the page is visible", async () => {
+        visibleDocument();
+        const fixture = controlledHost();
+        void fixture.connection.client;
+        fixture.sockets[0]!.open();
+        await untilPrepared(() => fixture.statuses.at(-1) === "connected");
+        fixture.sockets[0]!.close();
+        fixture.advance(0);
+        fixture.sockets[1]!.close();
+        await untilPrepared(() => fixture.statuses.at(-1) === "disconnected");
+        fixture.advance(250);
+        fixture.sockets[2]!.open();
+        await untilPrepared(() => fixture.statuses.at(-1) === "connected");
+        expect(fixture.sockets).toHaveLength(3);
+    });
+
+    // A host that stays unreachable must not keep a visible page dialing.
+    it("stops retrying a refused reconnect after a bounded number of attempts", async () => {
+        visibleDocument();
+        const fixture = controlledHost();
+        void fixture.connection.client;
+        fixture.sockets[0]!.open();
+        await untilPrepared(() => fixture.statuses.at(-1) === "connected");
+        fixture.sockets[0]!.close();
+        for (const delay of [0, 250, 1_000, 4_000]) {
+            fixture.advance(delay);
+            fixture.sockets.at(-1)!.close();
+        }
+        fixture.advance(120_000);
+        expect(fixture.sockets).toHaveLength(5);
+    });
+
     it("wakes existing subscription listeners when a failed background replacement becomes visible", async () => {
         const previousDocument = globalThis.document;
         const document = Object.assign(new EventTarget(), { visibilityState: "visible" });

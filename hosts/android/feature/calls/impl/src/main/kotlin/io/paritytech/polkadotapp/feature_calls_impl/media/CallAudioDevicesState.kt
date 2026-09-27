@@ -7,6 +7,7 @@ data class CallAudioDevicesState(
     val selectedDevice: CallAudioDevice? get() = devices.firstOrNull { it.id == selectedId }
 
     val isEarpieceActive: Boolean get() = selectedDevice?.type == CallAudioDeviceType.Earpiece
+    val isRouteApplied: Boolean get() = selectedId != null
 
     companion object {
         val EMPTY = CallAudioDevicesState(emptyList(), null)

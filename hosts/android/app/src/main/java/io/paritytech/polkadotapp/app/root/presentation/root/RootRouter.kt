@@ -21,6 +21,9 @@ interface RootRouter : ReturnableRouter {
 
     fun openProductBotsManagement()
 
+    /** Debug: draw a renderer tree served over HTTP at Pocket card size. */
+    fun openPocketFacePreview()
+
     fun openSpaBrowser(payload: SpaBrowserPayload)
 
     /** Debug-only — bypasses the game lifecycle. */

@@ -17,9 +17,4 @@ final class TransferAmountWireframe: TransferAmountWireframeProtocol {
         navigateToChat(with: .person(recipient.accountId), force: false)
         navigationController?.popToRootViewController(animated: false)
     }
-
-    func showBalanceInfo(model: BalanceInfoModel, from view: (any ControllerBackedProtocol)?) {
-        let sheet = BalanceInfoViewFactory.createView(from: model)
-        view?.controller.present(sheet, animated: true)
-    }
 }

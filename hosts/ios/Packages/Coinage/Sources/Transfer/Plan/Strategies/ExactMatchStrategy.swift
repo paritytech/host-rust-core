@@ -14,17 +14,25 @@ struct ExactMatchStrategy: TransferStrategy {
         self.durability = durability
     }
 
-    func prepare(
-        groupId: CoinageTxGroupId?,
-        custodyId: String?,
-        authorization: (@Sendable () throws -> Void)?
-    ) async throws -> PreparedStrategy {
+    func prepare(native: NativeTransferRequest?) async throws -> PreparedStrategy {
         guard !coins.isEmpty else {
             throw TransferStrategyError.emptyCoins
         }
 
+        let memoEntries = coins.map {
+            PlannedMemoEntry(
+                coinDerivationIndex: $0.derivationIndex,
+                valueExponent: $0.exponent
+            )
+        }
+
+        // No entry backs these coins, so the provisional handoff mark (or, natively, the retained
+        // custody) is the only thing keeping them out of a concurrent selection until the memo is durable.
         return try await durability.prepareTransfer(
-            requests: [], coins: coins, groupId: groupId, custodyId: custodyId, authorization: authorization
+            handingOff: coins,
+            memoEntries: memoEntries,
+            transactions: [],
+            native: native
         )
     }
 }

@@ -7,6 +7,7 @@ import BigInt
 extension CoinagePallet {
     enum Constants {
         case maxConsolidation
+        case maxSplitOutputs
         case maximumExponent
         case minimumExponent
         case unloadTokenTimePeriod
@@ -19,6 +20,8 @@ extension CoinagePallet.Constants: ConstantPathConvertible {
         switch self {
         case .maxConsolidation:
             "MaxConsolidation"
+        case .maxSplitOutputs:
+            "MaxSplitOutputs"
         case .maximumExponent:
             "MaximumExponent"
         case .minimumExponent:

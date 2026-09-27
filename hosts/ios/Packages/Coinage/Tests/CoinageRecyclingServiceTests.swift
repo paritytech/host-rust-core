@@ -15,7 +15,7 @@ struct CoinageRecyclingServiceTests {
 
         try await sut.service.recycleCoins([], groupId: nil)
 
-        #expect(await sut.txService.submittedInputs.isEmpty)
+        #expect(sut.txService.submittedInputs.isEmpty)
     }
 
     @Test("Each coin registers one entry consuming it and minting a voucher")
@@ -24,8 +24,8 @@ struct CoinageRecyclingServiceTests {
 
         try await sut.service.recycleCoins([coin(index: 7), coin(index: 9)], groupId: nil)
 
-        let inputs = await sut.txService.submittedInputs
-        let outputs = await sut.txService.submittedOutputs
+        let inputs = sut.txService.submittedInputs
+        let outputs = sut.txService.submittedOutputs
         #expect(inputs == [[.coin(.own(7, key(7)))], [.coin(.own(9, key(9)))]])
         #expect(outputs.allSatisfy { $0.count == 1 })
     }
@@ -36,7 +36,7 @@ struct CoinageRecyclingServiceTests {
 
         try await sut.service.recycleCoins([coin(index: 3), coin(index: 1), coin(index: 2)], groupId: nil)
 
-        let inputs = await sut.txService.submittedInputs
+        let inputs = sut.txService.submittedInputs
         #expect(inputs == [[.coin(.own(3, key(3)))], [.coin(.own(1, key(1)))], [.coin(.own(2, key(2)))]])
     }
 
@@ -46,7 +46,7 @@ struct CoinageRecyclingServiceTests {
 
         try await sut.service.recycleCoins([coin(index: 7)], groupId: nil)
 
-        #expect(await sut.txService.submittedInputs.isEmpty)
+        #expect(sut.txService.submittedInputs.isEmpty)
     }
 
     @Test("recycleCoins returns the number of extrinsics actually submitted")
@@ -78,7 +78,7 @@ struct CoinageRecyclingServiceTests {
 
         #expect(first == 1)
         #expect(second == 0)
-        #expect(await sut.txService.submittedInputs == [[.coin(.own(7, key(7)))]])
+        #expect(sut.txService.submittedInputs == [[.coin(.own(7, key(7)))]])
     }
 
     @Test("observeRecycling folds the group into allRecycled with the minted vouchers")

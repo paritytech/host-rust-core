@@ -27,7 +27,13 @@ final class UnreadMessageCountService {
     }
 
     func totalUnreadBadgeMessageCount() async throws -> Int {
-        try await databaseService.perform { context in
+        try await totalUnreadBadgeMessageCount(unsavedMessageId: nil)
+    }
+
+    /// `unsavedMessageId` names a message that was notified but not persisted (a stripped push);
+    /// it counts as one more unread entry unless a row for it already exists.
+    func totalUnreadBadgeMessageCount(unsavedMessageId: Chat.MessageId?) async throws -> Int {
+        try await databaseService.performRead { context in
             let request = NSFetchRequest<NSDictionary>()
             request.entity = CDChatMessage.entity()
             request.predicate = Self.badgeCountPredicate()
@@ -36,9 +42,24 @@ final class UnreadMessageCountService {
             request.propertiesToFetch = [
                 #keyPath(CDChatMessage.groupingId)
             ]
-            let rows = try context.fetch(request)
-            return rows.count
+            let savedCount = try context.fetch(request).count
+
+            guard let unsavedMessageId, try !Self.messageExists(unsavedMessageId, in: context) else {
+                return savedCount
+            }
+
+            return savedCount + 1
         }
+    }
+}
+
+private extension UnreadMessageCountService {
+    static func messageExists(_ messageId: Chat.MessageId, in context: NSManagedObjectContext) throws -> Bool {
+        let request = NSFetchRequest<NSNumber>()
+        request.entity = CDChatMessage.entity()
+        request.predicate = NSPredicate(format: "%K == %@", #keyPath(CDChatMessage.messageId), messageId)
+        request.resultType = .countResultType
+        return try context.count(for: request) > 0
     }
 }
 

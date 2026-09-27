@@ -13,6 +13,7 @@
 // `window.__truapi_localhost` for the shared container to consume.
 
 import Foundation
+import UIKit
 
 /// Package metadata.
 public enum TrUAPIHost {
@@ -882,22 +883,55 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     private let inner: NativeTrUApiHostRuntime
     private let callbackRetainer: HostCallbacks
     private let nativeWalletRetainer: NativeCoinageCallbacks?
+    private let notificationCenter: NotificationCenter
+    private let foregroundObserver: NSObjectProtocol
 
     /// Register native custody once; nil selects the built-in Rust wallet.
-    public init(
+    public convenience init(
         bridge: HostBridge,
         runtimeConfig: HostRuntimeConfig,
         nativeWallet: NativeCoinageHost? = nil
+    ) throws {
+        try self.init(
+            bridge: bridge,
+            runtimeConfig: runtimeConfig,
+            nativeWallet: nativeWallet,
+            notificationCenter: .default
+        )
+    }
+
+    init(
+        bridge: HostBridge,
+        runtimeConfig: HostRuntimeConfig,
+        nativeWallet: NativeCoinageHost? = nil,
+        notificationCenter: NotificationCenter
     ) throws {
         let adapter = HostCallbackAdapter(bridge: bridge)
         callbackRetainer = adapter
         let walletAdapter = nativeWallet.map { NativeCoinageCallbackAdapter(bridge: $0) }
         nativeWalletRetainer = walletAdapter
-        inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
+        let inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
             callbacks: adapter,
             runtimeConfig: runtimeConfig.native,
             nativeWallet: walletAdapter
         )
+        self.inner = inner
+        self.notificationCenter = notificationCenter
+        // iOS reclaims a suspended app's listening sockets. Rebinding waits on
+        // the Rust runtime's threads, so it runs off the main thread and at their QoS.
+        foregroundObserver = notificationCenter.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            DispatchQueue.global().async(flags: .noQoS) {
+                inner.relistenWsBridge()
+            }
+        }
+    }
+
+    deinit {
+        notificationCenter.removeObserver(foregroundObserver)
     }
 
     /// Open one executable connection with a host-assigned immutable context.

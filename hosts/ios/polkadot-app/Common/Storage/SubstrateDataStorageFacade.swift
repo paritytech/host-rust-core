@@ -47,7 +47,9 @@ class SubstrateDataStorageFacade: StorageFacadeProtocol {
 
         let configuration = CoreDataServiceConfiguration(
             modelURL: modelURL!,
-            storageType: .persistent(settings: persistentSettings)
+            storageType: .persistent(settings: persistentSettings),
+            concurrencyMode: CoreDataConcurrencyPolicy.forCurrentTarget,
+            logger: Logger.shared
         )
 
         databaseService = CoreDataService(configuration: configuration)
