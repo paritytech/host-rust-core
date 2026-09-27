@@ -115,7 +115,7 @@ final class StubVoucherLoaderFactory: VoucherLoaderFactoryProtocol, VoucherLoade
         state.withLock { $0.loads.append(amount) }
         if let loadError { throw loadError }
 
-        let denominations = breakdownContext.breakdown(amountInPlanks: amount)
+        let denominations = try breakdownContext.breakdown(amountInPlanks: amount)
         guard !denominations.isEmpty else { return [] }
 
         let minted = denominations.map { denomination in

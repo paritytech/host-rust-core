@@ -539,6 +539,9 @@ let execution = try runtime.openProductExecution(
         executionKind: .app
     )
 )
+// The endpoint stays valid across backgrounding: iOS reclaims a suspended
+// app's listening socket, and the runtime rebinds it on the same port when
+// the app returns to the foreground.
 let endpoint = try execution.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates

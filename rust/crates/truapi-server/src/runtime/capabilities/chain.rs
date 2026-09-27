@@ -4,7 +4,7 @@
 //! the platform provider, mapping JSON-RPC replies and follow notifications
 //! into typed TrUAPI results.
 
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt, pin_mut};
 use tracing::instrument;
 use truapi::api::Chain;
 use truapi::versioned::chain::{
@@ -26,10 +26,38 @@ use truapi::versioned::chain::{
     RemoteChainTransactionBroadcastResponse, RemoteChainTransactionStopError,
     RemoteChainTransactionStopRequest, RemoteChainTransactionStopResponse,
 };
-use truapi::{CallContext, CallError, Subscription, v01};
+use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
 
 use crate::host_logic::features::{chain_info, supported_chains};
-use crate::runtime::{PERMISSION_DENIED_REASON, ProductRuntimeHost, runtime_failure_to_call_error};
+use crate::runtime::{
+    AUTHORITY_CANCEL_UNWIND_GRACE, PERMISSION_DENIED_REASON, ProductRuntimeHost,
+    runtime_failure_to_call_error,
+};
+
+impl ProductRuntimeHost {
+    /// Stop a broadcast whose call was withdrawn, bounded so a stalled stop
+    /// cannot hold back the withdrawn call's answer.
+    async fn stop_withdrawn_broadcast(&self, genesis_hash: Vec<u8>, operation_id: String) {
+        let stop = self
+            .services
+            .chain
+            .remote_chain_transaction_stop(v01::RemoteChainTransactionStopRequest {
+                genesis_hash,
+                operation_id: operation_id.clone(),
+            })
+            .fuse();
+        let deadline = futures_timer::Delay::new(AUTHORITY_CANCEL_UNWIND_GRACE).fuse();
+        pin_mut!(stop, deadline);
+        let reason = futures::select! {
+            result = stop => match result {
+                Ok(()) => return,
+                Err(err) => err.reason(),
+            },
+            () = deadline => "timed out".to_string(),
+        };
+        tracing::warn!(%operation_id, %reason, "could not stop a withdrawn broadcast");
+    }
+}
 
 #[truapi::async_trait]
 impl Chain for ProductRuntimeHost {
@@ -214,7 +242,7 @@ impl Chain for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "chain.broadcast_transaction"))]
     async fn broadcast_transaction(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         request: RemoteChainTransactionBroadcastRequest,
     ) -> Result<
         RemoteChainTransactionBroadcastResponse,
@@ -227,12 +255,30 @@ impl Chain for ProductRuntimeHost {
             },
         ))
         .await?;
-        self.services
+        if let Some(reason) = cx.cancel().reason() {
+            return Err(CallError::Domain(RemoteChainTransactionBroadcastError::V1(
+                v01::GenericError {
+                    reason: format!("broadcast {reason}"),
+                },
+            )));
+        }
+        let genesis_hash = inner.genesis_hash.clone();
+        let response = self
+            .services
             .chain
             .remote_chain_transaction_broadcast(inner)
             .await
-            .map(RemoteChainTransactionBroadcastResponse::V1)
-            .map_err(runtime_failure_to_call_error)
+            .map_err(runtime_failure_to_call_error)?;
+        // A withdrawn call answers `Cancelled`, so the product never learns
+        // the id it would stop this broadcast with. Any other cancellation
+        // still answers with the id, and stopping would strand the product.
+        if cx.cancel().reason() == Some(CancellationReason::Cancelled)
+            && let Some(operation_id) = response.operation_id.clone()
+        {
+            self.stop_withdrawn_broadcast(genesis_hash, operation_id)
+                .await;
+        }
+        Ok(RemoteChainTransactionBroadcastResponse::V1(response))
     }
 
     #[instrument(skip_all, fields(runtime.method = "chain.stop_transaction"))]

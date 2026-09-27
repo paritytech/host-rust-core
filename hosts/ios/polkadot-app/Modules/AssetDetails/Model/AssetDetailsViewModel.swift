@@ -6,11 +6,10 @@ import Foundation
 
 struct CoinageBalanceBreakdownViewModel {
     /// Bare amounts, no symbol: the headline carries ``symbol`` once, in small type, and the
-    /// three figures below it are read against that.
+    /// two figures below it are read against that.
     let totalBalance: String
     let availableNowBalance: String
     let gainingPrivacyBalance: String
-    let pendingBalance: String
     let symbol: String
     let composition: CoinageCompositionBar.Model
     /// Coins and vouchers in one list, already ordered for display.

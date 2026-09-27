@@ -148,8 +148,7 @@ fn paired_raw_signing_review_matches_the_signed_bytes_and_requires_confirmation(
                 let request = SignRequest::decode(&mut encoded.as_slice()).unwrap();
                 RemoteMessage::request("proof".into(), request)
             };
-            let Dispatch::Response(answer) =
-                futures::executor::block_on(service.dispatch(service.current_session(), message))
+            let Dispatch::Response(answer) = futures::executor::block_on(service.answer(message))
             else {
                 panic!("expected signing response")
             };
@@ -202,6 +201,7 @@ fn assert_review_watermark(platform: &StubPlatform, legacy: bool, watermarked: b
         SignRawReview::Product {
             request,
             watermarked,
+            ..
         } => (false, *watermarked, &request.payload),
         SignRawReview::LegacyAccount {
             request,

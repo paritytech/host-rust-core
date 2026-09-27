@@ -6,7 +6,3 @@ enum SearchContactSearchResult {
 }
 
 typealias SearchContactSearchState = SearchRunner.State<SearchContactSearchResult>
-
-struct SearchContactModel {
-    let didFoundChat: (ChatOpenModel) -> Void
-}

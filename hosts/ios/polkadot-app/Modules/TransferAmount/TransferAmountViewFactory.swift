@@ -196,6 +196,7 @@ enum TransferAmountViewFactory {
             createMessageFactory: LocalMessageCreatingOperationFactory(
                 messagesStorageService: MessagesLocalStorageService()
             ),
+            messageStore: ChatMessageTransactionalStore(storageFacade: UserDataStorageFacade.shared),
             logger: Logger.shared
         )
     }

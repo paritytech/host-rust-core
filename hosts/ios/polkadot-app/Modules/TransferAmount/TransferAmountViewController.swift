@@ -11,10 +11,15 @@ final class TransferAmountViewController: UIViewController, ViewHolder {
 
     var keyboardHandler: KeyboardHandler?
     private var isAmountInputEnabled = true
+    private var paymentAssetViewModel: PaymentAssetViewModelProtocol?
 
     init(presenter: TransferAmountPresenterProtocol) {
         self.presenter = presenter
         super.init(nibName: nil, bundle: nil)
+    }
+
+    deinit {
+        paymentAssetViewModel?.cancel()
     }
 
     @available(*, unavailable)
@@ -69,11 +74,6 @@ final class TransferAmountViewController: UIViewController, ViewHolder {
             presenter?.onBalance()
         }
         rootView.balanceView.addAction(maxAction, for: .touchUpInside)
-
-        let infoAction = UIAction { [weak presenter] _ in
-            presenter?.onBalanceInfo()
-        }
-        rootView.infoButton.addAction(infoAction, for: .touchUpInside)
     }
 
     func lockScreenNavigation() {
@@ -156,19 +156,16 @@ extension TransferAmountViewController: KeyboardAdoptable {
     }
 }
 
-private extension ClaimStatus {
+private extension OutgoingTransferState.Status {
     var sendingStatusTitle: String {
         switch self {
-        case .detecting:
+        case .sending:
             String(localized: .transferStatusSending)
-        case .claiming,
-             .partiallyClaimed:
-            String(localized: .transferStatusClaiming)
         case .sent:
             String(localized: .transferStatusSent)
-        case .finished:
+        case .claimed:
             String(localized: .transferStatusFinished)
-        case .error:
+        case .failed:
             String(localized: .transferStatusError)
         }
     }
@@ -194,16 +191,21 @@ extension TransferAmountViewController: TransferAmountViewProtocol {
         rootView.balanceView.bind(amount: availableBalance)
     }
 
-    func didReceive(privacyHint: String?) {
-        rootView.bind(privacyHint: privacyHint)
-    }
-
     func didReceive(amountViewModel: AmountInputViewModelProtocol) {
         rootView.amountInputView.bind(inputViewModel: amountViewModel)
     }
 
     func didReceive(assetViewModel: AssetAmountViewModel) {
         rootView.amountInputView.bind(assetViewModel: assetViewModel)
+    }
+
+    func didReceive(paymentAsset: PaymentAssetViewModelProtocol) {
+        paymentAssetViewModel?.cancel()
+        paymentAssetViewModel = paymentAsset
+
+        paymentAsset.bind { [weak self] brand in
+            self?.rootView.apply(assetBrand: brand)
+        }
     }
 
     func didReceive(feeViewModel _: BalanceViewModelProtocol?) {
@@ -233,8 +235,8 @@ extension TransferAmountViewController: TransferAmountViewProtocol {
         rootView.bind(state: .confirm)
     }
 
-    func didReceive(transferStatus: ClaimStatus) {
-        rootView.bind(transferStatus: transferStatus.sendingStatusTitle)
+    func didReceive(transferState: OutgoingTransferState) {
+        rootView.bind(transferStatus: transferState.status.sendingStatusTitle)
     }
 
     func didUnlockNavigation() {

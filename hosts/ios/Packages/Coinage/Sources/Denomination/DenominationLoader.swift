@@ -42,12 +42,19 @@ final class DenominationContextLoader: DenominationContextLoaderProtocol {
             type: Int16.self
         )
 
-        return try await DenominationBreakdownContext(
+        let context = try await DenominationBreakdownContext(
             unit: unit,
             precision: asset.decimalPrecision,
             maxExponent: maxExponent,
             minExponent: minExponent
         )
+
+        // The breakdown's completeness is a property of these constants, not of any one amount, so
+        // it is settled once here rather than rediscovered by whichever payment happens to need a
+        // denomination the ladder cannot reach.
+        try context.validateLadder()
+
+        return context
     }
 }
 

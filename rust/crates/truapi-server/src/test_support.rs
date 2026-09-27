@@ -126,6 +126,9 @@ pub(crate) struct StubPlatform {
     /// order. Empty proves an AutoSigning grant suppressed the prompt.
     pub(crate) create_transaction_reviews: Arc<Mutex<Vec<CreateTransactionReview>>>,
     pub(crate) create_transaction_error: Option<&'static str>,
+    /// Pause a transaction review until the test releases its confirmation.
+    pub(crate) create_transaction_confirmation_gate:
+        Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     pub(crate) resource_allocation_confirmed: bool,
     pub(crate) resource_allocation_error: Option<&'static str>,
     /// Pause a resource review until the test releases its confirmation.
@@ -173,6 +176,10 @@ pub(crate) struct StubPlatform {
     /// cannot outrun the response pump. Prefer it whenever a test drives a path
     /// that decodes metadata or does other work between calls.
     pub(crate) rpc_method_responses: Vec<(&'static str, String)>,
+    /// Hold the first connection's `rpc_method_responses` answers until the
+    /// test releases them.
+    pub(crate) rpc_method_responses_gate:
+        Arc<Mutex<Option<futures::channel::oneshot::Receiver<()>>>>,
     pub(crate) sso_response_script: Option<SsoResponseScript>,
     /// Every genesis hash handed to `connect`, in order. Lets a test assert
     /// *which* chain a lookup reached, not merely that it reached one: the
@@ -464,6 +471,21 @@ pub(crate) fn submitted_remote_message(
     let submit = wait_for_statement_submit(&platform.sent_rpc);
     let (_, message) = submitted_sso_request_from_submit(&submit, session);
     message
+}
+
+/// Every SSO message this host has published, oldest first.
+pub(crate) fn submitted_remote_messages(
+    platform: &Arc<StubPlatform>,
+    session: &SessionInfo,
+) -> Vec<RemoteMessage> {
+    platform
+        .sent_rpc
+        .lock()
+        .expect("rpc list mutex poisoned")
+        .iter()
+        .filter(|request| request.contains("\"statement_submit\""))
+        .map(|submit| submitted_sso_request_from_submit(submit, session).1)
+        .collect()
 }
 
 fn submitted_sso_request_from_submit(
@@ -1240,6 +1262,7 @@ struct RecordingConnection {
     sent: Arc<Mutex<Vec<String>>>,
     responses: Vec<String>,
     method_responses: Vec<(&'static str, String)>,
+    method_responses_gate: Arc<Mutex<Option<futures::channel::oneshot::Receiver<()>>>>,
     sso_response_script: Option<SsoResponseScript>,
     auth_states: Arc<Mutex<Vec<AuthState>>>,
     pairing_success_response: bool,
@@ -1543,7 +1566,22 @@ impl JsonRpcConnection for RecordingConnection {
             return sso_scripted_responses(self.sent.clone(), script);
         }
         if !self.method_responses.is_empty() {
-            return method_keyed_responses(self.sent.clone(), self.method_responses.clone());
+            let answers = method_keyed_responses(self.sent.clone(), self.method_responses.clone());
+            let gate = self
+                .method_responses_gate
+                .lock()
+                .expect("method responses gate mutex poisoned")
+                .take();
+            return match gate {
+                Some(gate) => Box::pin(
+                    stream::once(async move {
+                        gate.await.expect("method responses gate was released");
+                        answers
+                    })
+                    .flatten(),
+                ),
+                None => answers,
+            };
         }
         if self.responses.is_empty() {
             if self.chain_responses_end {
@@ -1742,6 +1780,7 @@ impl ChainProvider for StubPlatform {
             sent: self.sent_rpc.clone(),
             responses: self.rpc_responses.clone(),
             method_responses: self.rpc_method_responses.clone(),
+            method_responses_gate: self.rpc_method_responses_gate.clone(),
             sso_response_script: self.sso_response_script.clone(),
             auth_states: self.auth_states.clone(),
             pairing_success_response: self.pairing_success_response,
@@ -1828,6 +1867,15 @@ impl UserConfirmation for StubPlatform {
                     .lock()
                     .expect("create transaction review list mutex poisoned")
                     .push(review);
+                let gate = self
+                    .create_transaction_confirmation_gate
+                    .lock()
+                    .expect("transaction confirmation gate mutex poisoned")
+                    .take();
+                if let Some(gate) = gate {
+                    gate.await
+                        .expect("transaction confirmation gate was released");
+                }
                 (
                     self.create_transaction_error,
                     self.create_transaction_confirmed,

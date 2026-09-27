@@ -68,11 +68,12 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, ProductRequest, RingVrfError};
 use crate::host_logic::transaction::sign_extrinsic_payload;
 use crate::runtime::auth_state::AuthStateMachine;
+use crate::runtime::sso_service::SsoWithdrawals;
 use crate::runtime::statement_allowance::CollectionCandidate;
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
+use crate::runtime::vrf::{self, Vrf};
 use ring_vrf::{
-    ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, create_proof,
-    development_context_bytes, member_from_entropy, sign_from_entropy,
+    ChainRingResolver, MemberCandidate, RingResolver, create_proof, development_context_bytes,
 };
 use sso_replay::SsoReplayLocks;
 
@@ -145,6 +146,8 @@ pub(crate) struct SigningHost {
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
     /// Serializes replay-ledger updates within each wallet and peer scope.
     sso_replay_locks: SsoReplayLocks,
+    /// Paired-host requests the pairing host can still withdraw.
+    sso_withdrawals: SsoWithdrawals,
     renewal: allowance_renewal::RenewalState,
 }
 
@@ -167,6 +170,7 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
+            sso_withdrawals: Default::default(),
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -232,6 +236,7 @@ impl SigningHost {
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
             sso_replay_locks: SsoReplayLocks::default(),
+            sso_withdrawals: Default::default(),
             renewal: allowance_renewal::RenewalState::default(),
         })
     }
@@ -272,6 +277,10 @@ impl SigningHost {
 
     fn sso_replay_locks(&self) -> &SsoReplayLocks {
         &self.sso_replay_locks
+    }
+
+    fn sso_withdrawals(&self) -> &SsoWithdrawals {
+        &self.sso_withdrawals
     }
 
     fn grant_auto_signing(
@@ -532,13 +541,14 @@ impl SigningHost {
             return Ok(());
         }
         let pallet_index = self.ring_resolver.members_pallet_index(&chain_id).await?;
+        let vrf = vrf::load().await?;
         for (collection, index) in missing {
             let handle = ProductAccountId {
                 dot_ns_identifier: owner.to_string(),
                 derivation_index: DerivationIndex::Index(index),
             };
             let entropy = self.ring_vrf_entropy(session, &handle)?;
-            let public_key = member_from_entropy(&entropy)?;
+            let public_key = vrf.member(&entropy)?;
             let ring = RingLocation {
                 chain_id,
                 junctions: vec![
@@ -566,6 +576,7 @@ impl SigningHost {
 
     async fn resolve_ring_vrf_key_for_ring(
         &self,
+        vrf: &Vrf,
         session: &AuthoritySession,
         handle: &v01::ProductAccountId,
         ring: &v01::RingLocation,
@@ -578,12 +589,13 @@ impl SigningHost {
             return Err(RingVrfError::KeyNotInRing);
         }
         let entropy = self.ring_vrf_entropy(session, handle)?;
-        Self::require_matching_registered_public_key(&entry, &entropy)?;
+        Self::require_matching_registered_public_key(vrf, &entry, &entropy)?;
         Ok(entropy)
     }
 
     async fn resolve_registered_ring_vrf_key(
         &self,
+        vrf: &Vrf,
         session: &AuthoritySession,
         handle: &v01::ProductAccountId,
     ) -> Result<Zeroizing<[u8; 32]>, RingVrfError> {
@@ -592,15 +604,16 @@ impl SigningHost {
             .await?
             .ok_or(RingVrfError::KeyNotRegistered)?;
         let entropy = self.ring_vrf_entropy(session, handle)?;
-        Self::require_matching_registered_public_key(&entry, &entropy)?;
+        Self::require_matching_registered_public_key(vrf, &entry, &entropy)?;
         Ok(entropy)
     }
 
     fn require_matching_registered_public_key(
+        vrf: &Vrf,
         entry: &v01::RegisteredRingVrfKey,
         entropy: &[u8; 32],
     ) -> Result<(), RingVrfError> {
-        if entry.public_key != Some(member_from_entropy(entropy)?) {
+        if entry.public_key != Some(vrf.member(entropy)?) {
             return Err(RingVrfError::Unknown {
                 reason: "registered ring-VRF public key does not match the active wallet"
                     .to_string(),
@@ -611,10 +624,11 @@ impl SigningHost {
 
     fn ring_vrf_member_candidate(
         &self,
+        vrf: &Vrf,
         entropy: &[u8; 32],
     ) -> Result<MemberCandidate, RingVrfError> {
         Ok(MemberCandidate {
-            member: member_from_entropy(entropy)?,
+            member: vrf.member(entropy)?,
         })
     }
 
@@ -841,7 +855,7 @@ impl ProductAuthority for SigningHost {
 
     async fn sign_vrf(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         session: &AuthoritySession,
         calling_product_id: String,
         request: v01::HostAccountSignVrfRequest,
@@ -855,16 +869,18 @@ impl ProductAuthority for SigningHost {
             &calling_product_id,
             &request.account.dot_ns_identifier,
         ) {
-            let confirmed = self
-                .platform
-                .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
-                    calling_product_id,
-                    request: request.clone(),
-                }))
-                .await
-                .map_err(|err| AuthorityError::Unknown {
-                    reason: format!("VRF signing confirmation failed: {err:?}"),
-                })?;
+            let confirmed = super::until_cancelled(
+                cx,
+                self.platform
+                    .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                        calling_product_id,
+                        request: request.clone(),
+                    })),
+            )
+            .await?
+            .map_err(|err| AuthorityError::Unknown {
+                reason: format!("VRF signing confirmation failed: {err:?}"),
+            })?;
             if !confirmed {
                 return Err(AuthorityError::Rejected);
             }
@@ -1081,14 +1097,20 @@ impl ProductAuthority for SigningHost {
                 }
             }
         };
+        let vrf = vrf::load().await?;
         let entropy = self
-            .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
+            .resolve_ring_vrf_key_for_ring(
+                &vrf,
+                session,
+                &key_handle,
+                &request.payload.ring_location,
+            )
             .await?;
         self.ring_resolver
             .validate(&request.payload.ring_location)
             .await?;
         let context = development_context_bytes(&request.payload.context);
-        let alias = alias_from_entropy(&entropy, &context)?;
+        let alias = vrf.alias(&entropy, &context)?;
         Ok(v01::ContextualAlias {
             context,
             alias: alias.to_vec(),
@@ -1115,10 +1137,16 @@ impl ProductAuthority for SigningHost {
         // The owner's own calls are unaffected; a cross-product caller is held to
         // its own context or the granting product's.
         crate::runtime::product_manifest::require_own_context(&access, &request.payload.context)?;
+        let vrf = vrf::load().await?;
         let entropy = self
-            .resolve_ring_vrf_key_for_ring(session, &key_handle, &request.payload.ring_location)
+            .resolve_ring_vrf_key_for_ring(
+                &vrf,
+                session,
+                &key_handle,
+                &request.payload.ring_location,
+            )
             .await?;
-        let candidate = self.ring_vrf_member_candidate(&entropy)?;
+        let candidate = self.ring_vrf_member_candidate(&vrf, &entropy)?;
         let resolved = self
             .ring_resolver
             .resolve(&request.payload.ring_location, &[candidate])
@@ -1127,7 +1155,13 @@ impl ProductAuthority for SigningHost {
         // while its chain snapshot was being resolved.
         self.require_current_session(session)?;
         let context = development_context_bytes(&request.payload.context);
-        let (proof, alias) = create_proof(&entropy, &resolved, &context, &request.payload.message)?;
+        let (proof, alias) = create_proof(
+            &vrf,
+            &entropy,
+            &resolved,
+            &context,
+            &request.payload.message,
+        )?;
         Ok(v01::HostAccountCreateProofResponse {
             proof,
             contextual_alias: v01::ContextualAlias {
@@ -1157,7 +1191,7 @@ impl ProductAuthority for SigningHost {
             derivation_index: request.payload.index,
         };
         let entropy = self.ring_vrf_entropy(session, &handle)?;
-        let public_key = member_from_entropy(&entropy)?;
+        let public_key = vrf::load().await?.member(&entropy)?;
         self.ring_vrf_registry
             .register(session.public_key, handle, request.payload.ring, public_key)
             .await?;
@@ -1229,15 +1263,16 @@ impl ProductAuthority for SigningHost {
         let (key_handle, _access) = self
             .require_ring_vrf_key_access(&request.calling_product_id, &request.payload.key_handle)
             .await?;
+        let vrf = vrf::load().await?;
         let entropy = self
-            .resolve_registered_ring_vrf_key(session, &key_handle)
+            .resolve_registered_ring_vrf_key(&vrf, session, &key_handle)
             .await?;
-        sign_from_entropy(&entropy, &request.payload.message)
+        vrf.sign(&entropy, &request.payload.message)
     }
 
     async fn allocate_resources(
         &self,
-        _cx: &CallContext,
+        cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
         request: v01::HostRequestResourceAllocationRequest,
@@ -1257,6 +1292,9 @@ impl ProductAuthority for SigningHost {
         }
         let mut outcomes = Vec::with_capacity(request.resources.len());
         for resource in request.resources {
+            if let Some(reason) = cx.cancel().reason() {
+                return Err(super::authority_cancellation_error(cx, reason));
+            }
             let outcome = match resource {
                 v01::AllocatableResource::StatementStoreAllowance => {
                     sso_responder::allocate_statement_store_allowance(
@@ -1413,6 +1451,7 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
 #[cfg(test)]
 mod tests {
     mod auto_signing;
+    mod cross_product_account;
     mod raw_signing;
 
     use std::sync::Arc;
@@ -1423,7 +1462,7 @@ mod tests {
     };
     use super::super::{ProductAuthority, ProductRuntimeHost, RuntimeServices, SigningHostRole};
     use super::TEST_NETWORK_SUFFIX;
-    use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
+    use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver};
     use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
@@ -1449,7 +1488,6 @@ mod tests {
     use truapi::versioned::signing::{HostSignRawError, HostSignRawRequest, HostSignRawResponse};
     use truapi::{CallContext, CallError, v01};
     use truapi_platform::{HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig};
-    use verifiable::ring::RingDomainSize;
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
 
@@ -1616,7 +1654,10 @@ mod tests {
         let full_entropy =
             derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(0))
                 .expect("full-person entropy");
-        let full_member = member_from_entropy(&full_entropy).expect("full-person member");
+        let full_member = futures::executor::block_on(crate::runtime::vrf::load())
+            .expect("verifiable is linked")
+            .member(&full_entropy)
+            .expect("full-person member");
         Arc::new(StubRingResolver {
             collection: *b"pop:polkadot.network/people     ",
             ring: ResolvedRing {
@@ -1625,7 +1666,7 @@ mod tests {
                 },
                 ring_index: 7,
                 ring_revision: 11,
-                domain_size: RingDomainSize::Domain11,
+                domain_size: crate::runtime::vrf::DOMAIN_2E11,
                 members: vec![full_member],
             },
         })
@@ -3856,6 +3897,39 @@ mod tests {
                 panic!("a PGAS claim should be waiting on Asset Hub, got {outcome:?}")
             }
         }
+    }
+
+    /// Each allocation spends on chain, so a withdrawn call must not start the
+    /// next one.
+    #[test]
+    fn a_withdrawn_allocation_starts_no_further_resource() {
+        let (_services, authority) =
+            signing_runtime_with_platform(Arc::new(StubPlatform::default()));
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let session = authority.current_session().expect("connected");
+        let cancel = truapi::CancellationToken::default();
+        cancel.cancel();
+        let cx = CallContext::with_parts("allocation-withdrawn".to_string(), cancel);
+
+        let result = futures::executor::block_on(authority.allocate_resources(
+            &cx,
+            &session,
+            "myapp.dot".to_string(),
+            v01::HostRequestResourceAllocationRequest {
+                resources: vec![v01::AllocatableResource::AutoSigning],
+            },
+        ));
+
+        assert_eq!(
+            result,
+            Err(AuthorityError::Cancelled(
+                crate::runtime::authority::AuthorityCancelError::new(
+                    "allocation-withdrawn",
+                    truapi::CancellationReason::Cancelled,
+                )
+            ))
+        );
     }
 
     #[test]

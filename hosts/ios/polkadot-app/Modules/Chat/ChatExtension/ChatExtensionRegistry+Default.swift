@@ -3,13 +3,11 @@ import Keystore_iOS
 import Operation_iOS
 
 extension ChatExtensionsRegistry {
-    // swiftlint:disable:next function_parameter_count
     @MainActor static func createDefault(
         syncStateStore: DetermineStateSyncStore,
         personDataStore: DetermineStatePersonDataStore,
         syncService: DetermineStateSyncServicing,
         personhoodRegistrationService: PersonhoodRegistrationServicing,
-        claimStatusStore: ClaimStatusStore,
         productBotProvider: ProductBotProviding,
         audioSessionManager: AudioSessionManaging
     ) -> ChatExtensionsRegistering {
@@ -26,8 +24,7 @@ extension ChatExtensionsRegistry {
         )
 
         let commonExtensions: [ChatExtending] = [
-            ChatReactionExtension(reactionRepository: reactionRepository),
-            CoinageTransferExtension(claimStatusStore: claimStatusStore)
+            ChatReactionExtension(reactionRepository: reactionRepository)
         ]
 
         let dimsExtension = ChatExtensionsRegistry.createDimExtensions(

@@ -12,8 +12,6 @@ import SubstrateSdk
 /// Emits like the store: every write re-emits, identical or not, and a subscriber first sees the
 /// current rows.
 final class FakeRegistrationEngine: DurableTxServicing, @unchecked Sendable {
-    let oracles = TxCompletionOracleRegistry()
-
     private struct State {
         var groups: [DurableTxGroupId: [DurableTxEntry]] = [:]
         var observers: [DurableTxGroupId: [AsyncStream<[DurableTxEntry]>.Continuation]] = [:]
@@ -44,9 +42,20 @@ final class FakeRegistrationEngine: DurableTxServicing, @unchecked Sendable {
         domain _: TxDomainId,
         requests _: [DurableTxRequest],
         groupId _: DurableTxGroupId?,
+        policies _: [SubmissionPolicy?],
         onRegister _: @escaping DurableTxRegistrationHook
     ) async throws -> [DurableTxId] {
         fatalError("the registrar submits through its submitter")
+    }
+
+    func schedule(
+        domain _: TxDomainId,
+        groupId _: DurableTxGroupId?,
+        policies _: [SubmissionPolicy],
+        joining _: any DurableTxRegistrationScope,
+        onRegister _: DurableTxRegistrationHook
+    ) throws -> [DurableTxId] {
+        fatalError("installation registration never schedules")
     }
 
     func subscribeTransactionStatus(_: DurableTxId) -> AnyAsyncSequence<DurableTxStatus> {

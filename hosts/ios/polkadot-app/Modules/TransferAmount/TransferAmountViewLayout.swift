@@ -30,29 +30,19 @@ final class TransferAmountViewLayout: UIView, AdaptiveDesignable {
 
     let balanceView = BalanceView()
 
-    let infoButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.setImage(UIImage(resource: .iconInfo20), for: .normal)
-        button.tintColor = .fgSecondary
-        return button
-    }()
-
-    let privacyHintLabel: PolkadotUI.Label = .create {
-        $0.typography = .bodyMedium
-        $0.textColor = .fgSecondary
-        $0.numberOfLines = 0
-        $0.textAlignment = .center
-        $0.isHidden = true
-    }
-
     let amountInputView: AmountInputView = .create {
         $0.symbolImage = .cashLogo
     }
 
     let cashLabel: PolkadotUI.Label = .create {
-        $0.text = String(localized: .tokenName)
         $0.typography = .titleExtraLarge
         $0.textColor = .fgSecondary
+    }
+
+    func apply(assetBrand: PaymentAssetBrand) {
+        cashLabel.text = assetBrand.symbol
+        amountInputView.symbolImageRenderingMode = assetBrand.squareIcon == nil ? .alwaysTemplate : .alwaysOriginal
+        amountInputView.symbolImage = assetBrand.squareIcon ?? .cashLogo
     }
 
     var heightScaleMultiplier: CGFloat {
@@ -122,52 +112,58 @@ final class TransferAmountViewLayout: UIView, AdaptiveDesignable {
 
     func setupLayout() {
         balanceView.apply(style: .normal)
+        balanceView.preferredHeight = Constants.balanceRowHeight
+        balanceView.controlContentView.contentInsets = .zero
 
         addSubview(balanceView)
-        addSubview(infoButton)
-
         balanceView.snp.makeConstraints { make in
             make.centerX.equalToSuperview()
-            make.top.equalTo(safeAreaLayoutGuide.snp.top).offset(132 * heightScaleMultiplier)
-            make.height.equalTo(balanceView.preferredHeight ?? 0)
-        }
-        infoButton.snp.makeConstraints { make in
-            make.size.equalTo(20)
-            make.leading.equalTo(balanceView.snp.trailing).offset(DSSpacings.extraSmall)
-            make.trailing.lessThanOrEqualToSuperview().inset(24)
-            make.centerY.equalTo(balanceView)
-        }
-
-        addSubview(privacyHintLabel)
-        privacyHintLabel.snp.makeConstraints { make in
-            make.leading.trailing.equalToSuperview().inset(24)
-            make.top.equalTo(balanceView.snp.bottom).offset(DSSpacings.extraSmall)
+            make.leading.greaterThanOrEqualToSuperview().offset(24)
+            make.height.equalTo(Constants.balanceRowHeight)
         }
 
         addSubview(amountInputView)
         amountInputView.snp.makeConstraints { make in
             make.leading.trailing.equalToSuperview().inset(24)
-            make.top.equalTo(privacyHintLabel.snp.bottom).offset(8)
-            make.height.equalTo(88)
+            make.top.equalTo(balanceView.snp.bottom).offset(DSSpacings.tiny)
+            make.height.equalTo(80)
         }
 
         addSubview(cashLabel)
         cashLabel.snp.makeConstraints { make in
             make.centerX.equalToSuperview()
-            make.top.equalTo(amountInputView.snp.bottom).offset(DSSpacings.medium)
+            make.top.equalTo(amountInputView.snp.bottom).offset(DSSpacings.small)
         }
 
         let bottomView = UIView.vStack(spacing: 12 * heightScaleMultiplier, [feeView, confirmView])
         self.bottomView = bottomView
 
         confirmView.snp.makeConstraints { make in
-            make.height.equalTo(UIConstants.actionHeight)
+            make.height.equalTo(TransferActionButtonView.size.height)
         }
 
         addSubview(bottomView)
         bottomView.snp.makeConstraints { make in
             make.leading.trailing.equalToSuperview().inset(UIConstants.horizontalInsetMedium)
             make.bottom.equalTo(safeAreaLayoutGuide.snp.bottom).offset(-24 * heightScaleMultiplier)
+        }
+
+        let contentGuide = UILayoutGuide()
+        addLayoutGuide(contentGuide)
+        contentGuide.snp.makeConstraints { make in
+            make.top.equalTo(safeAreaLayoutGuide.snp.top).offset(Constants.recipientRowHeight)
+            make.bottom.equalTo(bottomView.snp.top)
+            make.leading.trailing.equalToSuperview()
+        }
+
+        let amountGroupGuide = UILayoutGuide()
+        addLayoutGuide(amountGroupGuide)
+        amountGroupGuide.snp.makeConstraints { make in
+            make.top.equalTo(balanceView.snp.top)
+            make.bottom.equalTo(cashLabel.snp.bottom)
+            make.leading.trailing.equalToSuperview()
+            make.centerY.equalTo(contentGuide.snp.centerY)
+            make.top.greaterThanOrEqualTo(contentGuide.snp.top).offset(DSSpacings.small)
         }
 
         issueLabel.isHidden = true
@@ -212,11 +208,6 @@ final class TransferAmountViewLayout: UIView, AdaptiveDesignable {
         transferButtonController.view
     }
 
-    func bind(privacyHint: String?) {
-        privacyHintLabel.text = privacyHint
-        privacyHintLabel.isHidden = privacyHint == nil
-    }
-
     func bind(recipient: TransferRecipientViewModel) {
         addressInputViewController?.view.removeFromSuperview()
 
@@ -236,8 +227,15 @@ final class TransferAmountViewLayout: UIView, AdaptiveDesignable {
         controller.view.snp.makeConstraints { make in
             make.leading.trailing.equalToSuperview().inset(16)
             make.top.equalTo(safeAreaLayoutGuide.snp.top)
-            make.height.equalTo(56)
+            make.height.equalTo(Constants.recipientRowHeight)
         }
+    }
+}
+
+private extension TransferAmountViewLayout {
+    enum Constants {
+        static let recipientRowHeight: CGFloat = 56
+        static let balanceRowHeight: CGFloat = 24
     }
 }
 

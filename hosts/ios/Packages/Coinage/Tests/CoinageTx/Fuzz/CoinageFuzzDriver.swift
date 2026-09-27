@@ -311,21 +311,22 @@ private extension CoinageFuzzDriver {
     }
 
     func isIncludedAnywhere(_ entry: CoinageTxEntry) -> Bool {
-        canonicalTransactions()[entry.txHash] != nil
+        canonicalTransactions()[entry.submittedAttempt.txHash] != nil
     }
 
     /// The transaction can no longer execute, judged at the finalized head. Stated in the chain's terms
     /// rather than by reusing the rules' own predicate, so this stays an independent check.
     func windowClosed(_ entry: CoinageTxEntry) -> Bool {
-        UInt64(harness.chain.finalizedHead.number) > UInt64(entry.checkpoint.number) + UInt64(entry.mortality)
+        UInt64(harness.chain.finalizedHead.number) > UInt64(entry.submittedAttempt.checkpoint.number) +
+            UInt64(entry.submittedAttempt.mortalityBlocks)
     }
 
     /// The block that would carry the extrinsic is inside its era. Judged on the block about to be
     /// produced (best + 1), not the current head, which the runtime would reject.
     func withinEra(_ entry: CoinageTxEntry) -> Bool {
         let next = UInt64(harness.chain.bestHead.number) + 1
-        let anchor = UInt64(entry.checkpoint.number)
-        let end = anchor + UInt64(entry.mortality)
+        let anchor = UInt64(entry.submittedAttempt.checkpoint.number)
+        let end = anchor + UInt64(entry.submittedAttempt.mortalityBlocks)
         return next >= anchor && next <= end
     }
 
@@ -409,7 +410,7 @@ private extension CoinageFuzzDriver {
         let cleanPass = trace.last == .runPass
 
         for entry in entries {
-            let inclusion = canonical[entry.txHash]
+            let inclusion = canonical[entry.submittedAttempt.txHash]
 
             try terminalVerdictIsFrozen(entry, trace)
             try failureIsJustified(entry, inclusion, finalized, trace)
@@ -520,7 +521,7 @@ private extension CoinageFuzzDriver {
 
         try require(entry.status != .pending || passes < passesToDecide, trace) {
             "entry \(entry.sequence) is still pending after \(passes) clean passes past its window, which " +
-                "closed at \(UInt64(entry.checkpoint.number) + UInt64(entry.mortality)) with the finalized " +
+                "closed at \(UInt64(entry.submittedAttempt.checkpoint.number) + UInt64(entry.submittedAttempt.mortalityBlocks)) with the finalized " +
                 "head at \(harness.chain.finalizedHead.number)"
         }
     }

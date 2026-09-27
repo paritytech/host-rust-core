@@ -70,3 +70,8 @@ extension CoinageTxEntry {
         )
     }
 }
+
+extension CoinageTxEntry {
+    /// The attempt a submitted row always carries — see ``DurableTransactions/DurableTxEntry/submittedAttempt``.
+    var submittedAttempt: DurableTxAttempt { entry.submittedAttempt }
+}

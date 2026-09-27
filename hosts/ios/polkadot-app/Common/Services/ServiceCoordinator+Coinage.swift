@@ -16,18 +16,16 @@ extension ServiceCoordinator {
     struct CoinageServices {
         let coinageService: CoinageServicing
         /// The one durable transaction engine every domain shares; the coordinator starts and stops it.
-        let durableTransactionEngine: any DurableTxServicing
+        let durableTransactionEngine: DurableTxServices
         let transferMonitor: CoinageTransferMonitoring
         let w3sPaymentTracking: W3sPaymentTracking
         let backupSyncService: CoinageBackupSyncServicing
-        let claimStatusStore: ClaimStatusStore
     }
 
     /// `allowanceManager` is the coordinator's PGAS manager: the data store account is topped up through
     /// the same one as everything else.
     static func createCoinageServices(allowanceManager: AllowanceManaging) -> CoinageServices? {
         let databaseFactory = CoinageDatabaseDependencyFactory(storageFacade: UserDataStorageFacade.shared)
-        let claimStatusStore = ClaimStatusStore()
 
         let externalPaymentStore = ExternalPaymentCoreDataStore(
             storageFacade: UserDataStorageFacade.shared
@@ -49,16 +47,18 @@ extension ServiceCoordinator {
             databaseFactory: databaseFactory,
             externalPaymentStore: externalPaymentStore,
             incomingPaymentStore: incomingPaymentStore,
-            durableEngine: durableEngine,
+            durable: durableEngine,
             chainViewFactory: chainViewFactory
         ) else {
             return nil
         }
 
         let transferMonitor = CoinageTransferMonitor(
-            coinageService: coinageService,
-            storageFacade: UserDataStorageFacade.shared,
-            claimStatusStore: claimStatusStore
+            claimCoinsService: coinageService.claimCoinsService,
+            transferStatusService: coinageService.transferStatusService,
+            denominationContext: { try await coinageService.denominationContext() },
+            transferStateStore: TransferStateCoreDataStore(storageFacade: UserDataStorageFacade.shared),
+            storageFacade: UserDataStorageFacade.shared
         )
 
         let backupSyncService = CoinageBackupSyncService(
@@ -71,8 +71,7 @@ extension ServiceCoordinator {
             durableTransactionEngine: durableEngine,
             transferMonitor: transferMonitor,
             w3sPaymentTracking: createW3sPaymentTracking(coinageService: coinageService),
-            backupSyncService: backupSyncService,
-            claimStatusStore: claimStatusStore
+            backupSyncService: backupSyncService
         )
     }
 
@@ -99,7 +98,7 @@ private extension ServiceCoordinator {
         databaseFactory: DatabaseDependencyFactoring,
         externalPaymentStore: ExternalPaymentStoring,
         incomingPaymentStore: IncomingPaymentStoring,
-        durableEngine: any DurableTxServicing,
+        durable: DurableTxServices,
         chainViewFactory: any PinnedChainViewFactoryProtocol
     ) -> CoinageService? {
         let logger = Logger.shared
@@ -194,7 +193,7 @@ private extension ServiceCoordinator {
             databaseFactory: databaseFactory,
             originFactory: coinageOriginFactory,
             extrinsicMonitorFactory: monitorFactory,
-            durableEngine: durableEngine,
+            durable: durable,
             chainViewFactory: chainViewFactory,
             assetLedger: assetLedger,
             rootEntropyManager: RootEntropyManager.shared,

@@ -1437,6 +1437,11 @@ impl NativeTrUApiHostRuntime {
     /// constructs them. Session control and transport stay with the wallet —
     /// `Disconnected` is reported, never handled here. Confirmation-gated
     /// requests await `confirm_user_action`, so this can take arbitrarily long.
+    ///
+    /// A `Cancel` withdraws the request it names and returns at once. It
+    /// reaches a running request only if the wallet passes it on as it
+    /// arrives; queued behind that request it arrives too late to stop it.
+    /// The withdrawn request, and the `Cancel` itself, answer `Ignored`.
     pub async fn handle_sso_request(
         &self,
         message: Vec<u8>,
@@ -1825,6 +1830,17 @@ impl NativeProductExecution {
     /// Revoke this execution's bridge registration while leaving it reusable.
     pub fn stop_ws_bridge(&self) {
         self.stop_bridge();
+    }
+}
+
+#[cfg(feature = "ws-bridge")]
+#[uniffi::export]
+impl NativeTrUApiHostRuntime {
+    /// Rebind the shared bridge listener on its port, keeping every
+    /// execution's endpoint valid. iOS reclaims a suspended app's listening
+    /// sockets, so call this each time the app returns to the foreground.
+    pub fn relisten_ws_bridge(&self) {
+        self.ws_bridge.relisten();
     }
 }
 

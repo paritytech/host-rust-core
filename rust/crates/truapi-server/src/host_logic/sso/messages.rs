@@ -288,6 +288,13 @@ impl fmt::Debug for SsoAllocatedResource {
     }
 }
 
+/// A pairing host withdrawing a request it published and no longer waits on.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct Withdrawal {
+    /// `message_id` of the withdrawn request.
+    pub message_id: String,
+}
+
 /// Consent-free request for `//product//{product_id}`'s sr25519 public key.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct ProductSubtreeRequest {

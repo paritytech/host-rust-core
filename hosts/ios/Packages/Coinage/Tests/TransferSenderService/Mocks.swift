@@ -52,13 +52,40 @@ extension TransferSenderServiceTests {
     }
 
     /// Mock recycler loader that returns configured recycler states
-    final class MockRecyclerLoader: RecyclerReadinessLoading {
-        var states: [RecyclerKey: MembersPallet.RingStatus] = [:]
-        var revisions: [RecyclerKey: UInt32] = [:]
-        var maxConsolidationValue: UInt32 = 100
+    final class MockRecyclerLoader: RecyclerReadinessLoading, @unchecked Sendable {
+        private let mutex = NSLock()
+
+        private var storedStates: [RecyclerKey: MembersPallet.RingStatus] = [:]
+        private var storedRevisions: [RecyclerKey: UInt32] = [:]
+        private var storedMaxConsolidation: UInt32 = 100
+        private var storedMaxSplitOutputs: UInt32 = 32
+
+        var states: [RecyclerKey: MembersPallet.RingStatus] {
+            get { mutex.withLock { storedStates } }
+            set { mutex.withLock { storedStates = newValue } }
+        }
+
+        var revisions: [RecyclerKey: UInt32] {
+            get { mutex.withLock { storedRevisions } }
+            set { mutex.withLock { storedRevisions = newValue } }
+        }
+
+        var maxConsolidationValue: UInt32 {
+            get { mutex.withLock { storedMaxConsolidation } }
+            set { mutex.withLock { storedMaxConsolidation = newValue } }
+        }
+
+        var maxSplitOutputsValue: UInt32 {
+            get { mutex.withLock { storedMaxSplitOutputs } }
+            set { mutex.withLock { storedMaxSplitOutputs = newValue } }
+        }
 
         func maxConsolidation() async throws -> UInt32 {
             maxConsolidationValue
+        }
+
+        func maxSplitOutputs() async throws -> UInt32 {
+            maxSplitOutputsValue
         }
 
         func fetchRecyclerStates(for keys: [RecyclerKey]) async throws -> [RecyclerKey: MembersPallet.RingStatus] {
