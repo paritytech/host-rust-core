@@ -135,7 +135,7 @@ impl ProductRuntimeHost {
 
 // Published product runtimes have no JAM peer-transport grant.
 #[truapi::async_trait]
-impl truapi::api::PeerTransport for ProductRuntimeHost {}
+impl truapi::api::JamPeerTransport for ProductRuntimeHost {}
 
 #[truapi::async_trait]
 impl ResourceAllocation for ProductRuntimeHost {
