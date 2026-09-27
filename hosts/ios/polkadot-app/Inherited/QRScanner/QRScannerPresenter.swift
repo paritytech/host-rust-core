@@ -107,6 +107,10 @@ class QRScannerPresenter: QRScannerPresenterProtocol {
     func viewWillDisappear() {
         stopServiceIfNeeded()
     }
+
+    func setRecognitionArmed(_ armed: Bool) {
+        qrScanService.setRecognitionArmed(armed)
+    }
 }
 
 extension QRScannerPresenter: @MainActor QRCaptureServiceDelegate {

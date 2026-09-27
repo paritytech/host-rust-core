@@ -53,7 +53,7 @@ public struct CoinageTxRegistrationValidator {
             throw CoinageTxError.handoffOfClaimedAsset(key.toHex())
         }
         if let key = try transaction.filterHandedOff(keys).first {
-            throw CoinageTxError.handoffAlreadyReserved(key.toHex())
+            throw CoinageTxError.handoffOfHandedOffAsset(key.toHex())
         }
     }
 }

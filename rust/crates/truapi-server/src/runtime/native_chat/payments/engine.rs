@@ -23,6 +23,10 @@ impl Engine {
         store: Arc<HostCoinageStore>,
     ) -> Result<Self, Error> {
         live(context)?;
+        // The browser core fetches its ring-VRF module on demand.
+        let vrf = crate::runtime::vrf::load()
+            .await
+            .map_err(|_| Error::NetworkUnavailable)?;
         let chain = Arc::new(HostCoinageChain::new(
             context.services.platform.clone(),
             context.genesis_hash,
@@ -31,6 +35,7 @@ impl Engine {
             context.session_valid.clone(),
             context.services.spawner.clone(),
             store.clone(),
+            vrf,
         ));
         let denominations = chain
             .denomination_context()

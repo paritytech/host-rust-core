@@ -598,7 +598,8 @@ fn only_explicit_success_at_the_submitted_extrinsic_index_completes() {
 
 #[test]
 fn expired_session_cannot_derive_voucher_material_or_create_proofs() {
-    let crypto = HostVoucherCryptography::new(Arc::new(|| false));
+    let vrf = futures::executor::block_on(crate::runtime::vrf::load()).unwrap();
+    let crypto = HostVoucherCryptography::new(Arc::new(|| false), vrf);
     let seed = truapi_coinage::VoucherSeed([1; 32]);
     assert!(crypto.member_key(&seed).is_err());
     assert!(crypto.sign(&seed, b"message").is_err());
@@ -613,7 +614,8 @@ fn expired_session_cannot_derive_voucher_material_or_create_proofs() {
 #[test]
 fn voucher_ownership_signature_verifies_and_ring_proof_rejects_nonmembers() {
     use verifiable::{GenerateVerifiable, ring::bandersnatch::BandersnatchVrfVerifiable};
-    let crypto = HostVoucherCryptography::new(Arc::new(|| true));
+    let vrf = futures::executor::block_on(crate::runtime::vrf::load()).unwrap();
+    let crypto = HostVoucherCryptography::new(Arc::new(|| true), vrf);
     let seed = truapi_coinage::VoucherSeed([7; 32]);
     let member = crypto.member_key(&seed).unwrap();
     let signature = crypto.sign(&seed, b"coin-owner").unwrap();

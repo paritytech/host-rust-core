@@ -175,12 +175,12 @@ struct CompletionLadderTests {
     @Test("Rule 4 holds only inside the window: past mortality the search decides")
     func rule4HoldsOnlyInsideWindow() async throws {
         let tx = entry(checkpointNumber: 50, mortality: 60)
-        view.setBodySearchResponse(tx.txHash, to: .notFoundWindowComplete)
+        try view.setBodySearchResponse(#require(tx.txHash), to: .notFoundWindowComplete)
 
         let outcome = await evaluate(tx, scope: StubPassScope(notCompletedAtBest: [tx.id]))
 
         #expect(outcome.verdict?.status == .failure)
-        #expect(view.searchedHashes == [tx.txHash])
+        #expect(try view.searchedHashes == [#require(tx.txHash)])
     }
 
     // MARK: Rule 5 — body search
@@ -188,7 +188,7 @@ struct CompletionLadderTests {
     @Test("Rule 5 finalizes on a successful dispatch in the searched block")
     func rule5FinalizesOnSuccess() async throws {
         let tx = entry()
-        view.setBodySearchResponse(tx.txHash, to: .foundSucceeded(.fixture(120)))
+        try view.setBodySearchResponse(#require(tx.txHash), to: .foundSucceeded(.fixture(120)))
 
         let outcome = await evaluate(tx, scope: .unknown)
 
@@ -200,7 +200,7 @@ struct CompletionLadderTests {
     @Test("Rule 5 fails on a failed dispatch — inclusion is not success")
     func rule5FailsOnFailedDispatch() async throws {
         let tx = entry()
-        view.setBodySearchResponse(tx.txHash, to: .foundFailed(.fixture(120)))
+        try view.setBodySearchResponse(#require(tx.txHash), to: .foundFailed(.fixture(120), reason: "Test.Failed"))
 
         let outcome = await evaluate(tx, scope: .unknown)
 
@@ -210,7 +210,7 @@ struct CompletionLadderTests {
     @Test("Rule 5 leaves the transaction pending when the outcome could not be read")
     func rule5PendingWhenOutcomeUnreadable() async throws {
         let tx = entry()
-        view.setBodySearchResponse(tx.txHash, to: .foundOutcomeUnreadable(.fixture(120)))
+        try view.setBodySearchResponse(#require(tx.txHash), to: .foundOutcomeUnreadable(.fixture(120)))
 
         let outcome = await evaluate(tx, scope: .unknown)
 
@@ -220,7 +220,7 @@ struct CompletionLadderTests {
     @Test("Rule 5 fails only once the whole window was read and mortality has expired")
     func rule5FailsWhenWholeWindowReadAndMortalityExpired() async throws {
         let tx = entry(checkpointNumber: 50, mortality: 60)
-        view.setBodySearchResponse(tx.txHash, to: .notFoundWindowComplete)
+        try view.setBodySearchResponse(#require(tx.txHash), to: .notFoundWindowComplete)
 
         let outcome = await evaluate(tx, scope: .unknown)
 
@@ -230,7 +230,7 @@ struct CompletionLadderTests {
     @Test("Rule 5 keeps an absent transaction pending while its window is still open")
     func rule5PendingWhileWindowOpen() async throws {
         let tx = entry(checkpointNumber: 100, mortality: 60)
-        view.setBodySearchResponse(tx.txHash, to: .notFoundWindowComplete)
+        try view.setBodySearchResponse(#require(tx.txHash), to: .notFoundWindowComplete)
 
         let outcome = await evaluate(tx, scope: .unknown)
 
@@ -240,7 +240,7 @@ struct CompletionLadderTests {
     @Test("A partially read window leaves the transaction pending")
     func rule5PartialWindowStaysPending() async throws {
         let tx = entry(checkpointNumber: 50, mortality: 60)
-        view.setBodySearchResponse(tx.txHash, to: .incomplete)
+        try view.setBodySearchResponse(#require(tx.txHash), to: .incomplete)
 
         let outcome = await evaluate(tx, scope: .unknown)
 
@@ -255,8 +255,8 @@ struct CompletionLadderTests {
         _ = await evaluate(inWindow, scope: .unknown)
         _ = await evaluate(expired, scope: .unknown)
 
-        #expect(view.searchedWindow(for: inWindow.txHash) == 100 ... 150)
-        #expect(view.searchedWindow(for: expired.txHash) == 50 ... 110)
+        #expect(try view.searchedWindow(for: #require(inWindow.txHash)) == 100 ... 150)
+        #expect(try view.searchedWindow(for: #require(expired.txHash)) == 50 ... 110)
     }
 
     @Test("A checkpoint above the finalized head has nothing to search yet and stays pending")

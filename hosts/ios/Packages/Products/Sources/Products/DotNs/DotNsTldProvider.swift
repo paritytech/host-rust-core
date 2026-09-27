@@ -1,5 +1,6 @@
 import Foundation
 import os
+import SDKLogger
 import StructuredConcurrency
 
 public protocol DotNsTldStoring: Sendable {
@@ -29,6 +30,7 @@ public final class DotNsTldProvider: DotNsTldProviding {
     private let reader: DotNsTldReading
     private let now: @Sendable () -> Date
     private let store: DotNsTldStoring?
+    private let logger: SDKLoggerProtocol?
     private let persistedTld: String?
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let coalescer = CoalescingTask<String>()
@@ -46,12 +48,15 @@ public final class DotNsTldProvider: DotNsTldProviding {
     public init(
         reader: DotNsTldReading,
         store: DotNsTldStoring? = nil,
+        logger: SDKLoggerProtocol? = nil,
         now: @Sendable @escaping () -> Date = { Date() }
     ) {
         self.reader = reader
         self.store = store
+        self.logger = logger
         persistedTld = store?.loadTld()
         self.now = now
+        logger?.debug("DotNs TLD provider started, persisted: \(persistedTld ?? "none")")
     }
 
     public func currentTld() -> String? {
@@ -66,7 +71,10 @@ public final class DotNsTldProvider: DotNsTldProviding {
         return try await coalescer.run { [self] in
             // A joiner arriving after a successful read must not trigger a second one.
             if let tld = state.withLock({ $0.tld }) { return tld }
-            guard claimStart(ignoringBackoff: true) else { throw DotNsContractError.tldNotFound }
+            guard claimStart(ignoringBackoff: true) else {
+                logger?.error("DotNs TLD resolve rejected by inter-attempt floor")
+                throw DotNsContractError.tldNotFound
+            }
             return try await performRead()
         }
     }
@@ -91,13 +99,17 @@ private extension DotNsTldProvider {
     }
 
     func performRead() async throws -> String {
+        logger?.debug("DotNs TLD chain read started")
+
         do {
             let tld = try await reader.readTld()
             finish(.success(tld))
             store?.saveTld(tld)
+            logger?.debug("DotNs TLD resolved: \(tld)")
             return tld
         } catch {
             finish(.failure(error))
+            logger?.error("DotNs TLD read failed: \(error)")
             throw error
         }
     }

@@ -3,64 +3,71 @@ import Foundation
 /// The outcome of a strategy's foreground preparation.
 ///
 /// `prepare` does everything that must complete before the memo — the keys — can leave the device:
-/// register entries, insert projected outputs, and pre-commit the handoff. It returns the handoff
-/// handle, committed once the memo is durable, and the background work that submits the on-chain
-/// extrinsic(s).
+/// mint the outputs and reserve the handoff. It builds and submits nothing: the transactions come back
+/// to be scheduled inside the transaction that makes the payment durable, and are built by their
+/// policies afterwards.
 struct PreparedStrategy {
     /// Memo entries for the coins the recipient receives — built from what `prepare` minted.
     let memoEntries: [PlannedMemoEntry]
     let handoffCommit: any CoinageHandoffCommit
+
+    /// Still to be scheduled. Empty for a strategy that puts nothing of ours on chain, and for a native
+    /// transfer, whose transactions were scheduled together with its custody.
+    let transactions: [CoinageScheduledTxRequest]
 }
 
-/// Protocol for transfer execution strategies. Each strategy mints its outputs, fires the
-/// (background-tracked) submission, and pre-commits the handoff — all in one `prepare`.
+/// A native-custody transfer: its recipient custody is retained atomically with its transactions, under
+/// `groupId`, after `authorization` passes inside that same write.
+struct NativeTransferRequest {
+    let custodyId: String
+    let groupId: CoinageTxGroupId?
+    let authorization: @Sendable () throws -> Void
+}
+
+/// Protocol for transfer execution strategies. Each strategy mints its outputs and pre-commits the
+/// handoff, and declares the transactions that will spend them.
 protocol TransferStrategy {
-    /// Mints outputs (persisted by the allocator), submits the extrinsic(s) fire-and-forget under
-    /// `groupId` (the transfer's message id, or `nil` when ungrouped), and pre-commits the handoff.
-    /// Returns the memo entries and the handoff handle.
-    func prepare(
-        groupId: CoinageTxGroupId?,
-        custodyId: String?,
-        authorization: (@Sendable () throws -> Void)?
-    ) async throws -> PreparedStrategy
+    /// Mints outputs (persisted by the allocator) and pre-commits the handoff. Returns the memo
+    /// entries, the handoff handle, and the transactions still to be scheduled.
+    ///
+    /// Takes no group: a strategy declares transactions but registers none, so the group they are
+    /// registered under is the caller's to choose when it commits them. A `native` transfer is the
+    /// exception: its transactions and custody are registered here, in one write, before the memo exists.
+    func prepare(native: NativeTransferRequest?) async throws -> PreparedStrategy
 }
 
 extension CoinageTxServicing {
-    /// Native registration commits the recipient custody before the engine can start submission.
-    /// The normal transport path keeps its existing provisional handoff semantics.
+    /// Reserves the coins a strategy hands off, then returns what the strategy prepared.
+    ///
+    /// The normal transport path pre-commits a provisional handoff and leaves `transactions` for the
+    /// transport to schedule. Native custody instead commits the recipient custody before the engine
+    /// can start submission: an exact match retains it alone, anything else schedules its transactions
+    /// in the same write.
     func prepareTransfer(
-        requests: [CoinageTxRequest],
-        coins: [Coin],
-        groupId: CoinageTxGroupId?,
-        custodyId: String?,
-        authorization: (@Sendable () throws -> Void)?,
-        afterSubmission: (() async -> Void)? = nil
+        handingOff coins: [Coin],
+        memoEntries: [PlannedMemoEntry],
+        transactions: [CoinageScheduledTxRequest],
+        native: NativeTransferRequest?
     ) async throws -> PreparedStrategy {
-        let memoEntries = coins.map {
-            PlannedMemoEntry(coinDerivationIndex: $0.derivationIndex, valueExponent: $0.exponent)
+        guard let native else {
+            let handoffCommit = try await preCommitHandoff(coins.map { .coin($0.derivationIndex, $0.publicKey) })
+            return PreparedStrategy(memoEntries: memoEntries, handoffCommit: handoffCommit, transactions: transactions)
         }
+
+        try Task.checkCancellation()
+        let custody = NativeTransferCustody(custodyId: native.custodyId, coins: coins)
         let handoffCommit: any CoinageHandoffCommit
-        if let custodyId {
-            guard let authorization else { throw NativeTransferCustodyError.invalidRecord }
-            try Task.checkCancellation()
-            let custody = NativeTransferCustody(custodyId: custodyId, coins: coins)
-            if requests.isEmpty {
-                handoffCommit = try await retainNativeTransfer(custody, authorization: authorization)
-            } else {
-                try await submitTransactions(requests, groupId: groupId, custody: custody, authorization: authorization)
-                await afterSubmission?()
-                guard let retained = try await retainedNativeTransfer(custodyId: custodyId) else {
-                    throw NativeTransferCustodyError.incompleteRegistration
-                }
-                handoffCommit = retained.handoffCommit
-            }
+        if transactions.isEmpty {
+            handoffCommit = try await retainNativeTransfer(custody, authorization: native.authorization)
         } else {
-            if !requests.isEmpty {
-                try await submitTransactions(requests, groupId: groupId)
-                await afterSubmission?()
+            try await scheduleTransactions(
+                transactions, groupId: native.groupId, custody: custody, authorization: native.authorization
+            )
+            guard let retained = try await retainedNativeTransfer(custodyId: native.custodyId) else {
+                throw NativeTransferCustodyError.incompleteRegistration
             }
-            handoffCommit = try await preCommitHandoff(coins.map { .coin($0.derivationIndex, $0.publicKey) })
+            handoffCommit = retained.handoffCommit
         }
-        return PreparedStrategy(memoEntries: memoEntries, handoffCommit: handoffCommit)
+        return PreparedStrategy(memoEntries: memoEntries, handoffCommit: handoffCommit, transactions: [])
     }
 }

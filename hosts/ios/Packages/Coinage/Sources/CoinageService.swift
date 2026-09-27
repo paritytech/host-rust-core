@@ -89,7 +89,7 @@ public protocol CoinageServicing: Actor {
     /// Execute a transfer from a pre-computed coin selection result, skipping coin selection.
     /// Returns the memo plus the provisional handoff to commit once the memo is durable.
     /// `groupId` labels the registered transaction(s) — the transfer's message id, or `nil`.
-    func executeTransfer(result: CoinSelectionResult, groupId: CoinageTxGroupId?) async throws -> PreparedTransfer
+    func executeTransfer(result: CoinSelectionResult, groupId: CoinageTxGroupId) async throws -> PreparedTransfer
 
     /// Native custody commits recipient derivations and handoff marks atomically with registration.
     /// Replaying an identity returns its retained memo without allocating or spending again.
@@ -394,7 +394,7 @@ extension CoinageService: CoinageServicing {
 
     public func executeTransfer(
         result: CoinSelectionResult,
-        groupId: CoinageTxGroupId?
+        groupId: CoinageTxGroupId
     ) async throws -> PreparedTransfer {
         try await withLifecycleOperation {
             guard let denominationContext = breakdownContext else {

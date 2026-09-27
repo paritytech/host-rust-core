@@ -45,6 +45,7 @@ impl HostCoinageChain {
             &self.inner.entropy,
             suffix,
             self.inner.session_valid.clone(),
+            self.inner.crypto.vrf(),
         )?))
     }
 

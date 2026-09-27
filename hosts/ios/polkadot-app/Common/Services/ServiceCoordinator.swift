@@ -59,7 +59,7 @@ final class ServiceCoordinator {
     let attachmentUploadService: AttachmentUploadingServicing
     let attachmentDownloadService: AttachmentDownloadingServicing
     let coinageTransferMonitor: CoinageTransferMonitoring
-    let durableTransactionEngine: any DurableTxServicing
+    let durableTransactionEngine: DurableTxServices
     let w3sPaymentTracking: W3sPaymentTracking
     let audioSessionManager: AudioSessionManaging
     let determineStateSyncService: DetermineStateSyncServicing
@@ -104,7 +104,7 @@ final class ServiceCoordinator {
         attachmentUploadService: AttachmentUploadingServicing,
         attachmentDownloadService: AttachmentDownloadingServicing,
         coinageTransferMonitor: CoinageTransferMonitoring,
-        durableTransactionEngine: any DurableTxServicing,
+        durableTransactionEngine: DurableTxServices,
         w3sPaymentTracking: W3sPaymentTracking,
         audioSessionManager: AudioSessionManaging,
         determineStateSyncService: DetermineStateSyncServicing,
@@ -246,8 +246,8 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
         return lifecycleLock.withLock {
             guard lifecycleGeneration == generation else { return false }
             guard coinageService.setActive(true) else { return false }
-            // Coinage setup releases provisional handoffs before the engine's first pass.
-            durableTransactionEngine.start()
+            // After coinage setup, which releases uncommitted handoffs the first pass must not see.
+            durableTransactionEngine.txService.start()
             truapiRuntimeProvider.setCoinageAvailable(true)
             return true
         }
@@ -258,7 +258,7 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
             lifecycleGeneration = nil
             coinageService.setActive(false)
             truapiRuntimeProvider.setCoinageAvailable(false)
-            durableTransactionEngine.stop()
+            durableTransactionEngine.txService.stop()
         }
 
         #if FEATURE_DIMS
@@ -428,7 +428,6 @@ extension ServiceCoordinator {
             personDataStore: syncServiceResult.personDataStore,
             syncService: syncServiceResult.service,
             personhoodRegistrationService: personhoodServices.registrationService,
-            claimStatusStore: coinageServices.claimStatusStore,
             audioSessionManager: audioSessionManager,
             spaFlowState: spaFlowState
         )

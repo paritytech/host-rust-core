@@ -54,11 +54,34 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
   composition crate (#540)
 - return a decode error instead of trapping when subscription helpers receive a
   request descriptor
+## [0.21.0] - 2026-09-24
+
+### Added
+
+- load verifiable on demand in the browser (#922)
+- host-supplied wire-debugger dial, plus a make debugger target (#604)
+- let a withdrawal reach the paired host that is serving it (#933)
+- stop a withdrawn call before it prompts, acts or reaches another party (#927)
+- pass the requesting ProductContext to permission prompts (#936)
+- stream product frames to a wire debugger behind --debugger (#656)
+
+### Changed
+
+- build smoldot's secp256k1 tables on first use in the browser (#928)
+
+### Fixed
+
+- mark the debugger private, since it is not published (#911)
+- initialize built-in personhood keys (#924)
 ## [0.20.0] - 2026-09-23
 
 ### Added
 
 - chat modality on the shared TrUAPI core (#840)
+
+### Changed
+
+- @parity/truapi 0.20.0, @parity/truapi-host 0.20.0, @parity/ios-host 0.20.0 (#920)
 
 ### Fixed
 

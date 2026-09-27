@@ -295,7 +295,10 @@ export type CreateTransactionReview =
   /**
    * Product-account transaction request.
    */
-  | { tag: "Product"; value: ProductAccountTxPayload }
+  | {
+      tag: "Product";
+      value: { callingProductId?: string; payload: ProductAccountTxPayload };
+    }
   /**
    * Legacy-account transaction request.
    */
@@ -874,7 +877,10 @@ export type SignPayloadReview =
   /**
    * Product-account signing request.
    */
-  | { tag: "Product"; value: HostSignPayloadRequest }
+  | {
+      tag: "Product";
+      value: { callingProductId?: string; request: HostSignPayloadRequest };
+    }
   /**
    * Legacy-account signing request.
    */
@@ -891,7 +897,11 @@ export type SignRawReview =
    */
   | {
       tag: "Product";
-      value: { request: HostSignRawRequest; watermarked: boolean };
+      value: {
+        callingProductId?: string;
+        request: HostSignRawRequest;
+        watermarked: boolean;
+      };
     }
   /**
    * Legacy-account raw signing request.
@@ -926,6 +936,12 @@ export interface SignVrfReview {
  * not present it with the raw-signing convention.
  */
 export interface StatementStoreProductSignReview {
+  /**
+   * Product that asked, when the request carries a caller. See
+   * `SignPayloadReview::Product`.
+   */
+  callingProductId?: string;
+
   /**
    * Product account that will sign the statement payload.
    */
@@ -1148,7 +1164,13 @@ export const CreateProofReview: S.Codec<CreateProofReview> = S.lazy(
 export const CreateTransactionReview: S.Codec<CreateTransactionReview> = S.lazy(
   (): S.Codec<CreateTransactionReview> =>
     S.TaggedUnion({
-      Product: ProductAccountTxPayload,
+      Product: S.Struct({
+        callingProductId: S.Option(S.str),
+        payload: ProductAccountTxPayload,
+      }) as S.Codec<{
+        callingProductId?: string;
+        payload: ProductAccountTxPayload;
+      }>,
       LegacyAccount: LegacyAccountTxPayload,
     }),
 );
@@ -1546,7 +1568,13 @@ export const SessionUiInfo: S.Codec<SessionUiInfo> = S.lazy(
 export const SignPayloadReview: S.Codec<SignPayloadReview> = S.lazy(
   (): S.Codec<SignPayloadReview> =>
     S.TaggedUnion({
-      Product: HostSignPayloadRequest,
+      Product: S.Struct({
+        callingProductId: S.Option(S.str),
+        request: HostSignPayloadRequest,
+      }) as S.Codec<{
+        callingProductId?: string;
+        request: HostSignPayloadRequest;
+      }>,
       LegacyAccount: HostSignPayloadWithLegacyAccountRequest,
     }),
 );
@@ -1560,9 +1588,14 @@ export const SignRawReview: S.Codec<SignRawReview> = S.lazy(
   (): S.Codec<SignRawReview> =>
     S.TaggedUnion({
       Product: S.Struct({
+        callingProductId: S.Option(S.str),
         request: HostSignRawRequest,
         watermarked: S.bool,
-      }) as S.Codec<{ request: HostSignRawRequest; watermarked: boolean }>,
+      }) as S.Codec<{
+        callingProductId?: string;
+        request: HostSignRawRequest;
+        watermarked: boolean;
+      }>,
       LegacyAccount: S.Struct({
         request: HostSignRawWithLegacyAccountRequest,
         watermarked: S.bool,
@@ -1594,6 +1627,7 @@ export const StatementStoreProductSignReview: S.Codec<StatementStoreProductSignR
   S.lazy(
     (): S.Codec<StatementStoreProductSignReview> =>
       S.Struct({
+        callingProductId: S.Option(S.str),
         account: ProductAccountId,
         payload: S.Bytes(),
       }) as S.Codec<StatementStoreProductSignReview>,
@@ -2257,6 +2291,10 @@ export interface UserConfirmation {
 
   /**
    * Confirm a reviewed action before the core continues.
+   *
+   * The core drops this future when the request behind the review is
+   * withdrawn, and an answer given afterwards reaches nobody. A host should
+   * dismiss its prompt when that happens.
    */
   confirmUserAction(review: UserConfirmationReview): Promise<boolean>;
 }

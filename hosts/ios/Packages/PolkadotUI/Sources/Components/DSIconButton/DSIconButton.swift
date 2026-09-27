@@ -32,6 +32,8 @@ public final class DSIconButton: UIView {
         let controller = UIHostingController(rootView: host)
         controller.view.backgroundColor = .clear
         controller.sizingOptions = []
+        // Fixed-size control — don't inset hosted content by window safe-area
+        controller.safeAreaRegions = []
 
         hostingController = controller
 

@@ -4,6 +4,8 @@
 //! storage, URL handler, notification center). Everything else lives here so
 //! iOS, Android, and web hosts share one canonical implementation.
 
+// Its `verifiable` steps are native-only; the browser core supplies them from
+// the module it loads on demand.
 pub mod attestation;
 pub mod bulletin;
 pub mod device_key;

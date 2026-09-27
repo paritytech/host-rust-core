@@ -66,6 +66,10 @@ fn main() {
     assert!(matches!(request, v1::RemoteMessage::FooRequest(Request(1))));
     assert_eq!(v1::RemoteMessage::Disconnected.name(), "Disconnected");
     assert_eq!(v1::RemoteMessage::Disconnected.responding_to(), None);
+    let withdrawal = v1::RemoteMessage::Cancel(v1::Withdrawal {
+        message_id: "m-1".into(),
+    });
+    assert_eq!(withdrawal.name(), "Cancel");
 
     fn require_send(_: impl core::future::Future + Send) {}
     let service = Service::new();

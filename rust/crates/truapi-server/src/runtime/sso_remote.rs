@@ -311,10 +311,12 @@ pub(super) async fn wait_for_sso_remote_response<T>(
     }
     .fuse();
     pin_mut!(response, disconnect, cancelled);
-    futures::select! {
+    // Cancellation first: a call withdrawn while it was still setting up must
+    // not submit its request on the way out.
+    futures::select_biased! {
+        reason = cancelled => Err(reason),
         result = response => result,
         reason = disconnect => Err(reason),
-        reason = cancelled => Err(reason),
     }
 }
 
