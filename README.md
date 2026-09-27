@@ -109,8 +109,8 @@ js/packages/
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
-                           published to GitHub Packages as io.parity:truapi-host-android
-                           (AAR with per-ABI cdylibs; see android/truapi-host/README.md)
+                           built from source, published to Maven Local as
+                           io.parity:truapi-host-android (see android/truapi-host/README.md)
 android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
@@ -152,8 +152,7 @@ See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO ha
 
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
-manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
-dependency. The UniFFI bindings and the container bundle are gitignored build
+manifest at the repo root (`Package.swift`). The UniFFI bindings and the container bundle are gitignored build
 outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
@@ -196,14 +195,13 @@ client holds at most 32 connections at once and refuses a `connect` past that, s
 consumer that leaks them fails instead of growing; closing one hands its slot back.
 Connections to a remote node, which only the WASM build compiles, are not counted
 against it. The crate
-compiles to one binary artifact per platform, each exposing the same
-`ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
-dependency on the crate:
+compiles to one artifact per platform, each exposing the same
+`ChainProvider` contract:
 
 - [`@parity/truapi-provider`](js/packages/truapi-provider) is the WASM build for
   browser and webview hosts, rebuilt by `make wasm` alongside the host bundle.
-- [`TrUAPIProvider`](ios/truapi-provider) is the second product of the root
-  `Package.swift`, an xcframework plus generated Swift bindings, built by
+- [`TrUAPIProvider`](ios/truapi-provider) is a Swift package with its own
+  manifest, an xcframework plus generated Swift bindings, built by
   `make provider-ios`.
 - [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
   Kotlin bindings and the cdylib per ABI, built by
@@ -386,8 +384,7 @@ pull request means running the command above and deleting the file.
 
 ### Working on the iOS host
 
-`hosts/ios/` is the iOS app, and it resolves the core from this tree rather than
-from a published version. The core's bindings, xcframework and FFI headers are
+`hosts/ios/` is the iOS app, and it resolves the core from this tree. The core's bindings, xcframework and FFI headers are
 gitignored build outputs, so a fresh clone cannot load the app's package graph
 until they exist. Generate them once:
 
@@ -396,8 +393,8 @@ make ios-bootstrap
 ```
 
 Then open `hosts/ios/polkadot-app.xcodeproj`. Rerun it after changing anything
-the bindings are generated from, which is the `truapi`, `truapi-platform`,
-`truapi-server` or `truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
+the bindings are generated from, which is the `truapi`, `truapi-platform` or
+`truapi-server` crates. `SIM_ONLY=1` halves it by skipping
 the device slice, which is enough for Simulator but not for an archive.
 
 Because the app builds against the core in this tree, a core change that breaks
@@ -559,8 +556,7 @@ Pushes to `main` build and deploy:
 ## Release
 
 See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
-`@parity/truapi` and `@parity/truapi-host` to npm, and the iOS host and
-Android host artifacts alongside them. A release also opens a bump issue on each
+`@parity/truapi` and `@parity/truapi-host` to npm. A release also opens a bump issue on each
 repository listed in [`.github/consumers.json`](.github/consumers.json) that pins
 one of the published packages.
 

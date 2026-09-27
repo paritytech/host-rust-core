@@ -77,8 +77,6 @@ The PR title must start with `release:`. Convention:
 release: @parity/truapi 0.1.1
 release: @parity/truapi-host 0.1.1
 release: @parity/truapi 0.5.0, @parity/truapi-host 0.2.0
-release: @parity/android-host 0.1.0
-release: @parity/truapi 0.5.0, @parity/ios-host 0.5.0, @parity/android-host 0.1.0
 ```
 
 Separate multiple package/version targets with commas. The workflow validates
@@ -130,12 +128,6 @@ On merge, CI runs as usual. When CI passes, the `Release` workflow:
    [`.github/consumers.json`](../.github/consumers.json) lists under a confirmed
    package.
 
-An iOS release then uploads the XCFramework, creates a bare `<version>` tag from
-a commit whose `Package.swift` records the live asset URL and checksum, and
-builds that tag from a clean clone before pushing it. The workflow also opens a
-generated manifest PR to keep `main` current. It dispatches CI explicitly
-because a PR created with `GITHUB_TOKEN` does not start another workflow.
-
 The dispatch in step 4 returns as soon as GitHub accepts it, which is why step 5
 exists: the registry is the only proof a version landed. A green `Release` run
 therefore means both packages are installable, not merely that the publish was
@@ -145,11 +137,7 @@ You can still watch the dispatched run under
 [`paritytech/npm_publish_automation` Actions](https://github.com/paritytech/npm_publish_automation/actions),
 which is where a publish failure reports its reason.
 
-### The native artifacts
-
-The npm packages are not the only release targets. `@parity/ios-host` and
-`@parity/android-host` name artifacts that live outside npm, and each is
-published by its own job once the release job succeeds.
+### The CLI binaries
 
 `@parity/truapi <version>` also publishes the prebuilt `truapi-host` CLI
 binaries, because `rust/crates/truapi-host-cli/Cargo.toml` tracks the protocol
@@ -161,42 +149,8 @@ each archive and its `.sha256` to the `@parity/truapi@<version>` release, and
 only then moves the `truapi-host-cli-stable` pointer that the installer and the
 in-binary updater read. There is no separate release subject entry for it.
 
-`@parity/ios-host <version>` publishes two artifacts, because SwiftPM splits a
-package across both. The xcframework goes to the `@parity/ios-host@<version>`
-GitHub release as an asset. The Swift sources go to a plain semver tag named
-`<version>`, whose commit carries the generated bindings, the FFI headers and
-the container bundle alongside a `Package.swift` pointing at that asset. The
-generated files are git-ignored on a branch, and SwiftPM resolves source
-targets from the git checkout with no way to fetch them from an asset, so the
-tag is what a consumer can actually resolve. Apps therefore pin the semver tag:
-
-```swift
-.package(url: "https://github.com/paritytech/host-rust-core", exact: "0.12.0")
-```
-
-`ios/truapi-host/scripts/tag-release.sh` builds that commit, reading the
-required paths out of `Package.swift` so the file set cannot drift from what
-SwiftPM looks for. The job clones the tag and compiles it against the published
-asset before pushing, so a tag that cannot be resolved is never published.
-
-`@parity/android-host <version>` publishes the Android host AAR as
-`io.parity:truapi-host-android:<version>` to GitHub Packages. The job
-cross-compiles `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64,
-regenerates the UniFFI Kotlin bindings from the same source, and publishes the
-AAR with the native libraries inside it, so consumers need only Gradle. Nothing
-in the tree records the Android version, so there is no manifest to bump: the
-release subject is the only place it appears. See
-[`android/truapi-host/README.md`](../android/truapi-host/README.md) for the
-consumer setup and the credentials a consumer needs.
-
-Both native jobs are also reachable by a manual `workflow_dispatch` run with a
-version input. For iOS that is also how a pre-release is cut: dispatching
-`release-ios` from a branch with a version like `0.12.0-beta.1` publishes an
-asset and a tag an app can pin, which is how an unmerged host change gets
-tested in the app. A dispatched run leaves every branch alone, because it
-passes no `manifest_branch`. Neither job has a tag trigger, because a tag push
-cannot use the `workflow_run` gate on green CI and would be an unverified path
-to a registry.
+The iOS and Android core packages are not released: the host apps under
+`hosts/` build them from this tree, and other hosts build them from a checkout.
 
 ### Notifying the consumers
 
@@ -207,10 +161,9 @@ by `paritytech/dotli-community`. Every repository under a published package
 receives an issue naming the versions it should move to, so subscribing a
 repository to another package means adding it to that package's list.
 
-Every release target appears in that file, an unsubscribed one with an empty
-list, which is how `@parity/ios-host` and `@parity/android-host` sit today.
-Publishing a package the file does not mention at all is a warning on the run,
-since that means a new release target nobody wired up.
+A release target with no consumers is listed with an empty list. Publishing a
+package the file does not mention at all is a warning on the run, since that
+means a new release target nobody wired up.
 
 A release that publishes several packages a repository pins produces one issue
 covering all of them, labelled `truapi-release`. An earlier notification on the
@@ -269,24 +222,11 @@ has to be one of ours rather than a personal one.
   another does not, only the one that landed is tagged and the run still fails.
   Re-run it once the publish is fixed; the tag and version checks make that
   safe.
-- A release is one unit. The iOS and Android jobs run only after the release job
-  succeeds, so a release naming both npm packages and `@parity/ios-host` or
-  `@parity/android-host` publishes no XCFramework and no AAR while npm is
-  unconfirmed. Re-running covers both. A native-only release is unaffected, since
-  it has no npm package to confirm.
-- A release that does not name `@parity/android-host` publishes no AAR. The
-  Android artifact is opt-in per release, like the iOS one, so a playground-only
-  npm bump does not cut an Android version.
-- The Android job has no equivalent of the npm "is this version already
-  published?" pre-flight check, so re-running a release re-attempts the publish
-  and relies on the registry to refuse a duplicate coordinate. Prefer bumping the
-  version over re-running a release whose Android publish already succeeded.
 - A `release:` PR with mismatched `js/packages/truapi/package.json` and
   `rust/crates/truapi/Cargo.toml` versions is blocked at PR time by the
   `Release version check` workflow.
 - `Release version check` also requires consumed changesets for a `release:`
-  PR without an npm version bump, including a publish retry or native-only
-  release. It remains alongside `Release guard`, which detects bumps without
+  PR without an npm version bump, including a publish retry. It remains alongside `Release guard`, which detects bumps without
   relying on the title and also runs in the merge queue. Both checks give the
   same recovery guidance for an unmerged release branch.
 - A release commit publishes the versions its changesets computed, so those
@@ -319,8 +259,7 @@ has to be one of ours rather than a personal one.
   registry confirmed. A repository that cannot be reached is a warning and does
   not stop the others, though the run still ends red so the failure is visible.
   Nothing about the publish depends on it: tags and GitHub Releases already
-  exist by then, and nothing declares `needs: notify-consumers`, so the iOS and
-  Android publishes are unaffected as well.
+  exist by then, and nothing declares `needs: notify-consumers`.
 - Recover a failed notification with "Re-run failed jobs" rather than "Re-run all
   jobs". A full re-run restarts the release job, which finds the versions already
   on npm and so leaves `published` empty, at which point the notification job is

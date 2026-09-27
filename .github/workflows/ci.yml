@@ -568,9 +568,6 @@ jobs:
         with:
           save_cache: ${{ github.event_name == 'push' }}
 
-      # No truapi.dir: the core resolves two levels up, which is one of the
-      # properties this job keeps true.
-      #
       # The target is the module that consumes the bindings, not the module that
       # produces them. Generated bindings cannot disagree with the library they
       # were generated from, so compiling them proves nothing; the signal is in

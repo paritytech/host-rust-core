@@ -110,4 +110,4 @@ Use an appropriate commit type. Be especially careful with breaking changes.
 
 ## Releasing
 
-See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for the release flow, covering the npm packages and the iOS and Android host artifacts.
+See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for the release flow of the npm packages and the `truapi-host` CLI binaries.
