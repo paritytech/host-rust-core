@@ -448,40 +448,11 @@ jobs:
       - name: Build the simulator XCFramework for TrUAPIProvider
         run: PROFILE=debug ./ios/truapi-provider/scripts/rebuild.sh --sim-only
 
-      # Build the tag a release would cut, then compile from a clean clone of
-      # it. Compiling in place would pass on generated files that the tag does
-      # not carry, which is exactly the failure this guards: a consumer only
-      # ever sees the tag.
-      - name: Build the SwiftPM consumer tag
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          ./ios/truapi-host/scripts/tag-release.sh 0.0.0-ci
-
-      - name: Check the tag carries every generated file
-        run: |
-          set -euo pipefail
-          probe="$RUNNER_TEMP/tag-probe"
-          rm -rf "$probe"
-          git clone --quiet --branch 0.0.0-ci "file://$PWD" "$probe"
-          while read -r path; do
-            diff -u <(cd "$probe" && find "$path" -type f | sort) \
-                    <(find "$path" -type f | sort)
-          done <<< "$(sed -n -E 's/^[[:space:]]*path: "([^"]+)".*/\1/p' Package.swift | grep -v '/Binaries/')"
-
-      # The xcframework ships as a release asset rather than in the tag, so the
-      # locally built one stands in for it here.
-      - name: Compile the package and its tests from the tag
+      - name: Compile the package and its tests
         run: |
           set -euo pipefail
           simulator="$(node --input-type=module -e 'import { selectSimulator } from "./scripts/lib/ios-simulator.mjs"; console.log(selectSimulator().udid)')"
           echo "TRUAPI_TEST_SIMULATOR=$simulator" >> "$GITHUB_ENV"
-          probe="$RUNNER_TEMP/tag-probe"
-          mkdir -p "$probe/ios/truapi-host/Binaries" "$probe/ios/truapi-provider/Binaries"
-          cp -R ios/truapi-host/Binaries/truapi_server.xcframework "$probe/ios/truapi-host/Binaries/"
-          cp -R ios/truapi-provider/Binaries/truapi_provider.xcframework "$probe/ios/truapi-provider/Binaries/"
-          cd "$probe"
           TRUAPI_TEST_SIMULATOR="$simulator" ./ios/truapi-host/scripts/test.sh build-for-testing \
             -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost"
           # Built for the simulator like TrUAPIHost above, not with `swift build`,
@@ -497,7 +468,6 @@ jobs:
       - name: Test native product network permissions in WKWebView
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/tag-probe"
           ./ios/truapi-host/scripts/test.sh test-without-building \
             -derivedDataPath "$RUNNER_TEMP/TrUAPINetworkTestHost" \
             -only-testing:NetworkPermissionTests/ProductNetworkAccessTests \

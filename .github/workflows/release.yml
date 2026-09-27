@@ -32,8 +32,6 @@ jobs:
       id-token: write
       attestations: write
     outputs:
-      ios_version: ${{ steps.version.outputs.ios_version }}
-      android_version: ${{ steps.version.outputs.android_version }}
       cli_version: ${{ steps.version.outputs.cli_version }}
       published: ${{ steps.confirm.outputs.published }}
     steps:
@@ -59,8 +57,6 @@ jobs:
           subject="${subject% (#*)}"
           release="${subject#release: }"
           packages=""
-          ios_version=""
-          android_version=""
           cli_version=""
           seen_names="|"
 
@@ -73,7 +69,7 @@ jobs:
             # Trim whitespace around comma-separated targets.
             target="${target#"${target%%[![:space:]]*}"}"
             target="${target%"${target##*[![:space:]]}"}"
-            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/truapi-provider|@parity/truapi-debugger|@parity/ios-host|@parity/android-host)[[:space:]]+([^[:space:]]+)$ ]]; then
+            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/truapi-provider|@parity/truapi-debugger)[[:space:]]+([^[:space:]]+)$ ]]; then
               echo "::error::Unsupported release target '${target}' in subject: ${subject}"
               exit 1
             fi
@@ -96,22 +92,6 @@ jobs:
               @parity/truapi-host) path="js/packages/truapi-host" ;;
               @parity/truapi-provider) path="js/packages/truapi-provider" ;;
               @parity/truapi-debugger) path="js/packages/truapi-debugger" ;;
-              @parity/ios-host)
-                if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-                  echo "::error::Invalid iOS host version '${declared_version}'."
-                  exit 1
-                fi
-                ios_version="${declared_version}"
-                continue
-                ;;
-              @parity/android-host)
-                if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-                  echo "::error::Invalid Android host version '${declared_version}'."
-                  exit 1
-                fi
-                android_version="${declared_version}"
-                continue
-                ;;
             esac
 
             version="$(jq -r '.version' "${path}/package.json")"
@@ -195,8 +175,6 @@ jobs:
             done < <(printf '%s\n' "${dep_lines}")
           done <<< "${packages}"
 
-          echo "ios_version=${ios_version}" >> "$GITHUB_OUTPUT"
-          echo "android_version=${android_version}" >> "$GITHUB_OUTPUT"
           echo "cli_version=${cli_version}" >> "$GITHUB_OUTPUT"
 
           if [ -z "${packages}" ]; then
@@ -376,18 +354,6 @@ jobs:
       CONSUMER_APP_ID: ${{ secrets.CONSUMER_APP_ID }}
       CONSUMER_APP_KEY: ${{ secrets.CONSUMER_APP_KEY }}
 
-  publish-android:
-    name: Publish Android host
-    needs: release
-    if: needs.release.outputs.android_version != ''
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/release-android.yml
-    with:
-      version: ${{ needs.release.outputs.android_version }}
-      ref: ${{ github.event.workflow_run.head_sha }}
-
   publish-cli:
     name: Publish truapi-host binaries
     needs: release
@@ -400,17 +366,3 @@ jobs:
     with:
       version: ${{ needs.release.outputs.cli_version }}
       ref: ${{ github.event.workflow_run.head_sha }}
-
-  publish-ios:
-    name: Publish iOS host
-    needs: release
-    if: needs.release.outputs.ios_version != ''
-    permissions:
-      actions: write
-      contents: write
-      pull-requests: write
-    uses: ./.github/workflows/release-ios.yml
-    with:
-      version: ${{ needs.release.outputs.ios_version }}
-      ref: ${{ github.event.workflow_run.head_sha }}
-      manifest_branch: ${{ github.event.workflow_run.head_branch }}

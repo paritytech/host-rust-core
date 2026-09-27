@@ -492,8 +492,7 @@ XCFRAMEWORK_HEADERS := target/xcframework-headers
 # what a release needs; a compile-only consumer overrides both for speed. The
 # profile name doubles as cargo's output directory.
 # SIM_ONLY=1 drops the device slice while iterating, which halves the target
-# builds. publish.sh refuses a framework missing either slice, so this cannot
-# reach a release asset. XCFRAMEWORK_TARGETS still overrides both.
+# builds. XCFRAMEWORK_TARGETS still overrides both.
 #
 # 0, false, no and off mean off. Make treats any non-empty value as true, so
 # without this SIM_ONLY=0 would drop the device slice.
