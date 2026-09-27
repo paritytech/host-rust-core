@@ -17,6 +17,7 @@ public struct DSBarberPole: View {
     private let periodDuration: Double
     private let stripeColor: Color
     private let backgroundColor: Color
+    private let isAnimated: Bool
 
     @State private var isSliding = false
 
@@ -26,13 +27,15 @@ public struct DSBarberPole: View {
         slant: CGFloat = 0.7,
         periodDuration: Double = 0.6,
         stripeColor: Color = .fgError,
-        backgroundColor: Color = .fgStaticWhite
+        backgroundColor: Color = .fgStaticWhite,
+        isAnimated: Bool = true
     ) {
         self.stripeWidth = stripeWidth
         self.slant = slant
         self.periodDuration = periodDuration
         self.stripeColor = stripeColor
         self.backgroundColor = backgroundColor
+        self.isAnimated = isAnimated
     }
 
     public var body: some View {
@@ -65,7 +68,7 @@ public struct DSBarberPole: View {
             // even applies — which starves the right edge partway through each slide.
             .frame(width: size.width, height: size.height, alignment: .leading)
             .clipped()
-            .onAppear { isSliding = true }
+            .onAppear { isSliding = isAnimated }
         }
     }
 }

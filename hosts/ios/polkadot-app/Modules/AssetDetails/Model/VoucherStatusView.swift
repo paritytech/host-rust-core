@@ -20,6 +20,7 @@ struct VoucherStatusView: View {
     }
 
     let model: Model
+    var isAnimated: Bool = true
 
     var body: some View {
         GeometryReader { geometry in
@@ -30,7 +31,8 @@ struct VoucherStatusView: View {
                 height: CoinageStatusMetrics.barHeight,
                 cornerStyle: .rounded(radius: CoinageStatusMetrics.solidBarCornerRadius),
                 outlineColor: CoinageStatusMetrics.markFrame,
-                outlineWidth: CoinageStatusMetrics.markFrameWidth
+                outlineWidth: CoinageStatusMetrics.markFrameWidth,
+                isAnimated: isAnimated
             )
             .frame(width: layout.barWidth)
             .frame(width: geometry.size.width, alignment: .leading)

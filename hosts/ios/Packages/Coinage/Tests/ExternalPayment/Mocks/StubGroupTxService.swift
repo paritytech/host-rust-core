@@ -64,11 +64,8 @@ final class StubGroupTxService: CoinageTxServicing, @unchecked Sendable {
     @discardableResult
     func submitTransactions(
         _ requests: [CoinageTxRequest],
-        groupId: CoinageTxGroupId?,
-        custody: NativeTransferCustody?,
-        authorization _: (@Sendable () throws -> Void)?
+        groupId: CoinageTxGroupId?
     ) async throws -> [CoinageTxId] {
-        guard custody == nil else { throw Failure() }
         let (error, outcome) = state.withLock { state -> (Error?, Outcome) in
             let next = state.outcomeQueue.isEmpty ? state.outcome : state.outcomeQueue.removeFirst()
             return (state.submitError, next)
@@ -95,6 +92,16 @@ final class StubGroupTxService: CoinageTxServicing, @unchecked Sendable {
         return entries.map(\.id)
     }
 
+    /// The offramp never schedules — it registers built extrinsics and is never retried.
+    @discardableResult
+    func scheduleTransactions(
+        _: [CoinageScheduledTxRequest],
+        groupId _: CoinageTxGroupId,
+        joining _: any DurableTxRegistrationScope
+    ) throws -> [CoinageTxId] {
+        []
+    }
+
     func subscribeTransactionStatus(_: CoinageTxId) -> AnyAsyncSequence<CoinageTxStatus> {
         AsyncStream<CoinageTxStatus> { $0.finish() }.eraseToAnyAsyncSequence()
     }
@@ -108,6 +115,15 @@ final class StubGroupTxService: CoinageTxServicing, @unchecked Sendable {
     }
 
     func preCommitHandoff(_: [OwnAsset]) async throws -> any CoinageHandoffCommit {
+        throw Failure()
+    }
+
+    func scheduleTransactions(
+        _: [CoinageScheduledTxRequest],
+        groupId _: CoinageTxGroupId?,
+        custody _: NativeTransferCustody,
+        authorization _: @escaping @Sendable () throws -> Void
+    ) async throws -> [CoinageTxId] {
         throw Failure()
     }
 

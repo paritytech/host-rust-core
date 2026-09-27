@@ -178,7 +178,6 @@ private actor LifecycleRegistrationGate {
 /// Supplies prepared extrinsics after a controllable suspension, then invokes the real registrar and
 /// native CoinageTxService hook. The in-memory repository rolls back a throwing hook like CoreData.
 private final class LifecycleRegistrationEngine: DurableTxServicing, @unchecked Sendable {
-    let oracles = TxCompletionOracleRegistry()
     let store = MockCoinageTxRepository()
     let gate = LifecycleRegistrationGate()
 
@@ -186,12 +185,38 @@ private final class LifecycleRegistrationEngine: DurableTxServicing, @unchecked 
         domain: TxDomainId,
         requests: [DurableTxRequest],
         groupId: DurableTxGroupId?,
+        policies _: [SubmissionPolicy?],
         onRegister: @escaping DurableTxRegistrationHook
     ) async throws -> [DurableTxId] {
         await gate.pause()
         let registrations = requests.map { _ in CoinageTxRegistration.fixture(groupId: groupId).durable }
         return try await DurableTxRegistrar(store: store.durable, owned: DurableTxOwnershipSet())
             .register(registrations, onRegister: onRegister)
+    }
+    func schedule(
+        domain: TxDomainId,
+        groupId: DurableTxGroupId?,
+        policies: [SubmissionPolicy],
+        joining scope: any DurableTxRegistrationScope,
+        onRegister: DurableTxRegistrationHook
+    ) throws -> [DurableTxId] {
+        try store.durable.schedule(
+            policies.map { DurableTxSchedule(domainId: domain, groupId: groupId, policy: $0) },
+            joining: scope,
+            onRegister: onRegister
+        )
+    }
+    func schedule(
+        domain: TxDomainId,
+        groupId: DurableTxGroupId?,
+        policies: [SubmissionPolicy],
+        onRegister: @escaping DurableTxRegistrationHook
+    ) async throws -> [DurableTxId] {
+        try await store.durable.schedule(
+            policies.map { DurableTxSchedule(domainId: domain, groupId: groupId, policy: $0) },
+            in: nil,
+            onRegister: onRegister
+        )
     }
     func subscribeTransactionStatus(_ id: DurableTxId) -> AnyAsyncSequence<DurableTxStatus> {
         store.durable.subscribeStatus(id: id)

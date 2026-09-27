@@ -17,7 +17,7 @@ use truapi_platform::{
 
 use crate::runtime::{
     ProductRuntimeHost, RESOURCE_ALLOCATION_REMOTE_AUTHORITY_RESPONSE_TIMEOUT,
-    remote_authority_call, remote_authority_context_with_default,
+    remote_authority_call, remote_authority_context_with_default, until_cancelled,
 };
 
 impl ProductRuntimeHost {
@@ -190,18 +190,28 @@ impl ResourceAllocation for ProductRuntimeHost {
         // An explicit request means additional quota, not merely ensure. Always
         // confirm it, even when implicit provisioning has a durable grant. The
         // same review establishes any missing grants without a second prompt.
-        let confirmed = self
-            .platform
-            .confirm_user_action(UserConfirmationReview::ResourceAllocation(
-                ResourceAllocationReview {
-                    calling_product_id: product_id.clone(),
-                    resources: inner.resources.clone(),
+        // A withdrawn call stops waiting on the review and authorizes nothing.
+        let confirmed = until_cancelled(
+            cx,
+            self.platform
+                .confirm_user_action(UserConfirmationReview::ResourceAllocation(
+                    ResourceAllocationReview {
+                        calling_product_id: product_id.clone(),
+                        resources: inner.resources.clone(),
+                    },
+                )),
+        )
+        .await
+        .map_err(|err| {
+            CallError::Domain(HostRequestResourceAllocationError::V1(
+                v01::ResourceAllocationError::Unknown {
+                    reason: err.to_string(),
                 },
             ))
-            .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("resource allocation confirmation failed: {err:?}"),
-            })?;
+        })?
+        .map_err(|err| CallError::HostFailure {
+            reason: format!("resource allocation confirmation failed: {err:?}"),
+        })?;
         require_session()?;
         for (request, before) in &grants {
             let current = service

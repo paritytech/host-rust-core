@@ -44,6 +44,7 @@ pub mod statement_allowance;
 /// `StatementStore` surface: proofs plus submit and subscribe flows.
 pub(crate) mod statement_store;
 mod statement_store_rpc;
+mod vrf;
 
 use core::future::Future;
 use core::time::Duration;
@@ -72,6 +73,8 @@ pub(crate) use signing_host::{
     respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{LocalIdentity, LocalIdentityContext, WalletAllowanceSnapshot};
+#[cfg(all(target_arch = "wasm32", feature = "test-host"))]
+pub(crate) use vrf::ring_vrf_member;
 // `TrackedStatementRenewalTarget` is only read back by the native renewal
 // reporting, so re-exporting it on wasm leaves an unused import.
 #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -223,6 +226,11 @@ where
     F: Future<Output = Result<T, E>>,
     E: From<AuthorityError>,
 {
+    // A call already withdrawn never sends its request, not even within the
+    // unwind grace below.
+    if let Some(reason) = cx.cancel().reason() {
+        return Err(authority_cancellation_error(cx, reason).into());
+    }
     let call = call.fuse();
     let cancelled = cx.cancel().cancelled().fuse();
     pin_mut!(call, cancelled);
@@ -262,6 +270,25 @@ where
         () = unwind => {},
     }
     Err(error.into())
+}
+
+/// Await `wait` unless the call is cancelled first.
+///
+/// For waits a person controls, such as a local confirmation prompt: a
+/// withdrawn call stops waiting, so an answer given after the withdrawal
+/// authorizes nothing. The error is the one `remote_authority_call` answers,
+/// so each caller maps it into its method's own domain error.
+async fn until_cancelled<T>(
+    cx: &CallContext,
+    wait: impl Future<Output = T>,
+) -> Result<T, AuthorityError> {
+    let wait = wait.fuse();
+    let cancelled = cx.cancel().cancelled().fuse();
+    pin_mut!(wait, cancelled);
+    futures::select_biased! {
+        reason = cancelled => Err(authority_cancellation_error(cx, reason)),
+        output = wait => Ok(output),
+    }
 }
 
 fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) -> AuthorityError {
@@ -493,17 +520,36 @@ impl ProductRuntimeHost {
         self.authority.disconnect().await;
     }
 
-    fn is_product_account_valid_for_caller(&self, dot_ns_identifier: &str) -> bool {
-        let Ok(dot_ns_identifier) = normalize_product_identifier(dot_ns_identifier) else {
-            return false;
-        };
+    /// The product account id the caller may act with, or `None` when it may
+    /// not.
+    ///
+    /// Its own account needs no grant and reaches nothing to find that out.
+    /// Any other product's account needs that product to name this caller in
+    /// its manifest's `trustedProducts` with `context` or `all`. That is the
+    /// same grant a cross-product alias needs, because a signature and an
+    /// alias both act as the account and the identity behind it.
+    ///
+    /// Returns the canonical spelling rather than a bare yes, so the grant and
+    /// the key derivation that follows are decided against one string.
+    pub(crate) async fn authorized_product_account(
+        &self,
+        dot_ns_identifier: &str,
+        cx: &CallContext,
+    ) -> Option<String> {
         let product_id = self.product_id();
         // Localhost products are development-only wildcards once a host admits
         // them. Production hosts must reject localhost products before creating
         // the product runtime.
-        product_id == "localhost"
-            || product_id.starts_with("localhost:")
-            || dot_ns_identifier == product_id
+        if truapi_platform::is_localhost_product_identifier(&product_id) {
+            return normalize_product_identifier(dot_ns_identifier).ok();
+        }
+        // Bounded here rather than left to the lookup: it can reach dotNS on
+        // the Asset Hub, and a caller's own deadline is what decides how long
+        // that may take. Expiry answers the same refusal as a target that
+        // granted nothing, so the wait cannot be read as an answer.
+        let cx = remote_authority_context(cx);
+        self.bounded_cross_product_scope_target(dot_ns_identifier, Granted::Context, &cx)
+            .await
     }
 
     /// Resolve the grant under the caller's deadline and cancellation, answering

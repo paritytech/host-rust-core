@@ -424,6 +424,7 @@ impl WalletCoinage {
         operation
             .source_cleared
             .resize(operation.source_public.len(), false);
+        let vrf = crate::runtime::vrf::load().await.map_err(|_| ())?;
         let chain = Arc::new(HostCoinageChain::new(
             context.services.platform.clone(),
             self.genesis_hash,
@@ -432,6 +433,7 @@ impl WalletCoinage {
             context.session_valid.clone(),
             context.services.spawner.clone(),
             self.store.clone(),
+            vrf,
         ));
         let at = chain.finalized_head().await.map_err(|_| ())?;
         let query = truapi_coinage::CoinOnChainQueryService::new(chain);

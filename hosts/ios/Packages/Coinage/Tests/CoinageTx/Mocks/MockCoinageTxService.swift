@@ -27,8 +27,22 @@ actor MockCoinageTxService: CoinageTxServicing {
     let store: MockCoinageTxRepository
     let callJournal: CallJournal
 
-    private(set) var submittedInputs: [[CoinageTxInput]] = []
-    private(set) var submittedOutputs: [[OwnAsset]] = []
+    /// One record of what a strategy declared, however it was registered.
+    ///
+    /// Submitted and scheduled transactions land here alike: an assertion about what a transfer
+    /// consumes and mints holds either way, and a test that cares which path was taken reads
+    /// ``scheduledRequests``. Lock-backed rather than actor state because `scheduleTransactions` is a
+    /// synchronous requirement — it runs inside a store's write block, which cannot suspend.
+    private struct Recorded {
+        var inputs: [[CoinageTxInput]] = []
+        var outputs: [[OwnAsset]] = []
+        var scheduled: [CoinageScheduledTxRequest] = []
+    }
+
+    private nonisolated let recorded = OSAllocatedUnfairLock<Recorded>(initialState: Recorded())
+
+    nonisolated var submittedInputs: [[CoinageTxInput]] { recorded.withLock { $0.inputs } }
+    nonisolated var submittedOutputs: [[OwnAsset]] { recorded.withLock { $0.outputs } }
     private(set) var handoffAssets: [OwnAsset] = []
 
     private let submissionOutcome: SubmissionOutcome
@@ -60,38 +74,44 @@ actor MockCoinageTxService: CoinageTxServicing {
     @discardableResult
     func submitTransactions(
         _ requests: [CoinageTxRequest],
-        groupId: CoinageTxGroupId?,
-        custody: NativeTransferCustody?,
-        authorization: (@Sendable () throws -> Void)?
+        groupId: CoinageTxGroupId?
     ) async throws -> [CoinageTxId] {
-        if let custody {
-            if case .thrown = submissionOutcome { throw StubError.boom }
-            let registrations = requests.map {
-                CoinageTxRegistration(
-                    txHash: Data(repeating: 0xAB, count: 32),
-                    checkpoint: BlockRef(number: 0, hash: Data(repeating: 0, count: 32)),
-                    mortalityBlocks: 300, groupId: groupId, inputs: $0.inputs, outputs: $0.outputs
-                )
-            }
-            try await beforeRegistration?()
-            let ledger = store.ledger
-            let ids = try await store.durable.register(registrations.map(\.durable)) { scope, ids in
-                try ledger.registerAssets(
-                    registrations.map(\.assets), for: ids, custody: custody, authorization: authorization, in: scope
-                )
-            }
-            submittedInputs += requests.map(\.inputs)
-            submittedOutputs += requests.map(\.outputs)
-            handoffAssets += custody.assets
-            if case .registeredThenThrown = submissionOutcome { throw StubError.boom }
-            for id in ids {
-                try await store.updateStatus(id, to: submissionOutcome == .chainFailure ? .failure : .finalizedSuccess)
-            }
-            return ids
-        }
         var ids: [CoinageTxId] = []
         for request in requests {
             try await ids.append(recordSubmission(request, groupId: groupId))
+        }
+        return ids
+    }
+
+    /// Native scheduling registers through the real in-memory store and ledger, so custody, marks and
+    /// transaction rows commit or roll back together, then resolves each row like a submission.
+    @discardableResult
+    func scheduleTransactions(
+        _ requests: [CoinageScheduledTxRequest],
+        groupId: CoinageTxGroupId?,
+        custody: NativeTransferCustody,
+        authorization: @escaping @Sendable () throws -> Void
+    ) async throws -> [CoinageTxId] {
+        callJournal.record("schedule")
+        if case .thrown = submissionOutcome { throw StubError.boom }
+        try await beforeRegistration?()
+        let ledger = store.ledger
+        let assets = requests.map { CoinageAssetRegistration(inputs: $0.inputs, outputs: $0.outputs) }
+        let ids = try await store.durable.schedule(
+            requests.map { DurableTxSchedule(domainId: .coinage, groupId: groupId, policy: $0.policy) },
+            in: nil
+        ) { scope, ids in
+            try ledger.registerAssets(assets, for: ids, custody: custody, authorization: authorization, in: scope)
+        }
+        recorded.withLock { current in
+            current.scheduled.append(contentsOf: requests)
+            current.inputs.append(contentsOf: requests.map(\.inputs))
+            current.outputs.append(contentsOf: requests.map(\.outputs))
+        }
+        handoffAssets += custody.assets
+        if case .registeredThenThrown = submissionOutcome { throw StubError.boom }
+        for id in ids {
+            try await store.updateStatus(id, to: submissionOutcome == .chainFailure ? .failure : .finalizedSuccess)
         }
         return ids
     }
@@ -112,8 +132,10 @@ actor MockCoinageTxService: CoinageTxServicing {
     }
 
     private func recordSubmission(_ request: CoinageTxRequest, groupId: CoinageTxGroupId?) async throws -> CoinageTxId {
-        submittedInputs.append(request.inputs)
-        submittedOutputs.append(request.outputs)
+        recorded.withLock { current in
+            current.inputs.append(request.inputs)
+            current.outputs.append(request.outputs)
+        }
         callJournal.record("submit")
 
         if case .thrown = submissionOutcome {
@@ -142,6 +164,46 @@ actor MockCoinageTxService: CoinageTxServicing {
         try await store.updateStatus(entry.id, to: terminal)
 
         return entry.id
+    }
+
+    /// What a caller scheduled, so a test can assert the transactions a strategy declared.
+    ///
+    /// `nonisolated` because the protocol requirement is synchronous — it runs inside a store's write
+    /// block, which cannot suspend — so an actor cannot satisfy it from isolated state.
+    nonisolated var scheduledRequests: [CoinageScheduledTxRequest] {
+        recorded.withLock { $0.scheduled }
+    }
+
+    @discardableResult
+    nonisolated func scheduleTransactions(
+        _ requests: [CoinageScheduledTxRequest],
+        groupId: CoinageTxGroupId,
+        joining _: any DurableTxRegistrationScope
+    ) throws -> [CoinageTxId] {
+        recorded.withLock { current in
+            current.scheduled.append(contentsOf: requests)
+            current.inputs.append(contentsOf: requests.map(\.inputs))
+            current.outputs.append(contentsOf: requests.map(\.outputs))
+        }
+        callJournal.record("schedule")
+
+        let ids = requests.map { _ in CoinageTxId() }
+
+        Task { [store] in
+            for request in requests {
+                let entry = CoinageTxEntry(
+                    inputs: request.inputs,
+                    outputs: request.outputs,
+                    groupId: groupId,
+                    txHash: Data(repeating: 0xAB, count: 32),
+                    checkpoint: BlockRef(number: 0, hash: Data(repeating: 0, count: 32)),
+                    mortality: 300
+                )
+                try? await store.register(entry)
+            }
+        }
+
+        return ids
     }
 
     nonisolated func subscribeTransactionStatus(_ id: CoinageTxId) -> AnyAsyncSequence<CoinageTxStatus> {

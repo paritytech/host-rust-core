@@ -45,6 +45,7 @@ final class MessageExchangeChatCoordinator {
         serviceFactory: MessageExchageServiceMaking,
         pushIdFactory: ChatPushIdMaking,
         pushMessageCoder: ChatPushMessageCoding,
+        notificationPayloadBuilder: ChatNotificationPayloadBuilding,
         chatRequestStoreService: ChatRequestStoreServicing,
         messageCompacterFactory: (any ChatMessageCompactorMaking)?,
         chatChainId: ChainModel.Id = AppConfig.Chains.chatChain,
@@ -74,6 +75,7 @@ final class MessageExchangeChatCoordinator {
             apnsClientService: APNSClientService(
                 pushIdFactory: pushIdFactory,
                 messageCoder: pushMessageCoder,
+                payloadBuilder: notificationPayloadBuilder,
                 tokenProvider: tokenProvider,
                 workQueue: workQueue
             ),

@@ -8,7 +8,7 @@ Use these typed utilities from `substrate-sdk-ios` instead of raw primitives:
 |------------------------|--------------------------------------|-------------------------|
 | Hex encoding           | `data.toHex()` (Data wrapper)        | `NSData.toHexString` from NovaCrypto, custom hex conversion |
 | Hex with prefix        | `data.toHex(includePrefix: true)`    | Manual `0x` prepend     |
-| Hex decoding           | `Data(hexString: str)` (Data wrapper)| `NSData(hexString:)` from NovaCrypto, custom hex parsing |
+| Hex decoding           | `str.fromHex()` (SubstrateSdkExt)    | `Data(hexString:)` directly, `NSData(hexString:)` from NovaCrypto, custom hex parsing |
 | Random data            | `Data.randomOrError`                 | `Data(random:)` etc.    |
 | SCALE encoding         | `ScaleEncodable` conformance         | Manual byte packing     |
 | SCALE decoding         | `ScaleDecodable` / `resultDecoder`   | Manual byte parsing     |

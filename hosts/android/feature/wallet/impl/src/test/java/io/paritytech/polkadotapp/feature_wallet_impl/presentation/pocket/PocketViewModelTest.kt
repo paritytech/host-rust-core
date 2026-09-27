@@ -20,6 +20,7 @@ import io.paritytech.polkadotapp.feature_wallet_impl.domain.model.PocketRank
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.PocketCardUiModel
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.PocketScreenState
 import io.paritytech.polkadotapp.test_shared.TestCoroutineDispatchers
+import io.paritytech.polkadotapp.test_shared.any
 import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -41,6 +42,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.never
+import org.mockito.Mockito.verify
 import org.mockito.stubbing.Answer
 
 class PocketViewModelTest {
@@ -123,6 +126,12 @@ class PocketViewModelTest {
         privileged = false,
     )
 
+    private fun privilegedCard(cardId: String) = PocketCard(
+        key = PocketCardKey(ProductId.fromStoredValue("peopl.dot"), PocketCardId(cardId)),
+        title = cardId,
+        privileged = true,
+    )
+
     // The collection is stored, decoded and served by a product's worker, so it has failure modes
     // the balance and identity cards do not share. Before the product cards joined this screen
     // nothing product-side could empty it; that must stay true.
@@ -173,5 +182,56 @@ class PocketViewModelTest {
 
         assertTrue("the card came back selected", viewModel.state.value is PocketScreenState.List)
         assertNull(viewModel.expandedProductSession.value)
+    }
+
+    /**
+     * A host-placed card is the one most likely to be opened, and only the host places one, so the
+     * set cannot grow with use. Fetching its pages when the collection arrives spends the time the
+     * user spends looking at the cards; waiting for [PocketViewModel.selectCard] offers only the
+     * half second the card takes to travel.
+     */
+    @Test
+    fun `a privileged card's product is fetched as soon as the collection arrives`() = runTest(testDispatcher) {
+        val card = privilegedCard("humanity")
+        whenever(interactor.observeProductCards()).thenReturn(flowOf(listOf(card)))
+
+        val viewModel = createViewModel()
+        settledCards(viewModel)
+
+        verify(interactor).warmUpProduct(card.key)
+    }
+
+    // The cost of warming every card is what the privileged set exists to avoid: a user holding
+    // cards from a dozen products would otherwise fetch a dozen archives on opening the tab.
+    @Test
+    fun `a card the user added is fetched only once it is selected`() = runTest(testDispatcher) {
+        val card = productCard("loyalty")
+        whenever(interactor.observeProductCards()).thenReturn(flowOf(listOf(card)))
+
+        val viewModel = createViewModel()
+        val uiCard = settledCards(viewModel).filterIsInstance<PocketCardUiModel.ProductCard>().single()
+        verify(interactor, never()).warmUpProduct(any())
+
+        viewModel.selectCard(uiCard)
+        advanceUntilIdle()
+
+        verify(interactor).warmUpProduct(card.key)
+    }
+
+    // The collection re-emits whenever it changes, and a fetch answered from cache still costs a
+    // chain read to reach that cache.
+    @Test
+    fun `a privileged product is fetched once however often the collection changes`() = runTest(testDispatcher) {
+        val privileged = privilegedCard("humanity")
+        val collection = MutableStateFlow(listOf(privileged))
+        whenever(interactor.observeProductCards()).thenReturn(collection)
+
+        val viewModel = createViewModel()
+        settledCards(viewModel)
+
+        collection.value = listOf(privileged, productCard("loyalty"))
+        advanceUntilIdle()
+
+        verify(interactor).warmUpProduct(privileged.key)
     }
 }

@@ -2,43 +2,21 @@ import Foundation
 
 @MainActor
 enum SearchContactViewFactory {
-    static func createView(with model: SearchContactModel) -> SearchContactViewProtocol? {
-        let walletRepo: WalletManagerRepositoryProtocol = .shared
-        guard let ownAccountId = try? walletRepo.main().getRawPublicKey() else {
-            assertionFailure()
+    static func createView(
+        onChatFound: @escaping (ChatOpenModel) -> Void
+    ) -> SearchContactViewProtocol? {
+        guard let module = SearchContactModuleFactory.makeModule() else {
             return nil
         }
 
-        let localContactSearch = LocalContactSearchService(
-            repositoryFactory: ChatContactRepositoryFactory()
-        )
-        let recentChatsProvider = RecentChatsProvider(
-            chatProvider: ChatContactDataProviderFactory()
-        )
+        let view = SearchContactViewController(presenter: module.presenter)
+        module.presenter.view = view
 
-        let accountSearching: any AccountSearching<ContactSearchPayload, ContactSearchPayload> =
-            AccountSearchProvider(
-                recentRowsStream: { recentChatsProvider.subscribe() },
-                localContactSearch: localContactSearch,
-                remoteContactSearch: RemoteContactOperationFactory(),
-                ownAccountId: ownAccountId,
-                logger: Logger.shared
-            )
-
-        let interactor = SearchContactInteractor(
-            accountSearching: accountSearching
-        )
-        let wireframe = SearchContactWireframe(model: model)
-
-        let presenter = SearchContactPresenter(
-            interactor: interactor,
-            wireframe: wireframe
-        )
-
-        let view = SearchContactViewController(presenter: presenter)
-
-        presenter.view = view
-        interactor.presenter = presenter
+        // Dismissal belongs to the presenting screen, not the wireframe, so the panel host can
+        // reuse the same module without a modal to dismiss.
+        module.wireframe.onChatFound = { [weak view] model in
+            view?.dismiss(animated: true) { onChatFound(model) }
+        }
 
         return view
     }

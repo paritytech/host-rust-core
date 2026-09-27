@@ -62,6 +62,69 @@ struct CoinageGroupStatusQueryTests {
     }
 }
 
+/// The policy a transaction is registered with has to reach the store, or nothing can ever rebuild it.
+///
+/// A claim is the case that matters: it is built and submitted eagerly — registered, never scheduled —
+/// and still carries a policy, because the peer's coin is money nothing else will collect. When the
+/// policy was dropped at the persistence boundary the verdict writer read back `nil`, wrote the failure
+/// as terminal, and the coin was stranded.
+@Suite("Durable submission policy persistence")
+struct DurableSubmissionPolicyPersistenceTests {
+    private let policyId = SubmissionPolicyId("coinage-claim")
+
+    @Test("a policy attached to an eager registration is read back")
+    func registrationPolicyIsPersisted() async throws {
+        let store = CoinageCoreDataLedger(storageFacade: UserDataStorageTestFacade())
+        let params = Data([0xDE, 0xAD, 0xBE, 0xEF])
+
+        let id = try #require(try await register(store, policy: SubmissionPolicy(id: policyId, params: params)))
+
+        let stored = try await store.durable.getSubmissionPolicy(id: id)
+        #expect(stored == SubmissionPolicy(id: policyId, params: params))
+    }
+
+    @Test("a registration with no policy reads back none, not an empty one")
+    func registrationWithoutPolicyStaysNil() async throws {
+        let store = CoinageCoreDataLedger(storageFacade: UserDataStorageTestFacade())
+
+        let id = try #require(try await register(store, policy: nil))
+
+        #expect(try await store.durable.getSubmissionPolicy(id: id) == nil)
+    }
+
+    @Test("a scheduled transaction's policy is read back too")
+    func schedulePolicyIsPersisted() async throws {
+        let store = CoinageCoreDataLedger(storageFacade: UserDataStorageTestFacade())
+        let params = Data([1, 2, 3])
+
+        let ids = try await store.durable.schedule(
+            [DurableTxSchedule(
+                domainId: .coinage,
+                groupId: "group",
+                policy: SubmissionPolicy(id: policyId, params: params)
+            )],
+            in: nil,
+            onRegister: { _, _ in }
+        )
+
+        let id = try #require(ids.first)
+        #expect(try await store.durable.getSubmissionPolicy(id: id) == SubmissionPolicy(id: policyId, params: params))
+    }
+
+    private func register(_ store: CoinageCoreDataLedger, policy: SubmissionPolicy?) async throws -> DurableTxId? {
+        try await store.durable.register([
+            DurableTxRegistration(
+                domainId: .coinage,
+                groupId: "group",
+                txHash: Data(repeating: 0xAB, count: 32),
+                checkpoint: BlockRef(number: 100, hash: Data([100])),
+                mortalityBlocks: 64,
+                policy: policy
+            )
+        ]) { _, _ in }.first
+    }
+}
+
 private extension CoinageGroupStatusQueryTests {
     func makeStore() -> CoinageCoreDataLedger {
         CoinageCoreDataLedger(storageFacade: UserDataStorageTestFacade())

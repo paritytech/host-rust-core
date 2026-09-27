@@ -55,15 +55,17 @@ outcome. Shared Rust code adds `Response<P> { responding_to, payload }`;
 the generated request contract selects its wire variant. An inner async block
 preserves `?` and early returns.
 
-The generated `dispatch(&self, session, message)` method matches the existing
-wire enum directly, routing requests to handlers and handling responses and
-disconnects separately. Without a session it returns the response's typed disconnected error.
+The generated `dispatch(&self, cx, message)` method matches the existing
+wire enum directly, routing requests to handlers and handling responses,
+disconnects and cancels separately. The caller builds `cx` for the message, so
+it owns the request's cancellation. Without one it returns the response's typed
+disconnected error.
 Shared reply finishing supplies correlation and defaults the transcript outcome
 to success or error; handlers classify operation-specific outcomes. Missing
 handlers, undeclared wire variants, and incompatible payloads fail compilation.
 
-The wire enum contains requests, responses, and disconnects in one SCALE tag
-space. Dispatch has no catch-all arm: every request needs a handler,
+The wire enum contains requests, responses, disconnects and cancels in one
+SCALE tag space. Dispatch has no catch-all arm: every request needs a handler,
 and every response must be selected by at least one handler. Handler parameters
 must match their wire payloads, including any boxing. The macro also generates
 the enum's `name()`, `responding_to()`, and `with_responding_to()` helpers.

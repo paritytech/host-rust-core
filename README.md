@@ -173,6 +173,7 @@ rust/crates/
   truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
   truapi-polkavm-host/   Optional native composition of truapi-server and a pinned PolkaVM runtime
+  truapi-verifiable/     Ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
@@ -230,21 +231,31 @@ logs** remain available.
 See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope,
 and the macro implementation modules.
 
-The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server UniFFI core) lives under
-[`ios/truapi-host/`](ios/truapi-host), with its SPM manifest at the repo root (`Package.swift`) so apps can consume it
-as a git-URL dependency. The UniFFI bindings and the container bundle are gitignored build outputs; `scripts/rebuild.sh`
-regenerates them along with the xcframework (`make xcframework` + `make uniffi`); see
-[`ios/truapi-host/README.md`](ios/truapi-host/README.md). The container publishes the shared client and a temporary
-MessagePort adapter for older SDKs. The adapter's removal is tracked in
-[#881](https://github.com/paritytech/host-rust-core/issues/881); CLI and iframe MessagePort transports remain supported.
-Native bindings expose the canonical Rust domain and protocol value types; native-only adapter types are limited to
-lifecycle and callback behavior. On iOS, a wallet host that manages its own statement-store SSO session can call
-`handleSsoRequest` (routes one decrypted remote message through the core, returning a typed outcome: response bytes to
-post back, a disconnect marker, or ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message for a
-wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and session-record cleanup remain on the wallet
-side. See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso) for typed handlers,
-canonical resource types, and consent bound to the signing session. Product and SSO signing share canonical payloads and
-the one-byte `OptionBool` encoding for `with_signed_transaction`.
+The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
+UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
+manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
+dependency. The UniFFI bindings and the container bundle are gitignored build
+outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
+(`make xcframework` + `make uniffi`); see
+[`ios/truapi-host/README.md`](ios/truapi-host/README.md).
+The container publishes the shared client and a temporary MessagePort adapter for
+older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
+CLI and iframe MessagePort transports remain supported.
+The [container permission boundary](js/container/README.md) documents the protected
+operations and the built-ins that remain mutable for product compatibility.
+Native bindings expose the canonical Rust domain and protocol value types;
+native-only adapter types are limited to lifecycle and callback behavior.
+On iOS, a wallet host that manages its own statement-store SSO session can call
+`handleSsoRequest` (routes one decrypted remote message through the core,
+returning a typed outcome: response bytes to post back, a disconnect marker, or
+ignored; a `Cancel` returns at once, so the wallet passes it on without queueing
+it behind the request it withdraws) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
+for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
+session-record cleanup remain on the wallet side.
+See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
+for typed handlers, canonical resource types, and consent bound to the signing session.
+Product and SSO signing share canonical payloads and the one-byte `OptionBool`
+encoding for `with_signed_transaction`.
 
 ### JS Host SDKs
 
@@ -277,6 +288,28 @@ finalized state instead, including the relay a parachain syncs through. The prov
 written; the host owns where the bytes live. The crate stores nothing itself: a host implements `StorageClient` over
 storage it already owns, on web and native alike, so it keeps control of quota and of whether the bytes are backed up or
 encrypted.
+
+### Wire debugger
+
+[`@parity/truapi-debugger`](js/packages/truapi-debugger) is the consumer for the
+payload-blind frame tap in `truapi-server`. The core streams raw SCALE frames out
+of two choke points; the debugger correlates them into per-operation traces,
+decodes envelopes and values behind a `TRUAPI_WIRE_SCHEMA_HASH` match, and renders
+them through one of two mounts:
+
+- `startDebugServer(...)` is a standalone Bun WS+HTTP server on `127.0.0.1:9231`
+  that hosts dial into, so frames from any host reach one inspector.
+- `createInAppDebugger(...)` mounts the same engine inside the host page, with no
+  server and no dial.
+
+All decoding lives in this package; `@parity/truapi` has no debug seam. Its
+[README](js/packages/truapi-debugger/README.md) carries the endpoint list and the
+per-host enablement recipe.
+
+`make debugger` brings up the inspector on `:9231` alongside a dot.li host and the
+playground. It builds the host with `NODE_ENV=development` on purpose: the dial
+sits behind `import.meta.env.DEV`, which a production bundle replaces with `false`,
+so `make dev` leaves the board empty with no error.
 
 ## How it works
 
@@ -357,16 +390,28 @@ the host already live. The product reaches it through a development-only `<scrip
 }
 ```
 
-The host serves that script itself, with no imports or environment variables needed. It installs the shared client and
-browser container before product code runs. Keep the tag before application scripts, without `async` or `defer`. SDK
-calls and permission checks share one connection. Updated SDKs reuse the injected client across reconnects; older SDKs
-can still start through the MessagePort adapter but require a page reload after a disconnect. After a failed reconnect,
-the next API call or return to a visible page tries again. The container routes fetch, XHR and WebSocket permission
-checks to Rust. WebRTC and camera/microphone access use the same live permission checks. `/script` shares these wrappers
-for the APIs available in Bun. CLI permission checks support development testing; product code can deliberately bypass
-them. Native hosts retain their separate authorization protection. TCP frame connections are accepted only from loopback
-peers, and browser WebSocket origins must also name localhost or a loopback IP. WebSocket is not subject to CORS, and
-confirmations here are auto-approved.
+The host serves that script itself, with no imports or environment variables
+needed. It installs the shared client and browser container before product code
+runs. Keep the tag before application scripts, without `async` or `defer`.
+SDK calls and permission checks share one connection. Updated SDKs reuse the
+injected client across reconnects; older SDKs can still start through the
+MessagePort adapter but require a page reload after a disconnect.
+A visible page retries a failed reconnect after 250 ms, 1 s and 4 s; after that, the next API
+call or return to a visible page tries again.
+On iOS the host rebinds its localhost listener on the same port each time the app
+returns to the foreground, since the system reclaims a suspended app's listening socket.
+On every platform the bridge also rebinds the port itself when its listening socket is destroyed,
+pausing between failed attempts instead of retrying in a tight loop; other accept errors keep the port.
+When WebKit loses its networking process, every MessagePort a page already holds stops
+delivering; the container detects this after a disconnect and reloads the page.
+The container routes fetch, XHR and WebSocket permission checks to Rust.
+WebRTC and camera/microphone access use the same live permission checks.
+`/script` shares these wrappers for the APIs available in Bun. CLI permission
+checks support development testing; product code can deliberately bypass them.
+Native hosts retain their separate authorization protection. TCP frame
+connections are accepted only from loopback peers, and browser WebSocket
+origins must also name localhost or a loopback IP. WebSocket is not subject to
+CORS, and confirmations here are auto-approved.
 
 The CLI owns the wrapped command's process group on Unix. On shutdown it sends SIGTERM to the group, waits up to five
 seconds, then sends SIGKILL if a descendant still remains. This prevents a package-manager child from keeping a
@@ -390,23 +435,24 @@ moving. `hosts/imports.json` records where each tree came from and at which revi
 ```bash
 scripts/refresh-host-import.sh status ios     # how far behind, and what differs
 scripts/refresh-host-import.sh refresh ios    # take the new tree, re-apply adaptations
-scripts/refresh-host-import.sh backport ios   # what this tree owes the source
 ```
 
-`refresh` replaces the tree with the source's, re-applies this repository's adaptations on top as a three-way patch,
-then compares every path against the source by blob hash in both directions. A difference no adaptation accounts for is
-upstream work that was dropped; an adaptation that left no difference either did not apply or has been adopted upstream.
+Changes move one way, from the source into this tree. A change made here is not
+sent back: the source is upstream of this repository, not a peer.
+
+`refresh` replaces the tree with the source's, re-applies this repository's
+adaptations on top as a three-way patch, then compares every path against the
+source by blob hash in both directions. A difference no adaptation accounts for
+is upstream work that was dropped; an adaptation that left no difference either
+did not apply or has been adopted upstream.
 
 A clean apply is staged for review. A conflicted one is left unmerged, so git refuses to commit it until someone decides
 which side is right.
 
-`refresh` moves changes one way, from the source into this tree. `backport` answers the other direction: of everything
-this tree has changed, which is app code the source does not have. The rest, the CI actions and the manifests that
-resolve the core from here, exists because the tree lives in this repository, and is listed per host in
-`hosts/imports.json` under `infrastructure`.
-
-`--patch <file>` writes the owed changes with the `hosts/<host>/` prefix stripped, so they apply at the root of the
-source repository.
+Drift is picked up on a schedule. `.github/workflows/backport-host.yml` opens a
+pull request carrying a single `BACKPORT-<host>.md`, which names the range, the
+pull requests in it, and what has to be done to finish the work. Completing that
+pull request means running the command above and deleting the file.
 
 ### Working on the iOS host
 
@@ -470,10 +516,13 @@ Two workflows deliver through Firebase App Distribution, which reaches a named t
 link. That matters beyond convenience: these builds carry configuration that should not be public, so attaching them to
 a release is not an option.
 
-`android-nightly.yml` runs on weekdays at 22:00 UTC, two hours after the iOS nightly starts, so the two never overlap.
-`android-debug-distribution.yml` runs when a pull request merges to `main`, and answers what `main` does right now. It
-builds the merge commit rather than the pull request's merge preview, which is computed while the request is open and
-would otherwise ship a tree missing whatever landed first.
+`android-nightly.yml` runs daily at 22:00 UTC, two hours after the iOS
+nightly starts, so the two never overlap. Both nightlies skip a scheduled night
+when `main` has not moved past what their last successful run built. `android-debug-distribution.yml` runs
+when a pull request merges to `main`, and answers what `main` does right now.
+It builds the merge commit rather than the pull request's merge preview, which
+is computed while the request is open and would otherwise ship a tree missing
+whatever landed first.
 
 Both authenticate by federation. The run proves its identity with its OIDC token and receives a short lived credential,
 so no long lived key for that project is stored here. Both check the delivery target before building, since an hour is
