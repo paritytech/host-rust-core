@@ -192,8 +192,6 @@ IOS_APP := $(abspath $(IOS_DERIVED_DATA)/Build/Products/$(IOS_CONFIGURATION)-iph
 ios-bootstrap: ## Generate everything hosts/ios needs before Xcode can load its package graph (SIM_ONLY=1 for simulator slices only).
 	./scripts/codegen.sh
 	./ios/truapi-host/scripts/rebuild.sh
-	$(MAKE) provider-swift
-	sh ios/truapi-provider/scripts/sync-bindings.sh
 	@echo "hosts/ios can now be opened in Xcode."
 
 ios-build: ## Rebuild the local Rust package and the TestFlight-configured iOS simulator app.

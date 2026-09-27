@@ -63,4 +63,3 @@ xcodebuild -create-xcframework "${ARGS[@]}" -output "$OUT"
 PROVIDER_XCFRAMEWORK="$OUT" sh "$PACKAGE_ROOT/scripts/stage-xcframework.sh"
 
 echo "done."
-echo "Build against it with TRUAPI_PROVIDER_USE_LOCAL_BINARY=1."
