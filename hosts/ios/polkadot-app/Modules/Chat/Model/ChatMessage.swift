@@ -24,6 +24,7 @@ extension Chat {
         let reactions: [Chat.MessageReaction]
         let compactionId: MessageId?
         let relatedMessages: [Chat.RelatedLocalMessage]
+        let order: UInt64
 
         init?(
             remote: Chat.RemoteMessage,
@@ -61,6 +62,7 @@ extension Chat {
             reactions = []
             compactionId = nil
             relatedMessages = []
+            order = 0
         }
 
         init(
@@ -79,6 +81,7 @@ extension Chat {
             reactions = []
             compactionId = nil
             relatedMessages = []
+            order = 0
         }
 
         init(
@@ -91,7 +94,8 @@ extension Chat {
             content: Content,
             reactions: [Chat.MessageReaction],
             compactionId: MessageId?,
-            relatedMessages: [Chat.RelatedLocalMessage]
+            relatedMessages: [Chat.RelatedLocalMessage],
+            order: UInt64 = 0
         ) {
             self.messageId = messageId
             self.chatId = chatId
@@ -103,6 +107,7 @@ extension Chat {
             self.reactions = reactions
             self.compactionId = compactionId
             self.relatedMessages = relatedMessages
+            self.order = order
         }
     }
 
@@ -555,7 +560,8 @@ extension Chat.LocalMessage {
             content: content,
             reactions: reactions,
             compactionId: compactionId,
-            relatedMessages: relatedMessages
+            relatedMessages: relatedMessages,
+            order: order
         )
     }
 
@@ -570,7 +576,8 @@ extension Chat.LocalMessage {
             content: newContent,
             reactions: reactions,
             compactionId: compactionId,
-            relatedMessages: relatedMessages
+            relatedMessages: relatedMessages,
+            order: order
         )
     }
 }
