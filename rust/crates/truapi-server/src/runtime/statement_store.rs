@@ -32,6 +32,7 @@ use truapi::versioned::statement_store::{
     RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest,
 };
 use truapi::{CallContext, CallError, Subscription};
+use truapi_platform::{StatementStoreProductSignReview, UserConfirmationReview};
 
 #[truapi::async_trait]
 impl StatementStore for ProductRuntimeHost {
@@ -66,11 +67,15 @@ impl StatementStore for ProductRuntimeHost {
                     latest::RemoteStatementStoreCreateProofError::UnknownAccount,
                 ))
             })?;
-        if !self.is_product_account_valid_for_caller(&inner.product_account_id.dot_ns_identifier) {
+        let Some(owner) = self
+            .authorized_product_account(&inner.product_account_id.dot_ns_identifier, cx)
+            .await
+        else {
             return Err(CallError::Domain(RemoteStatementStoreCreateProofError::V1(
                 latest::RemoteStatementStoreCreateProofError::UnknownAccount,
             )));
-        }
+        };
+        inner.product_account_id.dot_ns_identifier = owner;
         let proof = self
             .create_product_statement_proof(cx, inner.product_account_id, inner.statement)
             .await
@@ -341,6 +346,27 @@ impl ProductRuntimeHost {
             .map_err(StatementProofFailure::InvalidStatement)?;
         let payload = unsigned_statement_signing_payload(fields)
             .map_err(StatementProofFailure::UnableToSign)?;
+        // Signing as another product needs the user, not only that product's
+        // publisher. The three signing capabilities reach a confirmation
+        // through their own AutoSigning gate, which never covers a caller that
+        // is not the account's own product; this path has no such gate, so the
+        // confirmation is raised here rather than being absent.
+        if product_account_id.dot_ns_identifier != self.product_id() {
+            let confirmed = self
+                .platform
+                .confirm_user_action(UserConfirmationReview::StatementStoreProductSign(
+                    StatementStoreProductSignReview {
+                        calling_product_id: Some(self.product_id()),
+                        account: product_account_id.clone(),
+                        payload: payload.clone(),
+                    },
+                ))
+                .await
+                .map_err(|err| StatementProofFailure::UnableToSign(err.reason))?;
+            if !confirmed {
+                return Err(StatementProofFailure::Refused);
+            }
+        }
         let cx = remote_authority_context(cx);
         let signature = remote_authority_call(
             &cx,
@@ -399,6 +425,8 @@ fn create_statement_proof_with_key(
 
 enum StatementProofFailure {
     NoSession,
+    /// The user refused a signature made with another product's account.
+    Refused,
     InvalidStatement(String),
     UnableToSign(String),
 }
@@ -414,7 +442,7 @@ fn statement_proof_domain_error(
     failure: StatementProofFailure,
 ) -> latest::RemoteStatementStoreCreateProofError {
     match failure {
-        StatementProofFailure::NoSession => {
+        StatementProofFailure::NoSession | StatementProofFailure::Refused => {
             latest::RemoteStatementStoreCreateProofError::UnableToSign
         }
         StatementProofFailure::UnableToSign(_reason) => {
@@ -481,8 +509,32 @@ mod tests {
             .unwrap();
     }
 
+    /// Seed `owner`'s manifest cache so its `context` grant to `grantee`
+    /// resolves without a chain.
+    fn cache_context_grant(platform: &StubPlatform, owner: &str, grantee: &str) {
+        let entry = crate::runtime::product_manifest::CachedManifest {
+            fetched_at_secs: crate::host_logic::statement_store::current_unix_secs(),
+            json: Some(format!(
+                r#"{{"$v":1,"trustedProducts":{{"{grantee}":["context"]}}}}"#
+            )),
+        };
+        futures::executor::block_on(truapi_platform::CoreStorage::write_core_storage(
+            platform,
+            crate::runtime::product_manifest::manifest_cache_key(owner),
+            entry.encode(),
+        ))
+        .expect("stub core storage accepts the entry");
+    }
+
     fn signing_host_runtime(product_id: &str) -> (ProductRuntimeHost, Arc<SigningHostRole>) {
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
+        signing_host_runtime_on(product_id, Arc::new(StubPlatform::default()))
+    }
+
+    fn signing_host_runtime_on(
+        product_id: &str,
+        platform: Arc<StubPlatform>,
+    ) -> (ProductRuntimeHost, Arc<SigningHostRole>) {
+        let platform: Arc<dyn truapi_platform::Platform> = platform;
         let services = RuntimeServices::new(
             platform.clone(),
             truapi_platform::HostInfo {
@@ -559,6 +611,89 @@ mod tests {
         };
         assert_eq!(signer, expected_signer);
         assert_sr25519_signature(signer, signature, &payload);
+    }
+
+    /// The three signing capabilities reach a user confirmation through their
+    /// AutoSigning gate, which never covers a caller that is not the account's
+    /// own product. This path has no such gate, so signing as another product
+    /// raises the confirmation itself rather than going out silently.
+    #[test]
+    fn statement_store_create_proof_confirms_a_cross_product_account() {
+        let platform = Arc::new(StubPlatform {
+            sign_raw_confirmed: true,
+            ..Default::default()
+        });
+        cache_context_grant(&platform, "dim2.paseo", "dim2next");
+        let (host, _signing_host) = signing_host_runtime_on("dim2next.paseo", platform.clone());
+        let statement = statement();
+        let payload = statement_payload(statement.clone());
+        let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
+        let owner = derive_product_keypair(&root, "dim2.paseo", index_bytes(0)).unwrap();
+        let request = RemoteStatementStoreCreateProofRequest::V1(
+            latest::RemoteStatementStoreCreateProofRequest {
+                product_account_id: account_id("dim2.paseo", 0),
+                statement,
+            },
+        );
+
+        let response = futures::executor::block_on(StatementStore::create_proof(
+            &host,
+            &CallContext::default(),
+            request,
+        ))
+        .expect("the grant admits the account");
+
+        let RemoteStatementStoreCreateProofResponse::V1(inner) = response;
+        let latest::StatementProof::Sr25519 { signer, signature } = inner.proof else {
+            panic!("expected sr25519 statement proof");
+        };
+        assert_eq!(
+            signer,
+            owner.public.to_bytes(),
+            "the owner's account signed"
+        );
+        assert_sr25519_signature(signer, signature, &payload);
+
+        let reviews = platform
+            .statement_store_product_sign_reviews
+            .lock()
+            .expect("statement store product sign review list mutex poisoned");
+        assert_eq!(reviews.len(), 1, "the user saw the signature");
+        assert_eq!(
+            reviews[0].calling_product_id.as_deref(),
+            Some("dim2next.paseo"),
+            "and saw which product asked",
+        );
+    }
+
+    #[test]
+    fn statement_store_create_proof_refuses_a_cross_product_account_the_user_declines() {
+        let platform = Arc::new(StubPlatform {
+            sign_raw_confirmed: false,
+            ..Default::default()
+        });
+        cache_context_grant(&platform, "dim2.paseo", "dim2next");
+        let (host, _signing_host) = signing_host_runtime_on("dim2next.paseo", platform);
+        let request = RemoteStatementStoreCreateProofRequest::V1(
+            latest::RemoteStatementStoreCreateProofRequest {
+                product_account_id: account_id("dim2.paseo", 0),
+                statement: statement(),
+            },
+        );
+
+        let err = futures::executor::block_on(StatementStore::create_proof(
+            &host,
+            &CallContext::default(),
+            request,
+        ))
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CallError::Domain(RemoteStatementStoreCreateProofError::V1(
+                latest::RemoteStatementStoreCreateProofError::UnableToSign
+            ))
+        ));
     }
 
     #[test]

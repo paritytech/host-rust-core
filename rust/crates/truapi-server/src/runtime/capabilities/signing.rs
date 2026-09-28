@@ -21,9 +21,10 @@ use crate::runtime::authority::{
     SignPayloadAuthorityRequest, SignRawAuthorityRequest,
 };
 use crate::runtime::{
-    LEGACY_ACCOUNT_UNAVAILABLE_REASON, LEGACY_PRODUCT_ACCOUNT_MISMATCH_REASON, LegacySigner,
-    ProductRuntimeHost, remote_authority_call, remote_authority_context, signing_call_error,
-    transaction_call_error, until_cancelled,
+    ContactResolutionError, LEGACY_ACCOUNT_UNAVAILABLE_REASON,
+    LEGACY_PRODUCT_ACCOUNT_MISMATCH_REASON, LegacySigner, ProductRuntimeHost,
+    remote_authority_call, remote_authority_context, signing_call_error, transaction_call_error,
+    until_cancelled,
 };
 
 #[truapi::async_trait]
@@ -41,11 +42,6 @@ impl Signing for ProductRuntimeHost {
                 v01::HostSignPayloadError::PermissionDenied,
             ))
         })?;
-        if !self.is_product_account_valid_for_caller(&inner.account.dot_ns_identifier) {
-            return Err(CallError::Domain(HostSignPayloadError::V1(
-                v01::HostSignPayloadError::PermissionDenied,
-            )));
-        }
         self.require_chain_submit(HostSignPayloadError::V1(
             v01::HostSignPayloadError::PermissionDenied,
         ))
@@ -55,6 +51,15 @@ impl Signing for ProductRuntimeHost {
                 v01::HostSignPayloadError::Rejected,
             )));
         };
+        let Some(owner) = self
+            .authorized_product_account(&inner.account.dot_ns_identifier, cx)
+            .await
+        else {
+            return Err(CallError::Domain(HostSignPayloadError::V1(
+                v01::HostSignPayloadError::PermissionDenied,
+            )));
+        };
+        inner.account.dot_ns_identifier = owner;
         let grant = self
             .auto_signing_status(&session, &inner.account)
             .await
@@ -64,7 +69,10 @@ impl Signing for ProductRuntimeHost {
                 cx,
                 self.platform
                     .confirm_user_action(UserConfirmationReview::SignPayload(
-                        SignPayloadReview::Product(inner.clone()),
+                        SignPayloadReview::Product {
+                            calling_product_id: Some(self.product_id()),
+                            request: inner.clone(),
+                        },
                     )),
             )
             .await
@@ -127,11 +135,6 @@ impl Signing for ProductRuntimeHost {
                 v01::HostCreateTransactionError::PermissionDenied,
             ))
         })?;
-        if !self.is_product_account_valid_for_caller(&inner.signer.dot_ns_identifier) {
-            return Err(CallError::Domain(HostCreateTransactionError::V1(
-                v01::HostCreateTransactionError::PermissionDenied,
-            )));
-        }
         self.require_chain_submit(HostCreateTransactionError::V1(
             v01::HostCreateTransactionError::PermissionDenied,
         ))
@@ -141,16 +144,55 @@ impl Signing for ProductRuntimeHost {
                 v01::HostCreateTransactionError::Rejected,
             )));
         };
+        let Some(owner) = self
+            .authorized_product_account(&inner.signer.dot_ns_identifier, cx)
+            .await
+        else {
+            return Err(CallError::Domain(HostCreateTransactionError::V1(
+                v01::HostCreateTransactionError::PermissionDenied,
+            )));
+        };
+        inner.signer.dot_ns_identifier = owner;
+        let names_contacts = !inner.contacts.is_empty();
+        inner.call_data = self
+            .substitute_declared_contacts(inner.call_data, &inner.contacts)
+            .await
+            .map_err(|error| {
+                let error = match error {
+                    ContactResolutionError::Unsupported => {
+                        v01::HostCreateTransactionError::NotSupported {
+                            reason: "this host resolves no contacts".to_string(),
+                        }
+                    }
+                    ContactResolutionError::NotConnected => {
+                        v01::HostCreateTransactionError::PermissionDenied
+                    }
+                    ContactResolutionError::Host(reason) => {
+                        v01::HostCreateTransactionError::Unknown { reason }
+                    }
+                    ContactResolutionError::UnknownContact => {
+                        v01::HostCreateTransactionError::UnknownContact
+                    }
+                };
+                CallError::Domain(HostCreateTransactionError::V1(error))
+            })?;
         let grant = self
             .auto_signing_status(&session, &inner.signer)
             .await
             .map_err(|reason| transaction_call_error(HostCreateTransactionError::V1, reason))?;
-        if grant == AutoSigningGrant::Absent {
+        // The signed call goes back to the product with each contact's real
+        // account in it, so naming a contact always asks the user: an
+        // auto-signing grant must not let a product read accounts out of
+        // handles unseen.
+        if grant == AutoSigningGrant::Absent || names_contacts {
             let confirmed = until_cancelled(
                 cx,
                 self.platform
                     .confirm_user_action(UserConfirmationReview::CreateTransaction(
-                        CreateTransactionReview::Product(inner.clone()),
+                        CreateTransactionReview::Product {
+                            calling_product_id: Some(self.product_id()),
+                            payload: inner.clone(),
+                        },
                     )),
             )
             .await
@@ -392,11 +434,6 @@ impl ProductRuntimeHost {
                 v01::HostSignPayloadError::PermissionDenied,
             ))
         })?;
-        if !self.is_product_account_valid_for_caller(&inner.account.dot_ns_identifier) {
-            return Err(CallError::Domain(HostSignRawError::V1(
-                v01::HostSignPayloadError::PermissionDenied,
-            )));
-        }
         self.require_chain_submit(HostSignRawError::V1(
             v01::HostSignPayloadError::PermissionDenied,
         ))
@@ -406,6 +443,15 @@ impl ProductRuntimeHost {
                 v01::HostSignPayloadError::Rejected,
             )));
         };
+        let Some(owner) = self
+            .authorized_product_account(&inner.account.dot_ns_identifier, cx)
+            .await
+        else {
+            return Err(CallError::Domain(HostSignRawError::V1(
+                v01::HostSignPayloadError::PermissionDenied,
+            )));
+        };
+        inner.account.dot_ns_identifier = owner;
         // The deprecated unwatermarked API is never grant-covered: its
         // signatures are not domain-separated from transaction signatures, so a
         // standing grant would waive the prompt on the one surface that can
@@ -422,6 +468,7 @@ impl ProductRuntimeHost {
                 cx,
                 self.platform
                     .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product {
+                        calling_product_id: Some(self.product_id()),
                         request: inner.clone(),
                         watermarked,
                     })),

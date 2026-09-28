@@ -2068,9 +2068,9 @@ impl PairingHost {
     /// for it.
     ///
     /// A caller may name an account belonging to another product —
-    /// `is_product_account_valid_for_caller` admits that for a `localhost`
-    /// caller — and the grant covers the owning product's subtree, not the
-    /// caller's. Serving one locally would sign with a key the caller was
+    /// `authorized_product_account` admits that for a `localhost` caller, and
+    /// for one the owner granted `context` — and the grant covers the owning
+    /// product's subtree, not the caller's. Serving one locally would sign with a key the caller was
     /// never granted and skip the confirmation the signing host raises for a
     /// relayed request, so the binding is checked here rather than only at the
     /// gate.
@@ -2569,6 +2569,24 @@ impl PairingHost {
             },
         )
     }
+
+    /// Contact-handle key from the wallet-provided root entropy source.
+    ///
+    /// Unlike `derive_entropy` this does not require a live SSO channel: it
+    /// needs the key material the session already carries, not a round trip to
+    /// the wallet.
+    fn contacts_handle_key(&self, session: &AuthoritySession) -> Result<[u8; 32], AuthorityError> {
+        let session = self.current_private_session(session)?;
+        let root_entropy_source =
+            session
+                .root_entropy_source
+                .ok_or_else(|| AuthorityError::Unavailable {
+                    reason: "Session secret missing".to_string(),
+                })?;
+        Ok(crate::runtime::contacts::handle_key_from_root_source(
+            &root_entropy_source,
+        ))
+    }
 }
 
 fn apply_ring_vrf_disclosure(
@@ -2812,5 +2830,9 @@ impl ProductAuthority for PairingHost {
         context: &[u8],
     ) -> Result<[u8; 32], AuthorityError> {
         PairingHost::derive_entropy(self, session, product_id, context)
+    }
+
+    fn contacts_handle_key(&self, session: &AuthoritySession) -> Result<[u8; 32], AuthorityError> {
+        PairingHost::contacts_handle_key(self, session)
     }
 }

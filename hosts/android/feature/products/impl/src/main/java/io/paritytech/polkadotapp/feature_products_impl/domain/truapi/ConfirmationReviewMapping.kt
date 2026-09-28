@@ -129,7 +129,7 @@ private fun <Signer> HostSignPayloadData.toSignerPayloadJson(account: Signer) = 
 
 private fun SignPayloadReview.toSigningRequestBody(): SigningRequestBody = when (this) {
     is SignPayloadReview.Product ->
-        SigningRequestBody.Transaction(v1.payload.toSignerPayloadJson(v1.account.toDomain()))
+        SigningRequestBody.Transaction(request.payload.toSignerPayloadJson(request.account.toDomain()))
     is SignPayloadReview.LegacyAccount ->
         SigningRequestBody.TransactionLegacy(
             v1.payload.toSignerPayloadJson(v1.signer.parseLegacySigner().toDataByteArray()),
@@ -176,11 +176,11 @@ private fun TxPayloadExtension.toDomain() = EncodedTransactionExtensionValue(
 private fun CreateTransactionReview.toSigningRequestBody(): SigningRequestBody = when (this) {
     is CreateTransactionReview.Product -> SigningRequestBody.CreateTransaction(
         TxPayload(
-            signer = v1.signer.toDomain(),
-            genesisHash = v1.genesisHash.toDataByteArray(),
-            callData = v1.callData.toDataByteArray(),
-            extensions = v1.extensions.map { it.toDomain() },
-            txExtVersion = v1.txExtVersion,
+            signer = payload.signer.toDomain(),
+            genesisHash = payload.genesisHash.toDataByteArray(),
+            callData = payload.callData.toDataByteArray(),
+            extensions = payload.extensions.map { it.toDomain() },
+            txExtVersion = payload.txExtVersion,
         ),
     )
     is CreateTransactionReview.LegacyAccount -> SigningRequestBody.CreateTransactionLegacy(

@@ -69,6 +69,7 @@ pub use host_logic::worker::{WorkerLedger, WorkerTransition};
 #[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
 pub use native_debug::{DebugSinkError, WsDebugSink};
 pub use runtime::StatementRenewalTarget;
+pub use runtime::contacts::contact_handle;
 pub use runtime::login_failure::reports_exhausted_period;
 pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
 pub use runtime::statement_allowance;

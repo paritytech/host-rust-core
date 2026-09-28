@@ -35,8 +35,8 @@ use truapi::Bytes32;
 pub mod mock;
 
 use truapi::latest::{
-    AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
-    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
+    AccountId, AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage,
+    ChatFile, ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
     HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
     HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
@@ -361,6 +361,25 @@ pub fn normalizes_to_trusted_remote_permissions(product_id: &str) -> bool {
         .is_ok_and(|normalized| has_trusted_remote_permissions(&normalized))
 }
 
+/// The label a development product identifier is served under.
+const LOCALHOST_PRODUCT_LABEL: &str = "localhost";
+
+/// Whether `product_id` is a development localhost product identifier.
+///
+/// Exactly `localhost`, or `localhost:` followed by a port and nothing else.
+/// Hosts grant these a development wildcard, so the match is the whole
+/// identifier: a prefix test would also admit `localhost:8080.evil`, and a
+/// label test would admit a published `localhost.<tld>`, which
+/// [`normalize_product_identifier`] rejects for the same reason.
+pub fn is_localhost_product_identifier(product_id: &str) -> bool {
+    if product_id == LOCALHOST_PRODUCT_LABEL {
+        return true;
+    }
+    product_id
+        .strip_prefix("localhost:")
+        .is_some_and(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// Largest accepted product identifier, in bytes.
 ///
 /// Bounds the size of one identifier, not how many exist: a manifest miss
@@ -388,10 +407,16 @@ pub fn normalize_product_identifier(
             product_id: product_id.to_string(),
         });
     }
-    if has_dotns_tld(&normalized)
-        || normalized == "localhost"
-        || normalized.starts_with("localhost:")
-    {
+    if is_localhost_product_identifier(&normalized) {
+        return Ok(normalized);
+    }
+    // `localhost` is reserved as a label, not only as a bare identifier. A
+    // product published as `localhost.<tld>` would otherwise be one string
+    // comparison away from whatever a host grants the development wildcard.
+    let reserves_localhost = normalized
+        .rsplit_once('.')
+        .is_some_and(|(label, _tld)| label == LOCALHOST_PRODUCT_LABEL);
+    if has_dotns_tld(&normalized) && !reserves_localhost {
         Ok(normalized)
     } else {
         Err(RuntimeConfigValidationError::InvalidProductId {
@@ -2381,6 +2406,34 @@ mod tests {
     }
 
     #[test]
+    fn a_published_product_cannot_take_the_localhost_label() {
+        // Hosts grant a development wildcard to a localhost product, so the
+        // label must not be reachable from dotNS.
+        for product_id in ["localhost.dot", "localhost.paseo", "LOCALHOST.DOT"] {
+            assert!(
+                normalize_product_identifier(product_id).is_err(),
+                "{product_id} must not be a valid product identifier"
+            );
+            assert!(
+                !is_localhost_product_identifier(product_id),
+                "{product_id} must not read as the development wildcard"
+            );
+        }
+        for product_id in ["localhost", "localhost:3000"] {
+            assert!(is_localhost_product_identifier(product_id), "{product_id}");
+        }
+        // A prefix test would admit these; the whole identifier has to match.
+        for product_id in ["localhost:3000.evil.dot", "localhost:", "localhost:80a"] {
+            assert!(
+                !is_localhost_product_identifier(product_id),
+                "{product_id} must not read as the development wildcard"
+            );
+        }
+        // Still a normal product, sharing only the prefix.
+        assert!(normalize_product_identifier("localhosting.dot").is_ok());
+    }
+
+    #[test]
     fn trusted_remote_permissions_normalize_the_spellings_a_host_holds() {
         // Both the UniFFI and wasm exports answer through this, and a host
         // holds an id in whatever spelling it received rather than the
@@ -2946,7 +2999,15 @@ pub trait AuthPresenter: Send + Sync {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum SignPayloadReview {
     /// Product-account signing request.
-    Product(HostSignPayloadRequest),
+    Product {
+        /// Product that asked, when the request carries a caller. Absent on a
+        /// relayed request, which carries no caller identity. A caller other
+        /// than the account's own product is acting under that product's
+        /// `context` grant, and the user is the one who has to see that.
+        calling_product_id: Option<String>,
+        /// Signing request.
+        request: HostSignPayloadRequest,
+    },
     /// Legacy-account signing request.
     LegacyAccount(HostSignPayloadWithLegacyAccountRequest),
 }
@@ -2959,6 +3020,9 @@ pub enum SignPayloadReview {
 pub enum SignRawReview {
     /// Product-account raw signing request.
     Product {
+        /// Product that asked, when the request carries a caller. See
+        /// [`SignPayloadReview::Product`].
+        calling_product_id: Option<String>,
         /// Raw signing request.
         request: HostSignRawRequest,
         /// Whether the signer applies the `<Bytes>` transaction-payload protection.
@@ -2980,6 +3044,9 @@ pub enum SignRawReview {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct StatementStoreProductSignReview {
+    /// Product that asked, when the request carries a caller. See
+    /// [`SignPayloadReview::Product`].
+    pub calling_product_id: Option<String>,
     /// Product account that will sign the statement payload.
     pub account: ProductAccountId,
     /// Exact unsigned statement payload to be signed.
@@ -2991,7 +3058,13 @@ pub struct StatementStoreProductSignReview {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum CreateTransactionReview {
     /// Product-account transaction request.
-    Product(ProductAccountTxPayload),
+    Product {
+        /// Product that asked, when the request carries a caller. See
+        /// [`SignPayloadReview::Product`].
+        calling_product_id: Option<String>,
+        /// Transaction request.
+        payload: ProductAccountTxPayload,
+    },
     /// Legacy-account transaction request.
     LegacyAccount(LegacyAccountTxPayload),
 }
@@ -3314,6 +3387,106 @@ pub trait ProductOperations: Send + Sync {
     ) -> Result<(), HostWorkerOperationError>;
 }
 
+/// Contact handles the core needs turned back into accounts, and the key they
+/// were minted under.
+///
+/// A handle is `BLAKE2b-256(key = handle_key, message = account)`, the account
+/// being its 32 raw bytes. The host holds the accounts, so it is the one that
+/// can match: hash each contact's account under `handle_key`, or keep that hash
+/// as an indexed column for the session, and look the handles up.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostContactLookup {
+    /// The key every handle here was minted under. Per session, and never
+    /// given to a product.
+    pub handle_key: Bytes32,
+    /// The handles to resolve, in the order the answer must follow.
+    pub handles: Vec<Bytes32>,
+}
+
+/// The host's answer to a [`HostContactLookup`].
+///
+/// A named wrapper because the callback emitter cannot return a bare `Vec`.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostContactMatches {
+    /// One entry per requested handle, in order: the contact's account, or
+    /// `None` when no current contact hashes to it.
+    pub accounts: Vec<Option<AccountId>>,
+}
+
+/// How a host's contact picker ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum HostContactPick {
+    /// The user chose this account.
+    ///
+    /// Consumed by the core to mint the product-facing handle and never
+    /// forwarded to a product: it is the person's real account, and the handle
+    /// exists precisely so a product does not receive it.
+    Picked {
+        /// The chosen contact's account.
+        account: AccountId,
+    },
+    /// The user closed the picker without choosing.
+    Dismissed,
+    /// The user has no contacts, so the host drew nothing.
+    NoContacts,
+    /// This host resolves contacts but cannot present a picker. The core
+    /// answers the product `Unsupported`, so it can tell "try again later"
+    /// apart from "this host will never pick".
+    Unsupported,
+}
+
+/// Host-owned contact picker, drawn from the chat lists the host's chat
+/// extensions hold.
+///
+/// Optional, and listed on [`OptionalPlatform`] as [`ChatPlatform`] is.
+///
+/// The host owns the UI and the list. It draws the names, so nothing it renders
+/// reaches the product, and the list never crosses to the core either: the core
+/// asks only about the handles a transaction names. A host omits contacts the
+/// user has blocked, from the picker and from lookups alike.
+#[async_trait]
+pub trait ContactsPlatform: Send + Sync {
+    /// Resolve `lookup.handles` to the contacts they name.
+    ///
+    /// The one method a host has to write. Answer one entry per handle, in
+    /// order, with `None` for a handle no current contact hashes to — a
+    /// removed or blocked contact, or a handle a product made up. The core
+    /// re-hashes every account returned and refuses one that does not match
+    /// its handle, so a wrong answer is caught rather than trusted.
+    async fn contacts(
+        &self,
+        lookup: &HostContactLookup,
+    ) -> Result<HostContactMatches, GenericError>;
+
+    /// Present the contact picker on behalf of `product` and return the user's
+    /// choice.
+    ///
+    /// Defaults to [`HostContactPick::Unsupported`], so a Rust host that
+    /// implements [`Self::contacts`] alone still compiles and its products get
+    /// a truthful answer rather than a dismissal they would retry forever.
+    ///
+    /// A JS host reaches the same answer by another route: the generated
+    /// surface types this method optional, but a capability group counts as
+    /// served only when every callback in it is present, so omitting this one
+    /// makes the whole group absent and `contacts.pick` answers `Unsupported`
+    /// before any of it is reached.
+    ///
+    /// The core cannot draw UI, so a selection has to come from the host; the
+    /// whole point is that the host renders the names rather than shipping
+    /// them to the product. `product` is passed so the host can say who is
+    /// asking; it is not a filter. A host with no contacts answers
+    /// [`HostContactPick::NoContacts`] instead of drawing an empty overlay.
+    async fn pick_contact(
+        &self,
+        _product: &ProductContext,
+    ) -> Result<HostContactPick, GenericError> {
+        Ok(HostContactPick::Unsupported)
+    }
+}
+
 /// Combined platform interface. A host must provide every capability trait
 /// listed here. Members marked optional may be omitted; the core answers their
 /// product calls with `Unsupported`. See [`OptionalPlatform`].
@@ -3355,6 +3528,12 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+pub trait OptionalPlatform:
+    ChatPlatform + ContactsPlatform + PermissionStatusHost + PocketPlatform
+{
+}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost + PocketPlatform {}
+impl<T> OptionalPlatform for T where
+    T: ChatPlatform + ContactsPlatform + PermissionStatusHost + PocketPlatform
+{
+}

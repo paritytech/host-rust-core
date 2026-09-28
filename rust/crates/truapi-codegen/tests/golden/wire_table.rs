@@ -42,7 +42,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "462dacb6e0d1f504";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "763bbe67b2342ffe";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: MethodIds = MethodIds {
@@ -536,6 +536,12 @@ pub const WORKER_END_OPERATION: MethodIds = MethodIds {
     method_id: 1,
 };
 
+/// Wire discriminants for `contacts_pick`.
+pub const CONTACTS_PICK: MethodIds = MethodIds {
+    trait_id: 20,
+    method_id: 0,
+};
+
 /// The full wire table. Trait ids and per-trait method ordering are
 /// part of the wire protocol; only ever append within a trait.
 /// Removed methods leave their slot empty.
@@ -867,5 +873,9 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "worker_end_operation",
         kind: WireKind::Request(WORKER_END_OPERATION),
+    },
+    WireEntry {
+        method: "contacts_pick",
+        kind: WireKind::Request(CONTACTS_PICK),
     },
 ];
