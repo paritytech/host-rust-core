@@ -30,7 +30,6 @@ use crate::platform::{
     UserConfirmationReview, async_trait,
 };
 use futures::channel::mpsc;
-use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use parity_scale_codec::Encode;
 use truapi::{Bytes32, latest::HostPlatform, v01};
@@ -722,13 +721,12 @@ impl NativeTrUApiHostRuntime {
                     reason: err.to_string(),
                 }
             })?;
-        let core = executor.handle();
         if initialized {
             callbacks.on_core_log(
                 "truapi.native.executor.started".to_string(),
                 format!(
                     "runtime_id={} worker_threads={}",
-                    core.id(),
+                    executor.handle().id(),
                     executor.worker_threads()
                 ),
             );
@@ -739,7 +737,7 @@ impl NativeTrUApiHostRuntime {
             events: events.clone(),
             storage_events: events.clone(),
         });
-        let spawner = native_spawner(&core);
+        let spawner = executor.spawner();
         let runtime = Arc::new(SigningHostRuntime::new(
             platform.clone(),
             runtime_config.signing,
@@ -1620,14 +1618,6 @@ pub fn set_log_level(level: String) {
     crate::logging::set_level_from_str(&level);
 }
 
-/// Spawns core tasks on the process-wide runtime.
-fn native_spawner(core: &tokio::runtime::Handle) -> Spawner {
-    let core = core.clone();
-    Arc::new(move |fut: BoxFuture<'static, ()>| {
-        core.spawn(fut);
-    })
-}
-
 struct CallbackPlatform {
     callbacks: Arc<dyn HostCallbacks>,
     events: Arc<NativeEventBus>,
@@ -2446,28 +2436,6 @@ mod tests {
     use truapi::v01::LegacyAccountTxPayload;
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
-
-    /// Core tasks run on the shared native runtime, including those spawned
-    /// from a thread outside any runtime, such as a host thread.
-    #[test]
-    fn native_spawner_runs_core_work_on_the_shared_tokio_runtime() {
-        let (shared, _) = crate::native_executor::shared_native_executor().unwrap();
-        let spawner = native_spawner(&shared.handle());
-        let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
-
-        spawner(
-            async move {
-                let runtime = tokio::runtime::Handle::try_current().map(|handle| handle.id());
-                runtime_tx.send(runtime.ok()).unwrap();
-            }
-            .boxed(),
-        );
-
-        let ran_on = runtime_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("spawned core work never ran");
-        assert_eq!(ran_on, Some(shared.handle().id()));
-    }
 
     fn pocket_card(card_id: &str, privileged: bool) -> v01::PocketCard {
         v01::PocketCard {
