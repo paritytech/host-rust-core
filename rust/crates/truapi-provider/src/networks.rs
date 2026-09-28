@@ -10,8 +10,7 @@
 
 use std::collections::HashMap;
 
-use truapi::latest::GenericError;
-
+use crate::ProviderError;
 use crate::config::ChainSource;
 use crate::provider::EmbeddedChainProviderBuilder;
 
@@ -76,22 +75,22 @@ const CATALOG: &[NetworkDef] = &[
     NetworkDef {
         name: "previewnet",
         relay: ChainDef {
-            genesis_hex: "0x0459cb8394c5cddc4604a8ec64329d029400756ef615f56c90ab84b169fd4a9e",
+            genesis_hex: "0x860145753657e73c29b9388ffa0a8aebc643ea87434b4b271b6c3c3cc9e6bf92",
             spec: include_str!("../networks/previewnet.json"),
             statement_protocol: false,
         },
         assethub: ChainDef {
-            genesis_hex: "0xc27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe",
+            genesis_hex: "0xbac97e23fc8f4bccae72a98f8aeb2bcab20bf755862304e4b46ad6473456e896",
             spec: include_str!("../networks/previewnet-asset-hub.json"),
             statement_protocol: false,
         },
         bulletin: ChainDef {
-            genesis_hex: "0xea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d",
+            genesis_hex: "0xa081192b90c1f6a3f8e9ce7b2a8246f41af805c66456c84e05fd97c2b3502425",
             spec: include_str!("../networks/previewnet-bulletin.json"),
             statement_protocol: false,
         },
         people: ChainDef {
-            genesis_hex: "0xf720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218",
+            genesis_hex: "0x55e3e689ecfa9d2fffcf7d309b8011956671493982230bfd0420c683542249e9",
             spec: include_str!("../networks/previewnet-people.json"),
             statement_protocol: true,
         },
@@ -103,12 +102,12 @@ pub fn known_networks() -> impl Iterator<Item = &'static str> {
     CATALOG.iter().map(|network| network.name)
 }
 
-fn genesis(chain: &ChainDef) -> Result<[u8; 32], GenericError> {
+fn genesis(chain: &ChainDef) -> Result<[u8; 32], ProviderError> {
     hex::decode(chain.genesis_hex.trim_start_matches("0x"))
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| GenericError {
-            reason: format!("bundled genesis hash {} is malformed", chain.genesis_hex),
+        .ok_or_else(|| ProviderError::MalformedGenesis {
+            hex: chain.genesis_hex.to_owned(),
         })
 }
 
@@ -122,7 +121,7 @@ type ResolvedNetwork = (HashMap<[u8; 32], ChainSource>, Option<[u8; 32]>);
 
 /// Genesis hashes and standalone per-chain [`ChainSource`]s of one network; the
 /// caller pairs each parachain with the network's relay genesis.
-fn network_sources(network: &NetworkDef) -> Result<NetworkSources, GenericError> {
+fn network_sources(network: &NetworkDef) -> Result<NetworkSources, ProviderError> {
     let chains = NetworkChains {
         relay: genesis(&network.relay)?,
         assethub: genesis(&network.assethub)?,
@@ -141,18 +140,16 @@ fn network_sources(network: &NetworkDef) -> Result<NetworkSources, GenericError>
 /// Register every chain of the bundled network `name`, wiring the parachains
 /// to the relay and enabling the statement-store protocol where the catalog
 /// specifies it. Returns the chains' genesis hashes.
-pub(crate) fn add_network(
+pub fn add_network(
     builder: EmbeddedChainProviderBuilder,
     name: &str,
-) -> Result<(EmbeddedChainProviderBuilder, NetworkChains), GenericError> {
+) -> Result<(EmbeddedChainProviderBuilder, NetworkChains), ProviderError> {
     let network = CATALOG
         .iter()
         .find(|network| network.name == name)
-        .ok_or_else(|| GenericError {
-            reason: format!(
-                "unknown network \"{name}\"; bundled: {}",
-                known_networks().collect::<Vec<_>>().join(", ")
-            ),
+        .ok_or_else(|| ProviderError::UnknownNetwork {
+            name: name.to_owned(),
+            known: known_networks().collect::<Vec<_>>().join(", "),
         })?;
 
     let (chains, sources) = network_sources(network)?;
@@ -172,7 +169,7 @@ pub(crate) fn add_network(
 /// The network name and service (`relay`/`asset-hub`/`bulletin`/`people`) that
 /// `genesis_hash` maps to in the catalog, for log attribution. `None` if no
 /// bundled network defines it.
-pub(crate) fn catalog_service(genesis_hash: [u8; 32]) -> Option<(&'static str, &'static str)> {
+pub fn catalog_service(genesis_hash: [u8; 32]) -> Option<(&'static str, &'static str)> {
     for network in CATALOG {
         for (service, chain) in [
             ("relay", &network.relay),
@@ -191,7 +188,7 @@ pub(crate) fn catalog_service(genesis_hash: [u8; 32]) -> Option<(&'static str, &
 /// Resolve the bundled network containing `genesis_hash` from that hash alone:
 /// its chains and the relay `genesis_hash` syncs through. `None` if no bundled
 /// network defines it.
-pub(crate) fn catalog_network_chains(genesis_hash: [u8; 32]) -> Option<ResolvedNetwork> {
+pub fn catalog_network_chains(genesis_hash: [u8; 32]) -> Option<ResolvedNetwork> {
     for network in CATALOG {
         let Ok((chains, sources)) = network_sources(network) else {
             continue;
@@ -217,7 +214,7 @@ impl EmbeddedChainProviderBuilder {
     /// Register every chain of the bundled network `name` (see
     /// [`known_networks`]). Returns the builder and the network's genesis
     /// hashes. Errors when `name` is not bundled.
-    pub fn add_network(self, name: &str) -> Result<(Self, NetworkChains), GenericError> {
+    pub fn add_network(self, name: &str) -> Result<(Self, NetworkChains), ProviderError> {
         add_network(self, name)
     }
 }
@@ -334,14 +331,14 @@ mod tests {
         let error = EmbeddedChainProviderBuilder::new()
             .add_network("mainnet")
             .expect_err("an unbundled network must fail");
-        assert!(error.reason.contains("paseo-next-v2"));
+        assert!(error.to_string().contains("paseo-next-v2"));
     }
 
     #[test]
     fn connect_resolves_network_from_genesis_alone() {
+        use crate::platform::ChainProvider;
         use futures::executor::block_on;
         use futures::stream::StreamExt;
-        use truapi_platform::ChainProvider;
 
         // An empty provider — no explicit registration — still connects to a
         // catalog chain from its genesis hash alone.

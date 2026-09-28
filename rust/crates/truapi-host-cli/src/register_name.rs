@@ -14,17 +14,17 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tracing::debug;
-use truapi_server::host_logic::dotns_gateway::{
+use truapi::host_logic::dotns_gateway::{
     DOTNS_GATEWAY_CONTEXT, Link, MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN,
     build_register_proof_message, encode_register_full_name_extra, encode_register_name_call,
     is_dotted_lite_username, is_registrable_full_label,
 };
-use truapi_server::host_logic::product_account::{
+use truapi::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derive_full_person_ring_vrf_entropy, derive_identity_keypair,
 };
-use truapi_server::statement_allowance::collection::PersonhoodCollection;
-use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
-use truapi_server::statement_allowance::{
+use truapi::statement_allowance::collection::PersonhoodCollection;
+use truapi::statement_allowance::extension::AS_DOTNS_GATEWAY;
+use truapi::statement_allowance::{
     self as alloc, extension, extrinsic, proof, ring, rpc::RpcClient,
 };
 
@@ -104,7 +104,7 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     let at = people_rpc.finalized_head().await?;
     let full_entropy =
         derive_full_person_ring_vrf_entropy(&config.entropy, config.network.network_suffix);
-    let member = proof::member_key(full_entropy);
+    let member = proof::member_key(full_entropy).await?;
     let ring_index = ring::read_member_ring_index_at(
         &people_rpc,
         &people_metadata,
@@ -186,7 +186,8 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
         &members,
         &DOTNS_GATEWAY_CONTEXT,
         &proof_message,
-    )?;
+    )
+    .await?;
 
     // Asset Hub only verifies proofs against root revisions it has imported
     // from People; wait for this one before submitting.

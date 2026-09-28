@@ -53,7 +53,7 @@ extension CoinSelector: CoinSelecting {
         }
 
         // Strategy 2: Split single coin (1 tx, 0 tokens)
-        if let splitResult = trySplitCoin(
+        if let splitResult = try trySplitCoin(
             amount: input.amount,
             from: availableCoins,
             breakdownContext: input.breakdownContext
@@ -91,7 +91,7 @@ private extension CoinSelector {
         amount: BigUInt,
         from coins: [Coin],
         breakdownContext: DenominationBreakdownContext
-    ) -> CoinSelectionResult? {
+    ) throws -> CoinSelectionResult? {
         let sufficientCoins = coins.filter { coin in
             breakdownContext.valueInPlanks(for: coin.exponent) > amount
         }
@@ -123,9 +123,11 @@ private extension CoinSelector {
                 let remainingNeeded = amount - runningSum
 
                 // Target denominations: what recipient needs from the split
-                let targetDenominations = breakdownContext.breakdown(amountInPlanks: remainingNeeded)
+                let targetDenominations = try breakdownContext.breakdown(amountInPlanks: remainingNeeded)
                 // Change: overflow amount from this coin
-                let changeDenominations = breakdownContext.breakdown(amountInPlanks: coinValue - remainingNeeded)
+                let changeDenominations = try breakdownContext.breakdown(
+                    amountInPlanks: coinValue - remainingNeeded
+                )
 
                 return .split(
                     wholeCoins: wholeCoins,
@@ -230,7 +232,7 @@ private extension CoinSelector {
 
         while index < pending.count {
             let chunk = pending[index]
-            let planned = plan(
+            let planned = try plan(
                 chunk: chunk,
                 recipientBudget: remainingRecipient,
                 breakdownContext: breakdownContext
@@ -270,7 +272,7 @@ private extension CoinSelector {
         chunk: RecyclerVoucherChunk,
         recipientBudget: BigUInt,
         breakdownContext: DenominationBreakdownContext
-    ) -> PlannedCall {
+    ) throws -> PlannedCall {
         let budget = chunk.vouchers.reduce(BigUInt(0)) {
             $0 + breakdownContext.valueInPlanks(for: $1.exponent)
         }
@@ -278,7 +280,7 @@ private extension CoinSelector {
         let recipientUsed = min(recipientBudget, budget)
         let change = budget - recipientUsed
 
-        return PlannedCall(
+        return try PlannedCall(
             allocation: RecyclerGroupAllocation(
                 recyclerKey: chunk.key,
                 vouchers: chunk.vouchers,

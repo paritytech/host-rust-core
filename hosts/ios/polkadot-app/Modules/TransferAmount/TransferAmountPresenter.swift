@@ -317,8 +317,8 @@ private extension TransferAmountPresenter {
     }
 
     /// Drives completion from the lifecycle stream after a successful submission.
-    /// The stream terminates after the last meaningful status; a graceful finish
-    /// without an `.error` status means the transfer succeeded. Flows without
+    /// The stream terminates after the last meaningful state; a graceful finish
+    /// without a `.failed` status means the transfer succeeded. Flows without
     /// tracking finish immediately, completing right after submission.
     ///
     /// Runs in a separate task that holds `self` weakly per iteration, so a long
@@ -330,11 +330,11 @@ private extension TransferAmountPresenter {
             var failed = false
 
             do {
-                for try await status in statusStream {
-                    if case .error = status {
+                for try await state in statusStream {
+                    if state.status == .failed {
                         failed = true
                     }
-                    self?.apply(transferStatus: status)
+                    self?.apply(transferState: state)
                 }
             } catch {
                 failed = true
@@ -349,9 +349,9 @@ private extension TransferAmountPresenter {
         }
     }
 
-    func apply(transferStatus: ClaimStatus) {
-        view?.didReceive(transferStatus: transferStatus)
-        if case .sent = transferStatus {
+    func apply(transferState: OutgoingTransferState) {
+        view?.didReceive(transferState: transferState)
+        if transferState.status == .sent {
             view?.didUnlockNavigation()
         }
     }

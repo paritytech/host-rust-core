@@ -3,7 +3,7 @@
 - Status: as-built behavior reference
 - Binary: `truapi-host`
 - Implementation: `rust/crates/truapi-host-cli/`
-- Protocol implementation: `truapi` and `truapi-server`
+- Protocol implementation: `truapi`
 
 This document specifies the first complete version of the native headless
 TrUAPI host CLI. It was derived from the Rust and TypeScript implementation,
@@ -26,7 +26,7 @@ phone automation service, or external signing bot. It is intended for:
 - paired end-to-end tests; and
 - generation of CLI host compatibility reports.
 
-It embeds the real `truapi-server` dispatcher and host logic. Product scripts
+It embeds the real `truapi` dispatcher and host logic. Product scripts
 use the public `@parity/truapi` client and exchange the same SCALE protocol
 messages as a product connected to another host.
 
@@ -97,7 +97,7 @@ as the paired path.
 
 ### 2.3 Ownership boundaries
 
-`truapi-server` owns:
+`truapi` owns:
 
 - protocol dispatch and SCALE encoding;
 - product and role semantics;
@@ -1610,11 +1610,11 @@ on-chain testing.
 | --- | --- |
 | Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0xf720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218` |
+| People genesis | `0x55e3e689ecfa9d2fffcf7d309b8011956671493982230bfd0420c683542249e9` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0xea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d` |
+| Bulletin genesis | `0xa081192b90c1f6a3f8e9ce7b2a8246f41af805c66456c84e05fd97c2b3502425` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0xc27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe` |
+| Asset Hub genesis | `0xbac97e23fc8f4bccae72a98f8aeb2bcab20bf755862304e4b46ad6473456e896` |
 
 Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
 signer provisioned on one preset is not visible from the other. Two presets means
@@ -1973,14 +1973,12 @@ Without `RUST_LOG`, the selected CLI level applies to:
 
 - `truapi`
 - `truapi_host`
-- `truapi_platform`
-- `truapi_server`
 
 Other targets remain at `warn`.
 
 The following noisy targets are always hidden from the ordinary CLI log layer:
 
-- `truapi_server::sso_transcript` (handled by its dedicated layer);
+- `truapi::sso_transcript` (handled by its dedicated layer);
 - `rustls` and its children; and
 - `tungstenite::protocol` and its children.
 
@@ -2180,7 +2178,7 @@ The implementation is covered by:
   products, sessions, approvals, and platform behavior;
 - process-boundary tests for help, non-TTY rejection, product reporting,
   session restore, cached signer activation, and bare-script safety;
-- `truapi-server` runtime, protocol, cryptographic vector, and integration
+- `truapi` runtime, protocol, cryptographic vector, and integration
   tests;
 - shared container, script-runner/Bun diagnosis and packaged-runtime tests;
 - paired and direct `battery.ts` runs, both driven by `scripts/battery.sh`; and

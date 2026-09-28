@@ -71,7 +71,7 @@ private extension InputGatedSubmissionPolicy {
 
     func resolve(_ transactions: [ScheduledDurableTx]) async throws -> Resolution {
         let assets = try await ledger.assets(of: transactions.map(\.id))
-        let resolved = await rebuild.resolve(transactions, assets: assets)
+        let resolved = try await rebuild.resolve(transactions, assets: assets)
 
         let waiting = transactions.compactMap { transaction -> Waiting? in
             guard let resolvedTransaction = resolved[transaction.id],
@@ -92,7 +92,9 @@ private extension InputGatedSubmissionPolicy {
         let unbuildable = transactions.map(\.id).filter { !buildable.contains($0) }
 
         for id in unbuildable {
-            logger?.error("\(policyId) rebuild impossible entry=\(id) reason=ledger-or-params-unreadable")
+            // Genuinely unbuildable, not merely unread: an unreadable store now throws out of
+            // `resolve` and is retried, so anything reaching here is a row nothing will ever fix.
+            logger?.error("\(policyId) rebuild impossible entry=\(id) reason=params-or-outputs-unresolvable")
         }
 
         return Resolution(waiting: waiting, unbuildable: unbuildable)

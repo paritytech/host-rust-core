@@ -16,3 +16,9 @@ protocol RemoteConfigManaging: AnyObject {
 
     func asyncWaitRemoteConfig() async throws -> RemoteAppConfig
 }
+
+/// Registry wiring that only the facade owns, kept off RemoteConfigManaging because that protocol's other conformer has
+/// no registry.
+protocol ChainRegistryConfiguring: AnyObject {
+    func set(chainRegistry: ChainRegistryProtocol)
+}

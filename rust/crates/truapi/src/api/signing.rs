@@ -36,6 +36,13 @@ pub trait Signing: Send + Sync {
     /// Version 0 builds V5 when it includes `VerifyMultiSignature`, and a
     /// signed V4 transaction otherwise.
     ///
+    /// `contacts` lists the contact handles `callData` names, and the host
+    /// replaces each with the account it resolves to before the call is shown
+    /// or signed. A declared handle the call does not contain, or one no
+    /// contact matches, refuses the whole call as `UnknownContact` rather than
+    /// signing something that names somebody else. A call paying nobody from
+    /// the picker leaves it empty.
+    ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
     /// assert(productContext.isOk(), "getProductContext failed:", productContext);

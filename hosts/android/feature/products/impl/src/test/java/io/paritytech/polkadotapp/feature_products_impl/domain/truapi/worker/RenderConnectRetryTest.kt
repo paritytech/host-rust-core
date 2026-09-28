@@ -6,7 +6,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import uniffi.truapi_server.ProductRuntimeException
+import uniffi.truapi.ProductRuntimeException
 import kotlin.time.Duration.Companion.milliseconds
 
 class RenderConnectRetryTest {

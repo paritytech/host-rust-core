@@ -38,13 +38,14 @@ import androidx.compose.ui.unit.isUnspecified
 import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.spacer.HorizontalSpacer
+import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.design.utils.conditionalNotNull
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.compose.components.icons.DigitalDollarIcon
 import io.paritytech.polkadotapp.common.R as RCommon
 
-private val SymbolIconSize = DpSize(42.dp, 47.dp)
+private val SymbolIconSize = DpSize(32.dp, 36.dp)
 private val AmountReferenceHeight = 64.dp
 
 private fun Density.symbolIconSizeFor(amountFontSize: TextUnit): DpSize =
@@ -127,7 +128,7 @@ internal fun EnterAmountInput(
                     NovaIcon(
                         modifier = Modifier
                             .size(symbolIconSize)
-                            .alignBy { it.measuredHeight },
+                            .align(Alignment.CenterVertically),
                         imageVector = DigitalDollarIcon,
                         tint = PolkadotTheme.colors.fg.primary
                     )
@@ -140,7 +141,6 @@ internal fun EnterAmountInput(
                         singleLine = true,
                         enabled = enabled,
                         modifier = Modifier
-                            .alignByBaseline()
                             .conditionalNotNull(focusRequester) { focusRequester(it) },
                         cursorBrush = SolidColor(PolkadotTheme.colors.fg.primary),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -164,11 +164,15 @@ internal fun EnterAmountInput(
             }
         }
 
+        VerticalSpacer { small }
+
         NovaText(
             text = symbol.withCurrencyTickerStyle(PolkadotTheme.typography.title.extraLarge),
             style = PolkadotTheme.typography.title.extraLarge,
             color = PolkadotTheme.colors.fg.secondary
         )
+
+        VerticalSpacer { small }
 
         val errorText =
             if (showError) stringResource(RCommon.string.send_enter_amount_not_enough_funds_error)
@@ -176,7 +180,7 @@ internal fun EnterAmountInput(
 
         NovaText(
             text = errorText,
-            style = PolkadotTheme.typography.body.medium,
+            style = PolkadotTheme.typography.body.large,
             color = PolkadotTheme.colors.fg.error,
             textAlign = TextAlign.Center
         )

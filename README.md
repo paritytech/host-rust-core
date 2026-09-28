@@ -85,16 +85,21 @@ The [permission model](docs/rfcs/0002-permission-model.md) separates outbound do
 Android permission prompts belong to one request and close when it finishes or is cancelled,
 including cancellation while the app is backgrounded.
 
+The shared Rust core asks blessed products (`peopl`, `dim2` and `stash`,
+on every supported network) only for device permissions and legacy-account signing.
+All other operations it handles bypass permission prompts and recorded decisions.
+
 ## Repository layout
 
 ```
 rust/crates/
-  truapi/                Rust traits, versioned envelopes, and latest payload re-exports
+  truapi/                Rust traits, versioned envelopes, latest payload re-exports, and the
+                         host runtime (feature `runtime`): dispatcher, typed SCALE logic,
+                         chain signing, WASM surface, host syscall traits
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
   truapi-macros/         TrUAPI wire annotations and inter-host SSO proc macros
-  truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
-  truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
-  truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
+  truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client) and chain-access traits
+  truapi-verifiable/     Ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
@@ -107,11 +112,11 @@ js/packages/
                           (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
-android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
+android/truapi-host/       Kotlin host adapter package over the truapi UniFFI core;
                            published to GitHub Packages as io.parity:truapi-host-android
                            (AAR with per-ABI cdylibs; see android/truapi-host/README.md)
 android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
-ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
+ios/truapi-host/           Swift host adapter package over the truapi UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
 playground/                Interactive Next.js playground (truapi-playground dotNS label)
 hosts/ios/                 iOS host app; resolves the core from this tree
@@ -149,7 +154,7 @@ whole multipart request. The Debug menu and **Share logs** remain available.
 
 See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
 
-The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
+The Swift host adapter (the `TrUAPIHost` SPM package over the truapi
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
 manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
 dependency. The UniFFI bindings and the container bundle are gitignored build
@@ -159,6 +164,8 @@ outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 The container publishes the shared client and a temporary MessagePort adapter for
 older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
 CLI and iframe MessagePort transports remain supported.
+The [container permission boundary](js/container/README.md) documents the protected
+operations and the built-ins that remain mutable for product compatibility.
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
 On iOS, a wallet host that manages its own statement-store SSO session can call
@@ -168,7 +175,7 @@ ignored; a `Cancel` returns at once, so the wallet passes it on without queueing
 it behind the request it withdraws) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
 for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
 session-record cleanup remain on the wallet side.
-See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
+See the core's [inter-host SSO design](rust/crates/truapi/RUNTIME.md#inter-host-sso)
 for typed handlers, canonical resource types, and consent bound to the signing session.
 Product and SSO signing share canonical payloads and the one-byte `OptionBool`
 encoding for `with_signed_transaction`.
@@ -192,7 +199,13 @@ genesis hash, so the host ships no chain specs and never refreshes them. The lig
 client holds at most 32 connections at once and refuses a `connect` past that, so a
 consumer that leaks them fails instead of growing; closing one hands its slot back.
 Connections to a remote node, which only the WASM build compiles, are not counted
-against it. The crate
+against it. A light-client connection holds its requests until the chain first
+syncs and then forwards them in order; chain-spec queries, statement-store and
+Bitswap calls, and the `lifecycle_unstable_*` subscription that reports the sync are forwarded at
+once.
+Every artifact exposes the sync progress of a running chain (phase, peer count,
+stall verdict) as a watch.
+The crate
 compiles to one binary artifact per platform, each exposing the same
 `ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
 dependency on the crate:
@@ -213,6 +226,28 @@ host owns where the bytes live. The crate stores nothing itself: a host implemen
 `StorageClient` over storage it already owns, on web and native alike, so it keeps
 control of quota and of whether the bytes are backed up or encrypted.
 
+### Wire debugger
+
+[`@parity/truapi-debugger`](js/packages/truapi-debugger) is the consumer for the
+payload-blind frame tap in `truapi`. The core streams raw SCALE frames out
+of two choke points; the debugger correlates them into per-operation traces,
+decodes envelopes and values behind a `TRUAPI_WIRE_SCHEMA_HASH` match, and renders
+them through one of two mounts:
+
+- `startDebugServer(...)` is a standalone Bun WS+HTTP server on `127.0.0.1:9231`
+  that hosts dial into, so frames from any host reach one inspector.
+- `createInAppDebugger(...)` mounts the same engine inside the host page, with no
+  server and no dial.
+
+All decoding lives in this package; `@parity/truapi` has no debug seam. Its
+[README](js/packages/truapi-debugger/README.md) carries the endpoint list and the
+per-host enablement recipe.
+
+`make debugger` brings up the inspector on `:9231` alongside a dot.li host and the
+playground. It builds the host with `NODE_ENV=development` on purpose: the dial
+sits behind `import.meta.env.DEV`, which a production bundle replaces with `false`,
+so `make dev` leaves the board empty with no error.
+
 ## How it works
 
 1. The protocol is defined as Rust traits in [`rust/crates/truapi/`](rust/crates/truapi/), with each trait tagged `#[wire_trait(id = N)]` and each method tagged `#[wire(id = N)]` for a stable byte-level `(trait, method)` dispatch table. Every method's doc comment must carry a ` ```ts ` example, which codegen extracts into the playground's EXAMPLE tab; the build fails if any method is missing one.
@@ -231,7 +266,7 @@ make setup    # submodules + JS dependencies
 make build    # Rust workspace + TypeScript client + @parity/truapi-host
 make test     # Rust + TypeScript client + @parity/truapi-host tests
 make check    # full suite: build, fmt, clippy, test, TS tests, playground build + lint
-make wasm     # rebuild truapi-server WASM artifacts under js/packages/truapi-host/dist/wasm/
+make wasm     # rebuild truapi WASM artifacts under js/packages/truapi-host/dist/wasm/
 ```
 
 CI regenerates the shared bindings before building and testing both npm
@@ -296,7 +331,14 @@ runs. Keep the tag before application scripts, without `async` or `defer`.
 SDK calls and permission checks share one connection. Updated SDKs reuse the
 injected client across reconnects; older SDKs can still start through the
 MessagePort adapter but require a page reload after a disconnect.
-After a failed reconnect, the next API call or return to a visible page tries again.
+A visible page retries a failed reconnect after 250 ms, 1 s and 4 s; after that, the next API
+call or return to a visible page tries again.
+On iOS the host rebinds its localhost listener on the same port each time the app
+returns to the foreground, since the system reclaims a suspended app's listening socket.
+On every platform the bridge also rebinds the port itself when its listening socket is destroyed,
+pausing between failed attempts instead of retrying in a tight loop; other accept errors keep the port.
+When WebKit loses its networking process, every MessagePort a page already holds stops
+delivering; the container detects this after a disconnect and reloads the page.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission
@@ -333,8 +375,10 @@ where each tree came from and at which revision.
 ```bash
 scripts/refresh-host-import.sh status ios     # how far behind, and what differs
 scripts/refresh-host-import.sh refresh ios    # take the new tree, re-apply adaptations
-scripts/refresh-host-import.sh backport ios   # what this tree owes the source
 ```
+
+Changes move one way, from the source into this tree. A change made here is not
+sent back: the source is upstream of this repository, not a peer.
 
 `refresh` replaces the tree with the source's, re-applies this repository's
 adaptations on top as a three-way patch, then compares every path against the
@@ -345,14 +389,10 @@ did not apply or has been adopted upstream.
 A clean apply is staged for review. A conflicted one is left unmerged, so git
 refuses to commit it until someone decides which side is right.
 
-`refresh` moves changes one way, from the source into this tree. `backport`
-answers the other direction: of everything this tree has changed, which is app
-code the source does not have. The rest, the CI actions and the manifests that
-resolve the core from here, exists because the tree lives in this repository,
-and is listed per host in `hosts/imports.json` under `infrastructure`.
-
-`--patch <file>` writes the owed changes with the `hosts/<host>/` prefix
-stripped, so they apply at the root of the source repository.
+Drift is picked up on a schedule. `.github/workflows/backport-host.yml` opens a
+pull request carrying a single `BACKPORT-<host>.md`, which names the range, the
+pull requests in it, and what has to be done to finish the work. Completing that
+pull request means running the command above and deleting the file.
 
 ### Working on the iOS host
 
@@ -366,8 +406,8 @@ make ios-bootstrap
 ```
 
 Then open `hosts/ios/polkadot-app.xcodeproj`. Rerun it after changing anything
-the bindings are generated from, which is the `truapi`, `truapi-platform`,
-`truapi-server` or `truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
+the bindings are generated from, which is the `truapi` or `truapi-provider`
+crates. `SIM_ONLY=1` halves it by skipping
 the device slice, which is enough for Simulator but not for an archive.
 
 Because the app builds against the core in this tree, a core change that breaks
@@ -430,8 +470,9 @@ tester group rather than anyone holding a link. That matters beyond
 convenience: these builds carry configuration that should not be public, so
 attaching them to a release is not an option.
 
-`android-nightly.yml` runs on weekdays at 22:00 UTC, two hours after the iOS
-nightly starts, so the two never overlap. `android-debug-distribution.yml` runs
+`android-nightly.yml` runs daily at 22:00 UTC, two hours after the iOS
+nightly starts, so the two never overlap. Both nightlies skip a scheduled night
+when `main` has not moved past what their last successful run built. `android-debug-distribution.yml` runs
 when a pull request merges to `main`, and answers what `main` does right now.
 It builds the merge commit rather than the pull request's merge preview, which
 is computed while the request is open and would otherwise ship a tree missing

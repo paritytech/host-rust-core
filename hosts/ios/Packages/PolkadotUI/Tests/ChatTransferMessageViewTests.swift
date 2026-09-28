@@ -33,17 +33,41 @@ struct ChatTransferMessageViewTests {
 
         #expect(view.assetIconView.image?.renderingMode == .alwaysTemplate)
     }
+
+    @Test("A short claim strikes the original amount through and warns that it differs")
+    func partialClaimShowsOriginalAmount() {
+        let configuration = makeConfiguration(assetIcon: nil, state: .outgoing(.claimed), originalAmountText: "50")
+        let view = ChatTransferMessageView(configuration: configuration)
+
+        #expect(view.originalAmountLabel.isHidden == false)
+        #expect(view.originalAmountLabel.attributedText?.string == "50")
+        #expect(view.subtitleLabel.text == String(localized: .transferStatusAmountDiffers))
+        #expect(view.subtitleIconView.isHidden)
+    }
+
+    @Test("A failed transfer renders its status in the error tint")
+    func failedRendersErrorTint() {
+        let view = ChatTransferMessageView(configuration: makeConfiguration(assetIcon: nil, state: .incoming(.failed)))
+
+        #expect(view.subtitleLabel.text == String(localized: .transferStatusError))
+        #expect(view.subtitleLabel.textColor == .fgError)
+        #expect(view.originalAmountLabel.isHidden)
+    }
 }
 
 private extension ChatTransferMessageViewTests {
-    func makeConfiguration(assetIcon: UIImage?) -> ChatTransferMessageConfiguration {
+    func makeConfiguration(
+        assetIcon: UIImage?,
+        state: ChatTransferMessageConfiguration.DirectionalState = .outgoing(.sent),
+        originalAmountText: String? = nil
+    ) -> ChatTransferMessageConfiguration {
         ChatTransferMessageConfiguration(
             title: "You Sent",
             amountText: "20",
             tokenSymbol: "CASH",
             assetIcon: assetIcon,
-            originalAmountText: nil,
-            state: .outgoing(.sent),
+            originalAmountText: originalAmountText,
+            state: state,
             statusConfiguration: .init(
                 dateFormatter: FixedTimestampFormatter(),
                 date: .now,

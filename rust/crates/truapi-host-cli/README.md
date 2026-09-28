@@ -1,6 +1,6 @@
 # truapi-host-cli
 
-Headless TrUAPI hosts for local end-to-end testing, built on `truapi-server`.
+Headless TrUAPI hosts for local end-to-end testing, built on `truapi`.
 They replace the external signing-bot service: two CLI processes take the two
 host-spec §B roles and pair over the **real People-chain statement store** (the
 same node an iOS/web client uses), so tests run against a real signer with no
@@ -745,6 +745,13 @@ Scripts under `js/scripts/` include:
   in `TRUAPI_POCKET_LOG`. The cases read that transcript, so a pass means the
   host and the product agree rather than resting on the product's word.
 
+  Contacts are served on every phase, from `TRUAPI_CONTACTS`
+  (`alice=0x<32-byte account>;bob=0x…`) or, unset, from a two-name development
+  list so `contacts.pick` has someone to return. An empty spec is an empty list,
+  which is what answers `NoContacts`. `TRUAPI_CONTACT_PICK` names which contact
+  the picker offers; the approval surface asks about it like any other action,
+  so a headless run approves it and an interactive one does not.
+
   The paired phase gives its pairing host a throwaway `--base-path` under
   `target/battery/pairing-host-state`, so it performs a real handshake on every
   run. A pairing host that restores an earlier session reports
@@ -890,7 +897,7 @@ personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
 General (v5) `Resources.set_statement_store_account` extrinsic for each account
 that submits statements — its RFC-0022 `uid.<tld>` identity account and the
 pairing host's per-pairing device key. The shared native implementation lives in
-`truapi-server/src/runtime/statement_allowance/` (metadata-driven
+`truapi/src/runtime/statement_allowance/` (metadata-driven
 signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
 assembly, submit). The signing account must be an attested member of at least
 one personhood collection, and may sit in an old ring, so the signing host scans

@@ -1,6 +1,6 @@
 # @parity/truapi-host
 
-WASM-backed TrUAPI host runtime. It embeds the `truapi-server` Rust core (compiled to WASM)
+WASM-backed TrUAPI host runtime. It embeds the `truapi` Rust core (compiled to WASM)
 behind a Web Worker provider, plus per-environment integration entry points. It is the
 counterpart to the native Android/iOS host shells.
 
@@ -121,6 +121,7 @@ const callbacks: HostCallbacks = {
   chat, // optional: leave it out and chat products get `Unsupported`
   permissionStatus, // optional: reports live OS permission state
   pocket, // optional: serves the host's Pocket card collection
+  contacts, // optional: leave it out and contacts calls get `Unsupported`
 };
 ```
 
@@ -224,6 +225,16 @@ already carries, so the 32-byte chain code behind it stays core-owned and a host
 never reconstructs it. `productAccountAddress` applies the prefix host-spec C.6
 fixes, rather than leaving each host to choose one.
 
+`contacts` needs both callbacks, or the group counts as absent. `pickContact`
+draws the picker and returns the chosen account, or `NoContacts` when there is
+nobody to show. `contacts({ handleKey, handles })` resolves the handles a
+transaction names: one entry per handle, in order, the account or `undefined`.
+A contact's handle is BLAKE2b-256 keyed with `handleKey` over its 32-byte
+account (`blake2b(account, { key: handleKey, dkLen: 32 })` in `@noble/hashes`).
+The core re-checks every account returned. It caches what it resolves, so call
+`notifyContactsChanged()` whenever a contact is removed or blocked. Omit blocked
+contacts from both. See the contacts RFC (`docs/rfcs/contacts-api.md`).
+
 ## Generated WASM artefacts
 
 The ignored bundle under `dist/wasm/web/` is built with host-owned chain access.
@@ -233,7 +244,7 @@ the workspace size-optimized Rust profile plus `wasm-opt -Oz`, validate that
 debug/name/producers custom sections were stripped, and emit `.wasm.gz` and
 `.wasm.br` sidecars for hosts that serve precompressed assets.
 
-Build them after editing `rust/crates/truapi-server` and before packaging, publishing, or running
+Build them after editing `rust/crates/truapi` and before packaging, publishing, or running
 tests that load the raw WASM bundle (requires `wasm-pack` on PATH):
 
 ```bash
@@ -277,6 +288,7 @@ transition below reports the resulting `AuthState` the same way.
 | `activateStoredSession()`       | Await the restore of the `AuthSession` slot before opening providers.        |
 | `activateExternalSession(blob)` | Install a session the host holds itself, without writing it to core storage. |
 | `notifySessionStoreChanged()`   | Tell the core the persisted blob may have changed; it re-reads it.           |
+| `notifyContactsChanged()`       | Tell the core a contact was removed or blocked; it drops cached handles.     |
 | `disconnectSession()`           | Log out: clears the session and notifies the peer.                           |
 | `resetSessionState()`           | Drop the local session without notifying the peer.                           |
 
@@ -343,25 +355,45 @@ once, after the last. A `wanted: false` is permission to stop, not an order: a h
 ## Debugging (dev-only)
 
 The worker can stream every product↔core wire frame to the wire debugger. It is
-off by default and enabled purely from the host page — the product needs no
-changes. Two conditions must **both** hold or nothing dials and the core installs
-no tap:
+off by default and the embedding host decides; the product needs no changes.
+Two conditions must **both** hold or nothing dials and the core installs no tap:
 
 1. **The host page is a dev build.** The dial sits behind a hard
    `import.meta.env.DEV` gate, which bundlers replace with a boolean literal: in
-   a production bundle it returns `null` unconditionally, so no stored key can
-   turn the tap on. A production build that shows no frames is this gate, not a
-   broken debugger — and it says so: with the key set but the gate closed, the
-   host logs once that the dial is compiled out, rather than staying silent and
-   reading as a broken tool. That matters for a host whose only local build is
-   production-mode; `NODE_ENV=development` is what opens the gate under Vite.
-2. **The host origin's `localStorage` carries a `ws://` loopback URL**, read on
-   the host page at runtime boot and forwarded to the worker in its `init`
-   message:
+   a production bundle that gate is false, so no option can turn the tap on. A
+   production build that shows no frames is this gate, not a broken debugger.
+   `NODE_ENV=development` is what opens the gate under Vite.
+2. **A `ws://` loopback URL reaches the runtime**, from one of two places. The
+   host's own value wins over the build's, so the build's is a default and never
+   an override:
 
-   ```js
-   localStorage.setItem("truapi:debugger", "ws://127.0.0.1:9231");
+   ```ts
+   // 1. the host passes it, the normal path, where the host stays in control
+   await createWebWorkerPairingHostRuntime(worker, callbacks, {
+     hostConfig,
+     debugger: "ws://127.0.0.1:9231", // null or "" refuses the dial outright
+   });
    ```
+
+   ```bash
+   # 2. or compile a default in, which is what a local stack does: every
+   #    browser profile that opens the build dials, with nothing to switch on
+   VITE_TRUAPI_DEBUGGER_URL=ws://127.0.0.1:9231 vite build
+   ```
+
+   Passing `null` or `""` is how a host refuses the dial even when the build
+   carries one; omitting the field takes the build's value.
+
+   While a dial is live the host shows a small fixed-position badge naming every
+   endpoint frames are going to, so a tap left on from an earlier session is
+   visible rather than buried in a console line. Pass `debuggerIndicator: false`
+   to suppress it, and only when the host renders its own signal, since the
+   point is that a host streaming frames is never silent about it. One runtime
+   suppressing the badge leaves another runtime's badge alone.
+
+   The dial is resolved once, when the runtime is created, and cannot be changed
+   from the page afterwards, so whether this session is observed is a property
+   of the build and the host, not of anything typed into a console later.
 
 Run the debugger at the other end (`@parity/truapi-debugger`, `npm run serve`,
 `127.0.0.1:9231`). On the next runtime boot the worker dials that URL and (via
@@ -372,7 +404,7 @@ a LAN or public address, a non-loopback hostname — yields an inert link and a
 `wire debugger URL rejected` console warning; there is no certificate or `wss`
 path. Prefer the literal `127.0.0.1` over `localhost`: `localhost` passes the
 gate, but it resolves `::1` first on macOS while the debugger binds `127.0.0.1`
-alone, so the same URL handed to a native host (`truapi-server`'s `WsDebugSink`
+alone, so the same URL handed to a native host (`truapi`'s `WsDebugSink`
 dials the first resolved address) silently never connects.
 
 The debugger owns all decoding and decodes every frame it can, including signing

@@ -292,7 +292,7 @@ final class ScriptedRebuild: CoinageRebuild, @unchecked Sendable {
     func resolve(
         _ transactions: [ScheduledDurableTx],
         assets _: [CoinageTxId: CoinageTxEntry]
-    ) async -> [CoinageTxId: Transaction] {
+    ) async throws -> [CoinageTxId: Transaction] {
         guard resolvable else { return [:] }
 
         return transactions.reduce(into: [:]) { resolved, transaction in
