@@ -1,4 +1,5 @@
 import Foundation
+import AsyncExtensions
 import Operation_iOS
 import Products
 import TrUAPIHost
@@ -15,6 +16,8 @@ import TrUAPIHost
 /// Faces are the exception: one that no longer reads is answered as none, and
 /// the card keeps its place and waits for its product to draw again.
 final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Sendable {
+    private let storageFacade: StorageFacadeProtocol
+    private let cardMapper = AnyCoreDataMapper(PocketCardMapper())
     private let cardRepository: AnyDataProviderRepository<StoredPocketCard>
     private let faceRepository: AnyDataProviderRepository<StoredPocketCardFace>
     private let logger: LoggerProtocol
@@ -23,6 +26,7 @@ final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Senda
         storageFacade: StorageFacadeProtocol = UserDataStorageFacade.shared,
         logger: LoggerProtocol = Logger.shared
     ) {
+        self.storageFacade = storageFacade
         cardRepository = AnyDataProviderRepository(
             storageFacade.createRepository(mapper: AnyCoreDataMapper(PocketCardMapper()))
         )
@@ -39,6 +43,16 @@ final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Senda
             .asyncExecute()
             .sorted { $0.addedAt < $1.addedAt }
             .map { PocketCardEntry(key: $0.key, title: $0.title, privileged: false) }
+    }
+
+    /// Followed rather than announced: every surface showing the collection
+    /// sees a write whoever made it, including the core removing a card through
+    /// its own bridge.
+    func observeCards() -> AnyAsyncSequence<[PocketCardEntry]> {
+        storageFacade
+            .subscribeSnapshot(mapper: cardMapper, transform: { $0.sorted { $0.addedAt < $1.addedAt } })
+            .map { stored in stored.map { PocketCardEntry(key: $0.key, title: $0.title, privileged: false) } }
+            .eraseToAnyAsyncSequence()
     }
 
     func insert(_ card: PocketCardEntry, face: RendererNode) async {

@@ -37,8 +37,14 @@ struct PocketCardsProvider {
     /// put a storage failure, and an empty Pocket for one launch is better than
     /// a tab that does not come up.
     func cards() async -> [PocketCardViewModel] {
+        await cards(held())
+    }
+
+    /// The collection as it was handed over, which is what a caller following
+    /// it already has.
+    func cards(_ held: [PocketCardEntry]) async -> [PocketCardViewModel] {
         var drawn: [PocketCardViewModel] = []
-        for card in await held() {
+        for card in held {
             await drawn.append(viewModel(for: card))
         }
         return drawn

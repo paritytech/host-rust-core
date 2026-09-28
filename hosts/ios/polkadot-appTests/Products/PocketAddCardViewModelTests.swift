@@ -17,7 +17,6 @@ struct PocketAddCardViewModelTests {
             productId: "game.paseo",
             cardId: PocketCardId(value: "loyalty"),
             interactor: makeAddCardInteractor(published: [loyalty]),
-            onAdded: {},
             images: { productId in
                 asked.note(productId)
                 return PocketImageResolver(

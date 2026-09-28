@@ -1,4 +1,5 @@
 import Foundation
+import AsyncExtensions
 import Products
 import Testing
 import TrUAPIHost
@@ -196,9 +197,17 @@ actor InMemoryPocketCardRepository: PocketCardRepository {
     private var faces: [PocketCardKey: RendererNode] = [:]
     private var readsFail = false
     private var writesFail = false
+    /// Seeded with what is held and sent on every write, the way a CoreData
+    /// snapshot subscription behaves.
+    private let snapshots: AsyncCurrentValueSubject<[PocketCardEntry]>
 
     init(_ stored: [PocketCardEntry] = []) {
         self.stored = stored
+        snapshots = AsyncCurrentValueSubject(stored)
+    }
+
+    nonisolated func observeCards() -> AnyAsyncSequence<[PocketCardEntry]> {
+        snapshots.eraseToAnyAsyncSequence()
     }
 
     /// Storage the app can no longer read, which is a failure rather than an
@@ -222,6 +231,7 @@ actor InMemoryPocketCardRepository: PocketCardRepository {
         stored.removeAll { $0.key == card.key }
         stored.append(card)
         faces[card.key] = face
+        snapshots.send(stored)
     }
 
     func delete(_ key: PocketCardKey) async throws -> Bool {
@@ -229,6 +239,7 @@ actor InMemoryPocketCardRepository: PocketCardRepository {
         let before = stored.count
         stored.removeAll { $0.key == key }
         faces[key] = nil
+        snapshots.send(stored)
         return stored.count != before
     }
 

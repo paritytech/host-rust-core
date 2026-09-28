@@ -63,7 +63,8 @@ struct ProductPocketHostBridgeTests {
 
     /// The core is told only when this product's own slice changes. A face
     /// streaming at frame rate changes the stored collection continuously
-    /// without changing any card the core knows about.
+    /// without changing any card the core knows about, and another product's
+    /// card changes nothing here at all.
     @Test
     func republishesOnlyWhenItsOwnSliceChanges() async throws {
         let repository = InMemoryPocketCardRepository()
@@ -72,13 +73,13 @@ struct ProductPocketHostBridgeTests {
         bridge.start { published.record($0) }
 
         await repository.insert(loyalty, face: .nil)
-        await bridge.refresh()
+        try await settle()
         await repository.insert(otherProductCard, face: .nil)
-        await bridge.refresh()
+        try await settle()
 
-        // The leading publish is the opening one, of the snapshot as it stood;
-        // the other product's card adds nothing to this product's slice, so the
-        // second refresh says nothing.
+        // The leading publish is the opening one, of the snapshot as it stood.
+        // The other product's card adds nothing to this product's slice, so
+        // nothing follows it.
         #expect(published.counts == [0, 1])
     }
 
@@ -133,8 +134,17 @@ private func makeBridge(
         productId: productId,
         collection: RealPocketCardStore(pinned: InMemoryPinnedCards(pinned), repository: held)
     )
-    await bridge.refresh()
+    await bridge.begin()
     return bridge
+}
+
+/// The bridge follows the collection in a task, so the assertions wait for it
+/// rather than for a fixed time.
+private func settle() async throws {
+    for _ in 0 ..< 20 {
+        await Task.yield()
+    }
+    try await Task.sleep(for: .milliseconds(20))
 }
 
 /// Records what the bridge asked to republish, without asserting on a mock.

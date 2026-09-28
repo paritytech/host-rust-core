@@ -1,4 +1,5 @@
 import Foundation
+import AsyncExtensions
 import Products
 import TrUAPIHost
 
@@ -51,6 +52,11 @@ protocol PocketCollection {
     /// apart from an empty Pocket.
     func cards() async throws -> [PocketCardEntry]
 
+    /// The collection as it stands, and again after every change to it,
+    /// whoever made the change. Read from storage rather than announced, so a
+    /// writer cannot forget to say it wrote.
+    func observeCards() -> AnyAsyncSequence<[PocketCardEntry]>
+
     func removeCard(_ key: PocketCardKey) async throws -> PocketRemoval
 }
 
@@ -74,6 +80,9 @@ protocol PocketCardStore: PocketCollection {
 /// like every other.
 protocol PocketCardRepository {
     func cards() async throws -> [PocketCardEntry]
+
+    /// The stored cards as they stand, and again after every write.
+    func observeCards() -> AnyAsyncSequence<[PocketCardEntry]>
 
     func insert(_ card: PocketCardEntry, face: RendererNode) async
 

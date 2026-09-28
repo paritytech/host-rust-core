@@ -7,33 +7,51 @@ import Testing
 import UIKit
 @testable import polkadot_app
 
-/// The Wallet tab is the Pocket's only surface, and it re-reads the collection
-/// only when it is told one changed. Nothing else re-reads on its own, so a
-/// change the tab was not listening for leaves it stale until the next one.
+/// The Wallet tab is the Pocket's only surface, and it follows the collection
+/// from storage. A card entering or leaving reaches it whoever put it there,
+/// including the core removing one through a product's own bridge.
 @MainActor
 struct WalletMainPocketTests {
-    /// Warming fetches an archive per host-placed product, and the collection
-    /// is read again only when a change is announced. A change that landed
-    /// while the tab was still busy with the last read must still be heard:
-    /// the stream announces once and keeps nothing for a listener that has not
-    /// arrived, and nothing re-reads the collection on its own afterwards.
+    /// Warming fetches an archive per host-placed product. A change that landed
+    /// while the tab was still busy warming the last one must still reach it,
+    /// or the tab sits on a collection that has already moved.
     @Test
-    func hearsAChangeThatLandedWhileItWasStillBusyWithTheLastRead() async throws {
+    func showsAChangeThatLandedWhileItWasStillWarmingTheLastOne() async throws {
         let repository = InMemoryPocketCardRepository()
-        let pocket = PocketFacade(tld: { "paseo" }, repository: repository)
-        let view = RecordingView()
-        let presenter = makePresenter(pocket: pocket, view: view, warmDelay: .milliseconds(400))
+        let presenter = RecordingPresenter()
+        let interactor = makeInteractor(
+            repository: repository,
+            presenter: presenter,
+            warmDelay: .milliseconds(400)
+        )
 
-        presenter.setup()
+        interactor.setup()
         try await settle()
-        let beforeTheChange = view.pocketCards.count
+        let beforeTheChange = presenter.pocketCards.count
 
         await repository.insert(loyalty, face: .nil)
-        pocket.collectionChanged()
         try await settle()
 
-        #expect(view.pocketCards.count > beforeTheChange)
-        #expect(view.pocketCards.last?.contains { $0.key == loyalty.key } == true)
+        #expect(presenter.pocketCards.count > beforeTheChange)
+        #expect(presenter.pocketCards.last?.contains { $0.key == loyalty.key } == true)
+    }
+
+    /// A removal the core made through a product's bridge writes to the same
+    /// storage and nothing announces it, so the tab has to see it by following.
+    @Test
+    func showsACardLeavingTheCollection() async throws {
+        let repository = InMemoryPocketCardRepository([loyalty])
+        let presenter = RecordingPresenter()
+        let interactor = makeInteractor(repository: repository, presenter: presenter)
+
+        interactor.setup()
+        try await settle()
+        #expect(presenter.pocketCards.last?.contains { $0.key == loyalty.key } == true)
+
+        _ = try await repository.delete(loyalty.key)
+        try await settle()
+
+        #expect(presenter.pocketCards.last?.contains { $0.key == loyalty.key } == false)
     }
 }
 
@@ -55,50 +73,39 @@ private func settle() async throws {
 }
 
 @MainActor
-private func makePresenter(
-    pocket: PocketFacade,
-    view: RecordingView,
+private func makeInteractor(
+    repository: InMemoryPocketCardRepository,
+    presenter: RecordingPresenter,
     warmDelay: Duration = .zero
-) -> WalletMainPresenter {
-    let presenter = WalletMainPresenter(
-        interactor: StubInteractor(),
-        wireframe: StubWireframe(),
-        titleViewModelFactory: StubTitleViewModelFactory(),
+) -> WalletMainInteractor {
+    let interactor = WalletMainInteractor(
+        collectiblesURLProvider: StubCollectiblesURLProvider(),
+        networkStatusObserver: StubNetworkStatusObserver(),
         pocketPrewarmer: PocketPrewarmer(products: StubResolver(), dotNsResolver: SlowArchives(delay: warmDelay)),
-        pocket: pocket
+        pocket: PocketFacade(tld: { "paseo" }, repository: repository)
     )
-    presenter.view = view
-    return presenter
+    interactor.presenter = presenter
+    return interactor
 }
 
-private final class RecordingView: WalletMainViewProtocol {
+@MainActor
+private final class RecordingPresenter: WalletMainInteractorOutputProtocol {
     private(set) var pocketCards: [[PocketCardViewModel]] = []
 
-    let controller = UIViewController()
-    let isSetup = true
-
-    func didReceive(isCollectiblesAvailable _: Bool) {}
-    func didReceive(titleViewModel _: NetworkStatusTitleView.ViewModel) {}
+    func didReceiveCollectibles(url _: URL?) {}
+    func didReceive(networkStatus _: NetworkStatus) {}
 
     func didReceive(pocketCards: [PocketCardViewModel]) {
         self.pocketCards.append(pocketCards)
     }
 }
 
-private final class StubInteractor: WalletMainInteractorInputProtocol {
-    func setup() {}
+private struct StubCollectiblesURLProvider: CollectiblesURLProviding {
+    func resolveURL() async -> URL? { nil }
 }
 
-private final class StubWireframe: WalletMainWireframeProtocol {
-    func showCollectibles(from _: WalletMainViewProtocol?, url _: URL) {}
-    func showPocketCard(_: PocketCardViewModel) {}
-    func confirmPocketCardRemoval(_: PocketCardViewModel, onConfirm _: @escaping () -> Void) {}
-}
-
-private struct StubTitleViewModelFactory: NetworkStatusTitleViewModelMaking {
-    func createTitleViewModel(for _: NetworkStatus) -> NetworkStatusTitleView.ViewModel {
-        NetworkStatusTitleView.ViewModel(text: "Wallet", isLoading: false)
-    }
+private final class StubNetworkStatusObserver: NetworkStatusObserving {
+    func start(onStatus _: @escaping @MainActor (NetworkStatus) -> Void) {}
 }
 
 private struct StubResolver: ProductResolving {

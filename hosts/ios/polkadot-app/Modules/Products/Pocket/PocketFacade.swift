@@ -1,5 +1,4 @@
 import Foundation
-import AsyncExtensions
 import Products
 import TrUAPIHost
 
@@ -18,7 +17,6 @@ actor PocketFacade {
 
     private let tld: @Sendable () async -> String?
     private let repository: any PocketCardRepository
-    private let changeSubject = AsyncPassthroughSubject<Void>()
     private var built: RealPocketCardStore?
 
     init(
@@ -38,16 +36,5 @@ actor PocketFacade {
         let store = RealPocketCardStore(pinned: AssetPinnedPocketCards(tld: tld), repository: repository)
         built = store
         return store
-    }
-
-    /// Fires whenever a card enters or leaves the collection, so every surface
-    /// showing it re-reads. Faces are not announced here: they change at frame
-    /// rate, and each card subscribes to its own.
-    nonisolated func changes() -> AnyAsyncSequence<Void> {
-        changeSubject.eraseToAnyAsyncSequence()
-    }
-
-    nonisolated func collectionChanged() {
-        changeSubject.send(())
     }
 }

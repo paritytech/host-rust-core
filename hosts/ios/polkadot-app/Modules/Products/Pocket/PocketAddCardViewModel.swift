@@ -27,21 +27,18 @@ final class PocketAddCardViewModel {
     private let productId: ProductId
     private let cardId: PocketCardId
     private let interactor: PocketAddCardInteractor
-    private let onAdded: () -> Void
     private let resolver: any WidgetDesignTokenResolving
 
     init(
         productId: ProductId,
         cardId: PocketCardId,
         interactor: PocketAddCardInteractor,
-        onAdded: @escaping () -> Void,
         images: (ProductId) -> PocketImageResolver? = { TrUAPIWorkerFacade.shared.images(of: $0) },
         resolver: any WidgetDesignTokenResolving = WidgetDesignTokenResolver()
     ) {
         self.productId = productId
         self.cardId = cardId
         self.interactor = interactor
-        self.onAdded = onAdded
         self.resolver = resolver
         resolveImage = images(productId).map { images in
             WidgetImageResolver { await images.resolve($0) }
@@ -62,7 +59,6 @@ final class PocketAddCardViewModel {
 
         isAdding = true
         await interactor.approve(offer)
-        onAdded()
         onFinish()
     }
 

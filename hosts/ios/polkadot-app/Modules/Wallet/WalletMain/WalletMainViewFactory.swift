@@ -37,7 +37,11 @@ enum WalletMainViewFactory {
                 remoteConfig: FirebaseFacade.shared,
                 firebaseFallback: { FirebaseApplicationService.shared.asyncWaitCollectiblesFallbackURL() }
             ),
-            networkStatusObserver: networkStatusObserver
+            networkStatusObserver: networkStatusObserver,
+            pocketPrewarmer: PocketPrewarmer(
+                products: context.flowState.productResolver,
+                dotNsResolver: context.flowState.dotNsResolver
+            )
         )
 
         let presenter = WalletMainPresenter(
@@ -45,10 +49,6 @@ enum WalletMainViewFactory {
             wireframe: wireframe,
             titleViewModelFactory: NetworkStatusTitleViewModelFactory(
                 screenTitle: String(localized: .walletMainTitle)
-            ),
-            pocketPrewarmer: PocketPrewarmer(
-                products: context.flowState.productResolver,
-                dotNsResolver: context.flowState.dotNsResolver
             )
         )
         interactor.presenter = presenter

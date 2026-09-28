@@ -17,8 +17,7 @@ enum PocketAddCardViewFactory {
         let viewModel = PocketAddCardViewModel(
             productId: link.productHost,
             cardId: link.cardId,
-            interactor: makeInteractor(store: store, flowState: flowState),
-            onAdded: { pocket.collectionChanged() }
+            interactor: makeInteractor(store: store, flowState: flowState)
         )
 
         let controller = UIHostingController(rootView: PocketAddCardView(viewModel: viewModel))

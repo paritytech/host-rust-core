@@ -213,10 +213,9 @@ struct TrUAPIWorkerSupervisorTests {
         #expect(supervisor.currentExecution(of: "game.paseo") != nil)
     }
 
-    /// The supervisor follows the collection for the whole life of the process,
-    /// and a worker already running is only told about a card added later
-    /// because of that. Without it a product's own list silently goes stale the
-    /// moment its worker is up.
+    /// A worker already running is told about a card added later because its
+    /// bridge follows storage. Nothing announces the write, so a writer that
+    /// forgot to say it wrote cannot leave a product's own list stale.
     @Test
     func tellsARunningWorkerAboutACardAddedLater() async throws {
         let builder = StubBuilder()
@@ -229,7 +228,6 @@ struct TrUAPIWorkerSupervisorTests {
         #expect(try builder.bridge?.listCards().map(\.cardId) == ["loyalty"])
 
         await repository.insert(streak, face: .nil)
-        pocket.collectionChanged()
         try await settle()
 
         #expect(try builder.bridge?.listCards().map(\.cardId).sorted() == ["loyalty", "streak"])

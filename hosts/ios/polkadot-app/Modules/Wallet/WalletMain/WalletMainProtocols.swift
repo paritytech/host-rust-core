@@ -26,10 +26,12 @@ protocol WalletMainWireframeProtocol: AnyObject {
 
 protocol WalletMainInteractorInputProtocol: AnyObject {
     func setup()
+    func removePocketCard(_ card: PocketCardViewModel)
 }
 
 @MainActor
 protocol WalletMainInteractorOutputProtocol: AnyObject {
     func didReceiveCollectibles(url: URL?)
     func didReceive(networkStatus: NetworkStatus)
+    func didReceive(pocketCards: [PocketCardViewModel])
 }

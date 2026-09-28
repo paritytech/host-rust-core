@@ -1,4 +1,5 @@
 import Foundation
+import AsyncExtensions
 import Products
 import Testing
 import TrUAPIHost
@@ -57,7 +58,11 @@ private struct StubFaceStreams: PocketFaceStreaming {
 private actor RecordingFaceStore: PocketCardStore {
     private(set) var kept: [RendererNode] = []
 
-    func cards() async -> [PocketCardEntry] { [] }
+    func cards() async throws -> [PocketCardEntry] { [] }
+
+    nonisolated func observeCards() -> AnyAsyncSequence<[PocketCardEntry]> {
+        AsyncStream<[PocketCardEntry]> { $0.finish() }.eraseToAnyAsyncSequence()
+    }
 
     func removeCard(_: PocketCardKey) async throws -> PocketRemoval { .absent }
 

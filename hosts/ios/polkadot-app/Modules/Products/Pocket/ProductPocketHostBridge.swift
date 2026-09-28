@@ -14,6 +14,7 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
     private let logger: LoggerProtocol
     private let snapshot = OSAllocatedUnfairLock(initialState: [PocketCard]())
     private let republish = OSAllocatedUnfairLock(initialState: (([PocketCard]) -> Void)?.none)
+    private let following = OSAllocatedUnfairLock(initialState: Task<Void, Never>?.none)
 
     init(productId: String, collection: any PocketCollection, logger: LoggerProtocol = Logger.shared) {
         self.productId = productId
@@ -35,13 +36,40 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
 
     func stop() {
         republish.withLock { $0 = nil }
+        following.withLock { held in
+            held?.cancel()
+            held = nil
+        }
     }
 
-    /// Re-reads the collection and tells the core only if this product's own
-    /// slice changed. A face streaming at frame rate changes the stored
-    /// collection continuously without changing any card the core knows about.
-    func refresh() async {
-        guard let held = try? await collection.cards() else {
+    /// Takes the collection as it stands, then keeps following it.
+    ///
+    /// Returns once the first read has landed, because the worker's script
+    /// subscribes to the card list as soon as it comes up: a snapshot filled
+    /// after that point leaves the product reading an empty Pocket for the
+    /// whole life of its worker.
+    func begin() async {
+        let held = try? await collection.cards()
+        take(held)
+
+        let task = Task { [weak self, collection, logger, productId] in
+            do {
+                for try await cards in collection.observeCards() {
+                    guard let self else { return }
+                    take(cards)
+                }
+            } catch {
+                logger.error("[pocket] \(productId) stopped following the collection: \(error)")
+            }
+        }
+        following.withLock { $0 = task }
+    }
+
+    /// Tells the core only if this product's own slice changed. A face
+    /// streaming at frame rate changes the stored collection continuously
+    /// without changing any card the core knows about.
+    private func take(_ held: [PocketCardEntry]?) {
+        guard let held else {
             logger.error("[pocket] \(productId)'s slice could not be read; the core keeps the last one")
             return
         }
@@ -50,9 +78,9 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
             .filter { $0.key.productId == productId }
             .map { PocketCard(cardId: $0.key.cardId.value, privileged: $0.privileged) }
 
-        let changed = snapshot.withLock { held -> Bool in
-            guard held != current else { return false }
-            held = current
+        let changed = snapshot.withLock { snapshot -> Bool in
+            guard snapshot != current else { return false }
+            snapshot = current
             return true
         }
         guard changed else { return }

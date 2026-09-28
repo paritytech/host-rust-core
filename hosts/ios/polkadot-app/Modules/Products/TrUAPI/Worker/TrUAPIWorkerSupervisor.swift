@@ -24,8 +24,8 @@ protocol TrUAPIWorkerSupervising: AnyObject, Sendable {
 
     func currentExecution(of productId: ProductId) -> TrUAPIProductExecutionProtocol?
 
-    /// Stops every worker this supervisor is running and gives up following the
-    /// collection. Called when the session it was built for ends.
+    /// Stops every worker this supervisor is running. Called when the session
+    /// it was built for ends.
     func shutdown() async
 }
 
@@ -75,7 +75,6 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
     private let logger: LoggerProtocol
 
     private var held: [ProductId: Held] = [:]
-    private var following: Task<Void, Never>?
     private var draining: Task<Void, Never>?
     private var isShutDown = false
 
@@ -97,15 +96,13 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
         Task { await self.beginFollowing() }
     }
 
-    /// Started from a task rather than in `init`, because the follow task
+    /// Started from a task rather than in `init`, because the drain task
     /// captures the supervisor and an actor's initializer cannot reach its own
     /// storage once it has escaped. A shutdown can therefore land first, and
-    /// must not be followed by a worker-refresh loop nothing holds a way back
-    /// to.
+    /// must not be followed by a drain loop nothing holds a way back to.
     private func beginFollowing() {
         guard !isShutDown else { return }
 
-        following = Task { await self.followCollection() }
         draining = Task { await self.drainTransitions() }
     }
 
@@ -121,8 +118,6 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
     func shutdown() async {
         isShutDown = true
         transitions.continuation.finish()
-        following?.cancel()
-        following = nil
         draining?.cancel()
         draining = nil
 
@@ -130,21 +125,6 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
         // otherwise be iterating, and awaits inside it let more land.
         for productId in Array(held.keys) {
             await stop(productId)
-        }
-    }
-
-    /// A card added or removed anywhere changes what every running worker is
-    /// told it holds, so each bridge re-reads its own slice and tells the core
-    /// only if that slice moved.
-    private func followCollection() async {
-        do {
-            for try await _ in pocket.changes() {
-                for case let .running(worker) in held.values {
-                    await worker.pocket.refresh()
-                }
-            }
-        } catch {
-            logger.error("[truapi] the Pocket collection change stream ended: \(error)")
         }
     }
 
@@ -206,7 +186,7 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
 
             // The worker's card list is served from the bridge's snapshot, and
             // the script that subscribes to it comes up inside `start()`.
-            await bridge.refresh()
+            await bridge.begin()
             try await runtime.start()
 
             guard case let .running(worker)? = held[productId], worker.boot === boot else { return }

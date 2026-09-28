@@ -1,4 +1,5 @@
 import Foundation
+import AsyncExtensions
 import TrUAPIHost
 
 /// The settled collection: the cards the host placed, then the ones the user
@@ -22,6 +23,22 @@ struct RealPocketCardStore: PocketCardStore {
         let added = try await repository.cards().filter { !placedKeys.contains($0.key) }
 
         return placed + added
+    }
+
+    /// The stored cards as they change, with the host's own placed in front of
+    /// them each time. Placed cards never change within a session, so only the
+    /// stored side is followed.
+    func observeCards() -> AnyAsyncSequence<[PocketCardEntry]> {
+        let pinned = pinned
+
+        return repository.observeCards()
+            .map { added in
+                let placed = await pinned.cards()
+                let placedKeys = Set(placed.map(\.key))
+
+                return placed + added.filter { !placedKeys.contains($0.key) }
+            }
+            .eraseToAnyAsyncSequence()
     }
 
     func removeCard(_ key: PocketCardKey) async throws -> PocketRemoval {
