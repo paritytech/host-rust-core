@@ -18,6 +18,7 @@
 //! `tracing-core`. Treat the returned errors as the whole contract: a native host
 //! learns nothing from the logs.
 
+use core::future::Future;
 use std::fmt;
 use std::sync::{Arc, Weak};
 
@@ -26,8 +27,8 @@ use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
 
-use crate::EmbeddedChainProvider;
 use crate::storage::{StorageClient, StorageClientError};
+use crate::{ChainLifecycle, EmbeddedChainProvider};
 
 // uniffi has no fixed-size array type, so a genesis hash crosses as bytes and
 // converts back here. `custom_type!` only accepts a single identifier, which is
@@ -55,6 +56,13 @@ pub enum ChainProviderError {
     /// The host's listener failed in a way it did not declare.
     #[error("{reason}")]
     Listener {
+        /// Human-readable failure reason.
+        reason: String,
+    },
+    /// The lifecycle of a chain could not be watched: nothing is connected to
+    /// it, or no thread could be started to deliver it.
+    #[error("{reason}")]
+    Lifecycle {
         /// Human-readable failure reason.
         reason: String,
     },
@@ -221,6 +229,16 @@ pub trait ChainMessageListener: Send + Sync {
     fn on_closed(&self, reason: ChainCloseReason) -> Result<(), ChainProviderError>;
 }
 
+/// Sink for a chain's lifecycle, implemented on the foreign side.
+#[uniffi::export(with_foreign)]
+pub trait ChainLifecycleListener: Send + Sync {
+    /// Called with the current state, then once per change.
+    fn on_lifecycle(&self, state: ChainLifecycle) -> Result<(), ChainProviderError>;
+    /// Called once the watch has ended: stopped, the chain no longer running,
+    /// or `on_lifecycle` having failed.
+    fn on_ended(&self) -> Result<(), ChainProviderError>;
+}
+
 /// Without this the generic converter panics, so a store that throws anything
 /// it did not declare would kill the process rather than fail the one call.
 ///
@@ -354,22 +372,95 @@ impl ChainProvider {
         // response stream, and the pump parks on that stream -- so holding a
         // strong reference means the drop that would release it can never run.
         let pumped = Arc::downgrade(&connection);
-        // Named for crash reports, and fallible: under EAGAIN the unnamed
-        // `thread::spawn` panics, which this method has a `Result` to avoid.
-        std::thread::Builder::new()
-            .name("truapi-pump".to_string())
-            .spawn(move || {
-                // Entered here, not inside `pump_responses`: the guard must outlive
-                // the future, because dropping `listener` releases the foreign object
-                // and runs its destructor on this thread, still inside `block_on`.
-                let _pumping = PumpGuard::enter();
-                block_on(pump_responses(responses, pumped, listener))
-            })
-            .map_err(|error| ChainProviderError::Connect {
+        spawn_pump("truapi-pump", pump_responses(responses, pumped, listener)).map_err(
+            |error| ChainProviderError::Connect {
                 reason: format!("could not start the response pump: {error}"),
-            })?;
+            },
+        )?;
 
         Ok(Arc::new(ChainConnection { inner: connection }))
+    }
+
+    /// Watch what the light client is doing on the chain identified by
+    /// `genesis_hash` (32 bytes). `listener` receives the current state, then
+    /// every change, until the watch is stopped or the chain stops running.
+    ///
+    /// Fails when nothing is connected to the chain, so connect first.
+    pub fn watch_lifecycle(
+        &self,
+        genesis_hash: Vec<u8>,
+        listener: Arc<dyn ChainLifecycleListener>,
+    ) -> Result<Arc<LifecycleWatch>, ChainProviderError> {
+        let states = self
+            .inner
+            .lifecycle(genesis_from(genesis_hash)?)
+            .map_err(|error| ChainProviderError::Lifecycle {
+                reason: error.to_string(),
+            })?;
+        let (states, stop) = futures::stream::abortable(states);
+        spawn_pump("truapi-lifecycle", pump_lifecycle(states, listener)).map_err(|error| {
+            ChainProviderError::Lifecycle {
+                reason: format!("could not start the lifecycle pump: {error}"),
+            }
+        })?;
+        Ok(Arc::new(LifecycleWatch { stop }))
+    }
+}
+
+/// Run `pump` to completion on a thread of its own, where foreign listener
+/// callbacks are made.
+///
+/// Named for crash reports, and fallible: under EAGAIN the unnamed
+/// `thread::spawn` panics, which the callers have a `Result` to avoid.
+fn spawn_pump(name: &str, pump: impl Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            // Entered here, not inside the pump: the guard must outlive the
+            // future, because dropping its listener releases the foreign object
+            // and runs its destructor on this thread, still inside `block_on`.
+            let _pumping = PumpGuard::enter();
+            block_on(pump)
+        })
+        .map(drop)
+}
+
+/// Deliver lifecycle states to `listener` until the stream ends or the
+/// listener fails, then tell it the watch ended.
+async fn pump_lifecycle(
+    mut states: impl futures::Stream<Item = ChainLifecycle> + Unpin,
+    listener: Arc<dyn ChainLifecycleListener>,
+) {
+    while let Some(state) = states.next().await {
+        if let Err(error) = listener.on_lifecycle(state) {
+            tracing::warn!(%error, "lifecycle listener failed; ending the watch");
+            break;
+        }
+    }
+    if let Err(error) = listener.on_ended() {
+        tracing::warn!(%error, "lifecycle listener failed on end");
+    }
+}
+
+/// A live watch on one chain's lifecycle. Dropping it stops the watch.
+#[derive(uniffi::Object)]
+pub struct LifecycleWatch {
+    stop: futures::stream::AbortHandle,
+}
+
+#[uniffi::export]
+impl LifecycleWatch {
+    /// Stop the watch; the listener's `on_ended` fires once the pump notices.
+    ///
+    /// Not named `close`, for the reason [`ChainConnection::disconnect`] gives.
+    pub fn stop(&self) {
+        self.stop.abort();
+    }
+}
+
+impl Drop for LifecycleWatch {
+    fn drop(&mut self) {
+        self.stop.abort();
     }
 }
 
@@ -997,6 +1088,73 @@ mod tests {
 
         assert_eq!(reason.chars().count(), CLOSE_REASON_MAX_CHARS);
         assert!(reason.starts_with("HEAD"), "the bound keeps the head");
+    }
+
+    /// Foreign lifecycle listener stand-in.
+    struct LifecycleCollector {
+        states: Sender<ChainLifecycle>,
+        ended: Sender<()>,
+    }
+
+    impl ChainLifecycleListener for LifecycleCollector {
+        fn on_lifecycle(&self, state: ChainLifecycle) -> Result<(), ChainProviderError> {
+            let _ = self.states.send(state);
+            Ok(())
+        }
+
+        fn on_ended(&self) -> Result<(), ChainProviderError> {
+            let _ = self.ended.send(());
+            Ok(())
+        }
+    }
+
+    /// A host shows sync progress from the first state on, and must be told
+    /// when the watch it stopped has actually ended.
+    #[test]
+    fn a_lifecycle_watch_reports_the_current_state_and_ends_when_stopped() {
+        let provider = ChainProvider::new();
+        let (listener, _messages, _closed) = Collector::new();
+        let _connection = provider
+            .connect(CATALOG_RELAY.to_vec(), listener)
+            .expect("the catalog resolves its own relay genesis");
+
+        let (states, state_rx) = channel();
+        let (ended, ended_rx) = channel();
+        let watch = provider
+            .watch_lifecycle(
+                CATALOG_RELAY.to_vec(),
+                Arc::new(LifecycleCollector { states, ended }),
+            )
+            .expect("a connected chain can be watched");
+        state_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the current state is delivered first");
+
+        watch.stop();
+        ended_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("stopping the watch fires on_ended");
+    }
+
+    /// Nothing runs a chain nobody connected to, so there is nothing to watch.
+    #[test]
+    fn watching_a_chain_nothing_is_connected_to_fails() {
+        let (states, _state_rx) = channel();
+        let (ended, _ended_rx) = channel();
+        let error = ChainProvider::new()
+            .watch_lifecycle(
+                CATALOG_RELAY.to_vec(),
+                Arc::new(LifecycleCollector { states, ended }),
+            )
+            .err()
+            .expect("an unconnected chain has no lifecycle");
+        let ChainProviderError::Lifecycle { reason } = error else {
+            panic!("expected a Lifecycle error");
+        };
+        assert!(
+            reason.contains("connect to it first"),
+            "unexpected: {reason}"
+        );
     }
 
     #[test]
