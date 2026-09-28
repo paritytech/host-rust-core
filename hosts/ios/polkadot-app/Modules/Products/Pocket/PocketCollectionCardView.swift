@@ -24,8 +24,8 @@ struct PocketCollectionCardView: View {
         PocketProductCardView(
             title: card.title,
             face: streamed ?? card.face,
-            onAction: { action, value in send(action, value) },
-            resolveImage: imageResolver.map { images in WidgetImageResolver { await images.resolve($0) } }
+            resolveImage: imageResolver.map { images in WidgetImageResolver { await images.resolve($0) } },
+            onAction: { action, value in send(action, value) }
         )
         .task(id: card.id) { await draw() }
     }

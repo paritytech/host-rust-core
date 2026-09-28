@@ -22,13 +22,16 @@ struct PublishedPocketCards: PublishedPocketCardsResolving {
         do {
             resolved = try await products.resolve(productId)
         } catch {
-            // A product that could not be read has not answered yet. A card
-            // typed in by hand needs no chain presence and still stands;
-            // anything else would settle the question against a read that
-            // simply did not land.
-            guard let byHand = byHand(cardId, of: productId, resolved: nil) else { throw error }
+            // A card typed in by hand needs no chain presence and stands either
+            // way.
+            if let byHand = byHand(cardId, of: productId, resolved: nil) { return byHand }
 
-            return byHand
+            // A manifest nothing can read is the product's answer and settles
+            // the question. Anything else is a read that did not land, and is
+            // raised as itself so the caller asks again.
+            guard case ProductResolutionError.malformedManifest = error else { throw error }
+
+            throw PocketPublishError.unreadableProduct
         }
 
         if let worker = resolved.executables.worker, worker.includesPocket {

@@ -20,8 +20,10 @@
                     .disabled(viewModel.isLoading)
 
                 // Drawn in the real card frame, so what is seen here is what the
-                // Pocket will show.
-                PocketProductCardView(title: "Preview", face: viewModel.face)
+                // Pocket will show. The face comes from a URL rather than from a
+                // product's archive, so there is nothing for an archive path to
+                // resolve against and those images draw as holes.
+                PocketProductCardView(title: "Preview", face: viewModel.face, resolveImage: nil)
 
                 if let refusal = viewModel.refusal {
                     ScrollView {

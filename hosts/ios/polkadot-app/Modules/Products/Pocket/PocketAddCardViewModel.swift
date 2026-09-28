@@ -19,6 +19,11 @@ final class PocketAddCardViewModel {
 
     var onFinish: () -> Void = {}
 
+    /// How the images inside the offered face are read. The sheet shows the
+    /// card as it will look, so it reads them out of the same archive the
+    /// Pocket will.
+    let resolveImage: WidgetImageResolver?
+
     private let productId: ProductId
     private let cardId: PocketCardId
     private let interactor: PocketAddCardInteractor
@@ -30,6 +35,7 @@ final class PocketAddCardViewModel {
         cardId: PocketCardId,
         interactor: PocketAddCardInteractor,
         onAdded: @escaping () -> Void,
+        images: (ProductId) -> PocketImageResolver? = { TrUAPIWorkerFacade.shared.images(of: $0) },
         resolver: any WidgetDesignTokenResolving = WidgetDesignTokenResolver()
     ) {
         self.productId = productId
@@ -37,6 +43,9 @@ final class PocketAddCardViewModel {
         self.interactor = interactor
         self.onAdded = onAdded
         self.resolver = resolver
+        resolveImage = images(productId).map { images in
+            WidgetImageResolver { await images.resolve($0) }
+        }
     }
 
     func load() async {

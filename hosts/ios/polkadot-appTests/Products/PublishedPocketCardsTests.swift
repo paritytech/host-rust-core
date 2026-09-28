@@ -95,6 +95,47 @@ struct PublishedPocketCardsTests {
         #expect(found.definition.preview == .url("http://127.0.0.1:5173/pocket/devicehood.json"))
     }
 
+    // MARK: - When the product cannot be read
+
+    /// A malformed manifest is a settled answer, not a read that did not land.
+    /// Left transient, the card asks the chain again every thirty seconds for
+    /// as long as it is on screen, and never draws.
+    @Test
+    func refusesAProductWhoseManifestCannotBeRead() async {
+        let cards = PublishedPocketCards(products: FailingResolver(
+            error: ProductResolutionError.malformedManifest("game.paseo")
+        ))
+
+        await #expect(throws: PocketPublishError.unreadableProduct) {
+            try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
+        }
+    }
+
+    /// A chain read that did not land is not an answer, so it is raised as
+    /// itself and the caller asks again.
+    @Test
+    func raisesAReadThatDidNotLandAsItself() async {
+        let cards = PublishedPocketCards(products: FailingResolver(error: URLError(.timedOut)))
+
+        await #expect(throws: URLError.self) {
+            try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
+        }
+    }
+
+    /// A card typed in by hand needs no chain presence, so it stands even while
+    /// the product cannot be read at all.
+    @Test
+    func stillServesAHandTypedCardWhenTheProductCannotBeRead() async throws {
+        let cards = PublishedPocketCards(
+            products: FailingResolver(error: URLError(.timedOut)),
+            debugCards: { _ in [debugLoyalty] }
+        )
+
+        let found = try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
+
+        #expect(found.definition.preview == .url("http://127.0.0.1:5173/pocket/devicehood.json"))
+    }
+
     @Test
     func refusesACardTheWorkerDoesNotPublish() async {
         let cards = PublishedPocketCards(products: StubResolver(worker: workerPublishing([loyalty])))
@@ -128,6 +169,14 @@ private func workerPublishing(_ cards: [PocketCardDefinition]) -> ProductExecuta
         includesPocket: true,
         pocketCards: cards
     )
+}
+
+private struct FailingResolver: ProductResolving {
+    let error: any Error
+
+    func resolve(_: ProductId) async throws -> ResolvedProduct {
+        throw error
+    }
 }
 
 private struct StubResolver: ProductResolving {

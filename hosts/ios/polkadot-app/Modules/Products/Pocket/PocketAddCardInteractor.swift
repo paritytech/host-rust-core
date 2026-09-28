@@ -6,11 +6,15 @@ import TrUAPIHost
 enum PocketPublishError: Error, Equatable, CustomStringConvertible {
     case noPocket
     case unknownCard
+    /// The product answered with a manifest nothing can read. A settled answer
+    /// rather than a read that did not land: asking again gives the same one.
+    case unreadableProduct
 
     var description: String {
         switch self {
         case .noPocket: "this product publishes no Pocket cards"
         case .unknownCard: "this product publishes no such card"
+        case .unreadableProduct: "this product's manifest cannot be read"
         }
     }
 }

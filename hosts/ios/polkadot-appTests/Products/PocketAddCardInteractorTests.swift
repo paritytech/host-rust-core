@@ -6,7 +6,7 @@ import Testing
 struct PocketAddCardInteractorTests {
     @Test
     func offersThePublishedCard() async throws {
-        let interactor = makeInteractor(published: [loyaltyDefinition])
+        let interactor = makeAddCardInteractor(published: [loyaltyDefinition])
 
         let offer = try await interactor.loadOffer(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
 
@@ -19,7 +19,7 @@ struct PocketAddCardInteractorTests {
     /// however its manifest lists cards.
     @Test
     func refusesAProductThatPublishesNoPocket() async {
-        let interactor = makeInteractor(published: [loyaltyDefinition], includesPocket: false)
+        let interactor = makeAddCardInteractor(published: [loyaltyDefinition], includesPocket: false)
 
         await #expect(throws: PocketPublishError.noPocket) {
             try await interactor.loadOffer(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
@@ -28,7 +28,7 @@ struct PocketAddCardInteractorTests {
 
     @Test
     func refusesACardTheProductDoesNotPublish() async {
-        let interactor = makeInteractor(published: [loyaltyDefinition])
+        let interactor = makeAddCardInteractor(published: [loyaltyDefinition])
 
         await #expect(throws: PocketPublishError.unknownCard) {
             try await interactor.loadOffer(productId: "game.paseo", cardId: PocketCardId(value: "trophy"))
@@ -43,7 +43,7 @@ struct PocketAddCardInteractorTests {
             pinned: InMemoryPinnedCards([]),
             repository: InMemoryPocketCardRepository()
         )
-        let interactor = makeInteractor(published: [loyaltyDefinition], store: store)
+        let interactor = makeAddCardInteractor(published: [loyaltyDefinition], store: store)
         let offer = try await interactor.loadOffer(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
 
         await interactor.approve(offer)
@@ -63,49 +63,3 @@ private let loyaltyDefinition = PocketCardDefinition(
     title: "Loyalty",
     preview: .archive(path: "faces/loyalty.json")
 )
-
-private let minimalFace = Data("""
-{ "tag": "Column", "value": { "modifiers": [], "props": {}, "children": [] } }
-""".utf8)
-
-private func makeInteractor(
-    published: [PocketCardDefinition],
-    includesPocket: Bool = true,
-    store: any PocketCardStore = RealPocketCardStore(
-        pinned: InMemoryPinnedCards([]),
-        repository: InMemoryPocketCardRepository()
-    )
-) -> PocketAddCardInteractor {
-    PocketAddCardInteractor(
-        publishedCards: StubPublishedCards(
-            definitions: published,
-            includesPocket: includesPocket,
-            productName: "Game"
-        ),
-        previews: PocketPreviewLoader(archive: StubArchive(), fetch: { _, _ in minimalFace }),
-        store: store
-    )
-}
-
-private struct StubPublishedCards: PublishedPocketCardsResolving {
-    let definitions: [PocketCardDefinition]
-    let includesPocket: Bool
-    let productName: String
-
-    func find(productId: ProductId, cardId: PocketCardId) async throws -> PublishedPocketCard {
-        guard includesPocket else { throw PocketPublishError.noPocket }
-        guard let definition = definitions.first(where: { $0.id == cardId }) else {
-            throw PocketPublishError.unknownCard
-        }
-        return PublishedPocketCard(
-            productId: productId,
-            productName: productName,
-            workerContentId: "worker.\(productId)",
-            definition: definition
-        )
-    }
-}
-
-private struct StubArchive: PocketArchiveReading {
-    func file(contentId _: ProductId, path _: String, maxBytes _: Int) async throws -> Data { minimalFace }
-}

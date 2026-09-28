@@ -24,7 +24,11 @@ struct PocketAddCardView: View {
                     .frame(height: PocketCardSize.height)
             case let .offered(offer, face):
                 header(productName: offer.productName, productId: offer.key.productId)
-                PocketProductCardView(title: offer.title, face: face)
+                PocketProductCardView(
+                    title: offer.title,
+                    face: face,
+                    resolveImage: viewModel.resolveImage
+                )
                 actions
             case let .refused(message):
                 refusal(message)

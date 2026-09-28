@@ -15,8 +15,11 @@ enum PocketCardSize {
 struct PocketProductCardView: View {
     let title: String
     let face: CustomMessageWidgetNode?
+    /// How the images inside the face are read. Required rather than
+    /// defaulted: a caller that leaves it out draws the face with blank space
+    /// where its images are, and nothing about the card says so.
+    let resolveImage: WidgetImageResolver?
     var onAction: WidgetActionHandler?
-    var resolveImage: WidgetImageResolver?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
