@@ -70,13 +70,16 @@ runtime = [
     "dep:send_wrapper",
     "dep:web-time",
     "dep:web-sys",
+    "dep:tokio",
+    "dep:tokio-tungstenite",
+    "dep:base64",
+    "dep:rand",
+    "dep:libc",
 ]
 wasm-signing-host = ["runtime"]
 # Test-host-only shortcuts a shipping host must not carry, such as answering
 # resource allocation as granted without allocating anything.
 test-host = ["runtime"]
-debug-sink = ["runtime", "dep:tokio", "dep:tokio-tungstenite", "dep:base64"]
-ws-bridge = ["debug-sink", "dep:rand", "dep:libc"]
 # In-memory `MockPlatform` for tests and host simulators.
 mock = ["runtime"]
 
