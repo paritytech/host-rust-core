@@ -19,7 +19,7 @@
 //! implementation, then create product-scoped `ProductRuntime` endpoints that
 //! expose the stable byte-frame API used from WASM, native mobile, or desktop
 //! shells. Host-facing bridges:
-//! - `ws_bridge` (feature `ws-bridge`): localhost WebSocket bridge for
+//! - `ws_bridge`: localhost WebSocket bridge for
 //!   native WebView hosts (Android/iOS).
 //! - `bootstrap`: the JavaScript those hosts inject to reach that bridge.
 //! - `native`: UniFFI surface exposing the native host runtime + callbacks.
@@ -569,7 +569,7 @@ runtime_items! {
     #[allow(deprecated)]
     pub mod generated;
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+    #[cfg(not(target_arch = "wasm32"))]
     mod ws_bridge;
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -584,7 +584,7 @@ runtime_items! {
     #[cfg(target_arch = "wasm32")]
     pub mod wasm;
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub mod native_debug;
 
     pub use truapi_core::TrUApiCore;
@@ -596,7 +596,7 @@ runtime_items! {
         ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
     };
     pub use host_logic::worker::{WorkerLedger, WorkerTransition};
-    #[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub use native_debug::{DebugSinkError, WsDebugSink};
     pub use platform::{
         CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostIdentity, PairingHostConfig,
@@ -613,7 +613,7 @@ runtime_items! {
         PairingProposal, PairingProposalMetadata, ResponderExit,
     };
 
-    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub use ws_bridge::{WsBridgeEndpoint, WsBridgeStartError};
 
     #[cfg(not(target_arch = "wasm32"))]
