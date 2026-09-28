@@ -1694,8 +1694,7 @@ pub fn set_log_level(level: String) {
     crate::logging::set_level_from_str(&level);
 }
 
-/// Spawns core tasks on the process-wide runtime, which the WebSocket bridge
-/// also uses.
+/// Spawns core tasks on the process-wide runtime.
 fn native_spawner(core: &tokio::runtime::Handle) -> Spawner {
     let core = core.clone();
     Arc::new(move |fut: BoxFuture<'static, ()>| {
