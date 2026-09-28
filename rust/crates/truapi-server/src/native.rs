@@ -36,13 +36,13 @@ use truapi_platform::{
     UserConfirmationReview, async_trait, normalize_product_identifier,
 };
 
-use crate::host_logic::dotns;
-pub use crate::host_logic::dotns::{NavigateDecision, PocketDeeplinkAction};
-use crate::host_logic::permissions::TemporaryPermissions;
-use crate::host_logic::sso::messages::{
+use crate::host_internal::permissions::TemporaryPermissions;
+use crate::host_internal::sso_messages::{
     RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
     decode_remote_message, v1,
 };
+use crate::host_logic::dotns;
+pub use crate::host_logic::dotns::{NavigateDecision, PocketDeeplinkAction};
 use crate::host_logic::worker::WorkerTransition;
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
@@ -159,7 +159,7 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for HostNavigateRejection {
 }
 
 /// FFI projection of the canonical
-/// [`SsoRequestOutcome`](crate::host_logic::sso::messages::SsoRequestOutcome),
+/// `SsoRequestOutcome` in `host_internal::sso_messages`,
 /// concrete because UniFFI cannot export generics.
 ///
 /// Variants carry SCALE-encoded wire bytes rather than decoded Rust types because
@@ -5769,7 +5769,7 @@ mod tests {
 
     #[test]
     fn handle_sso_request_reports_disconnect_as_marker() {
-        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
+        use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, v1};
         use parity_scale_codec::Encode;
         let runtime = native_host_runtime_no_session();
         let disconnected = RemoteMessage {
@@ -5784,7 +5784,7 @@ mod tests {
 
     #[test]
     fn handle_sso_request_reencodes_a_request_response() {
-        use crate::host_logic::sso::messages::{
+        use crate::host_internal::sso_messages::{
             ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
         };
         use parity_scale_codec::{Decode, Encode};
@@ -5822,7 +5822,7 @@ mod tests {
 
     #[test]
     fn prepare_disconnect_request_round_trips_with_fresh_ids() {
-        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
+        use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, v1};
         use parity_scale_codec::Decode;
         let runtime = native_host_runtime_no_session();
         let bytes = runtime.prepare_disconnect_request();

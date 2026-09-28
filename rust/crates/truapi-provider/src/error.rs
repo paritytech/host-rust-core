@@ -15,7 +15,7 @@ use truapi::latest::GenericError;
 /// allows dead variants rather than cfg-gating each one.
 #[allow(dead_code)]
 #[derive(Debug, derive_more::Display, derive_more::Error)]
-pub(crate) enum ProviderError {
+pub enum ProviderError {
     /// No backend is registered — and no bundled network defines — this
     /// genesis hash.
     #[display("no chain registered for genesis 0x{}", hex::encode(genesis))]
@@ -71,7 +71,7 @@ pub(crate) enum ProviderError {
 /// address carrying `user:pass@` would otherwise leak the credentials into
 /// every log line and error report that touches it.
 #[cfg(feature = "ws")]
-pub(crate) fn redacted(url: &url::Url) -> String {
+pub fn redacted(url: &url::Url) -> String {
     if url.username().is_empty() && url.password().is_none() {
         return url.to_string();
     }
@@ -108,7 +108,7 @@ const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 /// WebSocket backends instead end the whole response stream, since a send
 /// failure there means the socket is dead.)
 #[cfg(feature = "smoldot")]
-pub(crate) fn synthetic_error_frame(request: &str, message: &str) -> Option<String> {
+pub fn synthetic_error_frame(request: &str, message: &str) -> Option<String> {
     let value: Value = serde_json::from_str(request).ok()?;
     let id = value.get("id").filter(|id| !id.is_null())?;
     Some(
@@ -123,7 +123,7 @@ pub(crate) fn synthetic_error_frame(request: &str, message: &str) -> Option<Stri
 
 /// Outcome of matching a JSON-RPC response frame against an awaited request id.
 #[cfg(feature = "smoldot")]
-pub(crate) enum FrameForId {
+pub enum FrameForId {
     /// The frame answers `id` with a string `result`.
     Result(String),
     /// The frame answers `id` with an `error`, or with a `result` that is not a
@@ -138,7 +138,7 @@ pub(crate) enum FrameForId {
 /// node that rejects the method answers with an `error` and keeps the socket
 /// open, so treating an error frame as unmatched would wait forever.
 #[cfg(feature = "smoldot")]
-pub(crate) fn frame_for_id(frame: &str, id: &str) -> Option<FrameForId> {
+pub fn frame_for_id(frame: &str, id: &str) -> Option<FrameForId> {
     let value: Value = serde_json::from_str(frame).ok()?;
     if value.get("id")?.as_str()? != id {
         return None;

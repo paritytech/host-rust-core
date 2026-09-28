@@ -35,8 +35,8 @@ use truapi::Bytes32;
 pub mod mock;
 
 use truapi::latest::{
-    AccountId, AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage,
-    ChatFile, ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
+    AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
+    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
     HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
     HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
@@ -46,9 +46,8 @@ use truapi::latest::{
     HostPocketRemoveCardRequest, HostPushNotificationRequest, HostPushNotificationResponse,
     HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, HostWorkerBeginOperationResponse,
-    HostWorkerOperationError, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
-    RingLocation,
+    HostWorkerOperationError, LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RemotePermission, RemotePermissionRequest, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -1163,7 +1162,7 @@ pub trait Notifications: Send + Sync {
 
     /// Cancel a notification by id. Idempotent: cancelling an already-fired or
     /// unknown id still returns `Ok(())`.
-    async fn cancel_notification(&self, id: NotificationId) -> Result<(), GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), GenericError> {
         let _ = id;
         Ok(())
     }
@@ -3412,7 +3411,7 @@ pub struct HostContactLookup {
 pub struct HostContactMatches {
     /// One entry per requested handle, in order: the contact's account, or
     /// `None` when no current contact hashes to it.
-    pub accounts: Vec<Option<AccountId>>,
+    pub accounts: Vec<Option<Bytes32>>,
 }
 
 /// How a host's contact picker ended.
@@ -3426,7 +3425,7 @@ pub enum HostContactPick {
     /// exists precisely so a product does not receive it.
     Picked {
         /// The chosen contact's account.
-        account: AccountId,
+        account: Bytes32,
     },
     /// The user closed the picker without choosing.
     Dismissed,

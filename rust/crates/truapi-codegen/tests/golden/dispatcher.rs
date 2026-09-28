@@ -73,7 +73,7 @@ where
 }
 
 /// Start the host-initiated `renderer_render` subscription.
-pub(crate) fn renderer_render(
+pub fn renderer_render(
     subscriptions: &HostInitiatedSubscriptionManager,
     transport: Arc<dyn Transport>,
     request: versioned::renderer::ProductRendererRenderRequest,

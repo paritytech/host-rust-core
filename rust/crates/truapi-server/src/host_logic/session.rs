@@ -46,19 +46,12 @@ pub struct SessionInfo {
     pub full_username: Option<String>,
 }
 
-impl SessionInfo {
-    /// Whether the session already carries a usable username.
-    pub(crate) fn has_username(&self) -> bool {
+impl crate::session_usernames::SessionUsernames for SessionInfo {
+    fn has_username(&self) -> bool {
         non_empty_username(&self.full_username) || non_empty_username(&self.lite_username)
     }
 
-    /// Apply resolved username fields without replacing populated values with
-    /// empty strings.
-    pub(crate) fn apply_usernames(
-        &mut self,
-        lite_username: Option<String>,
-        full_username: Option<String>,
-    ) {
+    fn apply_usernames(&mut self, lite_username: Option<String>, full_username: Option<String>) {
         if non_empty_username(&full_username) {
             self.full_username = full_username;
         }
@@ -376,6 +369,7 @@ fn broadcast(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_usernames::SessionUsernames;
     use futures::executor::block_on;
     use futures::{FutureExt, StreamExt};
 

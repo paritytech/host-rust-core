@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 /// rather than through the SSO pairing flow. Only [`SigningHost`] implements
 /// this; pairing hosts have no local secret to activate.
 #[async_trait::async_trait]
-pub(crate) trait LocalActivation: Send + Sync {
+pub trait LocalActivation: Send + Sync {
     /// Activate a local session from raw BIP-39 entropy, deriving the root
     /// public key and marking the session connected.
     async fn activate_local_session(&self, secret: Vec<u8>) -> Result<(), AuthorityError>;

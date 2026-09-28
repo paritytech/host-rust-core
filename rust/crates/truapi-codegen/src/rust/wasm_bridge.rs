@@ -52,16 +52,16 @@ pub fn generate_wasm_bridge(
         /// stub when the host omits the group. The core never reaches them: it
         /// only holds an adapter for a capability whose `has_*` accessor is
         /// true, and answers the rest with `Unsupported`.
-        pub(super) struct JsBridge {{
+        pub struct JsBridge {{
         "#,
     )
     .unwrap();
 
     for field in bridge_fields(&traits, &trait_names, &optional_traits) {
-        writeln!(out, "    pub(super) {}: Function,", field.field_name).unwrap();
+        writeln!(out, "    pub {}: Function,", field.field_name).unwrap();
     }
     for namespace in optional_namespaces(&traits, &optional_traits) {
-        writeln!(out, "    pub(super) {namespace}_present: bool,").unwrap();
+        writeln!(out, "    pub {namespace}_present: bool,").unwrap();
     }
     out.push_str("}\n\n");
 
@@ -69,7 +69,7 @@ pub fn generate_wasm_bridge(
         out,
         r#"
         impl JsBridge {{
-            pub(super) fn from_js(callbacks: &JsValue) -> Result<Self, JsValue> {{
+            pub fn from_js(callbacks: &JsValue) -> Result<Self, JsValue> {{
                 Ok(Self {{
         "#,
     )
@@ -112,7 +112,7 @@ pub fn generate_wasm_bridge(
             r#"
             
                 /// Whether the host supplied every `{namespace}` callback.
-                pub(super) fn has_{namespace}(&self) -> bool {{
+                pub fn has_{namespace}(&self) -> bool {{
                     self.{namespace}_present
                 }}
             "#,

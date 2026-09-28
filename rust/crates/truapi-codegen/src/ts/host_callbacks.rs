@@ -192,7 +192,7 @@ fn emit_wasm_adapter(
 
     // Local types are emitted in `host-callbacks.ts` (e.g. `AuthState`); codec
     // types carry SCALE codecs and are imported as values for `.enc`/`.dec`.
-    // Anything else named in a signature (e.g. the `NotificationId` alias) is a
+    // Anything else named in a signature (e.g. the `Bytes32` alias) is a
     // non-codec `@parity/truapi` type the `RawCallbacks` interface imports for
     // its type only.
     let local = local_names(definition);
@@ -952,7 +952,7 @@ fn raw_primitive_ts(p: &str) -> String {
 }
 
 /// Collect named types referenced by `ty` that are neither codec types nor
-/// platform-local (e.g. the `NotificationId` alias), so the `RawCallbacks`
+/// platform-local (e.g. the `Bytes32` alias), so the `RawCallbacks`
 /// interface can import them from `@parity/truapi` for their type only.
 fn collect_extra_named(
     ty: &TypeRef,

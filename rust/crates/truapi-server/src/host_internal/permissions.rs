@@ -104,14 +104,14 @@ enum BundleResolution {
 
 /// Permission prompts and one-use grants shared by a product execution's connections.
 #[derive(Default)]
-pub(crate) struct TemporaryPermissions {
+pub struct TemporaryPermissions {
     authorization: futures::lock::Mutex<()>,
     grants: std::sync::Mutex<HashSet<Vec<u8>>>,
 }
 
 impl TemporaryPermissions {
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn clear(&self) {
+    pub fn clear(&self) {
         self.grants
             .lock()
             .expect("temporary permissions mutex poisoned")
@@ -185,10 +185,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         }
     }
 
-    pub(crate) fn with_temporary_permissions(
-        mut self,
-        permissions: Arc<TemporaryPermissions>,
-    ) -> Self {
+    pub fn with_temporary_permissions(mut self, permissions: Arc<TemporaryPermissions>) -> Self {
         self.temporary_permissions = permissions;
         self
     }

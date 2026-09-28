@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use truapi::latest::{AccountId, GenericError};
+use truapi::latest::GenericError;
 use truapi_platform::{
     ContactsPlatform, HostContactLookup, HostContactMatches, HostContactPick, ProductContext,
     async_trait,
@@ -25,7 +25,7 @@ use crate::platform::CliPlatform;
 /// core is told about when the user picks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HostContact {
-    account: AccountId,
+    account: [u8; 32],
     display_name: Option<String>,
 }
 

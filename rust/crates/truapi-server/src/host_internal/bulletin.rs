@@ -14,19 +14,19 @@ use subxt::ext::scale_encode::{self, EncodeAsFields, FieldIter, TypeResolver};
 use subxt::ext::scale_type_resolver::{Primitive, visitor};
 use subxt::tx::{StaticPayload, SubmittableTransaction};
 
-use crate::host_logic::extrinsic::Sr25519Signer;
+use crate::host_internal::extrinsic::Sr25519Signer;
 use crate::runtime::BulletinAllowanceKey;
 
 /// Pallet the store transaction targets.
-pub(crate) const STORE_PALLET_NAME: &str = "TransactionStorage";
+pub const STORE_PALLET_NAME: &str = "TransactionStorage";
 /// Call name within [`STORE_PALLET_NAME`].
-pub(crate) const STORE_CALL_NAME: &str = "store";
+pub const STORE_CALL_NAME: &str = "store";
 
 /// Mortality window for store transactions.
 const MORTAL_PERIOD_BLOCKS: u64 = 64;
 
 /// Preimage key: blake2b-256 of the raw preimage bytes.
-pub(crate) fn preimage_key(value: &[u8]) -> [u8; 32] {
+pub fn preimage_key(value: &[u8]) -> [u8; 32] {
     sp_crypto_hashing::blake2_256(value)
 }
 
@@ -34,7 +34,7 @@ pub(crate) fn preimage_key(value: &[u8]) -> [u8; 32] {
 /// Bulletin allowance signer against the client's block. Subxt chooses the
 /// supported transaction version and injects the nonce and mortality anchor
 /// from that same at-block client, so signing and dry-run stay aligned.
-pub(crate) async fn build_signed_store_transaction<C: OnlineClientAtBlockT<SubstrateConfig>>(
+pub async fn build_signed_store_transaction<C: OnlineClientAtBlockT<SubstrateConfig>>(
     client: &ClientAtBlock<SubstrateConfig, C>,
     signer: &Sr25519Signer,
     data: &[u8],
@@ -49,7 +49,7 @@ pub(crate) async fn build_signed_store_transaction<C: OnlineClientAtBlockT<Subst
 
 /// The only [`BulletinAllowanceKey`] -> signer conversion in the crate. The
 /// returned signer is a transient per-call value; callers must not store it.
-pub(crate) fn allowance_signer(allowance: &BulletinAllowanceKey) -> Result<Sr25519Signer, String> {
+pub fn allowance_signer(allowance: &BulletinAllowanceKey) -> Result<Sr25519Signer, String> {
     Sr25519Signer::from_secret_bytes(allowance.as_secret_bytes())
         .map_err(|reason| format!("invalid bulletin allowance key: {reason}"))
 }
@@ -109,7 +109,9 @@ fn require_u8_sequence<R: TypeResolver>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_logic::extrinsic::tests::{OfflineChainState, bulletin_chain_state, split_v4};
+    use crate::host_internal::extrinsic::tests::{
+        OfflineChainState, bulletin_chain_state, split_v4,
+    };
     use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
     use parity_scale_codec::Decode;
     use schnorrkel::{PublicKey, Signature};
@@ -168,7 +170,7 @@ mod tests {
     /// Decode the fixture metadata down to its mutable v14 representation.
     fn bulletin_metadata_v14() -> v14::RuntimeMetadataV14 {
         let prefixed = RuntimeMetadataPrefixed::decode(
-            &mut &crate::host_logic::extrinsic::tests::BULLETIN_METADATA_BYTES[..],
+            &mut &crate::host_internal::extrinsic::tests::BULLETIN_METADATA_BYTES[..],
         )
         .unwrap();
         match prefixed.1 {

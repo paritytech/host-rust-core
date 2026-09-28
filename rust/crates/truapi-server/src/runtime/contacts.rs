@@ -18,18 +18,17 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use parity_scale_codec::Encode;
-use truapi::latest::AccountId;
 
 /// Upper bound on cached handles. The cache holds contacts the user picked, so
 /// it stays small; reaching the bound empties it rather than evicting in order.
 const HANDLE_CACHE_MAX_ENTRIES: usize = 256;
 
 /// Domain separator for the contact-handle key.
-pub(crate) const CONTACT_HANDLE_CONTEXT: &[u8] = b"truapi-contact-handle";
+pub const CONTACT_HANDLE_CONTEXT: &[u8] = b"truapi-contact-handle";
 
 /// Domain-separate the session's root entropy source into the contact-handle
 /// key, so this key cannot collide with another derived from the same source.
-pub(crate) fn handle_key_from_root_source(root_entropy_source: &[u8; 32]) -> [u8; 32] {
+pub fn handle_key_from_root_source(root_entropy_source: &[u8; 32]) -> [u8; 32] {
     blake2b256_keyed(root_entropy_source, CONTACT_HANDLE_CONTEXT)
 }
 
@@ -45,7 +44,7 @@ pub(crate) fn handle_key_from_root_source(root_entropy_source: &[u8; 32]) -> [u8
 /// Product-independent on purpose — one contact is one handle everywhere, and
 /// the key is uniform across a user's hosts because the wallet supplies the same
 /// root source to each.
-pub fn contact_handle(handle_key: &[u8; 32], account: &AccountId) -> [u8; 32] {
+pub fn contact_handle(handle_key: &[u8; 32], account: &[u8; 32]) -> [u8; 32] {
     blake2b256_keyed(&account.encode(), handle_key)
 }
 
@@ -61,22 +60,22 @@ pub struct ContactHandles {
 impl ContactHandles {
     /// Derive the handle key from the session's root entropy source.
     #[cfg(test)]
-    pub(crate) fn from_root_entropy_source(root_entropy_source: &[u8; 32]) -> Self {
+    pub fn from_root_entropy_source(root_entropy_source: &[u8; 32]) -> Self {
         Self::from_handle_key(handle_key_from_root_source(root_entropy_source))
     }
 
     /// Take the handle key an authority already derived.
-    pub(crate) fn from_handle_key(handle_key: [u8; 32]) -> Self {
+    pub fn from_handle_key(handle_key: [u8; 32]) -> Self {
         Self { handle_key }
     }
 
     /// The handle this user knows `account` by.
-    pub(crate) fn mint(&self, account: &AccountId) -> [u8; 32] {
+    pub fn mint(&self, account: &[u8; 32]) -> [u8; 32] {
         contact_handle(&self.handle_key, account)
     }
 
     /// The key handles are minted under, which a host needs to look them up.
-    pub(crate) fn handle_key(&self) -> [u8; 32] {
+    pub fn handle_key(&self) -> [u8; 32] {
         self.handle_key
     }
 
@@ -86,14 +85,14 @@ impl ContactHandles {
     /// wrong contact, or with anyone at all for a made-up handle, is refused
     /// rather than trusted: resolution is the host's lookup, but the check
     /// stays in the core.
-    pub(crate) fn names(&self, handle: &[u8; 32], account: &AccountId) -> bool {
+    pub fn names(&self, handle: &[u8; 32], account: &[u8; 32]) -> bool {
         &self.mint(account) == handle
     }
 }
 
 /// Why the handles a transaction declares could not be resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ContactResolutionError {
+pub enum ContactResolutionError {
     /// The host serves no contacts platform.
     Unsupported,
     /// No active session, so there is no handle key.
@@ -115,13 +114,13 @@ pub(crate) enum ContactResolutionError {
 /// host. Each hit is re-minted under the current key before use, so an entry
 /// from an earlier session is a miss rather than a wrong answer.
 #[derive(Default)]
-pub(crate) struct ContactHandleCache {
+pub struct ContactHandleCache {
     state: Mutex<CacheState>,
 }
 
 #[derive(Default)]
 struct CacheState {
-    entries: HashMap<[u8; 32], AccountId>,
+    entries: HashMap<[u8; 32], [u8; 32]>,
     /// Bumped by every clear. An answer obtained before a clear carries the
     /// older value and is dropped rather than cached, so a host lookup racing
     /// a removal cannot put the removed contact back.
@@ -131,13 +130,13 @@ struct CacheState {
 impl ContactHandleCache {
     /// The current generation, to read before asking the host and pass to
     /// [`Self::insert`] with its answer.
-    pub(crate) fn generation(&self) -> u64 {
+    pub fn generation(&self) -> u64 {
         self.state().generation
     }
 
     /// Remember the account `handle` names, unless the cache was cleared since
     /// `generation` was read.
-    pub(crate) fn insert(&self, handle: [u8; 32], account: AccountId, generation: u64) {
+    pub fn insert(&self, handle: [u8; 32], account: [u8; 32], generation: u64) {
         let mut state = self.state();
         if state.generation != generation {
             return;
@@ -149,7 +148,7 @@ impl ContactHandleCache {
     }
 
     /// The account `handle` names under `handles`, if this cache holds it.
-    pub(crate) fn get(&self, handle: &[u8; 32], handles: &ContactHandles) -> Option<AccountId> {
+    pub fn get(&self, handle: &[u8; 32], handles: &ContactHandles) -> Option<[u8; 32]> {
         let account = *self.state().entries.get(handle)?;
         (&handles.mint(&account) == handle).then_some(account)
     }
@@ -158,7 +157,7 @@ impl ContactHandleCache {
     /// not list. Such a call would sign the handle bytes as an address nobody
     /// holds, so it is refused. Best effort: a handle minted before the last
     /// clear is no longer known here.
-    pub(crate) fn has_undeclared_handle(&self, call: &[u8], declared: &[[u8; 32]]) -> bool {
+    pub fn has_undeclared_handle(&self, call: &[u8], declared: &[[u8; 32]]) -> bool {
         let state = self.state();
         if state.entries.is_empty() {
             return false;
@@ -170,7 +169,7 @@ impl ContactHandleCache {
     }
 
     /// Forget every entry, so the next resolution asks the host.
-    pub(crate) fn clear(&self) {
+    pub fn clear(&self) {
         let mut state = self.state();
         state.entries.clear();
         state.generation += 1;
@@ -195,8 +194,8 @@ fn blake2b256_keyed(message: &[u8], key: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
 
-    const ALICE: AccountId = [10u8; 32];
-    const BOB: AccountId = [11u8; 32];
+    const ALICE: [u8; 32] = [10u8; 32];
+    const BOB: [u8; 32] = [11u8; 32];
 
     /// One identity's handle key, derived the way a live session's is.
     fn key() -> [u8; 32] {

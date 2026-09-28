@@ -20,6 +20,7 @@ use crate::host_logic::dotns_gateway::{
 };
 use crate::host_logic::session::SessionInfo;
 use crate::runtime::dotns_lookup::DotnsLookup;
+use crate::session_usernames::SessionUsernames;
 
 use futures::{FutureExt, pin_mut};
 use tracing::{debug, instrument, warn};
@@ -33,7 +34,7 @@ const LOOKUP_BUDGET: Duration = Duration::from_secs(45);
 /// Returns the session unchanged when it already carries a username. Also
 /// returns it unchanged when no Asset Hub is configured.
 #[instrument(skip_all, fields(runtime.method = "session.identity.resolve_with_chain"))]
-pub(super) async fn resolve_session_identity_with_chain(
+pub async fn resolve_session_identity_with_chain(
     chain: &ChainRuntime,
     asset_hub_chain_genesis_hash: [u8; 32],
     mut session: SessionInfo,

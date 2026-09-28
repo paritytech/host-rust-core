@@ -27,8 +27,8 @@ use truapi_platform::{
     normalize_product_identifier,
 };
 
-use crate::host_logic::product_manifest::Granted;
-use crate::host_logic::sso::messages::ProductRequest;
+use crate::host_internal::product_manifest::Granted;
+use crate::host_internal::sso_messages::ProductRequest;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,

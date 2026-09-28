@@ -120,9 +120,9 @@ type SubxtConnectionSetup = Shared<BoxFuture<'static, Result<SubxtConnection, Ru
 /// Cached Subxt client built over one connection's transport.
 /// The backend driver is owned by the setup task that created this value.
 #[derive(Clone)]
-pub(crate) struct SubxtConnection {
+pub struct SubxtConnection {
     /// Client whose chain config pins the host-configured genesis hash.
-    pub(crate) client: OnlineClient<SubstrateConfig>,
+    pub client: OnlineClient<SubstrateConfig>,
 }
 
 /// Classification of framework-level chain failures separate from JSON-RPC
@@ -356,7 +356,7 @@ impl ChainRuntime {
     /// a follow themselves. They wait for the events one operation needs and
     /// time out on their own, so a failure ends the stream rather than
     /// becoming an item every one of them has to match.
-    pub(crate) fn remote_chain_head_follow_items(
+    pub fn remote_chain_head_follow_items(
         &self,
         follow_subscription_id: String,
         request: RemoteChainHeadFollowRequest,
@@ -675,7 +675,7 @@ impl ChainRuntime {
     /// The cached unit is the underlying Subxt connection bundle, not just
     /// the cheap client handle.
     #[instrument(skip_all, fields(runtime.method = "chain_runtime.online_client"))]
-    pub(crate) async fn online_client(
+    pub async fn online_client(
         &self,
         genesis_hash: &[u8],
     ) -> Result<OnlineClient<SubstrateConfig>, RuntimeFailure> {
@@ -683,7 +683,7 @@ impl ChainRuntime {
     }
 
     /// Raw JSON-RPC client for the chain identified by `genesis_hash`.
-    pub(crate) async fn rpc_client(
+    pub async fn rpc_client(
         &self,
         method: &'static str,
         genesis_hash: &[u8],
@@ -1583,12 +1583,12 @@ fn rpc_failure(method: &'static str, error: SubxtRpcError) -> RuntimeFailure {
 }
 
 /// Encode a byte slice as a `0x`-prefixed lowercase hex string.
-pub(crate) fn encode_hex(value: &[u8]) -> String {
+pub fn encode_hex(value: &[u8]) -> String {
     format!("0x{}", hex::encode(value))
 }
 
 /// Wait for a usable best block hash from a `chainHead_v1_follow` stream.
-pub(crate) async fn wait_for_chain_head_best_hash(
+pub async fn wait_for_chain_head_best_hash(
     follow: &mut BoxStream<'static, RemoteChainHeadFollowItem>,
     label: &'static str,
     initialization_timeout: Duration,
@@ -1655,25 +1655,25 @@ async fn wait_for_chain_head_best_hash_after_initialization(
 }
 
 /// Context for one storage operation observed on a `chainHead_v1_follow` stream.
-pub(crate) struct ChainHeadStorageValueLookup<'a> {
-    pub(crate) chain: &'a ChainRuntime,
-    pub(crate) genesis_hash: &'a [u8],
-    pub(crate) follow_subscription_id: &'a str,
-    pub(crate) operation_id: &'a str,
-    pub(crate) key: &'a [u8],
-    pub(crate) label: &'static str,
-    pub(crate) timeout: Duration,
+pub struct ChainHeadStorageValueLookup<'a> {
+    pub chain: &'a ChainRuntime,
+    pub genesis_hash: &'a [u8],
+    pub follow_subscription_id: &'a str,
+    pub operation_id: &'a str,
+    pub key: &'a [u8],
+    pub label: &'static str,
+    pub timeout: Duration,
 }
 
 /// Result of one value query observed on a `chainHead_v1_follow` stream.
-pub(crate) enum ChainHeadStorageValue {
+pub enum ChainHeadStorageValue {
     Found(Vec<u8>),
     Missing,
     Inaccessible,
 }
 
 /// Wait for one storage operation's value from a `chainHead_v1_follow` stream.
-pub(crate) async fn wait_for_chain_head_storage_value(
+pub async fn wait_for_chain_head_storage_value(
     follow: &mut BoxStream<'static, RemoteChainHeadFollowItem>,
     lookup: ChainHeadStorageValueLookup<'_>,
 ) -> Result<ChainHeadStorageValue, String> {
@@ -1737,7 +1737,7 @@ pub(crate) async fn wait_for_chain_head_storage_value(
 
 /// Waits for one runtime-API call operation's output from a
 /// `chainHead_v1_follow` stream.
-pub(crate) async fn wait_for_chain_head_call_output(
+pub async fn wait_for_chain_head_call_output(
     follow: &mut BoxStream<'static, RemoteChainHeadFollowItem>,
     operation_id: &str,
     label: &'static str,

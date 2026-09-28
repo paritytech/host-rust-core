@@ -21,7 +21,7 @@ use crate::runtime::login_failure::classify_login_failure;
 /// opening state even when nothing changed. Only the first emission can come
 /// from an announcement; everything after it is a real change.
 #[derive(Clone)]
-pub(crate) struct AuthStateMachine {
+pub struct AuthStateMachine {
     platform: Arc<dyn Platform>,
     inner: Arc<Mutex<AuthStateInner>>,
 }
@@ -42,7 +42,7 @@ struct AuthStateInner {
 
 impl AuthStateMachine {
     /// Create an auth state machine that reports transitions to `platform`.
-    pub(super) fn new(platform: Arc<dyn Platform>) -> Self {
+    pub fn new(platform: Arc<dyn Platform>) -> Self {
         Self {
             platform,
             inner: Arc::new(Mutex::new(AuthStateInner::default())),
@@ -51,7 +51,7 @@ impl AuthStateMachine {
 
     /// Enter `Pairing`. Returns the cancel receiver and the pairing epoch, or
     /// `None` when a pairing is already in flight (single-flight guard).
-    pub(super) fn pairing_started(&self, deeplink: String) -> Option<(oneshot::Receiver<()>, u64)> {
+    pub fn pairing_started(&self, deeplink: String) -> Option<(oneshot::Receiver<()>, u64)> {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let epoch = self.transition(|inner| {
             if matches!(
@@ -70,7 +70,7 @@ impl AuthStateMachine {
 
     /// `Pairing` -> `Authenticating`: the wallet accepted the pairing request
     /// and the core is resolving and persisting the session.
-    pub(super) fn authentication_started(&self, epoch: u64) {
+    pub fn authentication_started(&self, epoch: u64) {
         self.transition(|inner| {
             if !matches!(inner.state, AuthState::Pairing { .. }) || inner.pairing_epoch != epoch {
                 return None;
@@ -83,7 +83,7 @@ impl AuthStateMachine {
     /// Active login -> `LoginFailed`: the in-flight login reported a failure.
     /// The kind is recovered from `reason`, which is the only form the wallet
     /// reports a refusal in.
-    pub(super) fn login_failed(&self, reason: String) {
+    pub fn login_failed(&self, reason: String) {
         self.transition(|inner| {
             if !matches!(
                 inner.state,
@@ -104,7 +104,7 @@ impl AuthStateMachine {
     /// it reached `Pairing` (device identity or bootstrap errors). A no-op
     /// while another login is active, so a concurrent second login attempt
     /// failing early cannot tear down the first one's presentation.
-    pub(super) fn login_failed_before_pairing(&self, reason: String) {
+    pub fn login_failed_before_pairing(&self, reason: String) {
         self.transition(|inner| {
             if matches!(
                 inner.state,
@@ -124,7 +124,7 @@ impl AuthStateMachine {
 
     /// Active login/`LoginFailed` -> `Disconnected` (host cancelled or
     /// dismissed). Wakes the in-flight login, which resolves as `Rejected`.
-    pub(super) fn login_cancelled(&self) {
+    pub fn login_cancelled(&self) {
         self.transition(|inner| {
             if !matches!(
                 inner.state,
@@ -145,7 +145,7 @@ impl AuthStateMachine {
     /// Any state -> `Connected`. A login in flight is cancelled: another
     /// runtime won the race, and the waking flow resolves as
     /// `AlreadyConnected`. Emits only when the connected info changed.
-    pub(super) fn connected(&self, info: &SessionUiInfo) {
+    pub fn connected(&self, info: &SessionUiInfo) {
         self.transition(|inner| {
             if let Some(cancel_tx) = inner.cancel_tx.take() {
                 let _ = cancel_tx.send(());
@@ -161,7 +161,7 @@ impl AuthStateMachine {
     /// Session store reports no session. A no-op while a login is active: the
     /// flow owns its own terminal transition, and a boot-time store tick must
     /// not tear down the login UI.
-    pub(super) fn store_disconnected(&self) {
+    pub fn store_disconnected(&self) {
         self.transition(|inner| {
             if matches!(
                 inner.state,
@@ -176,7 +176,7 @@ impl AuthStateMachine {
 
     /// Reset a login left behind by a dropped future, but only when it still
     /// belongs to `epoch` (a newer flow is left alone).
-    pub(super) fn reset_abandoned_pairing(&self, epoch: u64) {
+    pub fn reset_abandoned_pairing(&self, epoch: u64) {
         self.transition(|inner| {
             if !matches!(
                 inner.state,
@@ -196,7 +196,7 @@ impl AuthStateMachine {
     /// or because it failed before any transition could run — still answers the
     /// host instead of leaving it in silence. A no-op once any state has been
     /// emitted: it announces, it never repeats.
-    pub(super) fn announce_current(&self) {
+    pub fn announce_current(&self) {
         let mut inner = self.inner.lock().expect("auth state mutex poisoned");
         if inner.announced {
             return;

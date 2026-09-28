@@ -35,7 +35,7 @@ pub enum Granted {
 /// fixture carrying the display name, description and icon a publisher also
 /// writes would be exercising serde's tolerance rather than this parser.
 #[cfg(test)]
-pub(crate) fn test_manifest_json(trusted: &str) -> String {
+pub fn test_manifest_json(trusted: &str) -> String {
     format!(r#"{{"$v":1,"trustedProducts":{trusted}}}"#)
 }
 

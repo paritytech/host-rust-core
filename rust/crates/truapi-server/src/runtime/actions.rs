@@ -28,7 +28,7 @@ impl<Item> Default for State<Item> {
 }
 
 /// One product connection's stream of host-authored items of one kind.
-pub(crate) struct ActionChannel<Item> {
+pub struct ActionChannel<Item> {
     state: Mutex<State<Item>>,
     closed_reason: &'static str,
 }
@@ -44,17 +44,17 @@ impl<Item: Send + 'static> ActionChannel<Item> {
     }
 
     /// One connection's Chat action stream.
-    pub(crate) fn chat() -> Self {
+    pub fn chat() -> Self {
         Self::new("chat is closed for this product connection")
     }
 
     /// One connection's Renderer action stream.
-    pub(crate) fn renderer() -> Self {
+    pub fn renderer() -> Self {
         Self::new("renderer is closed for this product connection")
     }
 
     /// Open the product's subscription and drain buffered items first.
-    pub(crate) fn subscribe<E: Send + 'static>(&self) -> Subscription<Item, CallError<E>> {
+    pub fn subscribe<E: Send + 'static>(&self) -> Subscription<Item, CallError<E>> {
         let (sender, receiver) = mpsc::unbounded();
         let mut state = self.state.lock().expect("action channel mutex poisoned");
         if state.closed {
@@ -70,7 +70,7 @@ impl<Item: Send + 'static> ActionChannel<Item> {
     }
 
     /// Publish one item, buffering it until the product subscribes.
-    pub(crate) fn publish(&self, mut item: Item) -> Result<(), ProductRuntimeError> {
+    pub fn publish(&self, mut item: Item) -> Result<(), ProductRuntimeError> {
         let mut state = self.state.lock().expect("action channel mutex poisoned");
         if state.closed {
             return Err(ProductRuntimeError::Closed);
@@ -91,14 +91,14 @@ impl<Item: Send + 'static> ActionChannel<Item> {
 
     /// End the current subscriber's stream while keeping buffered items for
     /// the next product connection that subscribes.
-    pub(crate) fn detach(&self) {
+    pub fn detach(&self) {
         let mut state = self.state.lock().expect("action channel mutex poisoned");
         state.subscriber = None;
     }
 
     /// Close the channel and discard buffered items.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    pub(crate) fn close(&self) {
+    pub fn close(&self) {
         let mut state = self.state.lock().expect("action channel mutex poisoned");
         state.closed = true;
         state.subscriber = None;

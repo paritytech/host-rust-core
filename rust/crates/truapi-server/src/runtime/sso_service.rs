@@ -4,30 +4,26 @@ use core::fmt::Display;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
-use truapi::{CallContext, CancellationToken, RequestId};
+use truapi::{CallContext, CancellationToken};
 
 use super::authority::AuthoritySession;
-use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, Response, v1};
-use crate::host_logic::sso::wire::ResponseOutcome;
+use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, Response, v1};
+use crate::host_internal::sso_wire::ResponseOutcome;
 
 /// Per-request context handed to every service method.
-pub(crate) struct SsoRequestContext {
+pub struct SsoRequestContext {
     /// Call context correlated to the request's `message_id`.
-    pub(crate) call: CallContext,
+    pub call: CallContext,
     /// Signing session resolved once for the request.
-    pub(crate) session: AuthoritySession,
+    pub session: AuthoritySession,
 }
 
 impl SsoRequestContext {
     /// Context for the request sent as `message_id`, which the pairing host
     /// withdraws by firing `cancel`.
-    pub(crate) fn new(
-        message_id: &str,
-        session: AuthoritySession,
-        cancel: CancellationToken,
-    ) -> Self {
+    pub fn new(message_id: &str, session: AuthoritySession, cancel: CancellationToken) -> Self {
         Self {
-            call: CallContext::with_parts(RequestId::from(message_id), cancel),
+            call: CallContext::with_parts(String::from(message_id), cancel),
             session,
         }
     }
@@ -39,7 +35,7 @@ const MAX_EARLY_WITHDRAWALS: usize = 64;
 /// Requests the pairing host can still withdraw, by `message_id`, and the
 /// withdrawals that arrived before the request they name.
 #[derive(Default)]
-pub(crate) struct SsoWithdrawals {
+pub struct SsoWithdrawals {
     state: Mutex<WithdrawalState>,
 }
 
@@ -50,11 +46,11 @@ struct WithdrawalState {
 }
 
 /// A request registered with [`SsoWithdrawals`] until it is dropped.
-pub(crate) struct Withdrawable<'a> {
+pub struct Withdrawable<'a> {
     withdrawals: &'a SsoWithdrawals,
     message_id: String,
     /// Fired when the pairing host withdraws the request.
-    pub(crate) cancel: CancellationToken,
+    pub cancel: CancellationToken,
 }
 
 impl Drop for Withdrawable<'_> {
@@ -76,7 +72,7 @@ impl SsoWithdrawals {
 
     /// Register the request sent as `message_id`, or `None` when the pairing
     /// host withdrew it before it arrived.
-    pub(crate) fn begin(&self, message_id: &str) -> Option<Withdrawable<'_>> {
+    pub fn begin(&self, message_id: &str) -> Option<Withdrawable<'_>> {
         let mut state = self.lock();
         if let Some(position) = state.early.iter().position(|id| id == message_id) {
             state.early.remove(position);
@@ -96,7 +92,7 @@ impl SsoWithdrawals {
 
     /// Withdraw the request sent as `message_id`: fire its token if it is
     /// running, or remember it so it never starts.
-    pub(crate) fn withdraw(&self, message_id: &str) {
+    pub fn withdraw(&self, message_id: &str) {
         let mut state = self.lock();
         if let Some(cancel) = state.running.get(message_id).cloned() {
             drop(state);
@@ -120,7 +116,7 @@ impl SsoWithdrawals {
 
 /// What the service dispatcher produced for one wire message.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Dispatch {
+pub enum Dispatch {
     /// Response to post back, with its transcript outcome.
     Response(Box<Answer>),
     /// The peer ended the session.
@@ -135,15 +131,15 @@ pub(crate) enum Dispatch {
 
 /// A served request: the response envelope and how the transcript reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Answer {
+pub struct Answer {
     /// Response envelope, `message_id` suffixed with `:response`.
-    pub(crate) message: RemoteMessage,
+    pub message: RemoteMessage,
     /// Transcript classification of the payload.
-    pub(crate) outcome: ResponseOutcome,
+    pub outcome: ResponseOutcome,
 }
 
 /// A handler's payload and optional transcript outcome, before wire wrapping.
-pub(crate) struct SsoReply<P> {
+pub struct SsoReply<P> {
     payload: P,
     outcome: Option<ResponseOutcome>,
 }
@@ -159,7 +155,7 @@ impl<P> From<P> for SsoReply<P> {
 
 impl<P> SsoReply<P> {
     /// Supply a transcript outcome when the payload alone does not describe the result.
-    pub(crate) fn with_outcome(mut self, outcome: ResponseOutcome) -> Self {
+    pub fn with_outcome(mut self, outcome: ResponseOutcome) -> Self {
         self.outcome = Some(outcome);
         self
     }
@@ -167,7 +163,7 @@ impl<P> SsoReply<P> {
 
 impl<T, E: Display> SsoReply<Result<T, E>> {
     /// Address the reply and wrap it in the response variant selected by the request.
-    pub(crate) fn finish(
+    pub fn finish(
         self,
         message_id: &str,
         wrap: impl FnOnce(Response<Result<T, E>>) -> v1::RemoteMessage,
@@ -191,8 +187,8 @@ impl<T, E: Display> SsoReply<Result<T, E>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host_logic::sso::messages::{ProductSubtreeRequest, ProductSubtreeResponse};
-    use crate::host_logic::sso::wire::SsoRequest;
+    use crate::host_internal::sso_messages::{ProductSubtreeRequest, ProductSubtreeResponse};
+    use crate::host_internal::sso_wire::SsoRequest;
 
     #[test]
     fn finish_addresses_the_response_to_the_request() {

@@ -39,9 +39,9 @@ use truapi::versioned::worker::{
 use truapi::{CallContext, CallError, Subscription, v01, v02};
 use truapi_platform::PermissionAuthorizationStatus;
 
+use crate::host_internal::product_manifest::Granted;
 use crate::host_logic::dotns::{NavigateDecision, parse_navigate};
 use crate::host_logic::features::feature_supported;
-use crate::host_logic::product_manifest::Granted;
 use crate::runtime::{PERMISSION_DENIED_REASON, ProductRuntimeHost};
 
 #[truapi::async_trait]

@@ -6,11 +6,11 @@ license.workspace = true
 description = "TrUAPI trait and type definitions"
 
 [dependencies]
-async-trait = "0.1"
-derive_more = { version = "2", features = ["display"] }
-futures = "0.3"
-hex = "0.4"
-parity-scale-codec = { version = "3", features = ["derive"] }
+async-trait = { workspace = true }
+derive_more = { workspace = true, features = ["display"] }
+futures = { workspace = true }
+hex = { workspace = true }
+parity-scale-codec = { workspace = true, features = ["derive"] }
 truapi-macros = { path = "../truapi-macros" }
 uniffi = { workspace = true, optional = true }
 

@@ -865,7 +865,7 @@ fn type_signature(
 /// case the coarse codec number cannot see. Emitted as `TRUAPI_WIRE_SCHEMA_HASH`
 /// on both the TS and Rust sides so a host stamps it on every debug envelope and
 /// the debugger refuses to decode a frame whose contract differs from its own.
-pub(crate) fn wire_schema_hash(
+pub fn wire_schema_hash(
     api: &ApiDefinition,
     target_version: u32,
     codec_version: u8,

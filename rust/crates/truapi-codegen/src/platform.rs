@@ -328,7 +328,7 @@ fn collect_local_trait_ids(krate: &Crate) -> BTreeSet<String> {
 
 /// Name of the method-less super-trait listing capabilities a host may omit.
 /// Every other method-less super-trait composes the required surface.
-pub(crate) const OPTIONAL_SUPER_TRAIT: &str = "OptionalPlatform";
+pub const OPTIONAL_SUPER_TRAIT: &str = "OptionalPlatform";
 
 fn is_super_trait(trait_inner: &serde_json::Value) -> bool {
     let no_methods = trait_inner

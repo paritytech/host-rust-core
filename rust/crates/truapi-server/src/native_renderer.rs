@@ -6,7 +6,8 @@ use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
 use truapi::{CallError, Subscription, latest::ProductRendererRenderItem};
 
-use crate::subscription::{Spawner, interrupt_reason};
+use crate::interrupt::interrupt_reason;
+use crate::subscription::Spawner;
 
 /// Observer implemented by a native host to receive renderer tree replacements.
 #[uniffi::export(callback_interface)]
@@ -51,7 +52,7 @@ impl Drop for NativeRendererSubscription {
 }
 
 #[cfg_attr(not(feature = "ws-bridge"), allow(dead_code))]
-pub(crate) fn observe_renderer(
+pub fn observe_renderer(
     mut stream: Subscription<ProductRendererRenderItem, CallError<truapi::latest::GenericError>>,
     observer: Arc<dyn NativeRendererObserver>,
     spawner: Spawner,
