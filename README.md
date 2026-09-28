@@ -195,7 +195,13 @@ genesis hash, so the host ships no chain specs and never refreshes them. The lig
 client holds at most 32 connections at once and refuses a `connect` past that, so a
 consumer that leaks them fails instead of growing; closing one hands its slot back.
 Connections to a remote node, which only the WASM build compiles, are not counted
-against it. The crate
+against it. A light-client connection holds its requests until the chain first
+syncs and then forwards them in order; chain-spec queries, statement-store and
+Bitswap calls, and the `lifecycle_unstable_*` subscription that reports the sync are forwarded at
+once.
+Every artifact exposes the sync progress of a running chain (phase, peer count,
+stall verdict) as a watch.
+The crate
 compiles to one binary artifact per platform, each exposing the same
 `ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
 dependency on the crate:
