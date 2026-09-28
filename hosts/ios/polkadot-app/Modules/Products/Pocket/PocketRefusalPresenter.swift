@@ -15,7 +15,7 @@ final class PocketRefusalPresenter: AlertPresentable {
         shared.present(
             message: message,
             title: nil,
-            closeAction: String(localized: .pocketAlertOk),
+            closeAction: String(localized: .Common.close),
             from: nil
         )
     }

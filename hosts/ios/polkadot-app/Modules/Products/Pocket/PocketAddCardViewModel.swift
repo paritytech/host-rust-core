@@ -66,9 +66,9 @@ final class PocketAddCardViewModel {
     /// publishes no cards at all, because the two are fixed differently.
     private func message(for error: any Error) -> String {
         switch error {
-        case PocketPublishError.noPocket: String(localized: .pocketDeeplinkNoPocket)
-        case PocketPublishError.unknownCard: String(localized: .pocketDeeplinkUnknownCard)
-        default: String(localized: .pocketAddCardFailed)
+        case PocketPublishError.noPocket: String(localized: .Products.pocketDeeplinkNoPocket)
+        case PocketPublishError.unknownCard: String(localized: .Products.pocketDeeplinkUnknownCard)
+        default: String(localized: .Products.pocketAddCardFailed)
         }
     }
 }

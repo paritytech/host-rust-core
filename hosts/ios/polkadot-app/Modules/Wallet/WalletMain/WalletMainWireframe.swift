@@ -26,16 +26,16 @@ final class WalletMainWireframe: WalletMainWireframeProtocol, AlertPresentable {
     func confirmPocketCardRemoval(_: PocketCardViewModel, onConfirm: @escaping () -> Void) {
         present(
             viewModel: AlertPresentableViewModel(
-                title: String(localized: .pocketCardRemoveConfirmTitle),
-                message: String(localized: .pocketCardRemoveConfirmMessage),
+                title: String(localized: .Products.pocketCardRemoveConfirmTitle),
+                message: String(localized: .Products.pocketCardRemoveConfirmMessage),
                 actions: [
                     AlertPresentableAction(
-                        title: String(localized: .pocketCardRemove),
+                        title: String(localized: .Products.pocketCardRemove),
                         style: .destructive,
                         handler: onConfirm
                     )
                 ],
-                closeActionTitle: String(localized: .pocketAddCardCancel)
+                closeActionTitle: String(localized: .Common.cancel)
             ),
             style: .alert,
             from: nil

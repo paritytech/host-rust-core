@@ -42,7 +42,7 @@ struct PocketAddCardView: View {
 
     private func header(productName: String, productId: String) -> some View {
         VStack(spacing: 4) {
-            Text(String(localized: .pocketAddCardTitle))
+            Text(String(localized: .Products.pocketAddCardTitle))
                 .textStyle(.title24SemiBold())
                 .foregroundStyle(Color(.fgPrimary))
                 .padding(.bottom, 4)
@@ -68,7 +68,7 @@ struct PocketAddCardView: View {
                 .textStyle(.body16Regular())
                 .foregroundStyle(Color(.fgSecondary))
                 .multilineTextAlignment(.center)
-            DSButton(.pocketAddCardCancel, style: .secondary) { viewModel.onFinish() }
+            DSButton(.Common.notNow, style: .secondary) { viewModel.onFinish() }
         }
     }
 
@@ -77,10 +77,10 @@ struct PocketAddCardView: View {
     /// as a press that missed.
     private var actions: some View {
         HStack(spacing: 12) {
-            DSButton(.pocketAddCardCancel, style: .secondary, expands: true) { viewModel.onFinish() }
+            DSButton(.Common.notNow, style: .secondary, expands: true) { viewModel.onFinish() }
                 .disabled(viewModel.isAdding)
 
-            DSButton(.pocketAddCardConfirm, expands: true) {
+            DSButton(.Products.pocketAddCardConfirm, expands: true) {
                 Task { await viewModel.add() }
             }
             .disabled(viewModel.isAdding)

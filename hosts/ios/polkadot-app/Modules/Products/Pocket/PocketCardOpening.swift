@@ -50,7 +50,7 @@ enum PocketCardOpening {
 
         Task { @MainActor in
             guard let card = await PocketCardsProvider(store: pocket.collection).card(for: key) else {
-                PocketRefusalPresenter.show(String(localized: .pocketDeeplinkUnknownCard))
+                PocketRefusalPresenter.show(String(localized: .Products.pocketDeeplinkUnknownCard))
                 return
             }
 

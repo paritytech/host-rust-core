@@ -31,7 +31,7 @@ final class PocketOpenService: URLHandlingServiceProtocol {
             Task { @MainActor in present(link) }
             return true
         case .malformed:
-            Task { @MainActor in refuse(String(localized: .pocketDeeplinkMalformed)) }
+            Task { @MainActor in refuse(String(localized: .Products.pocketDeeplinkMalformed)) }
             return true
         case .notOurs:
             return false
@@ -53,7 +53,7 @@ extension PocketOpenService {
                     // nothing to open. The host claimed the link, so it says so
                     // rather than dropping it.
                     guard let pocket = PocketService.current else {
-                        PocketRefusalPresenter.show(String(localized: .pocketDeeplinkNoPocket))
+                        PocketRefusalPresenter.show(String(localized: .Products.pocketDeeplinkNoPocket))
                         return
                     }
 
