@@ -234,14 +234,10 @@ impl TryFrom<HostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     type Error = NativeRuntimeConfigError;
 
     fn try_from(config: HostRuntimeConfig) -> Result<Self, Self::Error> {
-        let people_chain_genesis_hash = genesis_hash(
-            "people_chain_genesis_hash",
-            &config.people_chain_genesis_hash,
-        )?;
-        let bulletin_chain_genesis_hash = genesis_hash(
-            "bulletin_chain_genesis_hash",
-            &config.bulletin_chain_genesis_hash,
-        )?;
+        let people_chain_genesis_hash =
+            genesis_hash("people_chain_genesis_hash", &config.people_chain_genesis_hash)?;
+        let bulletin_chain_genesis_hash =
+            genesis_hash("bulletin_chain_genesis_hash", &config.bulletin_chain_genesis_hash)?;
         let asset_hub_chain_genesis_hash = genesis_hash(
             "asset_hub_chain_genesis_hash",
             &config.asset_hub_chain_genesis_hash,
@@ -287,6 +283,7 @@ impl TryFrom<ProductExecutionConfig> for ProductContext {
             .map_err(NativeRuntimeConfigError::from)
     }
 }
+
 
 /// Classify a navigation input exactly like the core's internal navigate host
 /// call: dotNS first, then `localhost`, then normalized external, with
@@ -530,16 +527,9 @@ pub trait HostCallbacks: Send + Sync {
     fn device_paired(&self, device: PairedSsoPeer);
 
     /// Read a value from the host's scoped key-value store.
-    fn local_storage_read(
-        &self,
-        key: String,
-    ) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError>;
+    fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError>;
     /// Write a value to the host's scoped key-value store.
-    fn local_storage_write(
-        &self,
-        key: String,
-        value: Vec<u8>,
-    ) -> Result<(), v01::HostLocalStorageReadError>;
+    fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), v01::HostLocalStorageReadError>;
     /// Clear a value from the host's scoped key-value store.
     fn local_storage_clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError>;
 
@@ -2816,10 +2806,7 @@ mod tests {
                 chains: Vec::new(),
             })
         }
-        fn local_storage_read(
-            &self,
-            _key: String,
-        ) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
+        fn local_storage_read(&self, _key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
             Ok(None)
         }
         fn local_storage_write(
@@ -4414,9 +4401,7 @@ mod tests {
             assert_eq!(
                 err,
                 NativeRuntimeConfigError::Invalid {
-                    reason: format!(
-                        "asset_hub_chain_genesis_hash must be exactly 32 bytes, got {len}"
-                    ),
+                    reason: format!("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {len}"),
                 }
             );
         }
@@ -4615,10 +4600,7 @@ mod tests {
             ) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
-            fn local_storage_clear(
-                &self,
-                _key: String,
-            ) -> Result<(), v01::HostLocalStorageReadError> {
+            fn local_storage_clear(&self, _key: String) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
             async fn begin_operation(
@@ -4795,10 +4777,7 @@ mod tests {
             ) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
-            fn local_storage_clear(
-                &self,
-                _key: String,
-            ) -> Result<(), v01::HostLocalStorageReadError> {
+            fn local_storage_clear(&self, _key: String) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
             async fn begin_operation(
