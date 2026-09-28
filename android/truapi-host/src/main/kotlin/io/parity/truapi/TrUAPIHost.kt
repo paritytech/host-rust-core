@@ -651,7 +651,7 @@ private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : Nati
 
 /**
  * Bootstrap helper for the native localhost WebSocket bridge that a product
- * execution starts when the cdylib is built with the `ws-bridge` feature.
+ * execution starts.
  */
 object LocalhostBridgeBootstrap {
     /**

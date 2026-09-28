@@ -268,6 +268,33 @@ impl EmbeddedChainProvider {
         self.light.is_added(genesis_hash)
     }
 
+    /// Watch what the embedded light client is doing on `genesis_hash`: the
+    /// first item is the current state, then one item per change. The stream
+    /// ends when the client stops running the chain.
+    ///
+    /// Fails when the client is not running the chain, so connect first. A
+    /// relay a parachain brought up counts as running, and is the chain whose
+    /// warp sync progress a parachain waits on; see [`relay_of`](Self::relay_of).
+    pub fn lifecycle(
+        &self,
+        genesis_hash: [u8; 32],
+    ) -> Result<futures::stream::BoxStream<'static, crate::ChainLifecycle>, ProviderError> {
+        use futures::stream::{self, StreamExt};
+
+        let subscription = self
+            .light
+            .lifecycle(genesis_hash)
+            .ok_or(ProviderError::NotRunning {
+                genesis: genesis_hash,
+            })?;
+        Ok(stream::unfold(subscription, |mut subscription| async move {
+            let state = subscription.next().await?;
+            Some((state.into(), subscription))
+        })
+        .fuse()
+        .boxed())
+    }
+
     /// The relay `genesis_hash` syncs through, from the registry or the
     /// catalog. A chain that is not a parachain has none.
     pub fn relay_of(&self, genesis_hash: [u8; 32]) -> Option<[u8; 32]> {
