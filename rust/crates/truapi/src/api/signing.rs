@@ -29,6 +29,13 @@ pub trait Signing: Send + Sync {
     /// with a proof in a later extension — encodes the given bytes verbatim and
     /// returns an unsigned transaction.
     ///
+    /// `contacts` lists the contact handles `callData` names, and the host
+    /// replaces each with the account it resolves to before the call is shown
+    /// or signed. A declared handle the call does not contain, or one no
+    /// contact matches, refuses the whole call as `UnknownContact` rather than
+    /// signing something that names somebody else. A call paying nobody from
+    /// the picker leaves it empty.
+    ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
     /// assert(productContext.isOk(), "getProductContext failed:", productContext);

@@ -745,6 +745,13 @@ Scripts under `js/scripts/` include:
   in `TRUAPI_POCKET_LOG`. The cases read that transcript, so a pass means the
   host and the product agree rather than resting on the product's word.
 
+  Contacts are served on every phase, from `TRUAPI_CONTACTS`
+  (`alice=0x<32-byte account>;bob=0x…`) or, unset, from a two-name development
+  list so `contacts.pick` has someone to return. An empty spec is an empty list,
+  which is what answers `NoContacts`. `TRUAPI_CONTACT_PICK` names which contact
+  the picker offers; the approval surface asks about it like any other action,
+  so a headless run approves it and an interactive one does not.
+
   The paired phase gives its pairing host a throwaway `--base-path` under
   `target/battery/pairing-host-state`, so it performs a real handshake on every
   run. A pairing host that restores an earlier session reports

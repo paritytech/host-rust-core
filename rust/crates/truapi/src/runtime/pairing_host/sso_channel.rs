@@ -19,8 +19,8 @@ use crate::host_internal::sso_messages::{
     CreateTransactionWithLegacyAccountRequest, OnExistingAllowancePolicy, ProductRequest,
     ProductSubtreeRequest, RemoteMessage, RemoteMessageData, ResourceAllocationRequest,
     RingVrfError, SignRawWithLegacyAccountRequest, SignRequest, SsoAllocatedResource,
-    SsoAllocationOutcome, SsoSessionStatement, Withdrawal, build_outgoing_request_statement,
-    decode_sso_session_statement, v1,
+    SsoAllocationOutcome, SsoProductTxPayload, SsoSessionStatement, Withdrawal,
+    build_outgoing_request_statement, decode_sso_session_statement, v1,
 };
 use crate::host_internal::sso_wire::SsoRequest;
 use crate::host_logic::session::{SessionInfo, SessionState, SsoSessionInfo};
@@ -471,7 +471,9 @@ impl PairingHost {
                     cx,
                     session,
                     CreateTransactionRequest {
-                        payload: CreateTransactionPayload::V1(payload),
+                        payload: CreateTransactionPayload::V1(SsoProductTxPayload::from_resolved(
+                            payload,
+                        )),
                     },
                 )
                 .await
@@ -484,7 +486,7 @@ impl PairingHost {
                     cx,
                     session,
                     CreateTransactionRequest {
-                        payload: CreateTransactionPayload::V1(latest::ProductAccountTxPayload {
+                        payload: CreateTransactionPayload::V1(SsoProductTxPayload {
                             signer: product_account,
                             genesis_hash: request.genesis_hash,
                             call_data: request.call_data,

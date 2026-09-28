@@ -207,7 +207,8 @@ each product connection. Role-specific operations live only on the matching hand
 `activate_external_session`, and `reset_session_state` on the pairing handle,
 `activate_local_session` on the signing handle. Both handles expose
 `clear_product_state` to revoke one product's capability material without
-touching the session or other products. Calling the wrong operation is
+touching the session or other products, and `notify_contacts_changed` to drop
+the contact handles the core cached once a contact is removed or blocked. Calling the wrong operation is
 a compile error, not a runtime `Unavailable`.
 
 `SigningHostConfig.network_suffix` is the network's bare dotNS TLD (`dot`,
@@ -397,15 +398,23 @@ revokes the grant.
 - `PocketPlatform`: stream the product's Pocket card collection and remove a
   card from it. The host owns the collection and decides which cards are
   privileged.
+- `ContactsPlatform`: resolve the handles a transaction names to contacts, and
+  render the picker that selects one. `contacts` is the only required method; `pick_contact`
+  defaults to `Unsupported`, so a host serving no picker says so rather than
+  looking like a user who declined. The host owns the UI, so the list never
+  reaches the product — only a handle for the selection does. The core caches
+  resolved handles; a host calls `notify_contacts_changed` on its runtime when
+  a contact is removed or blocked.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
-traits above except `ChatPlatform`, `PermissionStatusHost` and
-`PocketPlatform`, which `OptionalPlatform` lists instead: a host supplies each
-only when it can serve it. Codegen reads `OptionalPlatform` to emit each listed
+traits above except `ChatPlatform`, `ContactsPlatform`, `PermissionStatusHost`
+and `PocketPlatform`, which `OptionalPlatform` lists instead: a host supplies
+each only when it can serve it. Codegen reads `OptionalPlatform` to emit each listed
 capability as an optional group on the host-callback surface.
 
 Omitting `ChatPlatform` makes the core answer Chat calls `Unsupported`, and
-omitting `PocketPlatform` does the same for Pocket calls.
+omitting `ContactsPlatform` or `PocketPlatform` does the same for Contacts or
+Pocket calls.
 Omitting `PermissionStatusHost` leaves device grants resolving from stored
 state alone, which is what a host with no OS permission model does anyway.
 Serving it gates both halves of the surface: a device permission request and a

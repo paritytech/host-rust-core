@@ -172,6 +172,7 @@ class ConfirmationReviewMappingTest {
                         ),
                     ),
                     txExtVersion = 0u,
+                    contacts = emptyList(),
                 ),
             ),
         )
