@@ -50,6 +50,9 @@ pub(crate) struct RuntimeServices {
     /// Host profile presenter, installed once at startup by a host that can
     /// render profiles. Unset leaves every product Profile call `Unsupported`.
     profile_platform: OnceLock<Arc<dyn truapi_platform::ProfilePlatform>>,
+    /// Where each live product connection draws contact avatars, so they can
+    /// be redrawn when what a contact shared changes.
+    pub(crate) contact_avatars: crate::runtime::profile::avatars::ContactAvatarPlacements,
     /// Optional native authenticated username index; only supplies candidates.
     identity_backend: OnceLock<Arc<dyn truapi_platform::IdentityBackendHost>>,
     /// Host observer told when a device finishes pairing with this signing
@@ -141,6 +144,7 @@ impl RuntimeServices {
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
             profile_platform: OnceLock::new(),
+            contact_avatars: Default::default(),
             identity_backend: OnceLock::new(),
             device_pairing_observer: OnceLock::new(),
             asset_hub_chain_genesis_hash,

@@ -68,25 +68,25 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode,
-        BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction,
-        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
-        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoom, ChatRoomParticipation,
-        ChatRoomRegistrationStatus, ColorToken, ColumnProps, ContentAlignment, ContextualAlias,
-        DerivationIndex, Dimensions, Effect, EffectProps, GenericError, HorizontalAlignment,
-        HostAccountCreateProofRequest, HostAccountGetAliasRequest,
-        HostAccountListRingVrfKeysRequest, HostAccountRegisterRingVrfKeyRequest,
-        HostAccountRingVrfSignRequest, HostAccountSignVrfError, HostAccountSignVrfRequest,
-        HostPlatform, HostSignPayloadData, HostWorkerOperationError, ImageFit, ImageProps,
-        ImageSource, Modifier, NotificationId, OperationId, OperationStartedResult, PocketCard,
-        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
-        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
-        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
-        RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
-        RingLocationJunction, RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi,
-        RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement, StatementProof,
-        StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps, TextProps,
-        ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
+        AccountId, AllocatableResource, AllocationOutcome, Arrangement, AvatarRect, Background,
+        BlendingMode, BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier,
+        ChatAction, ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage,
+        ChatFile, ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoom,
+        ChatRoomParticipation, ChatRoomRegistrationStatus, ColorToken, ColumnProps,
+        ContentAlignment, ContextualAlias, DerivationIndex, Dimensions, Effect, EffectProps,
+        GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
+        HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
+        HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
+        HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
+        HostWorkerOperationError, ImageFit, ImageProps, ImageSource, Modifier, NotificationId,
+        OperationId, OperationStartedResult, PocketCard, ProductAccountId, ProductProofContext,
+        RawPayload, RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
+        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
+        RendererNode, RingLocation, RingLocationJunction, RingVrfKeyDisclosure, RingVrfPublicKey,
+        RowProps, RuntimeApi, RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement,
+        StatementProof, StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps,
+        TextProps, ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
         VrfSignature,
     };
     pub use crate::v02::{
@@ -190,6 +190,9 @@ pub mod latest {
     pub type HostProfilePresentRequest = LatestOf<versioned::profile::HostProfilePresentRequest>;
     /// Profile presentation failure.
     pub type HostProfilePresentError = LatestOf<versioned::profile::HostProfilePresentError>;
+    /// Contact avatar placement failure.
+    pub type HostProfilePlaceContactAvatarsError =
+        LatestOf<versioned::profile::HostProfilePlaceContactAvatarsError>;
     /// Push notification scheduling request.
     pub type HostPushNotificationRequest =
         LatestOf<versioned::notifications::HostPushNotificationRequest>;
