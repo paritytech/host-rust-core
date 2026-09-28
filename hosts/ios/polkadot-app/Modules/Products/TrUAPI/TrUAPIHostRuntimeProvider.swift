@@ -27,7 +27,7 @@ protocol TrUAPIHostRuntimeProviding: AnyObject, Sendable {
 
     /// Attach what runs product workers when the core's reference ledger asks
     /// for them. Called once at startup, before the runtime is first built.
-    func attach(workerSupervisor: any PocketWorkerSupervising)
+    func attach(workerSupervisor: any TrUAPIWorkerSupervising)
 }
 
 /// Lazily builds one ``TrUAPIHostRuntime`` from host identity + people/bulletin
@@ -48,7 +48,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
 
     /// Set once at startup, before any product opens. The runtime is built on
     /// first use, which is long after, so the supervisor is in place by then.
-    private var workerSupervisor: (any PocketWorkerSupervising)?
+    private var workerSupervisor: (any TrUAPIWorkerSupervising)?
 
     init(
         chainRegistry: ChainRegistryProtocol,
@@ -73,7 +73,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
         confirmationRouterFacade.setPresentationView(view)
     }
 
-    func attach(workerSupervisor: any PocketWorkerSupervising) {
+    func attach(workerSupervisor: any TrUAPIWorkerSupervising) {
         lock.lock()
         defer { lock.unlock() }
 

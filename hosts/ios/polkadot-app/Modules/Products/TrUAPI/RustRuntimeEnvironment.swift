@@ -26,7 +26,7 @@ struct RustRuntimeEnvironment {
 
         /// Start the localhost ws-bridge and return the bootstrap script to
         /// inject. Called from the runtime's `start`; opening the execution
-        /// (``makeSPAExecution``/``makeChatExecution``) stays side-effect free.
+        /// (``makeSPAExecution``/``makeWorkerExecution``) stays side-effect free.
         /// The local session is activated once on the shared runtime, not here.
         func startBridge() throws -> String {
             let endpoint = try execution.startWsBridge(bindPort: 0)
@@ -45,25 +45,24 @@ struct RustRuntimeEnvironment {
         try makeExecution(productId: productId, routers: routers, kind: .app)
     }
 
-    /// Open a chat execution for `productId`. Mirrors ``makeSPAExecution``.
-    func makeChatExecution(
+    /// Open `productId`'s one Worker execution. The core keeps a single Worker
+    /// execution per product and closes the previous one when another opens, so
+    /// every modality is served from this one: both bridges are handed over
+    /// here rather than attached afterwards, because the worker may list its
+    /// cards or post a chat message as soon as it connects.
+    func makeWorkerExecution(
         productId: ProductId,
         routers: ProductRoutersFacadeProtocol,
-        chatMessaging: any ProductChatMessaging
-    ) throws -> ExecutionModel {
-        try makeExecution(productId: productId, routers: routers, kind: .worker, chatMessaging: chatMessaging)
-    }
-
-    /// Open a Pocket worker execution for `productId`. `pocket` is what the core
-    /// asks for the product's cards and removals through, so it is handed over
-    /// here rather than attached afterwards: the worker may list its cards as
-    /// soon as it connects.
-    func makePocketWorkerExecution(
-        productId: ProductId,
-        routers: ProductRoutersFacadeProtocol,
+        chatMessaging: any ProductChatMessaging,
         pocket: any PocketHostBridge
     ) throws -> ExecutionModel {
-        try makeExecution(productId: productId, routers: routers, kind: .worker, pocket: pocket)
+        try makeExecution(
+            productId: productId,
+            routers: routers,
+            kind: .worker,
+            chatMessaging: chatMessaging,
+            pocket: pocket
+        )
     }
 }
 

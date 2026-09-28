@@ -9,11 +9,11 @@ import SwiftUI
 /// reference: the card is live for exactly as long as it is visible.
 struct PocketCollectionCardView: View {
     let card: PocketCardViewModel
-    var faces: (any PocketFaceSourcing)? = PocketWorkerFacade.shared.faces
+    var faces: (any PocketFaceSourcing)? = TrUAPIWorkerFacade.shared.faces
     var images: PocketImageResolver?
 
     private var imageResolver: PocketImageResolver? {
-        images ?? PocketWorkerFacade.shared.images(of: card.key.productId)
+        images ?? TrUAPIWorkerFacade.shared.images(of: card.key.productId)
     }
 
     @State private var streamed: CustomMessageWidgetNode?

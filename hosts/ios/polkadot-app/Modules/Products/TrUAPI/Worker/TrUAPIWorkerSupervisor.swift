@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AsyncExtensions
 import Products
 import TrUAPIHost
@@ -6,12 +7,17 @@ import TrUAPIHost
 /// Runs product workers for as long as the core's reference ledger wants them.
 ///
 /// The core counts the references its modality holders take — a card on screen
-/// takes one — and reports only the transitions across zero. A `.start` boots
-/// the product's worker behind a Worker execution; a `.stop` tears it down.
-protocol PocketWorkerSupervising: AnyObject, Sendable {
+/// takes one, so does a chat session — and reports only the transitions across
+/// zero. A `.start` boots the product's worker behind its one Worker execution;
+/// a `.stop` tears it down.
+protocol TrUAPIWorkerSupervising: AnyObject, Sendable {
     /// May arrive on any thread, including re-entrantly from inside
     /// `acquireWorker`, so the work is handed off rather than done here.
     func demandChanged(productId: ProductId, transition: WorkerTransition)
+
+    /// What `productId`'s worker is served through, for the life of the
+    /// session rather than of any one worker.
+    func seams(of productId: ProductId) -> TrUAPIWorkerSeams
 
     /// The product's worker execution while it runs, and nil while it does not.
     func executions(of productId: ProductId) -> AnyAsyncSequence<TrUAPIProductExecutionProtocol?>
@@ -25,11 +31,15 @@ protocol PocketWorkerSupervising: AnyObject, Sendable {
 
 /// Builds the pieces one product's worker needs: its archive, its execution and
 /// the engine its script runs in.
-protocol PocketWorkerBuilding: Sendable {
-    func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> TrUAPIWorkerRuntime
+protocol TrUAPIWorkerBuilding: Sendable {
+    func makeRuntime(
+        productId: ProductId,
+        seams: TrUAPIWorkerSeams,
+        pocket: ProductPocketHostBridge
+    ) async throws -> TrUAPIWorkerRuntime
 }
 
-actor PocketWorkerSupervisor: PocketWorkerSupervising {
+actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
     private struct Running {
         let boot: Boot
         let runtime: TrUAPIWorkerRuntime
@@ -60,7 +70,7 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
     /// that finishes last must not clear what the others left.
     private final class Boot {}
 
-    private let builder: any PocketWorkerBuilding
+    private let builder: any TrUAPIWorkerBuilding
     private let pocket: PocketFacade
     private let logger: LoggerProtocol
 
@@ -69,13 +79,17 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
     private var draining: Task<Void, Never>?
     private var isShutDown = false
 
+    /// Read from `seams(of:)`, which a chat session calls before any worker
+    /// exists, so it is held beside the actor's own state rather than in it.
+    private let openSeams = OSAllocatedUnfairLock<[ProductId: TrUAPIWorkerSeams]>(initialState: [:])
+
     /// Transitions are applied one at a time, in the order the ledger sent
     /// them. Handing each to its own task leaves the order to the scheduler,
     /// where a start and the stop that cancels it can overtake each other.
     private let transitions = AsyncStream<(ProductId, WorkerTransition)>.makeStream()
     private let executionSubject = AsyncCurrentValueSubject<[ProductId: TrUAPIProductExecutionProtocol]>([:])
 
-    init(builder: any PocketWorkerBuilding, pocket: PocketFacade = .shared, logger: LoggerProtocol = Logger.shared) {
+    init(builder: any TrUAPIWorkerBuilding, pocket: PocketFacade = .shared, logger: LoggerProtocol = Logger.shared) {
         self.builder = builder
         self.pocket = pocket
         self.logger = logger
@@ -130,12 +144,22 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
                 }
             }
         } catch {
-            logger.error("[pocket] the collection change stream ended: \(error)")
+            logger.error("[truapi] the Pocket collection change stream ended: \(error)")
         }
     }
 
     nonisolated func demandChanged(productId: ProductId, transition: WorkerTransition) {
         transitions.continuation.yield((productId, transition))
+    }
+
+    nonisolated func seams(of productId: ProductId) -> TrUAPIWorkerSeams {
+        openSeams.withLock { open in
+            if let seams = open[productId] { return seams }
+
+            let seams = TrUAPIWorkerSeams()
+            open[productId] = seams
+            return seams
+        }
     }
 
     nonisolated func executions(of productId: ProductId) -> AnyAsyncSequence<TrUAPIProductExecutionProtocol?> {
@@ -162,14 +186,18 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
 
         guard let store = await pocket.store() else {
             discard(productId, of: boot)
-            logger.error("[pocket] no collection to serve \(productId)'s worker from")
+            logger.error("[truapi] no Pocket collection to serve \(productId)'s worker from")
             return
         }
 
         let bridge = ProductPocketHostBridge(productId: productId, collection: store)
 
         do {
-            let runtime = try await builder.makeRuntime(productId: productId, pocket: bridge)
+            let runtime = try await builder.makeRuntime(
+                productId: productId,
+                seams: seams(of: productId),
+                pocket: bridge
+            )
             guard held[productId]?.belongsTo(boot) == true else {
                 await runtime.dispose()
                 return
@@ -195,9 +223,9 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
             // clearing that would swallow a start the core never repeats.
             guard held[productId]?.belongsTo(boot) == true else { return }
 
-            logger.error("[pocket] \(productId)'s worker failed to start: \(error)")
+            logger.error("[truapi] \(productId)'s worker failed to start: \(error)")
             // A failed boot left in the map would swallow every later start,
-            // while the core keeps counting the reference the card holds and
+            // while the core keeps counting the reference the holder took and
             // so never sends another stop to clear it.
             await stop(productId)
         }

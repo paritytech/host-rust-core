@@ -13,17 +13,6 @@ protocol PocketFaceStreaming: Sendable {
     func send(action: String, payload: Data, for key: PocketCardKey)
 }
 
-/// The worker reference a card holds for as long as it is on screen. The core
-/// counts these and starts or stops the product's worker on the transitions
-/// across zero.
-protocol PocketWorkerReferencing: Sendable {
-    func acquireWorker(productId: ProductId)
-
-    func releaseWorker(productId: ProductId)
-}
-
-extension TrUAPIHostRuntime: PocketWorkerReferencing {}
-
 /// Faces over the core: one worker reference is taken for as long as the card
 /// is on screen, the product's worker is awaited, and `render` is opened on the
 /// card's own context.
@@ -45,14 +34,14 @@ struct TrUAPIPocketFaceStreams: PocketFaceStreaming {
         static let maxBackoffDoublings = 5
     }
 
-    private let runtime: @Sendable () throws -> any PocketWorkerReferencing
-    private let workers: any PocketWorkerSupervising
+    private let runtime: @Sendable () throws -> any TrUAPIWorkerReferencing
+    private let workers: any TrUAPIWorkerSupervising
     private let publishedCards: any PublishedPocketCardsResolving
     private let logger: LoggerProtocol
 
     init(
-        runtime: @escaping @Sendable () throws -> any PocketWorkerReferencing,
-        workers: any PocketWorkerSupervising,
+        runtime: @escaping @Sendable () throws -> any TrUAPIWorkerReferencing,
+        workers: any TrUAPIWorkerSupervising,
         publishedCards: any PublishedPocketCardsResolving,
         logger: LoggerProtocol = Logger.shared
     ) {

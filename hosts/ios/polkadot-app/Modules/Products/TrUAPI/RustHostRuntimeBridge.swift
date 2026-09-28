@@ -19,7 +19,7 @@ final class RustHostRuntimeBridge: HostBridge, @unchecked Sendable {
     private let chainRegistry: ChainRegistryProtocol
     private let chainConnections: TrUAPIChainConnecting
     private let confirmationPresenter: TrUAPIConfirmationPresenting
-    private let workerSupervisor: (any PocketWorkerSupervising)?
+    private let workerSupervisor: (any TrUAPIWorkerSupervising)?
     private let logger: LoggerProtocol
     private weak var runtime: TrUAPIHostRuntime?
 
@@ -28,7 +28,7 @@ final class RustHostRuntimeBridge: HostBridge, @unchecked Sendable {
         coreStorage: TrUAPILocalStoring,
         chainConnections: TrUAPIChainConnecting,
         confirmationPresenter: TrUAPIConfirmationPresenting,
-        workerSupervisor: (any PocketWorkerSupervising)? = nil,
+        workerSupervisor: (any TrUAPIWorkerSupervising)? = nil,
         logger: LoggerProtocol
     ) {
         self.chainRegistry = chainRegistry

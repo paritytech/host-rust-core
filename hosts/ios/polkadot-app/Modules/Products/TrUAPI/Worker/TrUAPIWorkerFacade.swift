@@ -5,12 +5,13 @@ import ChainRegistry
 import Products
 import TrUAPIHost
 
-/// The process-wide Pocket worker supervisor and the faces read off it.
+/// The process-wide product worker supervisor, and the Pocket faces read off it.
 ///
 /// Built once at startup, where the product resolver and the runtime provider
-/// are both in hand, and read from the card views, which have neither.
-final class PocketWorkerFacade: @unchecked Sendable {
-    static let shared = PocketWorkerFacade()
+/// are both in hand, and read from the chat bot factory and the card views,
+/// which have neither.
+final class TrUAPIWorkerFacade: @unchecked Sendable {
+    static let shared = TrUAPIWorkerFacade()
 
     private struct Assembled {
         let products: any ProductResolving
@@ -20,13 +21,17 @@ final class PocketWorkerFacade: @unchecked Sendable {
 
     private let held = OSAllocatedUnfairLock<(any PocketFaceSourcing)?>(initialState: nil)
     private let assembled = OSAllocatedUnfairLock<Assembled?>(initialState: nil)
-    private let running = OSAllocatedUnfairLock<(any PocketWorkerSupervising)?>(initialState: nil)
+    private let running = OSAllocatedUnfairLock<(any TrUAPIWorkerSupervising)?>(initialState: nil)
 
     private init() {}
 
     /// Nil until startup has assembled it, which is also while there is no
     /// runtime for a worker to open against.
     var faces: (any PocketFaceSourcing)? { held.withLock { $0 } }
+
+    /// What runs every product's worker. Nil until startup has installed it,
+    /// which is when a chat bot falls back to the native runtime.
+    var supervisor: (any TrUAPIWorkerSupervising)? { running.withLock { $0 } }
 
     /// Resolves the images inside `productId`'s faces, out of that product's
     /// own worker archive. Nil before startup has assembled the Pocket.
@@ -54,10 +59,10 @@ final class PocketWorkerFacade: @unchecked Sendable {
         pocket: PocketFacade = .shared,
         logger: LoggerProtocol = Logger.shared
     ) {
-        let supervisor = PocketWorkerSupervisor(
-            builder: RealPocketWorkerBuilder(
+        let supervisor = TrUAPIWorkerSupervisor(
+            builder: TrUAPIWorkerBuilder(
                 environment: { [weak runtimeProvider] in
-                    guard let runtimeProvider else { throw PocketWorkerFacadeError.gone }
+                    guard let runtimeProvider else { throw TrUAPIWorkerFacadeError.gone }
 
                     return try RustRuntimeEnvironment(
                         runtime: runtimeProvider.sharedRuntime(),
@@ -79,7 +84,7 @@ final class PocketWorkerFacade: @unchecked Sendable {
 
         runtimeProvider.attach(workerSupervisor: supervisor)
 
-        let replaced = running.withLock { held -> (any PocketWorkerSupervising)? in
+        let replaced = running.withLock { held -> (any TrUAPIWorkerSupervising)? in
             let previous = held
             held = supervisor
             return previous
@@ -102,7 +107,7 @@ final class PocketWorkerFacade: @unchecked Sendable {
                 store: { await pocket.store() },
                 streams: TrUAPIPocketFaceStreams(
                     runtime: { [weak runtimeProvider] in
-                        guard let runtimeProvider else { throw PocketWorkerFacadeError.gone }
+                        guard let runtimeProvider else { throw TrUAPIWorkerFacadeError.gone }
 
                         return try runtimeProvider.sharedRuntime()
                     },
@@ -116,6 +121,6 @@ final class PocketWorkerFacade: @unchecked Sendable {
     }
 }
 
-enum PocketWorkerFacadeError: Error {
+enum TrUAPIWorkerFacadeError: Error {
     case gone
 }

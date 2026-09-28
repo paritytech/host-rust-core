@@ -39,9 +39,8 @@ extension ServiceCoordinator {
 
         let botFactory = ProductBotFactory(
             productFileProvider: productFileProvider,
-            chainRegistry: ChainRegistryFacade.sharedRegistry,
-            hostProvider: spaFlowState.hostProvider,
             runtimeProvider: truapiRuntimeProvider,
+            workers: { TrUAPIWorkerFacade.shared.supervisor },
             workerManager: workerFacade.manager
         )
 

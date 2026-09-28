@@ -7,11 +7,11 @@ import TrUAPIHost
 /// The core counts worker references and reports only the transitions across
 /// zero, so the supervisor must be exact: a worker left running burns a web
 /// view, and one left half-booted swallows every later start.
-struct PocketWorkerSupervisorTests {
+struct TrUAPIWorkerSupervisorTests {
     @Test
     func startsTheWorkerOnTheFirstDemand() async throws {
         let builder = StubBuilder()
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -26,7 +26,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func doesNotStartASecondWorkerForTheSameProduct() async throws {
         let builder = StubBuilder()
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -39,7 +39,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func stopsTheWorkerAndForgetsItsExecution() async throws {
         let builder = StubBuilder()
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -56,7 +56,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func leavesNothingBehindWhenTheEngineFailsToBoot() async throws {
         let builder = StubBuilder(engineFails: true)
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -70,12 +70,12 @@ struct PocketWorkerSupervisorTests {
         #expect(supervisor.currentExecution(of: "game.paseo") != nil)
     }
 
-    /// A product with no Pocket worker cannot be built at all, which must be as
-    /// clean a failure as one that breaks while booting.
+    /// A product with no worker cannot be built at all, which must be as clean
+    /// a failure as one that breaks while booting.
     @Test
     func leavesNothingBehindWhenTheWorkerCannotBeBuilt() async throws {
         let builder = StubBuilder(cannotBuild: true)
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -94,7 +94,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func ignoresAStopForAWorkerThatNeverStarted() async throws {
         let builder = StubBuilder()
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -111,7 +111,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func fillsTheCardListBeforeTheWorkersScriptComesUp() async throws {
         let builder = StubBuilder()
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -125,7 +125,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func tellsTheCoreWhatTheWorkerHoldsOnceItsExecutionIsPublished() async throws {
         let builder = StubBuilder()
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -141,7 +141,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func doesNotStartASecondWorkerWhenTwoDemandsOverlap() async throws {
         let builder = StubBuilder()
-        let supervisor = PocketWorkerSupervisor(
+        let supervisor = TrUAPIWorkerSupervisor(
             builder: builder,
             pocket: pocketHolding([loyalty], tldDelay: .milliseconds(30))
         )
@@ -160,7 +160,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func disposesAWorkerThatWasStoppedWhileItWasStillBooting() async throws {
         let builder = StubBuilder(buildDelay: .milliseconds(80))
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await Task.sleep(for: .milliseconds(20))
@@ -179,7 +179,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func appliesABurstOfTransitionsInTheOrderTheyArrive() async throws {
         let builder = StubBuilder(buildDelay: .milliseconds(40))
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         supervisor.demandChanged(productId: "game.paseo", transition: .stop)
@@ -198,7 +198,7 @@ struct PocketWorkerSupervisorTests {
     @Test
     func aFailedBootDoesNotClearTheBootThatReplacedIt() async throws {
         let builder = StubBuilder(firstStartFailsAfter: .milliseconds(300))
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await Task.sleep(for: .milliseconds(50))
@@ -222,7 +222,7 @@ struct PocketWorkerSupervisorTests {
         let builder = StubBuilder()
         let repository = InMemoryPocketCardRepository([loyalty])
         let pocket = PocketFacade(tld: { "paseo" }, repository: repository)
-        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocket)
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocket)
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -271,7 +271,7 @@ private func pocketHolding(_ cards: [PocketCardEntry], tldDelay: Duration = .zer
     )
 }
 
-private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
+private final class StubBuilder: TrUAPIWorkerBuilding, @unchecked Sendable {
     private(set) var built: [ProductId] = []
     /// The execution of the worker built last, so a test can read what the core
     /// was told through it.
@@ -303,8 +303,12 @@ private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
         self.firstStartFailsAfter = firstStartFailsAfter
     }
 
-    func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> TrUAPIWorkerRuntime {
-        if cannotBuild { throw PocketWorkerError.noPocketWorker(productId) }
+    func makeRuntime(
+        productId: ProductId,
+        seams _: TrUAPIWorkerSeams,
+        pocket: ProductPocketHostBridge
+    ) async throws -> TrUAPIWorkerRuntime {
+        if cannotBuild { throw TrUAPIWorkerError.noWorker(productId) }
         if buildDelay > .zero { try await Task.sleep(for: buildDelay) }
 
         bridge = pocket

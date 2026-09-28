@@ -20,6 +20,15 @@ public enum ProductWorkerModality: Sendable {
 }
 
 public extension ProductWorkerSource {
+    /// The published worker for `resolved`, whatever it serves. A product has
+    /// one worker and every modality is served from it, so what it declares is
+    /// the holder's to check before it asks for one.
+    static func published(for resolved: ResolvedProduct) -> ProductWorkerSource? {
+        resolved.executables.worker.map {
+            ProductWorkerSource(contentId: $0.identifier, entryRelativePath: $0.entrypoint)
+        }
+    }
+
     /// The published worker for `resolved`, when it declares `modality`.
     ///
     /// A product that published a worker without the modality serves none of

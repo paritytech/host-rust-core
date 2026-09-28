@@ -16,7 +16,7 @@ struct PocketFaceStreamsTests {
     /// card's product never moved.
     @Test
     func doesNotReopenTheRenderWhenAnotherProductsWorkerMoves() async throws {
-        let workers = StubWorkers()
+        let workers = StubWorkerSupervisor()
         let execution = MockProductExecution()
         execution.keepsRenderStreamOpen = true
         let streams = makeStreams(workers: workers)
@@ -43,7 +43,7 @@ struct PocketFaceStreamsTests {
     func asksAgainWhenTheCardLookupDidNotLand() async throws {
         let published = StubPublishedCards()
         published.failures = [URLError(.notConnectedToInternet)]
-        let workers = StubWorkers()
+        let workers = StubWorkerSupervisor()
         let execution = MockProductExecution()
         workers.publish(["game.paseo": execution])
 
@@ -65,7 +65,7 @@ struct PocketFaceStreamsTests {
     func stopsAskingWhenTheProductPublishesNoSuchCard() async throws {
         let published = StubPublishedCards()
         published.failures = [PocketPublishError.noPocket]
-        let workers = StubWorkers()
+        let workers = StubWorkerSupervisor()
         workers.publish(["game.paseo": MockProductExecution()])
         let references = StubWorkerReferences()
 
@@ -101,7 +101,7 @@ private func waitUntil(_ condition: () -> Bool) async throws {
 }
 
 private func makeStreams(
-    workers: StubWorkers,
+    workers: StubWorkerSupervisor,
     published: StubPublishedCards = StubPublishedCards(),
     references: StubWorkerReferences = StubWorkerReferences()
 ) -> TrUAPIPocketFaceStreams {
@@ -110,30 +110,6 @@ private func makeStreams(
         workers: workers,
         publishedCards: published
     )
-}
-
-/// Publishes executions the way the supervisor does: one value carrying every
-/// product, re-sent whenever any of them moves.
-private final class StubWorkers: PocketWorkerSupervising, @unchecked Sendable {
-    private let subject = AsyncCurrentValueSubject<[ProductId: TrUAPIProductExecutionProtocol]>([:])
-
-    func publish(_ executions: [ProductId: TrUAPIProductExecutionProtocol]) {
-        subject.send(executions)
-    }
-
-    func demandChanged(productId _: ProductId, transition _: WorkerTransition) {}
-
-    func executions(of productId: ProductId) -> AnyAsyncSequence<TrUAPIProductExecutionProtocol?> {
-        subject
-            .map { $0[productId] }
-            .eraseToAnyAsyncSequence()
-    }
-
-    func currentExecution(of productId: ProductId) -> TrUAPIProductExecutionProtocol? {
-        subject.value[productId]
-    }
-
-    func shutdown() async {}
 }
 
 private final class StubPublishedCards: PublishedPocketCardsResolving, @unchecked Sendable {
@@ -153,14 +129,4 @@ private final class StubPublishedCards: PublishedPocketCardsResolving, @unchecke
             definition: PocketCardDefinition(id: cardId, title: "Loyalty", preview: .archive(path: "face.json"))
         )
     }
-}
-
-private final class StubWorkerReferences: PocketWorkerReferencing, @unchecked Sendable {
-    private(set) var acquired: [ProductId] = []
-
-    func acquireWorker(productId: ProductId) {
-        acquired.append(productId)
-    }
-
-    func releaseWorker(productId _: ProductId) {}
 }

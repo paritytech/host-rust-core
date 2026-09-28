@@ -319,10 +319,11 @@ extension ServiceCoordinator {
             contentHashCache: ContentHashCache.shared
         )
 
-        // Installed here rather than alongside chat: the Pocket is its own
-        // modality, and hanging it off chat's assembly would let any chat
-        // service failing take every live card face with it, silently.
-        PocketWorkerFacade.shared.install(
+        // Installed here rather than alongside chat: every modality is served
+        // from one worker per product, and hanging that off chat's assembly
+        // would let any chat service failing take every live card face with it,
+        // silently.
+        TrUAPIWorkerFacade.shared.install(
             runtimeProvider: truapiRuntimeProvider,
             flowState: spaFlowState,
             productFileProvider: productFileProvider,
