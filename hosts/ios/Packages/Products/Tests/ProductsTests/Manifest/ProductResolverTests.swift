@@ -46,7 +46,8 @@ struct ProductResolverTests {
         let resolver = ProductResolver(
             dotNsResolver: StubDotNsResolver(),
             hostProvider: ProductHostFactory(tldProvider: FailingTldProvider()),
-            logger: SilentLogger()
+            logger: SilentLogger(),
+            screening: .passingThrough
         )
 
         let resolved = try await resolver.resolve("worker.hackm3.dot")
@@ -184,7 +185,8 @@ private func makeResolver(_ stub: StubDotNsResolver) -> ProductResolver {
     ProductResolver(
         dotNsResolver: stub,
         hostProvider: ProductHostFactory(tldProvider: StubTldProvider()),
-        logger: SilentLogger()
+        logger: SilentLogger(),
+        screening: .passingThrough
     )
 }
 

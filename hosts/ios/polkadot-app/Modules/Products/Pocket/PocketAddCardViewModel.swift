@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import PolkadotUI
 import Products
+import TrUAPIHost
 
 /// Drives the approval sheet: loads what is being offered, then stores exactly
 /// that when the user approves it.
@@ -41,7 +42,7 @@ final class PocketAddCardViewModel {
 
     func load() async {
         do {
-            let screened = try PocketCardIdentifier.screen(cardId)
+            let screened = try PocketCardId(value: screenPocketCardId(id: cardId))
             let offer = try await interactor.loadOffer(productId: productId, cardId: screened)
             state = .offered(offer, face: offer.face.toWidgetNode(resolver: resolver))
         } catch {

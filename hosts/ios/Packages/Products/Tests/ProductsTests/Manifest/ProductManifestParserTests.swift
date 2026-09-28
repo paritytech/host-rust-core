@@ -4,7 +4,7 @@ import Testing
 
 /// Cases mirror the conformance fixtures the manifest specification lists for Hosts.
 struct ProductManifestParserTests {
-    private let parser = ProductManifestParser(logger: SilentLogger())
+    private let parser = ProductManifestParser(logger: SilentLogger(), screening: .passingThrough)
 
     // MARK: - Root manifest
 
@@ -259,38 +259,48 @@ struct ProductManifestParserTests {
         #expect(worker.pocketCards.isEmpty)
     }
 
-    /// The user approves a card from a dialog showing its title, so an id
-    /// carrying a character that renders as nothing is refused here rather than
-    /// at the first wire call.
-    @Test func publishesNoCardsWhenAnIdHidesCharacters() throws {
-        let cards = #"[{"id":"loy\u200balty","title":"Loyalty","preview":"faces/loyalty.json"}]"#
-        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
+    /// The two rules are not one rule, and the core draws the line: an id is
+    /// addressed, a title is only drawn. A parser that screened both alike
+    /// would cost a product every card over a legitimate emoji in a title.
+    @Test func screensAnIdAndATitleThroughTheirOwnRules() throws {
+        let screening = PocketCardScreening(
+            id: { raw in
+                guard raw == "loyalty" else { throw ScreeningRefusal.refused }
+                return raw
+            },
+            title: { raw in
+                guard raw == "Loyalty" else { throw ScreeningRefusal.refused }
+                return raw
+            }
+        )
+        let parser = ProductManifestParser(logger: SilentLogger(), screening: screening)
 
-        #expect(worker.pocketCards.isEmpty)
+        let swapped = #"[{"id":"Loyalty","title":"loyalty","preview":"faces/loyalty.json"}]"#
+        #expect(parsedWorker(Fixtures.worker(pocket: "true", cards: swapped), parser: parser)?.pocketCards
+            .isEmpty == true)
+
+        let correct = #"[{"id":"loyalty","title":"Loyalty","preview":"faces/loyalty.json"}]"#
+        #expect(parsedWorker(Fixtures.worker(pocket: "true", cards: correct), parser: parser)?.pocketCards.count == 1)
     }
 
-    /// The id is screened because the dialog shows the title — but the dialog
-    /// shows the title, so a title carrying a direction override reads as
-    /// another product's card just as well as a doctored id would.
-    @Test func publishesNoCardsWhenATitleHidesCharacters() throws {
-        let cards = #"[{"id":"loyalty","title":"Loy‮alty","preview":"faces/loyalty.json"}]"#
-        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
+    /// The screened value is what the card is stored and addressed under, not
+    /// the raw text, so a host comparing against the core's form still matches.
+    @Test func keepsWhatTheScreeningReturnedRatherThanTheRawText() throws {
+        let screening = PocketCardScreening(id: { _ in "screened-id" }, title: { _ in "Screened Title" })
+        let parser = ProductManifestParser(logger: SilentLogger(), screening: screening)
 
-        #expect(worker.pocketCards.isEmpty)
+        let cards = #"[{"id":"  raw  ","title":"  raw  ","preview":"faces/loyalty.json"}]"#
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards), parser: parser))
+
+        #expect(worker.pocketCards.map(\.id.value) == ["screened-id"])
+        #expect(worker.pocketCards.map(\.title) == ["Screened Title"])
     }
 
-    /// A title long enough to push the product's name out of the approval sheet
-    /// defeats the sheet.
-    @Test func publishesNoCardsWhenATitleIsLongerThanItMayBe() throws {
-        let long = String(repeating: "a", count: PocketCardIdentifier.maxTitleBytes + 1)
-        let cards = #"[{"id":"loyalty","title":"\#(long)","preview":"faces/loyalty.json"}]"#
-        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", cards: cards)))
-
-        #expect(worker.pocketCards.isEmpty)
-    }
-
-    private func parsedWorker(_ manifest: String) -> ProductExecutable.Worker? {
-        guard case let .worker(worker)? = parser.parseExecutable(
+    private func parsedWorker(
+        _ manifest: String,
+        parser: ProductManifestParser? = nil
+    ) -> ProductExecutable.Worker? {
+        guard case let .worker(worker)? = (parser ?? self.parser).parseExecutable(
             manifest,
             kind: .worker,
             identifier: "worker.hackm3.dot"
@@ -356,4 +366,8 @@ private enum Fixtures {
          {"id":"trophy","title":"Trophy","preview":"faces/trophy.json"}]
         """
     }
+}
+
+private enum ScreeningRefusal: Error {
+    case refused
 }

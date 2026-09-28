@@ -3,6 +3,7 @@
     import Foundation
     @preconcurrency import Keystore_iOS
     import Products
+    import TrUAPIHost
 
     /// A Pocket card supplied by hand, for a product that publishes no worker
     /// manifest.
@@ -21,9 +22,9 @@
         var definition: PocketCardDefinition? {
             // A card id that does not screen reads as no card rather than as an
             // error, so a typo shows up as the card simply not being offered.
-            guard let screened = try? PocketCardIdentifier.screen(cardId) else { return nil }
+            guard let screened = try? screenPocketCardId(id: cardId) else { return nil }
 
-            return PocketCardDefinition(id: screened, title: title, preview: .url(faceUrl))
+            return PocketCardDefinition(id: PocketCardId(value: screened), title: title, preview: .url(faceUrl))
         }
     }
 

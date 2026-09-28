@@ -1,5 +1,6 @@
 import Foundation
 import Products
+import TrUAPIHost
 import UIKit
 
 /// Routes `polkadot://<product>.<tld>/-/pocket/{add,open}?card=<id>`.
@@ -28,7 +29,7 @@ final class PocketOpenService: URLHandlingServiceProtocol {
         guard Self.isPocketTarget(url) else { return false }
 
         guard let link = parser.parse(url.absoluteString),
-              (try? PocketCardIdentifier.screen(link.cardId)) != nil
+              (try? screenPocketCardId(id: link.cardId)) != nil
         else {
             Task { @MainActor in refuse(String(localized: .pocketDeeplinkMalformed)) }
             return true

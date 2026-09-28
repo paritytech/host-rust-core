@@ -24,12 +24,13 @@ public actor ProductResolver: ProductResolving {
     public init(
         dotNsResolver: DotNsResolverProtocol,
         hostProvider: ProductHostProviding,
-        logger: SDKLoggerProtocol
+        logger: SDKLoggerProtocol,
+        screening: PocketCardScreening
     ) {
         self.init(
             dotNsResolver: dotNsResolver,
             hostProvider: hostProvider,
-            parser: ProductManifestParser(logger: logger)
+            parser: ProductManifestParser(logger: logger, screening: screening)
         )
     }
 

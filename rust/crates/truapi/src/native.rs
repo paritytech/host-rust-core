@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::platform::{
-    AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey,
+    AuthPresenter, AuthState, ChainProvider, ChatFieldError, CoreAdmin, CoreStorage, CoreStorageKey,
     DevicePermissionStatus, Features, HostInfo, JsonRpcConnection, LocaleHost, Navigation,
     Notifications, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
     PermissionDecision, Permissions, PlatformInfo, PreimageHost, ProductContext,
@@ -196,6 +196,28 @@ pub enum NativeRuntimeConfigError {
     },
 }
 
+/// Rejection of a product-supplied chat field, value-shaped for UniFFI.
+///
+/// [`ChatFieldError`] names its field with a `&'static str`, which has no
+/// UniFFI representation, so the field name travels inside the message.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, uniffi::Error)]
+pub enum NativeChatFieldError {
+    /// The field was refused; `reason` names the field and why.
+    #[error("{reason}")]
+    Refused {
+        /// Which field was refused, and why.
+        reason: String,
+    },
+}
+
+impl From<ChatFieldError> for NativeChatFieldError {
+    fn from(err: ChatFieldError) -> Self {
+        Self::Refused {
+            reason: err.to_string(),
+        }
+    }
+}
+
 impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
     fn from(err: RuntimeConfigValidationError) -> Self {
         Self::Invalid {
@@ -287,6 +309,28 @@ impl TryFrom<ProductExecutionConfig> for ProductContext {
 #[uniffi::export]
 pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
+}
+
+/// Screen a product-supplied Pocket card id with the rules every Pocket call
+/// already applies, so a card declared in a manifest is refused where it is
+/// declared rather than at its first wire call.
+///
+/// Hosts call this instead of screening ids themselves: the rules are the
+/// core's, and a host that guesses at them refuses links the core accepted.
+#[uniffi::export]
+pub fn screen_pocket_card_id(id: String) -> Result<String, NativeChatFieldError> {
+    crate::platform::normalize_chat_identifier("cardId", &id).map_err(Into::into)
+}
+
+/// Screen the display title a product gives one of its cards.
+///
+/// A title is drawn, not addressed, so it carries the display rules rather than
+/// the stricter identifier ones. Emoji and Persian need the joiners and
+/// variation selectors an identifier refuses, and a title screened as an id
+/// would cost a product every card it publishes.
+#[uniffi::export]
+pub fn screen_pocket_card_title(title: String) -> Result<String, NativeChatFieldError> {
+    crate::platform::validate_chat_name("title", &title).map_err(Into::into)
 }
 
 /// The bridge script a host injects into a product's web view, for the `port`
@@ -2392,6 +2436,28 @@ mod tests {
     use truapi::v01::LegacyAccountTxPayload;
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
+
+    /// A title is drawn and an id is addressed, so they cannot share one rule:
+    /// the emoji below carries a variation selector, which an id may not.
+    #[test]
+    fn a_card_title_accepts_what_a_card_id_refuses() {
+        assert_eq!(
+            screen_pocket_card_title("\u{2615}\u{fe0f} Coffee".to_string()).unwrap(),
+            "\u{2615}\u{fe0f} Coffee"
+        );
+        assert!(screen_pocket_card_id("\u{2615}\u{fe0f} Coffee".to_string()).is_err());
+    }
+
+    /// Both sides NFC-normalize, so a host that compares raw bytes against what
+    /// the core stored would miss a card it holds.
+    #[test]
+    fn screening_normalizes_and_trims() {
+        assert_eq!(
+            screen_pocket_card_id("  cafe\u{301}  ".to_string()).unwrap(),
+            "caf\u{e9}"
+        );
+        assert!(screen_pocket_card_id("   ".to_string()).is_err());
+    }
 
     fn pocket_card(card_id: &str, privileged: bool) -> v01::PocketCard {
         v01::PocketCard {

@@ -26,9 +26,11 @@ struct ProductManifestParser: ProductManifestParsing {
     }
 
     private let logger: SDKLoggerProtocol
+    private let screening: PocketCardScreening
 
-    init(logger: SDKLoggerProtocol) {
+    init(logger: SDKLoggerProtocol, screening: PocketCardScreening) {
         self.logger = logger
+        self.screening = screening
     }
 
     /// An absent record is a legacy product, not a failure.
@@ -174,7 +176,7 @@ private extension ProductManifestParser {
     }
 
     /// A stricter Host must not see a different manifest, so cards are read only behind
-    /// `includes.pocket` and screened exactly as the core screens them. A defect costs the product
+    /// `includes.pocket` and screened by the core itself. A defect costs the product
     /// its cards and nothing more: failing the worker over one would take its chat with it, and chat
     /// has nothing to do with the cards.
     func pocketCards(
@@ -216,8 +218,8 @@ private extension ProductManifestParser {
         }
 
         return try PocketCardDefinition(
-            id: PocketCardIdentifier.screen(rawId),
-            title: PocketCardIdentifier.screenTitle(title),
+            id: screening.id(rawId),
+            title: screening.title(title),
             preview: .archive(path: preview)
         )
     }
