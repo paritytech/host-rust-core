@@ -1,7 +1,7 @@
 //! Lite-username attestation against the identity backend.
 //!
 //! Fetches the backend verifier. Builds the client proofs
-//! (`truapi_server::host_logic::attestation`), including the dotNS gateway
+//! (`truapi::host_logic::attestation`), including the dotNS gateway
 //! reservation signature timestamped with Asset Hub chain time. POSTs them to
 //! `/usernames`. Polls the dotNS contracts on Asset Hub until the lite username
 //! lands.
@@ -21,11 +21,11 @@ use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 use tracing::{debug, warn};
-use truapi_server::host_logic::attestation::build_lite_registration;
-use truapi_server::host_logic::dotns_gateway::{
+use truapi::host_logic::attestation::build_lite_registration;
+use truapi::host_logic::dotns_gateway::{
     MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN, is_registrable_full_label,
 };
-use truapi_server::host_logic::product_account::{
+use truapi::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derive_identity_keypair, derive_root_keypair_from_entropy,
     identity_product_id, product_public_key_to_address,
 };
@@ -582,7 +582,7 @@ async fn submit_registration(
     client: &reqwest::Client,
     config: &AttestConfig,
     signed_at: u64,
-    reg: &truapi_server::host_logic::attestation::LiteRegistration,
+    reg: &truapi::host_logic::attestation::LiteRegistration,
 ) -> Result<()> {
     let backend_base = config.backend_base.as_str();
     let url = format!("{backend_base}/usernames");
@@ -635,7 +635,7 @@ fn hex0x(bytes: &[u8]) -> String {
 async fn wait_for_dotns_username(
     reader: &mut AssetHubReader,
     candidate: &[u8; 32],
-) -> Result<truapi_server::host_logic::dotns_gateway::DotnsIdentity> {
+) -> Result<truapi::host_logic::dotns_gateway::DotnsIdentity> {
     // First-time lite registration is backend-async and can lag the HTTP
     // response. The record is permanent once written. Later runs therefore
     // resolve on the first poll.
