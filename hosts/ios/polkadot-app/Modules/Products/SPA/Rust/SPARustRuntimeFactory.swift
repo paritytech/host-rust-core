@@ -1,5 +1,6 @@
 import Foundation
 import Products
+import TrUAPIHost
 import UIKitExt
 
 /// Builds one rust SPA runtime (TrUAPI core + localhost ws-bridge) per call.
