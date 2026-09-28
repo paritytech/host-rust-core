@@ -32,21 +32,27 @@ struct ProductWorkerArchiveTests {
         }
     }
 
-    /// A lookalike sibling is not inside the archive. `..` is refused outright,
-    /// so this never reaches the path comparison — which is the point: the
-    /// comparison alone would have to get the directory boundary exactly right.
+    /// A sibling directory whose name begins with the archive's own is inside
+    /// it by a plain prefix test and outside it in fact. Reached through a link
+    /// rather than `..`, so the refusal has to come from the directory
+    /// boundary: a comparison without the separator lets `content.staging`
+    /// pass as `content`.
     @Test
     func refusesASiblingDirectoryWhoseNameStartsWithTheArchives() async throws {
         let root = try makeArchive(files: ["faces/loyalty.json": "{}"])
         let sibling = root.deletingLastPathComponent().appending(path: "content.staging")
         try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
         try Data("secret".utf8).write(to: sibling.appending(path: "secret.json"))
+        try FileManager.default.createSymbolicLink(
+            at: root.appending(path: "nextdoor"),
+            withDestinationURL: sibling
+        )
         let archive = ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil })
 
         await #expect(throws: (any Error).self) {
             try await archive.file(
                 contentId: "worker.game.paseo",
-                path: "../content.staging/secret.json",
+                path: "nextdoor/secret.json",
                 maxBytes: 1_024
             )
         }

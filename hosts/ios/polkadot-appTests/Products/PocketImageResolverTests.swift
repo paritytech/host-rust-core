@@ -8,6 +8,10 @@ import Testing
 /// Turns an image source inside a face into something the image loader can
 /// fetch. A source that cannot be resolved answers nil: the rest of the face
 /// still draws, with a hole where the image would be.
+///
+/// What a path is allowed to name is the archive's rule, and
+/// ``ProductWorkerArchiveTests`` proves it. What is left here is which archive
+/// gets asked, and what a source that is not a file becomes.
 struct PocketImageResolverTests {
     @Test
     func resolvesAnArchiveImageToAFileInTheWorkersArchive() async throws {
@@ -22,38 +26,6 @@ struct PocketImageResolverTests {
 
         #expect(url.isFileURL)
         #expect(try Data(contentsOf: url) == Data("png".utf8))
-    }
-
-    /// The path comes from a face the product wrote, so it must not be able to
-    /// name a file outside the archive it belongs to.
-    @Test
-    func refusesAnArchivePathThatClimbsOut() async throws {
-        let root = try makeArchive(files: ["art/badge.png": "png"])
-        try Data("secret".utf8).write(to: root.deletingLastPathComponent().appending(path: "outside.png"))
-        let resolver = PocketImageResolver(
-            contentId: { "worker.game.paseo" },
-            archive: ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil }),
-            ipfsUrl: { _ in nil }
-        )
-
-        #expect(await resolver.resolve(.archive(path: "../outside.png")) == nil)
-    }
-
-    /// A lookalike sibling is not inside the archive. `..` is refused outright,
-    /// before any path comparison has to get the directory boundary right.
-    @Test
-    func refusesASiblingDirectoryWhoseNameStartsWithTheArchives() async throws {
-        let root = try makeArchive(files: ["art/badge.png": "png"])
-        let sibling = root.deletingLastPathComponent().appending(path: "content.staging")
-        try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
-        try Data("secret".utf8).write(to: sibling.appending(path: "secret.png"))
-        let resolver = PocketImageResolver(
-            contentId: { "worker.game.paseo" },
-            archive: ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil }),
-            ipfsUrl: { _ in nil }
-        )
-
-        #expect(await resolver.resolve(.archive(path: "../content.staging/secret.png")) == nil)
     }
 
     /// Every image node in a face asks again each time it appears, and going to
