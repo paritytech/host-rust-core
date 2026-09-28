@@ -14,6 +14,7 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.ChatActiveTracker
 import io.paritytech.polkadotapp.feature_chats_api.domain.ChatBroadcastUseCase
 import io.paritytech.polkadotapp.feature_chats_api.domain.ChatMessageSender
 import io.paritytech.polkadotapp.feature_chats_api.domain.ContactChatSessionManager
+import io.paritytech.polkadotapp.feature_chats_api.domain.ContactDirectory
 import io.paritytech.polkadotapp.feature_chats_api.domain.ContactDisplayProvider
 import io.paritytech.polkadotapp.feature_chats_api.domain.ReadOnlyChatRoomRepository
 import io.paritytech.polkadotapp.feature_chats_api.domain.chatRequest.ChatRequestServiceCoordinator
@@ -65,6 +66,7 @@ import io.paritytech.polkadotapp.feature_chats_impl.data.repository.RealChatRoom
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.RealChatSearchRecentsRepository
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.RealCompactionExpansionRepository
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.RealContactDevicesRepository
+import io.paritytech.polkadotapp.feature_chats_impl.data.repository.RealContactDirectory
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.RealContactsRepository
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.RealMessageRevisionRepository
 import io.paritytech.polkadotapp.feature_chats_impl.data.repository.RealProcessedChatMessageRepository
@@ -133,6 +135,9 @@ internal interface ChatsFeatureApiModule {
 
     @Binds
     fun bindBlockedContactsRepository(impl: RealContactsRepository): BlockedContactsRepository
+
+    @Binds
+    fun bindContactDirectory(impl: RealContactDirectory): ContactDirectory
 
     @Binds
     fun bindRemovedChatsRepository(impl: RealRemovedChatsRepository): RemovedChatsRepository
