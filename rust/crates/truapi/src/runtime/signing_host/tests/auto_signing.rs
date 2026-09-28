@@ -163,10 +163,10 @@ fn a_blessed_product_signs_its_own_account_without_a_grant() {
     }
 }
 
-/// Only the local runtime vouches for its caller; a relayed request can claim
-/// any product id.
+/// Only the local runtime vouches for its caller, and only for its own account;
+/// a relayed request can claim any product id.
 #[test]
-fn a_relayed_blessed_vrf_claim_still_prompts() {
+fn a_blessed_vrf_signature_skips_the_prompt_only_locally_for_its_own_account() {
     let platform = granting_platform();
     let (services, activation) = signing_runtime_with_platform(platform.clone());
     futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
@@ -174,11 +174,14 @@ fn a_relayed_blessed_vrf_claim_still_prompts() {
     let runtime = product_runtime_for(services, activation.clone(), "dim2.paseo");
     let request = vrf_request("dim2.paseo");
 
-    let local_signed = futures::executor::block_on(runtime.sign_vrf(
-        &CallContext::default(),
-        HostAccountSignVrfRequest::V1(request.clone()),
-    ))
-    .is_ok();
+    let sign_locally = |request| {
+        futures::executor::block_on(
+            runtime.sign_vrf(&CallContext::default(), HostAccountSignVrfRequest::V1(request)),
+        )
+        .is_ok()
+    };
+    let own_signed = sign_locally(request.clone());
+    let foreign_signed = sign_locally(vrf_request("other.paseo"));
     let Dispatch::Response(answer) = futures::executor::block_on(
         SigningHostSsoService::new(activation).answer(RemoteMessage::request(
             "relayed-vrf".to_string(),
@@ -197,10 +200,11 @@ fn a_relayed_blessed_vrf_claim_still_prompts() {
 
     assert_eq!(
         (
-            local_signed,
+            own_signed,
+            foreign_signed,
             response.payload.map(|_| ()),
             platform.sign_vrf_reviews.lock().unwrap().len(),
         ),
-        (true, Err(v01::HostAccountSignVrfError::Rejected), 1),
+        (true, false, Err(v01::HostAccountSignVrfError::Rejected), 2),
     );
 }

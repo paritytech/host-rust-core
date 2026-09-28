@@ -713,7 +713,10 @@ impl SigningHost {
         let keypair = self.product_keypair(&request.account)?;
         let (current, activation_generation) = self.require_current_session(session)?;
         let granted = authenticated_caller
-            && crate::platform::normalizes_to_trusted_remote_permissions(&calling_product_id)
+            && super::authority::is_blessed_owner(
+                &calling_product_id,
+                &request.account.dot_ns_identifier,
+            )
             || self.has_auto_signing_grant(
                 activation_generation,
                 current.public_key,
@@ -877,13 +880,7 @@ impl ProductAuthority for SigningHost {
         // the session's own key, so the session carries the owner a grant can
         // be keyed on and no root derivation is needed to answer this.
         let (current, activation_generation) = self.require_current_session(session)?;
-        let trusted_product =
-            normalize_product_identifier(calling_product_id).is_ok_and(|caller| {
-                crate::platform::has_trusted_remote_permissions(&caller)
-                    && normalize_product_identifier(&account.dot_ns_identifier)
-                        .is_ok_and(|owner| owner == caller)
-            });
-        if trusted_product
+        if super::authority::is_blessed_owner(calling_product_id, &account.dot_ns_identifier)
             || self.has_auto_signing_grant(
                 activation_generation,
                 current.public_key,

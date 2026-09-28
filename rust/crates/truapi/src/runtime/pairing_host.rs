@@ -2154,7 +2154,7 @@ impl PairingHost {
             );
             return Ok(v01::VrfSignature { pre_output, proof });
         }
-        if !crate::platform::has_trusted_remote_permissions(&calling_product_id) {
+        if !super::authority::is_blessed_owner(&calling_product_id, &request.account.dot_ns_identifier) {
             let confirmed = super::until_cancelled(
                 cx,
                 self.platform

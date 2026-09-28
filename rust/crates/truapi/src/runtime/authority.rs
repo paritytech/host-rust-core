@@ -288,6 +288,14 @@ pub enum CreateTransactionAuthorityRequest {
     IdentityAccount(LegacyAccountTxPayload),
 }
 
+/// Whether blessed `calling_product_id` is using its own account, `owner`.
+pub(crate) fn is_blessed_owner(calling_product_id: &str, owner: &str) -> bool {
+    crate::platform::normalize_product_identifier(calling_product_id).is_ok_and(|caller| {
+        crate::platform::has_trusted_remote_permissions(&caller)
+            && crate::platform::normalize_product_identifier(owner).is_ok_and(|owner| owner == caller)
+    })
+}
+
 /// Whether a product-account call can be signed without a confirmation prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutoSigningGrant {
