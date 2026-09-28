@@ -2422,10 +2422,8 @@ mod tests {
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
-    /// Core work and the WebSocket bridge must share one runtime, so a
-    /// subscription a bridged product opens runs where its request was
-    /// decoded. The spawn comes from a plain thread, as a host thread or a
-    /// `Drop` on one would issue it.
+    /// Core tasks run on the shared native runtime, including those spawned
+    /// from a thread outside any runtime, such as a host thread.
     #[test]
     fn native_spawner_runs_core_work_on_the_shared_tokio_runtime() {
         let callbacks: Arc<dyn HostCallbacks> = Arc::new(EventCallbacks::new());
