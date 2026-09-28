@@ -109,12 +109,11 @@ impl Preimage for ProductRuntimeHost {
         .await?;
         let confirmed = until_cancelled(
             cx,
-            self.platform
-                .confirm_user_action(UserConfirmationReview::PreimageSubmit(
-                    PreimageSubmitReview {
-                        size: value.len() as u64,
-                    },
-                )),
+            self.confirm_product_action(UserConfirmationReview::PreimageSubmit(
+                PreimageSubmitReview {
+                    size: value.len() as u64,
+                },
+            )),
         )
         .await
         .map_err(|err| preimage_submit_error(err.to_string()))?
