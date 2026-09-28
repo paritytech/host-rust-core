@@ -56,6 +56,40 @@ struct PocketImageResolverTests {
         #expect(await resolver.resolve(.archive(path: "../content.staging/secret.png")) == nil)
     }
 
+    /// Every image node in a face asks again each time it appears, and going to
+    /// the chain for each one costs a contract read the archive on disk already
+    /// answers. Offline that read fails outright, and a card drawn from a face
+    /// it kept would lose every image in it.
+    @Test
+    func readsAnArchiveAlreadyOnDiskWithoutAskingTheChain() async throws {
+        let root = try makeArchive(files: ["art/badge.png": "png"])
+        let resolver = PocketImageResolver(
+            contentId: { "worker.game.paseo" },
+            cachedArchive: { _ in root },
+            dotNsResolver: FailingResolver(),
+            ipfsUrl: { _ in nil }
+        )
+
+        let url = try #require(await resolver.resolve(.archive(path: "art/badge.png")))
+
+        #expect(try Data(contentsOf: url) == Data("png".utf8))
+    }
+
+    /// Nothing on disk yet is the first draw of a card whose product has never
+    /// been fetched, which is exactly when the chain read is worth paying.
+    @Test
+    func fetchesTheArchiveWhenNothingIsOnDiskYet() async throws {
+        let root = try makeArchive(files: ["art/badge.png": "png"])
+        let resolver = PocketImageResolver(
+            contentId: { "worker.game.paseo" },
+            cachedArchive: { _ in nil },
+            dotNsResolver: StubResolver(root: root),
+            ipfsUrl: { _ in nil }
+        )
+
+        #expect(await resolver.resolve(.archive(path: "art/badge.png")) != nil)
+    }
+
     @Test
     func resolvesABulletinImageToItsGatewayAddress() async throws {
         let resolver = PocketImageResolver(

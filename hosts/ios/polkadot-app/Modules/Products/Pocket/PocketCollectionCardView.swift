@@ -9,11 +9,11 @@ import SwiftUI
 /// reference: the card is live for exactly as long as it is visible.
 struct PocketCollectionCardView: View {
     let card: PocketCardViewModel
-    var faces: (any PocketFaceSourcing)? = TrUAPIWorkerFacade.shared.faces
-    var images: PocketImageResolver?
+    let drawing: PocketCardDrawing
 
-    private var imageResolver: PocketImageResolver? {
-        images ?? TrUAPIWorkerFacade.shared.images(of: card.key.productId)
+    init(card: PocketCardViewModel, drawing: PocketCardDrawing? = nil) {
+        self.card = card
+        self.drawing = drawing ?? .current(for: card.key.productId)
     }
 
     @State private var streamed: CustomMessageWidgetNode?
@@ -24,14 +24,17 @@ struct PocketCollectionCardView: View {
         PocketProductCardView(
             title: card.title,
             face: streamed ?? card.face,
-            resolveImage: imageResolver.map { images in WidgetImageResolver { await images.resolve($0) } },
+            resolveImage: drawing.images.map { images in WidgetImageResolver { await images.resolve($0) } },
             onAction: { action, value in send(action, value) }
         )
-        .task(id: card.id) { await draw() }
+        // Keyed on the Pocket as well as the card: a session that installed a
+        // new one ended the stream this card was drawing, and a key of its own
+        // id alone would never start another.
+        .task(id: drawing.key(for: card.id)) { await draw() }
     }
 
     private func draw() async {
-        guard let faces else {
+        guard let faces = drawing.faces else {
             Logger.shared.warning("[pocket] no face source yet; \(card.key.cardId.value) draws what is kept")
             return
         }
@@ -44,6 +47,6 @@ struct PocketCollectionCardView: View {
     /// A press carries no payload; a text edit carries the new value as UTF-8,
     /// which is the shape every host sends.
     private func send(_ action: String, _ value: String?) {
-        faces?.send(action: action, payload: Data((value ?? "").utf8), for: card.key)
+        drawing.faces?.send(action: action, payload: Data((value ?? "").utf8), for: card.key)
     }
 }

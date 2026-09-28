@@ -22,6 +22,7 @@ final class TrUAPIWorkerFacade: @unchecked Sendable {
     private let held = OSAllocatedUnfairLock<(any PocketFaceSourcing)?>(initialState: nil)
     private let assembled = OSAllocatedUnfairLock<Assembled?>(initialState: nil)
     private let running = OSAllocatedUnfairLock<(any TrUAPIWorkerSupervising)?>(initialState: nil)
+    private let installations = OSAllocatedUnfairLock(initialState: 0)
 
     private init() {}
 
@@ -32,6 +33,12 @@ final class TrUAPIWorkerFacade: @unchecked Sendable {
     /// What runs every product's worker. Nil until startup has installed it,
     /// which is when a chat bot falls back to the native runtime.
     var supervisor: (any TrUAPIWorkerSupervising)? { running.withLock { $0 } }
+
+    /// How many Pockets have been installed in this process. A sign-out and
+    /// back in installs another, and everything read from the one before it is
+    /// finished: cards key their drawing on this so they start again on the new
+    /// one rather than hold a stream that has ended.
+    var installation: Int { installations.withLock { $0 } }
 
     /// Resolves the images inside `productId`'s faces, out of that product's
     /// own worker archive. Nil before startup has assembled the Pocket.
@@ -101,6 +108,8 @@ final class TrUAPIWorkerFacade: @unchecked Sendable {
                 ipfsUrl: { converter.ipfsURL(cid: $0) }
             )
         }
+
+        installations.withLock { $0 += 1 }
 
         held.withLock {
             $0 = RealPocketFaceSource(
