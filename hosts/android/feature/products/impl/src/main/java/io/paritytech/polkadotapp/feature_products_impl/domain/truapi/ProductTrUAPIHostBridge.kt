@@ -9,8 +9,8 @@ import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
-import io.parity.truapi.ProductExecutionConfig
-import io.parity.truapi.ProductExecutionKind
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import io.parity.truapi.TrUAPIProductExecution
 import io.parity.truapi.WebSocketChainProvider
@@ -42,20 +42,19 @@ import okhttp3.OkHttpClient
 import timber.log.Timber
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
-import uniffi.truapi.HostNavigateToError
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.ThemeName
-import uniffi.truapi_platform.AuthState
-import uniffi.truapi_platform.HostChainSet
-import uniffi.truapi_platform.UserConfirmationReview
-import uniffi.truapi_server.HostNavigateRejection
-import uniffi.truapi_server.HostRejection
+import uniffi.truapi.AuthState
+import uniffi.truapi.HostChainSet
+import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.HostNavigateToException
+import uniffi.truapi.HostRejection
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Instant
 import uniffi.truapi.ThemeVariant as NativeThemeVariant
-import uniffi.truapi_platform.PermissionDecision as TrUAPIPermissionDecision
+import uniffi.truapi.PermissionDecision as TrUAPIPermissionDecision
 
 /**
  * Native platform callbacks ([io.parity.truapi.HostBridge]) for one product
@@ -142,13 +141,13 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         override suspend fun navigateTo(url: String) {
             val destination = url.toUri()
             val tld = dotNsTldProvider.getTld().getOrElse {
-                throw HostNavigateRejection.Navigate(HostNavigateToError.Unknown(it.message.orEmpty()))
+                throw HostNavigateToException.Unknown(it.message.orEmpty())
             }
             val type = DotNsUtils.classifyNavigation(callingProductId.toUri(), destination, tld)
             withContext(Dispatchers.Main) {
                 runCatching { navigation.handleNavigation(type, destination) }
                     .getOrElse {
-                        throw HostNavigateRejection.Navigate(HostNavigateToError.Unknown(it.message.orEmpty()))
+                        throw HostNavigateToException.Unknown(it.message.orEmpty())
                     }
             }
         }
@@ -189,13 +188,19 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
             confirmationLauncher.decide(review, requesterFallback = callingProductId.value)
 
-        override suspend fun devicePermission(request: HostDevicePermissionRequest): TrUAPIPermissionDecision =
+        override suspend fun devicePermission(
+            product: ProductExecutionConfig,
+            request: HostDevicePermissionRequest,
+        ): TrUAPIPermissionDecision =
             hostApiInteractor
                 .requestDevicePermissionDecision(callingProductId, request.toCapability())
                 .getOrElse { throw it }
                 .toNative()
 
-        override suspend fun remotePermission(request: RemotePermission): TrUAPIPermissionDecision =
+        override suspend fun remotePermission(
+            product: ProductExecutionConfig,
+            request: RemotePermission,
+        ): TrUAPIPermissionDecision =
             hostApiInteractor
                 .requestRemotePermissionDecision(callingProductId, request.toDomain())
                 .getOrElse { throw it }

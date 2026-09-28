@@ -76,6 +76,11 @@
         android:label="ProductBotManagementFragment" />
 
     <fragment
+        android:id="@+id/pocketFacePreviewFragment"
+        android:name="io.paritytech.polkadotapp.feature_products_impl.presentation.pocketFacePreview.PocketFacePreviewFragment"
+        android:label="PocketFacePreviewFragment" />
+
+    <fragment
         android:id="@+id/spaBrowserFragment"
         android:name="io.paritytech.polkadotapp.feature_products_impl.presentation.spaBrowser.SpaBrowserFragment"
         android:label="SpaBrowserFragment" />
@@ -271,6 +276,11 @@
     <action
         android:id="@+id/action_global_to_product_bots_management"
         app:destination="@id/productBotManagementFragment"
+        app:launchSingleTop="true" />
+
+    <action
+        android:id="@+id/action_global_to_pocket_face_preview"
+        app:destination="@id/pocketFacePreviewFragment"
         app:launchSingleTop="true" />
 
     <action

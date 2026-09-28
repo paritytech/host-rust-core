@@ -23,9 +23,12 @@ import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.RemotePermissionRequest
-import uniffi.truapi_platform.PermissionAuthorizationRequest
-import uniffi.truapi_platform.PermissionAuthorizationStatus
-import uniffi.truapi_platform.PermissionDecision
+import uniffi.truapi.PermissionAuthorizationRequest
+import uniffi.truapi.PermissionAuthorizationStatus
+import uniffi.truapi.PermissionDecision
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import java.io.Closeable
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -169,8 +172,9 @@ class ContainerHttpAuthorizationTest {
         override val coreStorage: HostCoreStorage = memory
         override suspend fun navigateTo(url: String) = Unit
         override suspend fun featureSupported(request: HostFeatureSupportedRequest) = false
-        override suspend fun devicePermission(request: HostDevicePermissionRequest) = PermissionDecision.DENY
-        override suspend fun remotePermission(request: RemotePermission): PermissionDecision {
+        override suspend fun devicePermission(product: ProductExecutionConfig, request: HostDevicePermissionRequest) =
+            PermissionDecision.DENY
+        override suspend fun remotePermission(product: ProductExecutionConfig, request: RemotePermission): PermissionDecision {
             requests.add(request)
             return decisions.poll() ?: PermissionDecision.DENY
         }

@@ -3,7 +3,7 @@
 - Status: as-built behavior reference
 - Binary: `truapi-host`
 - Implementation: `rust/crates/truapi-host-cli/`
-- Protocol implementation: `truapi` and `truapi-server`
+- Protocol implementation: `truapi`
 
 This document specifies the first complete version of the native headless
 TrUAPI host CLI. It was derived from the Rust and TypeScript implementation,
@@ -26,7 +26,7 @@ phone automation service, or external signing bot. It is intended for:
 - paired end-to-end tests; and
 - generation of CLI host compatibility reports.
 
-It embeds the real `truapi-server` dispatcher and host logic. Product scripts
+It embeds the real `truapi` dispatcher and host logic. Product scripts
 use the public `@parity/truapi` client and exchange the same SCALE protocol
 messages as a product connected to another host.
 
@@ -97,7 +97,7 @@ as the paired path.
 
 ### 2.3 Ownership boundaries
 
-`truapi-server` owns:
+`truapi` owns:
 
 - protocol dispatch and SCALE encoding;
 - product and role semantics;
@@ -273,7 +273,7 @@ when it points inside the version store.
 ## 4. Top-level command line
 
 ```text
-truapi-host [--log-level <level>] <command>
+truapi-host [--log-level <level>] [--debugger <url>] <command>
 ```
 
 Commands:
@@ -308,6 +308,25 @@ If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup
 and the status bar shows its trimmed value. The interactive `/log` command
 atomically saves the selected CLI level, replaces the active filter, and
 updates the status bar to that level.
+
+### 4.2 Global wire-debugger option
+
+`--debugger <url>` streams every product frame to a wire debugger at a loopback
+`ws://` address. `TRUAPI_DEBUGGER_URL` supplies the same value; clap resolves an
+explicit flag over it.
+
+The option is global, but only `pairing-host`, `dev` and `signing-host` resolve
+it: the remaining commands emit no frames and open no sink. Resolution happens
+before the frame listener binds, so a URL that is not `ws://` on `127.0.0.1`,
+`localhost` or `[::1]` fails startup. A reachable debugger is not required, since
+the sink dials lazily and reconnects.
+
+Each of those three commands reports the outcome once, as a lifecycle event
+rather than a log line: `Streaming wire frames to a debugger` with the endpoint
+and the switch clap read it from, or `Wire debugger off`.
+
+Each accepted connection gets its own channel id, `<product-id>#<n>`, so
+concurrent peers under one host do not share a trace key.
 
 ## 5. `pairing-host`
 
@@ -1954,14 +1973,12 @@ Without `RUST_LOG`, the selected CLI level applies to:
 
 - `truapi`
 - `truapi_host`
-- `truapi_platform`
-- `truapi_server`
 
 Other targets remain at `warn`.
 
 The following noisy targets are always hidden from the ordinary CLI log layer:
 
-- `truapi_server::sso_transcript` (handled by its dedicated layer);
+- `truapi::sso_transcript` (handled by its dedicated layer);
 - `rustls` and its children; and
 - `tungstenite::protocol` and its children.
 
@@ -2108,6 +2125,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | Variable | Scope |
 | --- | --- |
 | `TRUAPI_HOST_LOG` | Per-process `--log-level` override. |
+| `TRUAPI_DEBUGGER_URL` | Default `--debugger` dial. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `TRUAPI_HOST_NO_UPDATE` | Any value disables the self-update check. |
@@ -2160,7 +2178,7 @@ The implementation is covered by:
   products, sessions, approvals, and platform behavior;
 - process-boundary tests for help, non-TTY rejection, product reporting,
   session restore, cached signer activation, and bare-script safety;
-- `truapi-server` runtime, protocol, cryptographic vector, and integration
+- `truapi` runtime, protocol, cryptographic vector, and integration
   tests;
 - shared container, script-runner/Bun diagnosis and packaged-runtime tests;
 - paired and direct `battery.ts` runs, both driven by `scripts/battery.sh`; and

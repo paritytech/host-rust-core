@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use truapi::latest::GenericError;
-use truapi_platform::{GamePlatform, ProductContext, async_trait};
+use truapi::platform::{GamePlatform, ProductContext, async_trait};
 
 /// A Game host that keeps one reminder per product in memory.
 pub struct CliGameHost {

@@ -2812,6 +2812,7 @@ dependencies = [
  "base64",
  "digest 0.9.0",
  "hmac-drbg",
+ "lazy_static",
  "libsecp256k1-core",
  "libsecp256k1-gen-ecmult",
  "libsecp256k1-gen-genmult",
@@ -5217,18 +5218,6 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c83b561d025642014097b66e6c1bb422783339e0909e4429cde4749d1990bc38"
-dependencies = [
- "futures-util",
- "log",
- "tokio",
- "tungstenite 0.21.0",
-]
-
-[[package]]
-name = "tokio-tungstenite"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
@@ -5239,7 +5228,7 @@ dependencies = [
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
- "tungstenite 0.24.0",
+ "tungstenite",
  "webpki-roots 0.26.11",
 ]
 
@@ -5433,15 +5422,58 @@ dependencies = [
 
 [[package]]
 name = "truapi"
-version = "0.19.0"
+version = "0.21.0"
 dependencies = [
  "async-trait",
+ "base64",
+ "blake2b_simd",
+ "chacha20poly1305",
+ "console_error_panic_hook",
  "derive_more 2.1.1",
+ "frame-metadata",
  "futures",
+ "futures-timer",
+ "getrandom 0.2.17",
  "hex",
+ "hkdf",
+ "js-sys",
+ "libc",
+ "merlin",
+ "nanoid",
  "parity-scale-codec",
+ "parking_lot",
+ "rand 0.8.7",
+ "scale-decode",
+ "scale-info",
+ "schnorrkel",
+ "send_wrapper",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2",
+ "sp-crypto-hashing",
+ "substrate-bip39",
+ "subxt",
+ "subxt-rpcs",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
  "truapi-macros",
+ "truapi-provider",
+ "truapi-verifiable",
+ "unicode-normalization",
  "uniffi",
+ "url",
+ "verifiable",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+ "web-time",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
@@ -5460,7 +5492,7 @@ dependencies = [
 
 [[package]]
 name = "truapi-host-cli"
-version = "0.19.0"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5492,12 +5524,10 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "truapi",
- "truapi-platform",
- "truapi-server",
  "unicode-width",
  "zeroize",
 ]
@@ -5510,22 +5540,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "trybuild",
-]
-
-[[package]]
-name = "truapi-platform"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "derive_more 2.1.1",
- "futures",
- "parity-scale-codec",
- "sp-crypto-hashing",
- "truapi",
- "unicode-normalization",
- "uniffi",
- "url",
- "zeroize",
 ]
 
 [[package]]
@@ -5543,6 +5557,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-client-transport",
  "jsonrpsee-core",
+ "libsecp256k1",
  "log",
  "pin-project",
  "rand 0.8.7",
@@ -5553,11 +5568,9 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-rustls",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
- "truapi",
- "truapi-platform",
  "uniffi",
  "url",
  "wasm-bindgen",
@@ -5569,57 +5582,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "truapi-server"
+name = "truapi-verifiable"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "base64",
- "blake2b_simd",
- "chacha20poly1305",
- "console_error_panic_hook",
- "derive_more 2.1.1",
- "frame-metadata",
- "futures",
- "futures-timer",
  "getrandom 0.2.17",
- "hex",
- "hkdf",
- "js-sys",
- "merlin",
- "nanoid",
  "parity-scale-codec",
- "parking_lot",
- "rand 0.8.7",
- "scale-decode",
- "scale-info",
- "schnorrkel",
- "send_wrapper",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sp-crypto-hashing",
- "substrate-bip39",
- "subxt",
- "subxt-rpcs",
- "thiserror 1.0.69",
- "tokio",
- "tokio-tungstenite 0.21.0",
- "tracing",
- "tracing-subscriber",
- "truapi",
- "truapi-macros",
- "truapi-platform",
- "unicode-normalization",
- "uniffi",
- "url",
  "verifiable",
  "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
- "web-time",
- "x25519-dalek",
- "zeroize",
 ]
 
 [[package]]
@@ -5641,25 +5610,6 @@ dependencies = [
  "target-tuple",
  "termcolor",
  "toml",
-]
-
-[[package]]
-name = "tungstenite"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ef1a641ea34f399a848dea702823bbecfb4c486f911735368f1f137cb8257e1"
-dependencies = [
- "byteorder",
- "bytes",
- "data-encoding",
- "http",
- "httparse",
- "log",
- "rand 0.8.7",
- "sha1",
- "thiserror 1.0.69",
- "url",
- "utf-8",
 ]
 
 [[package]]

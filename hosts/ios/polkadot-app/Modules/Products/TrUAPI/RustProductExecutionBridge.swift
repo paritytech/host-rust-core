@@ -59,18 +59,21 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         } else if let parsed = URL(string: url) {
             try await dependencies.navigationRouter.openExternalURL(parsed)
         } else {
-            throw HostNavigateRejection.Navigate(.unknown(reason: "invalid navigation url"))
+            throw HostNavigateToError.Unknown(reason: "invalid navigation url")
         }
     }
 
-    func devicePermission(request: HostDevicePermissionRequest) async throws -> TrUAPIPermissionDecision {
+    func devicePermission(
+        product _: ProductExecutionConfig,
+        request: HostDevicePermissionRequest
+    ) async throws -> TrUAPIPermissionDecision {
         try await dependencies.permissionGuard.requestDevicePermissionDecision(
             productId: dependencies.productId,
             capability: request.deviceCapabilityType
         ).hostDecision
     }
 
-    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws -> NativeDevicePermissionStatus {
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws -> DevicePermissionStatus {
         switch request {
         case .camera,
              .microphone,
@@ -92,7 +95,10 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         }
     }
 
-    func remotePermission(request: RemotePermission) async throws -> TrUAPIPermissionDecision {
+    func remotePermission(
+        product _: ProductExecutionConfig,
+        request: RemotePermission
+    ) async throws -> TrUAPIPermissionDecision {
         try await dependencies.permissionGuard.requestPermissionsDecision(
             productId: dependencies.productId,
             permissions: request.toDomainRequest().toDomainPermissions()

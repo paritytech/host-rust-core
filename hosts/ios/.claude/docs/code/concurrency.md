@@ -113,6 +113,14 @@ single coalesced in-flight task use `CoalescingTask`; for one typed guarded valu
 `OSAllocatedUnfairLock<State>` is enough. (Real example: `IncomingPaymentService` +
 `IncomingPaymentContext` in `Packages/Coinage`.)
 
+## Injecting Time
+
+Take `DateProviding` from `FoundationExt` (`NowDateProvider` in production) rather than a
+`@Sendable () -> Date` closure. `read()` is `async`, so a caller must already be in an async context —
+which is exactly where a wall-clock read belongs. Keep a `Clock` alongside it for *pacing* (sleeps,
+timeouts): a clock instant cannot be compared against a deadline persisted on an earlier launch, and a
+date cannot pace a sleep.
+
 ## Key Rules
 
 0. **Check `StructuredConcurrency` and `AsyncExtensions` before writing any custom concurrency

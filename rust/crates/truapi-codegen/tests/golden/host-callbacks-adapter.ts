@@ -26,12 +26,15 @@ import {
   HostWorkerBeginOperationResponse,
   RemotePermissionRequest,
 } from "@parity/truapi";
-import type { GenericError, NotificationId } from "@parity/truapi";
+import type { GenericError } from "@parity/truapi";
 import {
   AuthState,
   CoreStorageKey,
   DevicePermissionStatus,
   HostChainSet,
+  HostContactLookup,
+  HostContactMatches,
+  HostContactPick,
   PermissionDecision,
   ProductContext,
   UserConfirmationReview,
@@ -66,6 +69,8 @@ export interface RawCallbacks {
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  contacts?(lookup: Uint8Array): Promise<Uint8Array>;
+  pickContact?(product: Uint8Array): Promise<Uint8Array>;
   readCoreStorage(key: Uint8Array): Promise<Uint8Array | null | undefined>;
   writeCoreStorage(key: Uint8Array, value: Uint8Array): Promise<void>;
   clearCoreStorage(key: Uint8Array): Promise<void>;
@@ -79,10 +84,16 @@ export interface RawCallbacks {
   ): (() => void) | void;
   navigateTo(url: string): Promise<void>;
   pushNotification(notification: Uint8Array): Promise<Uint8Array>;
-  cancelNotification(id: NotificationId): Promise<void>;
+  cancelNotification(id: number): Promise<void>;
   devicePermissionStatus?(request: Uint8Array): Promise<Uint8Array>;
-  devicePermission(request: Uint8Array): Promise<Uint8Array>;
-  remotePermission(request: Uint8Array): Promise<Uint8Array>;
+  devicePermission(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  remotePermission(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
   subscribePocketCards?(
     product: Uint8Array,
     sendItem: (item?: Uint8Array) => void,
@@ -117,6 +128,7 @@ export function createWasmRawCallbacks(
   callbacks: RequiredHostCallbacks,
 ): RawCallbacks {
   const chat = callbacks.chat;
+  const contacts = callbacks.contacts;
   const game = callbacks.game;
   const permissionStatus = callbacks.permissionStatus;
   const pocket = callbacks.pocket;
@@ -152,6 +164,18 @@ export function createWasmRawCallbacks(
               chat.subscribeChatRooms(ProductContext.dec(product)),
               (item) => sendItem(HostChatListSubscribeItem.enc(item)),
               sendError,
+            ),
+        }
+      : {}),
+    ...(contacts
+      ? {
+          contacts: async (lookup) =>
+            HostContactMatches.enc(
+              await contacts.contacts(HostContactLookup.dec(lookup)),
+            ),
+          pickContact: async (product) =>
+            HostContactPick.enc(
+              await contacts.pickContact(ProductContext.dec(product)),
             ),
         }
       : {}),
@@ -208,15 +232,17 @@ export function createWasmRawCallbacks(
             ),
         }
       : {}),
-    devicePermission: async (request) =>
+    devicePermission: async (product, request) =>
       PermissionDecision.enc(
         await callbacks.permissions.devicePermission(
+          ProductContext.dec(product),
           HostDevicePermissionRequest.dec(request),
         ),
       ),
-    remotePermission: async (request) =>
+    remotePermission: async (product, request) =>
       PermissionDecision.enc(
         await callbacks.permissions.remotePermission(
+          ProductContext.dec(product),
           RemotePermissionRequest.dec(request),
         ),
       ),

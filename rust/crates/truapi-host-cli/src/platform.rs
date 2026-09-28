@@ -21,14 +21,14 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
-use truapi::v01;
-use truapi_platform::{
-    AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
-    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionDecision,
-    PermissionStatusHost, Permissions, PreimageHost, ProductContext, ProductOperations,
-    ProductStorage, ProductStorageKey, SessionUiInfo, SignRawReview, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+use truapi::platform::{
+    AuthState, ChainProvider, CoreStorage, CoreStorageKey, CreateTransactionReview,
+    DevicePermissionStatus, Features, JsonRpcConnection, LocaleHost, Navigation, Notifications,
+    PermissionDecision, PermissionStatusHost, Permissions, PreimageHost, ProductContext,
+    ProductOperations, ProductStorage, ProductStorageKey, ProviderError, SessionUiInfo,
+    SignPayloadReview, SignRawReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
+use truapi::v01;
 
 use crate::chain::WsChainProvider;
 use crate::terminal_ui::{ApprovalKind, SystemEvent, UiHandle};
@@ -91,7 +91,7 @@ impl CliStoragePaths {
 pub struct CliPlatform {
     chain: WsChainProvider,
     /// Chain roles this host serves, answered by `Features::supported_chains`.
-    chains: truapi_platform::HostChainSet,
+    chains: truapi::platform::HostChainSet,
     product_storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
     core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     /// Device-scoped core slots, kept outside the per-user namespaces that
@@ -105,8 +105,7 @@ pub struct CliPlatform {
     pairing_scope: Option<PairingStorageScope>,
     preimages: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     next_notification_id: AtomicU32,
-    scheduled_notifications:
-        Arc<Mutex<HashMap<api::NotificationId, api::HostPushNotificationRequest>>>,
+    scheduled_notifications: Arc<Mutex<HashMap<u32, api::HostPushNotificationRequest>>>,
     approval: Mutex<ApprovalPolicy>,
     /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
     /// `<approved|denied> <action>` line per decided confirmation.
@@ -121,7 +120,7 @@ impl CliPlatform {
     /// The URL a genesis routes to, so a test can assert a routing override
     /// rather than assume it.
     #[cfg(test)]
-    pub(crate) fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
+    pub fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
         self.chain.routed_url(genesis_hash)
     }
 
@@ -374,7 +373,7 @@ impl CliPlatform {
         persist_current_pairing_user(&scope.bootstrap_dir, user_id)
     }
 
-    async fn decide(&self, action: &str, detail: String) -> bool {
+    pub async fn decide(&self, action: &str, detail: String) -> bool {
         self.decide_with(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
     }
 
@@ -611,7 +610,7 @@ impl ChainProvider for CliPlatform {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, api::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         self.chain.connect(genesis_hash).await
     }
 }
@@ -689,7 +688,7 @@ impl Notifications for CliPlatform {
         Ok(api::HostPushNotificationResponse { id })
     }
 
-    async fn cancel_notification(&self, id: api::NotificationId) -> Result<(), api::GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), api::GenericError> {
         if self
             .scheduled_notifications
             .lock()
@@ -728,12 +727,14 @@ impl PermissionStatusHost for CliPlatform {
 impl Permissions for CliPlatform {
     async fn device_permission(
         &self,
+        product: &ProductContext,
         request: api::HostDevicePermissionRequest,
     ) -> Result<PermissionDecision, api::GenericError> {
+        let product_id = &product.product_id;
         Ok(self
             .decide_with(
                 "device permission",
-                format!("A product requested access to {request}."),
+                format!("{product_id} requested access to {request}."),
                 ApprovalKind::Permission,
             )
             .await)
@@ -741,13 +742,15 @@ impl Permissions for CliPlatform {
 
     async fn remote_permission(
         &self,
+        product: &ProductContext,
         request: api::RemotePermissionRequest,
     ) -> Result<PermissionDecision, api::GenericError> {
+        let product_id = &product.product_id;
         let detail = match &request.permission {
             api::RemotePermission::Remote { .. } => format!(
-                "A product requested {request}. This covers all ports on each host, including local services."
+                "{product_id} requested {request}. This covers all ports on each host, including local services."
             ),
-            _ => format!("A product requested {request}."),
+            _ => format!("{product_id} requested {request}."),
         };
         Ok(self
             .decide_with("remote permission", detail, ApprovalKind::Permission)
@@ -770,12 +773,12 @@ impl Features for CliPlatform {
         Ok(api::HostFeatureSupportedResponse { supported })
     }
 
-    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, api::GenericError> {
+    async fn supported_chains(&self) -> Result<truapi::platform::HostChainSet, api::GenericError> {
         Ok(self.chains.clone())
     }
 }
 
-impl truapi_platform::AuthPresenter for CliPlatform {
+impl truapi::platform::AuthPresenter for CliPlatform {
     fn auth_state_changed(&self, state: AuthState) {
         if let AuthState::Connected(info) = &state
             && let Some(user_id) = storage_user_id(info)
@@ -862,11 +865,43 @@ impl UserConfirmation for CliPlatform {
     }
 }
 
+/// Names the product that asked, for the reviews that carry one. A relayed
+/// request carries no caller, and saying so is more use than naming nobody.
+fn asking(calling_product_id: Option<&str>) -> String {
+    match calling_product_id {
+        Some(product_id) => format!("Product {product_id}"),
+        None => "A paired host".to_string(),
+    }
+}
+
 fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
     match review {
+        UserConfirmationReview::SignPayload(SignPayloadReview::Product {
+            calling_product_id,
+            request,
+        }) => (
+            "sign payload",
+            format!(
+                "{} requested a SCALE payload signature for the {} account.",
+                asking(calling_product_id.as_deref()),
+                request.account.dot_ns_identifier,
+            ),
+        ),
         UserConfirmationReview::SignPayload(_) => (
             "sign payload",
             "A product requested a SCALE payload signature.".to_string(),
+        ),
+        UserConfirmationReview::SignRaw(SignRawReview::Product {
+            calling_product_id,
+            request,
+            watermarked: true,
+        }) => (
+            "sign raw data",
+            format!(
+                "{} requested a raw-data signature for the {} account. The payload is hidden here.",
+                asking(calling_product_id.as_deref()),
+                request.account.dot_ns_identifier,
+            ),
         ),
         UserConfirmationReview::SignRaw(
             SignRawReview::Product { watermarked: false, .. }
@@ -891,9 +926,21 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
         UserConfirmationReview::StatementStoreProductSign(review) => (
             "sign statement proof",
             format!(
-                "Product {} requested a Statement Store proof signature over a {}-byte payload.",
+                "{} requested a Statement Store proof signature for the {} account over a {}-byte payload.",
+                asking(review.calling_product_id.as_deref()),
                 review.account.dot_ns_identifier,
                 review.payload.len()
+            ),
+        ),
+        UserConfirmationReview::CreateTransaction(CreateTransactionReview::Product {
+            calling_product_id,
+            payload,
+        }) => (
+            "create transaction",
+            format!(
+                "{} requested a transaction from the {} account.",
+                asking(calling_product_id.as_deref()),
+                payload.signer.dot_ns_identifier,
             ),
         ),
         UserConfirmationReview::CreateTransaction(_) => (
@@ -1207,7 +1254,7 @@ fn save_string_map(path: &Path, values: &HashMap<String, Vec<u8>>) -> Result<(),
     atomic_write(path, text.as_bytes())
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("storage path has no parent: {}", path.display()))?;
@@ -1492,7 +1539,7 @@ mod tests {
     /// identity.
     #[tokio::test]
     async fn auth_state_changed_does_not_inherit_storage_on_a_rejected_username() {
-        use truapi_platform::AuthPresenter;
+        use truapi::platform::AuthPresenter;
 
         let dir = tempdir().expect("tempdir");
         let network_dir = dir.path().join("paseo");
@@ -1558,7 +1605,7 @@ mod tests {
     /// `AuthSession` is `00` and `PairingDeviceIdentity` is `01`.
     #[tokio::test]
     async fn cli_platform_preserves_unreadable_core_storage() {
-        use truapi_platform::CoreStorage;
+        use truapi::platform::CoreStorage;
 
         let dir = tempdir().expect("tempdir");
         let state_dir = dir.path().join("state");
@@ -1839,7 +1886,7 @@ mod tests {
     #[test]
     fn approval_summaries_are_concise_and_do_not_dump_payloads() {
         let review =
-            UserConfirmationReview::PreimageSubmit(truapi_platform::PreimageSubmitReview {
+            UserConfirmationReview::PreimageSubmit(truapi::platform::PreimageSubmitReview {
                 size: 4_096,
             });
 
@@ -1853,12 +1900,15 @@ mod tests {
         assert!(!detail.contains("["));
     }
 
+    /// Both products by name, because a signature made with an account the
+    /// caller does not own is the thing the user has to be able to see.
     #[test]
-    fn statement_proof_approval_names_product_without_dumping_payload() {
+    fn statement_proof_approval_names_both_products_without_dumping_payload() {
         let review = UserConfirmationReview::StatementStoreProductSign(
-            truapi_platform::StatementStoreProductSignReview {
+            truapi::platform::StatementStoreProductSignReview {
+                calling_product_id: Some("dim2next.paseo".to_string()),
                 account: api::ProductAccountId {
-                    dot_ns_identifier: "myapp.dot".to_string(),
+                    dot_ns_identifier: "dim2.paseo".to_string(),
                     derivation_index: api::DerivationIndex::Index(0),
                 },
                 payload: vec![0x42; 128],
@@ -1870,14 +1920,15 @@ mod tests {
         assert_eq!(action, "sign statement proof");
         assert_eq!(
             detail,
-            "Product myapp.dot requested a Statement Store proof signature over a 128-byte payload."
+            "Product dim2next.paseo requested a Statement Store proof signature for the \
+             dim2.paseo account over a 128-byte payload."
         );
         assert!(!detail.contains("[66"));
     }
 
     #[test]
     fn vrf_approval_names_both_products_without_dumping_transcript_values() {
-        let review = UserConfirmationReview::SignVrf(truapi_platform::SignVrfReview {
+        let review = UserConfirmationReview::SignVrf(truapi::platform::SignVrfReview {
             calling_product_id: "caller.dot".to_string(),
             request: truapi::v01::HostAccountSignVrfRequest {
                 account: truapi::v01::ProductAccountId {

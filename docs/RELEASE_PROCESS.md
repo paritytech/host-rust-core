@@ -89,8 +89,10 @@ packages bumped by Changesets. If a version is deliberately left unpublished,
 record that exact `package@version` and a reason in
 [`.github/registry-drift-exceptions.json`](../.github/registry-drift-exceptions.json).
 For example, an entry could be
-`"@parity/truapi-debugger@0.1.2": "Deferred until the standalone debugger release"`.
-An exception applies only to that version; the next bump is checked normally.
+`"@parity/example@1.2.3": "Held while its consumer catches up"`.
+An exception applies only to that version; the next bump is checked normally,
+so a package that should not be published at all is better marked `private` in
+its own manifest, which the check skips outright.
 The exception list is empty by default and does not control publishing.
 
 ### 4. Get the PR reviewed and merged
@@ -179,7 +181,7 @@ asset before pushing, so a tag that cannot be resolved is never published.
 
 `@parity/android-host <version>` publishes the Android host AAR as
 `io.parity:truapi-host-android:<version>` to GitHub Packages. The job
-cross-compiles `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64,
+cross-compiles `libtruapi.so` for arm64-v8a, armeabi-v7a and x86_64,
 regenerates the UniFFI Kotlin bindings from the same source, and publishes the
 AAR with the native libraries inside it, so consumers need only Gradle. Nothing
 in the tree records the Android version, so there is no manifest to bump: the

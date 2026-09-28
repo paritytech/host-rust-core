@@ -1,5 +1,5 @@
 // Wire format between the main thread (`createWebWorkerPairingHostRuntime`) and the
-// Web Worker that hosts the truapi-server WASM runtime.
+// Web Worker that hosts the truapi WASM runtime.
 //
 //   Main window / host JS
 //   ┌─────────────────────────────────────────────────────────────────┐
@@ -12,7 +12,7 @@
 //                   v
 //   Dedicated Worker
 //   ┌─────────────────────────────────────────────────────────────────┐
-//   │ shared truapi-server WASM PairingHostRuntime + product runtimes │
+//   │ shared truapi WASM PairingHostRuntime + product runtimes        │
 //   │ generated raw-callback proxy                                    │
 //   └───────────────┬─────────────────────────────────────────────────┘
 //                   │ WorkerToMain: coreReady, frame, callbackRequest,
@@ -88,6 +88,7 @@ export type MainToWorker =
   | { kind: "disconnectSession"; requestId: number }
   | { kind: "cancelPairing" }
   | { kind: "notifySessionStoreChanged" }
+  | { kind: "notifyContactsChanged" }
   | { kind: "acquireWorker"; productId: string }
   | { kind: "releaseWorker"; productId: string }
   | { kind: "activateStoredSession"; requestId: number }
@@ -337,3 +338,36 @@ export type WorkerToMain =
   | { kind: "chainConnectStart"; connId: number; genesisHash: string }
   | { kind: "chainSend"; connId: number; request: string }
   | { kind: "chainClose"; connId: number };
+
+/**
+ * Is `url` a `ws://` URL on a loopback host? The tap forwards every frame
+ * verbatim, key material included, and redacts nothing, so loopback is the whole
+ * confinement story.
+ *
+ * `ws://` only, matching the native sink. A loopback socket has no path for TLS
+ * to defend, so `wss://` would buy nothing and cost a certificate `localhost`
+ * cannot get from a real CA.
+ *
+ * `WsDebugSink::connect` resolves the host and checks every address; this matches
+ * the normalized hostname. A Worker has no resolver and needs none, since this
+ * same string is handed to `new WebSocket`, so the native "validate one string,
+ * dial another" gap cannot open here.
+ *
+ * Accepts what the native sink accepts: `localhost`, 127.0.0.0/8 and `::1`. An
+ * IPv4-mapped literal is refused in both, since `Ipv6Addr::is_loopback` matches
+ * only `::1`.
+ */
+export function isLoopbackWsUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "ws:") return false;
+    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "::1" ||
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+    );
+  } catch {
+    return false;
+  }
+}

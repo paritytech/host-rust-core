@@ -3,35 +3,21 @@ import UIKit_iOS
 import PolkadotUI
 import DesignSystem
 
-/// Bare camera preview for the tab bar panel: no dimmed cutout and no frame border, with the
-/// message label drawn straight over the preview. `fillColor` is what draws the dimming in
-/// `CameraFrameView`, so clearing it removes the window entirely and the preview fills the view.
+/// Bare camera preview that fills its host's bounds: no dimmed cutout and no frame border, with
+/// the message label drawn straight over the preview. `fillColor` is what draws the dimming in
+/// `CameraFrameView`, so clearing it removes the window entirely. The host view (`ScanPanelViewLayout`)
+/// owns the insets and placeholder.
 final class EmbeddedQRScannerViewLayout: QRScannerViewLayout {
     private enum Constants {
         static let previewFadeDuration: TimeInterval = 0.25
     }
 
-    /// Stands in for the camera while `AVCaptureSession` configures and starts, which takes
-    /// roughly a second and cannot be shortened from here.
-    private let placeholderView = UIView()
+    let previewView = CameraPreviewView()
 
     override func setupLayout() {
-        // The base init paints `bgSurfaceMain`; the panel's glass must show through the inset.
         backgroundColor = .clear
 
-        // The panel measures this view, so the square preview is declared here rather than by
-        // whatever hosts it.
         heightAnchor.constraint(equalTo: widthAnchor).isActive = true
-
-        addSubview(placeholderView)
-
-        placeholderView.backgroundColor = .bgSurfaceNested
-        placeholderView.layer.cornerRadius = DSRadii.large
-        placeholderView.layer.masksToBounds = true
-        placeholderView.snp.makeConstraints { make in
-            make.top.left.right.equalToSuperview().inset(DSSpacings.mediumIncreased)
-            make.bottom.equalToSuperview().inset(DSSpacings.small)
-        }
 
         addSubview(qrFrameView)
         qrFrameView.alpha = 0
@@ -39,7 +25,12 @@ final class EmbeddedQRScannerViewLayout: QRScannerViewLayout {
         qrFrameView.layer.masksToBounds = true
         qrFrameView.fillColor = .clear
         qrFrameView.snp.makeConstraints { make in
-            make.edges.equalTo(placeholderView)
+            make.edges.equalToSuperview()
+        }
+
+        qrFrameView.addSubview(previewView)
+        previewView.snp.makeConstraints { make in
+            make.edges.equalToSuperview()
         }
 
         messageLabel.textColor = .fgPrimary
@@ -54,5 +45,11 @@ final class EmbeddedQRScannerViewLayout: QRScannerViewLayout {
         UIView.animate(withDuration: Constants.previewFadeDuration) { [self] in
             qrFrameView.alpha = 1
         }
+    }
+
+    /// Hides the overlay message while the preview is a thumbnail. The reticle, title and dimming
+    /// cut-out are already absent from this layout, so nothing else needs suppressing.
+    func setPreviewCompact(_ compact: Bool) {
+        messageLabel.isHidden = compact
     }
 }

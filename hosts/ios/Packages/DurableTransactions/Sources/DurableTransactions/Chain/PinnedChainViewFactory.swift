@@ -92,7 +92,8 @@ extension PinnedChainViewFactory {
                         operationManager: OperationManager(operationQueue: operationQueue)
                     ),
                     logger: logger
-                )
+                ),
+                errorDecoder: CallDispatchErrorDecoder(logger: logger)
             )
         )
 
@@ -179,15 +180,18 @@ final class BlockOutcomeReader: BlockOutcomeReading {
     private let connection: any JSONRPCEngine
     private let runtimeService: any RuntimeCodingServiceProtocol
     private let eventsQueryFactory: any BlockEventsQueryFactoryProtocol
+    private let errorDecoder: any CallDispatchErrorDecoding
 
     init(
         connection: any JSONRPCEngine,
         runtimeService: any RuntimeCodingServiceProtocol,
-        eventsQueryFactory: any BlockEventsQueryFactoryProtocol
+        eventsQueryFactory: any BlockEventsQueryFactoryProtocol,
+        errorDecoder: any CallDispatchErrorDecoding
     ) {
         self.connection = connection
         self.runtimeService = runtimeService
         self.eventsQueryFactory = eventsQueryFactory
+        self.errorDecoder = errorDecoder
     }
 
     func lookUp(_ txHash: Data, at blockHash: Data) async -> BlockLookup {
@@ -223,15 +227,30 @@ private extension BlockOutcomeReader {
 
         for record in extrinsic.eventRecords {
             if successMatcher.match(event: record.event, using: coderFactory) {
-                return .outcome(.present(true))
+                return .outcome(.present(.succeeded))
             }
             if failureMatcher.match(event: record.event, using: coderFactory) {
-                return .outcome(.present(false))
+                let reason = errorDecoder
+                    .decode(errorParams: record.event.params, using: coderFactory)
+                    .map(Self.describe)
+
+                return .outcome(.present(.failed(reason: reason)))
             }
         }
 
         // Applied, but neither outcome event is present — the block was read and still says nothing.
         return .outcome(.failedRead)
+    }
+
+    /// The chain's own name for the failure where the metadata yields one, falling back to the raw
+    /// module and error indices so an undecodable variant still identifies itself in a log.
+    static func describe(_ error: Substrate.DispatchCallError) -> String {
+        switch error {
+        case let .module(moduleError):
+            "\(moduleError.display.moduleName).\(moduleError.display.errorName)"
+        case let .other(other):
+            [other.module, other.reason].compactMap { $0 }.joined(separator: ".")
+        }
     }
 }
 

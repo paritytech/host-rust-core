@@ -11,12 +11,15 @@ import okhttp3.OkHttpClient
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import uniffi.truapi_platform.AuthState
+import uniffi.truapi.AuthState
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_platform.PermissionDecision
-import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi.PermissionDecision
+import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -84,8 +87,14 @@ class TrUAPIDiagnosticsTest {
                 synchronized(authStates) { authStates.add(state) }
             }
             override suspend fun navigateTo(url: String) = onCoreLog("truapi.host.navigate_to", url)
-            override suspend fun devicePermission(request: HostDevicePermissionRequest): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
-            override suspend fun remotePermission(request: RemotePermission): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
+            override suspend fun devicePermission(
+                product: ProductExecutionConfig,
+                request: HostDevicePermissionRequest,
+            ): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
+            override suspend fun remotePermission(
+                product: ProductExecutionConfig,
+                request: RemotePermission,
+            ): PermissionDecision = PermissionDecision.ALLOW_ALWAYS
             override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean = true
             override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean = false
             override fun chainConnect(genesisHash: ByteArray): UInt? = chainProvider.connect(genesisHash)

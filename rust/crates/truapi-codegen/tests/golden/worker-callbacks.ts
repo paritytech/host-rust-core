@@ -3,7 +3,7 @@
 // Worker-side metadata and proxy functions for the raw WASM callback
 // surface. The worker transport/lifecycle remains hand-written; this
 // file owns the callback names, host-hook arity, and
-// subscription payload shape derived from `truapi-platform`.
+// subscription payload shape derived from the `platform` modules.
 
 import type { RawCallbacks } from "./host-callbacks-adapter.js";
 import type { GenericError } from "@parity/truapi";
@@ -15,6 +15,8 @@ export const CALLBACK_NAMES = [
   "createChatRoom",
   "registerChatBot",
   "postChatMessage",
+  "contacts",
+  "pickContact",
   "readCoreStorage",
   "writeCoreStorage",
   "clearCoreStorage",
@@ -123,14 +125,16 @@ function rawCallbacks(
       bridge.callbackRequest("cancelNotification", [id]) as ReturnType<
         Required<RawCallbacks>["cancelNotification"]
       >,
-    devicePermission: (request) =>
-      bridge.callbackRequest("devicePermission", [request]) as ReturnType<
-        Required<RawCallbacks>["devicePermission"]
-      >,
-    remotePermission: (request) =>
-      bridge.callbackRequest("remotePermission", [request]) as ReturnType<
-        Required<RawCallbacks>["remotePermission"]
-      >,
+    devicePermission: (product, request) =>
+      bridge.callbackRequest("devicePermission", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["devicePermission"]>,
+    remotePermission: (product, request) =>
+      bridge.callbackRequest("remotePermission", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["remotePermission"]>,
     beginOperation: (product, label) =>
       bridge.callbackRequest("beginOperation", [product, label]) as ReturnType<
         Required<RawCallbacks>["beginOperation"]
@@ -219,6 +223,21 @@ function chatRawCallbacks(
   };
 }
 
+function contactsRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "contacts" | "pickContact">> {
+  return {
+    contacts: (lookup) =>
+      bridge.callbackRequest("contacts", [lookup]) as ReturnType<
+        Required<RawCallbacks>["contacts"]
+      >,
+    pickContact: (product) =>
+      bridge.callbackRequest("pickContact", [product]) as ReturnType<
+        Required<RawCallbacks>["pickContact"]
+      >,
+  };
+}
+
 function gameRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<Pick<RawCallbacks, "scheduleGameReminder" | "cancelGameReminder">> {
@@ -274,6 +293,8 @@ export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   chat?: boolean;
   /** Whether the host serves this capability. */
+  contacts?: boolean;
+  /** Whether the host serves this capability. */
   game?: boolean;
   /** Whether the host serves this capability. */
   permissionStatus?: boolean;
@@ -291,6 +312,8 @@ export function createWorkerRawCallbacks(
     chainConnect: bridge.chainConnect,
   };
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
+  if (capabilities.contacts)
+    Object.assign(callbacks, contactsRawCallbacks(bridge));
   if (capabilities.game) Object.assign(callbacks, gameRawCallbacks(bridge));
   if (capabilities.permissionStatus)
     Object.assign(callbacks, permissionStatusRawCallbacks(bridge));

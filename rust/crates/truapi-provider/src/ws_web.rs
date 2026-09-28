@@ -11,10 +11,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use std::rc::Rc;
 use std::sync::Mutex;
 
+use crate::platform::JsonRpcConnection;
 use futures::channel::{mpsc, oneshot};
 use futures::stream::{BoxStream, StreamExt};
 use send_wrapper::SendWrapper;
-use truapi_platform::JsonRpcConnection;
 use url::Url;
 
 use crate::error::ProviderError;
@@ -36,7 +36,7 @@ type SocketCallbacks = (
 type StagedSocket = SendWrapper<(WebSocket, SocketCallbacks)>;
 
 /// Open a browser WebSocket connection to `url`.
-pub(crate) async fn connect(url: Url) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
+pub async fn connect(url: Url) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
     let (staged, handshake_rx, responses_tx, responses_rx) = open_socket(&url)?;
 
     match handshake_rx.await {

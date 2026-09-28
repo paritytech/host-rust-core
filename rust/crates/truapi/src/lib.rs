@@ -2,14 +2,34 @@
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
 )]
+// The pairing-flow future nests the chain, SSO and identity futures deeply
+// enough that proving the tree's auto traits exceeds the default limit.
+#![recursion_limit = "256"]
 #![doc = include_str!("../README.md")]
-//! TrUAPI trait and type definitions for the host product SDK.
+//! TrUAPI trait and type definitions for the host product SDK, and the runtime
+//! hosts embed (feature `runtime`, on by default).
 //!
 //! Concrete wire types live in per-version modules. Versioned envelopes are in
 //! [`versioned`].
 //! Async API traits use the `async_trait` macro so their concise `async fn` methods
 //! still guarantee `Send` futures. Implementations must annotate their impl
 //! blocks with `#[truapi::async_trait]`.
+//!
+//! The runtime: hosts instantiate a role runtime around a `platform::Platform`
+//! implementation, then create product-scoped `ProductRuntime` endpoints that
+//! expose the stable byte-frame API used from WASM, native mobile, or desktop
+//! shells. Host-facing bridges:
+//! - `ws_bridge` (feature `ws-bridge`): localhost WebSocket bridge for
+//!   native WebView hosts (Android/iOS).
+//! - `bootstrap`: the JavaScript those hosts inject to reach that bridge.
+//! - `native`: UniFFI surface exposing the native host runtime + callbacks.
+//! - `wasm` (wasm32 only): wasm-bindgen surface exposing `WasmProductRuntime`.
+//! - `native_debug` (non-wasm32 only): a loopback WebSocket `DebugSink` that
+//!   streams tapped frames to the `@parity/truapi-debugger` app.
+
+// Runtime code, the generated dispatcher and the macros all name this crate
+// `truapi`, the way code outside it does.
+extern crate self as truapi;
 
 use core::convert::Infallible;
 use core::fmt;
@@ -36,10 +56,10 @@ pub mod versioned;
 /// version.
 pub type Bytes32 = [u8; 32];
 
-#[cfg(feature = "uniffi")]
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 uniffi::setup_scaffolding!();
 
-#[cfg(feature = "uniffi")]
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 uniffi::custom_type!(Bytes32, Vec<u8>, {
     remote,
     lower: |bytes| bytes.to_vec(),
@@ -52,25 +72,26 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode,
-        BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction,
-        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
-        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoom, ChatRoomParticipation,
-        ChatRoomRegistrationStatus, ColorToken, ColumnProps, ContentAlignment, ContextualAlias,
-        DerivationIndex, Dimensions, Effect, EffectProps, GenericError, HorizontalAlignment,
-        HostAccountCreateProofRequest, HostAccountGetAliasRequest,
-        HostAccountListRingVrfKeysRequest, HostAccountRegisterRingVrfKeyRequest,
-        HostAccountRingVrfSignRequest, HostAccountSignVrfError, HostAccountSignVrfRequest,
-        HostPlatform, HostSignPayloadData, HostWorkerOperationError, ImageFit, ImageProps,
-        ImageSource, Modifier, NotificationId, OperationId, OperationStartedResult, PocketCard,
-        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
-        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
-        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
-        RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
-        RingVrfKeyDisclosure, RingVrfPublicKey, RowProps, RuntimeApi, RuntimeSpec, RuntimeType,
-        Shape, SignedStatement, Size, Statement, StatementProof, StorageQueryItem,
-        StorageQueryType, StorageResultItem, TextFieldProps, TextProps, ThemeName, ThemeVariant,
-        TxPayloadExtension, TypographyStyle, VerticalAlignment, VrfSignature,
+        AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode, BorderStyle,
+        BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction, ChatActionLayout,
+        ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile, ChatMedia,
+        ChatMessageContent, ChatReaction, ChatRichText, ChatRoom, ChatRoomParticipation,
+        ChatRoomRegistrationStatus, ColorToken, ColumnProps, ContactHandle, ContactPickOutcome,
+        ContentAlignment, ContextualAlias, DerivationIndex, Dimensions, Effect, EffectProps,
+        GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
+        HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
+        HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
+        HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
+        HostWorkerOperationError, ImageFit, ImageProps, ImageSource, Modifier,
+        OperationStartedResult, PocketCard, ProductAccountId, ProductProofContext, RawPayload,
+        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
+        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
+        RendererNode, RingLocation, RingLocationJunction, RingVrfKeyDisclosure, RowProps,
+        RuntimeApi, RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement,
+        StatementProof, StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps,
+        TextProps, ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
+        VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -109,6 +130,12 @@ pub mod latest {
         LatestOf<versioned::renderer::ProductRendererRenderRequest>;
     /// Product-to-host renderer tree.
     pub type ProductRendererRenderItem = LatestOf<versioned::renderer::ProductRendererRenderItem>;
+    /// Contact picker request.
+    pub type HostContactsPickRequest = LatestOf<versioned::contacts::HostContactsPickRequest>;
+    /// Contact picker outcome.
+    pub type HostContactsPickResponse = LatestOf<versioned::contacts::HostContactsPickResponse>;
+    /// Contact picker failure.
+    pub type HostContactsPickError = LatestOf<versioned::contacts::HostContactsPickError>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;
@@ -235,9 +262,6 @@ pub use truapi_macros::{service, wire, wire_trait};
 /// codegen stamps it into the generated clients, so every peer derives it
 /// from here.
 pub const WIRE_CODEC_VERSION: u8 = 3;
-
-/// Per-message id carried from the transport frame.
-pub type RequestId = String;
 
 /// Framework-level outcomes shared by API methods.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -428,14 +452,14 @@ impl Drop for CancellationFuture {
 /// Ambient context passed to every trait method.
 #[derive(Clone, Default)]
 pub struct CallContext {
-    request_id: RequestId,
+    request_id: String,
     cancel: CancellationToken,
     timeout: Option<Duration>,
 }
 
 impl CallContext {
     /// Construct a context bound to the given `request_id` with a fresh cancellation token.
-    pub fn with_request_id(request_id: RequestId) -> Self {
+    pub fn with_request_id(request_id: String) -> Self {
         Self {
             request_id,
             cancel: CancellationToken::default(),
@@ -444,7 +468,7 @@ impl CallContext {
     }
 
     /// Construct a context from explicit `request_id` and `cancel` parts.
-    pub fn with_parts(request_id: RequestId, cancel: CancellationToken) -> Self {
+    pub fn with_parts(request_id: String, cancel: CancellationToken) -> Self {
         Self {
             request_id,
             cancel,
@@ -515,6 +539,98 @@ impl<Item, Interrupt> Subscription<Item, Interrupt> {
     {
         Self::new(futures::stream::once(core::future::ready(Err(interrupt))))
     }
+}
+
+/// Applies `#[cfg(feature = "runtime")]` to every item it wraps.
+macro_rules! runtime_items {
+    ($($item:item)*) => { $( #[cfg(feature = "runtime")] $item )* };
+}
+
+runtime_items! {
+    pub mod bootstrap;
+    mod chain_runtime;
+    mod truapi_core;
+    mod dispatcher;
+    mod dotns_views;
+    mod dynamic_vrf;
+    pub mod frame;
+    mod host_core;
+    mod host_internal;
+    pub mod host_logic;
+    mod host_rpc_client;
+    mod interrupt;
+    pub mod logging;
+    pub mod platform;
+    mod protocol_error;
+    mod runtime;
+    mod session_usernames;
+    pub mod subscription;
+    pub mod transport;
+
+    #[cfg(test)]
+    mod test_support;
+    mod unix_time;
+
+    // Dispatch must keep serving deprecated APIs while clients migrate.
+    #[allow(deprecated)]
+    pub mod generated;
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+    mod ws_bridge;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod native;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    mod native_renderer;
+
+    #[cfg(target_arch = "wasm32")]
+    pub mod wasm;
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
+    pub mod native_debug;
+
+    pub use truapi_core::TrUApiCore;
+    pub use host_core::{
+        ChannelId, DebugEvent, DebugSink, FrameDirection, FrameSink, HostAdmin, PairingHostRuntime,
+        ProductRuntime, ProductRuntimeControl, ProductRuntimeError, SigningHostRuntime,
+    };
+    pub use host_logic::session::{
+        ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
+    };
+    pub use host_logic::worker::{WorkerLedger, WorkerTransition};
+    #[cfg(all(not(target_arch = "wasm32"), feature = "debug-sink"))]
+    pub use native_debug::{DebugSinkError, WsDebugSink};
+    pub use platform::{
+        CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostIdentity, PairingHostConfig,
+        PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform, ProductContext,
+        SigningHostConfig, describe_core_storage_key,
+    };
+    pub use runtime::StatementRenewalTarget;
+    pub use runtime::contacts::contact_handle;
+    pub use runtime::login_failure::reports_exhausted_period;
+    pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
+    pub use runtime::statement_allowance;
+    pub use runtime::{
+        AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
+        PairingProposal, PairingProposalMetadata, ResponderExit,
+    };
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+    pub use ws_bridge::{WsBridgeEndpoint, WsBridgeStartError};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use native_renderer::{NativeRendererObserver, NativeRendererSubscription};
+
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-signing-host"))]
+    pub use wasm::WasmSigningHostRuntime;
+    #[cfg(target_arch = "wasm32")]
+    pub use wasm::{
+        WasmPairingHostRuntime, WasmProductRuntime, WasmRendererSubscription,
+        derive_product_account_public_key, describe_core_storage_key_for_wasm,
+        has_trusted_remote_permissions_for_wasm, product_account_address, set_log_level,
+        wire_schema_hash,
+    };
 }
 
 #[cfg(test)]

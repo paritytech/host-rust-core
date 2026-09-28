@@ -7,6 +7,8 @@ import TrUAPIHost
 
 // MARK: - Helpers
 
+private let testProduct = ProductExecutionConfig(productId: "host.product", executionKind: .app)
+
 private func makeHostDefaults() -> UserDefaults {
     UserDefaults(suiteName: "io.polkadotapp.tests.truapi-host-bridge") ?? .standard
 }
@@ -63,7 +65,7 @@ struct RustHostRuntimeBridgeTests {
     @Test func navigateToRejects() async {
         let bridge = makeHostBridge()
 
-        await #expect(throws: HostNavigateRejection.self) {
+        await #expect(throws: HostNavigateToError.self) {
             try await bridge.navigateTo(url: "https://example.com")
         }
     }
@@ -88,8 +90,8 @@ struct RustHostRuntimeBridgeTests {
     @Test func permissionsDenyAtHostLevel() async throws {
         let bridge = makeHostBridge()
 
-        let device = try await bridge.devicePermission(request: .camera)
-        let remote = try await bridge.remotePermission(request: .webRtc)
+        let device = try await bridge.devicePermission(product: testProduct, request: .camera)
+        let remote = try await bridge.remotePermission(product: testProduct, request: .webRtc)
 
         #expect(device == .deny)
         #expect(remote == .deny)

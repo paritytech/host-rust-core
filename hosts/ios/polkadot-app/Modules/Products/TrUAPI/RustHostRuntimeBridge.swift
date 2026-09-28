@@ -49,14 +49,20 @@ final class RustHostRuntimeBridge: HostBridge, @unchecked Sendable {
     }
 
     func navigateTo(url: String) async throws {
-        throw HostNavigateRejection.Navigate(.unknown(reason: "navigation unavailable at host level: \(url)"))
+        throw HostNavigateToError.Unknown(reason: "navigation unavailable at host level: \(url)")
     }
 
-    func devicePermission(request _: HostDevicePermissionRequest) async throws -> TrUAPIPermissionDecision {
+    func devicePermission(
+        product _: ProductExecutionConfig,
+        request _: HostDevicePermissionRequest
+    ) async throws -> TrUAPIPermissionDecision {
         .deny
     }
 
-    func remotePermission(request _: RemotePermission) async throws -> TrUAPIPermissionDecision {
+    func remotePermission(
+        product _: ProductExecutionConfig,
+        request _: RemotePermission
+    ) async throws -> TrUAPIPermissionDecision {
         .deny
     }
 

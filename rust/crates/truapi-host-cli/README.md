@@ -1,6 +1,6 @@
 # truapi-host-cli
 
-Headless TrUAPI hosts for local end-to-end testing, built on `truapi-server`.
+Headless TrUAPI hosts for local end-to-end testing, built on `truapi`.
 They replace the external signing-bot service: two CLI processes take the two
 host-spec §B roles and pair over the **real People-chain statement store** (the
 same node an iOS/web client uses), so tests run against a real signer with no
@@ -126,6 +126,9 @@ by `make headless` or `make cli-runner`. To build and install the CLI yourself:
 make headless install  # build dependencies and install truapi-host once
 truapi-host signing-host
 ```
+
+Requires stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and Bun. The target installs missing workspace
+build tools and regenerates Rust and TypeScript sources on every run, including after updating an existing checkout.
 
 ### Raw proof contexts (development only)
 
@@ -745,6 +748,13 @@ Scripts under `js/scripts/` include:
   The CLI holds Game reminders in memory for the length of the process, on
   every execution kind.
 
+  Contacts are served on every phase, from `TRUAPI_CONTACTS`
+  (`alice=0x<32-byte account>;bob=0x…`) or, unset, from a two-name development
+  list so `contacts.pick` has someone to return. An empty spec is an empty list,
+  which is what answers `NoContacts`. `TRUAPI_CONTACT_PICK` names which contact
+  the picker offers; the approval surface asks about it like any other action,
+  so a headless run approves it and an interactive one does not.
+
   The paired phase gives its pairing host a throwaway `--base-path` under
   `target/battery/pairing-host-state`, so it performs a real handshake on every
   run. A pairing host that restores an earlier session reports
@@ -852,6 +862,36 @@ level when `RUST_LOG` is absent; otherwise it shows the exact `RUST_LOG` value.
 `--log-level` and `/log` apply to TrUAPI targets while other third-party
 dependencies remain at `warn`.
 
+## Wire debugger
+
+`--debugger <URL>` streams every product frame this host sends or receives to a
+[`@parity/truapi-debugger`](../../../js/packages/truapi-debugger) listening on a
+loopback `ws://` address. `TRUAPI_DEBUGGER_URL` sets the same value; an explicit
+flag wins over it.
+
+```bash
+# in one shell
+( cd js/packages/truapi-debugger && npm run serve )   # 127.0.0.1:9231
+
+# in another
+truapi-host dev --debugger ws://127.0.0.1:9231 -- yarn dev
+```
+
+The switch is meaningful only on the commands that serve frames: `pairing-host`,
+`dev` and `signing-host`. A URL that is not loopback fails startup rather than
+warning, since a host that runs on without the debugger it was asked for looks,
+from the debugger's side, exactly like a host nobody switched on. Starting the
+debugger after the host is fine: the sink dials lazily and reconnects.
+
+Every run says which way it went, either `Streaming wire frames to a debugger`,
+naming the endpoint and the switch clap read it from, or `Wire debugger off`.
+That report is the reason the flag needs no build gate: a stale exported
+`TRUAPI_DEBUGGER_URL` cannot tap a session quietly.
+
+Frames are forwarded whole and the debugger decodes all of them, so a tapped
+signing host puts its payloads on that socket. Point it at a debugger you are
+running yourself.
+
 ## Statement-store allowance
 
 The real statement store enforces per-account allowance. Before pairing, the
@@ -860,7 +900,7 @@ personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
 General (v5) `Resources.set_statement_store_account` extrinsic for each account
 that submits statements — its RFC-0022 `uid.<tld>` identity account and the
 pairing host's per-pairing device key. The shared native implementation lives in
-`truapi-server/src/runtime/statement_allowance/` (metadata-driven
+`truapi/src/runtime/statement_allowance/` (metadata-driven
 signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
 assembly, submit). The signing account must be an attested member of at least
 one personhood collection, and may sit in an old ring, so the signing host scans
