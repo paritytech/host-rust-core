@@ -315,15 +315,6 @@ pub enum LocalTransactionError {
     Other(String),
 }
 
-impl From<V5BuildError> for LocalTransactionError {
-    fn from(error: V5BuildError) -> Self {
-        match error {
-            V5BuildError::UnsupportedExtensions(reason) => Self::UnsupportedExtensions(reason),
-            V5BuildError::Other(reason) => Self::Other(reason),
-        }
-    }
-}
-
 /// Assemble a transaction locally from caller-supplied, pre-encoded parts,
 /// against the runtime metadata of the genesis-pinned Subxt client.
 pub async fn build_local_transaction(
@@ -380,14 +371,14 @@ pub fn build_signed_transaction(
     if tx_ext_version == 0 && !declares_verify_multi_signature(&metadata, 0)? {
         return Ok(build_signed_extrinsic_v4(signer, call_data, extensions));
     }
-    Ok(build_signed_extrinsic_v5(
+    build_signed_extrinsic_v5(
         signer,
         genesis_hash,
         call_data,
         extensions,
         tx_ext_version,
         metadata,
-    )?)
+    )
 }
 
 /// Whether the given transaction extension version includes `VerifyMultiSignature`.
@@ -404,17 +395,6 @@ fn declares_verify_multi_signature(
         .extension_ids
         .iter()
         .any(|declared| declared.name == verify_multi_signature))
-}
-
-/// Why a V5 transaction could not be assembled.
-#[derive(Debug, derive_more::Display)]
-pub enum V5BuildError {
-    /// The caller's extension list does not fit the runtime's pipeline.
-    #[display("{_0}")]
-    UnsupportedExtensions(String),
-    /// Any other assembly failure.
-    #[display("{_0}")]
-    Other(String),
 }
 
 /// Whether a type encodes to zero bytes, mirroring the private `is_type_empty`
@@ -438,16 +418,16 @@ fn traverse_exactly<R: TypeResolver>(
     type_id: R::TypeId,
     types: &R,
     what: &str,
-) -> Result<(), V5BuildError> {
+) -> Result<(), LocalTransactionError> {
     let mut cursor = bytes;
     decode_with_visitor(&mut cursor, type_id, types, IgnoreVisitor::new()).map_err(|error| {
-        V5BuildError::UnsupportedExtensions(format!(
+        LocalTransactionError::UnsupportedExtensions(format!(
             "supplied {what} ({} byte(s)) does not decode: {error}",
             bytes.len()
         ))
     })?;
     if !cursor.is_empty() {
-        return Err(V5BuildError::UnsupportedExtensions(format!(
+        return Err(LocalTransactionError::UnsupportedExtensions(format!(
             "supplied {what} has {} trailing byte(s)",
             cursor.len()
         )));
@@ -474,8 +454,8 @@ pub fn build_signed_extrinsic_v5(
     extensions: &[TxPayloadExtension],
     transaction_extension_version: u8,
     metadata: ArcMetadata,
-) -> Result<Vec<u8>, V5BuildError> {
-    let other = V5BuildError::Other;
+) -> Result<Vec<u8>, LocalTransactionError> {
+    let other = LocalTransactionError::Other;
     let (&pallet_index, rest) = call_data
         .split_first()
         .ok_or_else(|| other("V5 call data is missing its pallet index".to_string()))?;
@@ -519,7 +499,7 @@ pub fn build_signed_extrinsic_v5(
     let mut seen_ids = BTreeSet::new();
     for extension in extensions {
         if !seen_ids.insert(extension.id.as_str()) {
-            return Err(V5BuildError::UnsupportedExtensions(format!(
+            return Err(LocalTransactionError::UnsupportedExtensions(format!(
                 "transaction extension {:?} is listed more than once; every \
                  reader takes the first entry, so the rest would be dropped in \
                  silence",
@@ -527,7 +507,7 @@ pub fn build_signed_extrinsic_v5(
             )));
         }
         if !declared_at_any_version.contains(extension.id.as_str()) {
-            return Err(V5BuildError::UnsupportedExtensions(format!(
+            return Err(LocalTransactionError::UnsupportedExtensions(format!(
                 "transaction extension {:?} is not declared by the runtime at \
                  any pipeline version; encoding uses version \
                  {transaction_extension_version}, and the declared names across \
@@ -562,7 +542,7 @@ pub fn build_signed_extrinsic_v5(
         // encoded has no slot to put their bytes in. Silently dropping the one
         // extension that authorizes the transaction is not a safe default.
         (Some(_), None) => {
-            return Err(V5BuildError::UnsupportedExtensions(format!(
+            return Err(LocalTransactionError::UnsupportedExtensions(format!(
                 "pipeline version {transaction_extension_version} does not declare \
                  {verify_multi_signature}, so the supplied value cannot authorize \
                  this transaction"
@@ -573,7 +553,7 @@ pub fn build_signed_extrinsic_v5(
         // host's signature has nowhere to go. Returning the transaction anyway
         // hands back one that carries no authorization at all.
         (None, None) => {
-            return Err(V5BuildError::UnsupportedExtensions(format!(
+            return Err(LocalTransactionError::UnsupportedExtensions(format!(
                 "pipeline version {transaction_extension_version} does not declare \
                  {verify_multi_signature}, so the host cannot authorize this \
                  transaction"
@@ -659,7 +639,7 @@ pub fn build_signed_extrinsic_v5(
         &extension_info,
         &mut transaction,
     )
-    .map_err(|error| V5BuildError::Other(format!("V5 transaction: {error}")))?;
+    .map_err(|error| LocalTransactionError::Other(format!("V5 transaction: {error}")))?;
     Ok(transaction)
 }
 
