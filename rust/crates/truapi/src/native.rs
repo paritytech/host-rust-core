@@ -188,6 +188,12 @@ pub enum NativeRuntimeConfigError {
         /// Which field was refused, and why.
         reason: String,
     },
+    /// The core runtime's worker threads could not be started.
+    #[error("core runtime unavailable: {reason}")]
+    RuntimeUnavailable {
+        /// Why the runtime failed to start.
+        reason: String,
+    },
     /// Local signing-host session activation failed.
     #[error("failed to activate local signing session: {reason}")]
     LocalSessionActivation {
@@ -710,13 +716,30 @@ impl NativeTrUApiHostRuntime {
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         crate::logging::init();
         callbacks.on_core_log(log_marker.to_string(), log_detail.to_string());
+        let (executor, initialized) =
+            crate::native_executor::shared_native_executor().map_err(|err| {
+                NativeRuntimeConfigError::RuntimeUnavailable {
+                    reason: err.to_string(),
+                }
+            })?;
+        let core = executor.handle();
+        if initialized {
+            callbacks.on_core_log(
+                "truapi.native.executor.started".to_string(),
+                format!(
+                    "runtime_id={} worker_threads={}",
+                    core.id(),
+                    executor.worker_threads()
+                ),
+            );
+        }
         let events = Arc::new(NativeEventBus::default());
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
             storage_events: events.clone(),
         });
-        let spawner = native_spawner(&callbacks);
+        let spawner = native_spawner(&core);
         let runtime = Arc::new(SigningHostRuntime::new(
             platform.clone(),
             runtime_config.signing,
@@ -1597,34 +1620,12 @@ pub fn set_log_level(level: String) {
     crate::logging::set_level_from_str(&level);
 }
 
-/// Spawns core tasks on the process-wide runtime. If that runtime cannot
-/// start, each task gets its own thread.
-fn native_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
-    match crate::native_executor::shared_native_executor() {
-        Ok((executor, initialized)) => {
-            let handle = executor.handle();
-            if initialized {
-                callbacks.on_core_log(
-                    "truapi.native.executor.started".to_string(),
-                    format!(
-                        "runtime_id={} worker_threads={}",
-                        handle.id(),
-                        executor.worker_threads()
-                    ),
-                );
-            }
-            Arc::new(move |fut: BoxFuture<'static, ()>| {
-                handle.spawn(fut);
-            })
-        }
-        Err(err) => {
-            callbacks.on_core_log(
-                "truapi.native.core.subscription.runtime_unavailable".to_string(),
-                format!("{err}; falling back to thread-per-subscription"),
-            );
-            crate::subscription::thread_per_subscription_spawner()
-        }
-    }
+/// Spawns core tasks on the process-wide runtime.
+fn native_spawner(core: &tokio::runtime::Handle) -> Spawner {
+    let core = core.clone();
+    Arc::new(move |fut: BoxFuture<'static, ()>| {
+        core.spawn(fut);
+    })
 }
 
 struct CallbackPlatform {
@@ -2450,8 +2451,8 @@ mod tests {
     /// from a thread outside any runtime, such as a host thread.
     #[test]
     fn native_spawner_runs_core_work_on_the_shared_tokio_runtime() {
-        let callbacks: Arc<dyn HostCallbacks> = Arc::new(EventCallbacks::new());
-        let spawner = native_spawner(&callbacks);
+        let (shared, _) = crate::native_executor::shared_native_executor().unwrap();
+        let spawner = native_spawner(&shared.handle());
         let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
 
         spawner(
@@ -2465,7 +2466,6 @@ mod tests {
         let ran_on = runtime_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("spawned core work never ran");
-        let (shared, _) = crate::native_executor::shared_native_executor().unwrap();
         assert_eq!(ran_on, Some(shared.handle().id()));
     }
 
