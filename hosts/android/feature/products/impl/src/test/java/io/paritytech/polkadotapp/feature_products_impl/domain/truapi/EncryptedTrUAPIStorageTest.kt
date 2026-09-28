@@ -9,7 +9,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import uniffi.truapi_server.HostStorageException
+import uniffi.truapi.HostLocalStorageReadException
 
 class EncryptedTrUAPIStorageTest {
     private val prefs = FakeEncryptedPreferences()
@@ -31,7 +31,7 @@ class EncryptedTrUAPIStorageTest {
 
         val failure = runCatching { storage.write("k", byteArrayOf(9)) }.exceptionOrNull()
 
-        assertTrue("expected HostStorageException, got $failure", failure is HostStorageException)
+        assertTrue("expected HostLocalStorageReadException, got $failure", failure is HostLocalStorageReadException)
     }
 
     @Test

@@ -181,7 +181,7 @@ asset before pushing, so a tag that cannot be resolved is never published.
 
 `@parity/android-host <version>` publishes the Android host AAR as
 `io.parity:truapi-host-android:<version>` to GitHub Packages. The job
-cross-compiles `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64,
+cross-compiles `libtruapi.so` for arm64-v8a, armeabi-v7a and x86_64,
 regenerates the UniFFI Kotlin bindings from the same source, and publishes the
 AAR with the native libraries inside it, so consumers need only Gradle. Nothing
 in the tree records the Android version, so there is no manifest to bump: the

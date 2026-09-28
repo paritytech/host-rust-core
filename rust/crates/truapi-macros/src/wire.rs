@@ -66,7 +66,7 @@ impl Parse for WireArgs {
 }
 
 /// Parse the macro input and emit generated code or a compiler diagnostic.
-pub(super) fn expand(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn expand(args: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as WireArgs);
     let tags = wire_tags(&args);
 
@@ -130,7 +130,7 @@ impl Parse for WireTraitArgs {
 }
 
 /// Parse `#[wire_trait(id = N)]` and re-emit the trait with its hidden tag.
-pub(super) fn expand_trait(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn expand_trait(args: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as WireTraitArgs);
     let tag = format!("@wire_trait_id={}", args.id);
 

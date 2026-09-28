@@ -77,7 +77,7 @@ make build    # Rust workspace + TypeScript client
 ```
 
 The generated Rust, TypeScript and Swift outputs are git-ignored, so a fresh
-checkout has none of them and `truapi-server` does not compile until they
+checkout has none of them and the `truapi` runtime does not compile until they
 exist. `make setup` produces them; `make codegen` regenerates them on their
 own.
 
@@ -97,7 +97,7 @@ make playground   # rebuild the playground against the refreshed snapshot
 make test     # Rust + TypeScript client tests
 make check    # full suite: build, fmt, clippy, test, TS tests, playground build + lint
 ```
-Every target that compiles `truapi-server` depends on `check-generated`, so a
+Every target that compiles the `truapi` runtime depends on `check-generated`, so a
 missing generated file names itself and points at `make codegen` instead of
 failing inside rustc.
 

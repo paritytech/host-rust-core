@@ -17,7 +17,7 @@ from pathlib import Path
 REPO = "https://github.com/paritytech/host-rust-core.git"
 ACTION = Path(".github/actions/install/action.yaml")
 # The same directory settings.gradle.kts probes to decide the checkout is real.
-MARKER = Path("rust/crates/truapi-server")
+MARKER = Path("rust/crates/truapi")
 
 
 def fail(message):

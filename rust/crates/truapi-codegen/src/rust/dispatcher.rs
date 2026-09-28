@@ -18,7 +18,7 @@
 //! registered for that `requestId` and threads it into its `CallContext`, so a
 //! `Cancel` frame reaches the trait method.
 //!
-//! The generated file expects to live inside a `truapi-server` crate
+//! The generated file expects to live inside a `truapi` crate
 //! and references `crate::dispatcher::Dispatcher`. The codegen itself
 //! does not compile the output; string-diff golden tests guard it.
 
@@ -143,7 +143,7 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<String> {
 /// `renderer_render`). Its `Start` payload is the request wrapper's own
 /// encoding, sent immediately rather than registered against the dispatcher;
 /// the product's `Receive`/`Interrupt` replies are routed back by
-/// [`HostInitiatedSubscriptionManager`].
+/// `HostInitiatedSubscriptionManager`.
 fn write_host_initiated_callers(
     out: &mut String,
     api: &ApiDefinition,
@@ -191,7 +191,7 @@ fn write_host_initiated_callers(
                 r#"
 
                 /// Start the host-initiated `{wire_name}` subscription.
-                pub(crate) fn {wire_name}(
+                pub fn {wire_name}(
                     subscriptions: &HostInitiatedSubscriptionManager,
                     transport: Arc<dyn Transport>,
                     request: {request_path},
@@ -683,7 +683,7 @@ fn write_imports(out: &mut String, traits: &[&TraitDef]) {
         r#"
         }};
         use truapi::versioned::{{self, Versioned}};
-        use truapi_platform::ProductExecutionKind;
+        use crate::platform::ProductExecutionKind;
 
         use crate::dispatcher::Dispatcher;
         use crate::frame::downgrade_call_error;
