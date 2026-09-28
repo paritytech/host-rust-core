@@ -528,38 +528,6 @@ impl<Item, Interrupt> Subscription<Item, Interrupt> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn call_context_timeout_can_be_set_and_replaced() {
-        let default = Duration::from_secs(180);
-        let explicit = Duration::from_millis(25);
-
-        let mut cx = CallContext::with_request_id("request-1".to_string());
-        assert_eq!(cx.timeout(), None);
-        cx.set_timeout(default);
-        assert_eq!(cx.timeout(), Some(default));
-
-        cx.set_timeout(explicit);
-        assert_eq!(cx.timeout(), Some(explicit));
-    }
-
-    #[test]
-    fn cancellation_token_clones_share_cancellation() {
-        let token = CancellationToken::default();
-        let cloned = token.clone();
-        let wait = cloned.cancelled();
-
-        token.cancel();
-
-        let reason = futures::executor::block_on(wait);
-        assert_eq!(reason, CancellationReason::Cancelled);
-        assert!(cloned.is_cancelled());
-    }
-}
-
 /// Applies `#[cfg(feature = "runtime")]` to every item it wraps.
 macro_rules! runtime_items {
     ($($item:item)*) => { $( #[cfg(feature = "runtime")] $item )* };
@@ -649,4 +617,36 @@ runtime_items! {
         has_trusted_remote_permissions_for_wasm, product_account_address, set_log_level,
         wire_schema_hash,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_context_timeout_can_be_set_and_replaced() {
+        let default = Duration::from_secs(180);
+        let explicit = Duration::from_millis(25);
+
+        let mut cx = CallContext::with_request_id("request-1".to_string());
+        assert_eq!(cx.timeout(), None);
+        cx.set_timeout(default);
+        assert_eq!(cx.timeout(), Some(default));
+
+        cx.set_timeout(explicit);
+        assert_eq!(cx.timeout(), Some(explicit));
+    }
+
+    #[test]
+    fn cancellation_token_clones_share_cancellation() {
+        let token = CancellationToken::default();
+        let cloned = token.clone();
+        let wait = cloned.cancelled();
+
+        token.cancel();
+
+        let reason = futures::executor::block_on(wait);
+        assert_eq!(reason, CancellationReason::Cancelled);
+        assert!(cloned.is_cancelled());
+    }
 }

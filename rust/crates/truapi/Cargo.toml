@@ -11,6 +11,8 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = [
     "-Oz",
+    "--one-caller-inline-max-function-size",
+    "0",
     "--enable-bulk-memory",
     "--enable-nontrapping-float-to-int",
     "--enable-reference-types",
@@ -74,7 +76,7 @@ wasm-signing-host = ["runtime"]
 # resource allocation as granted without allocating anything.
 test-host = ["runtime"]
 debug-sink = ["runtime", "dep:tokio", "dep:tokio-tungstenite", "dep:base64"]
-ws-bridge = ["debug-sink", "dep:rand"]
+ws-bridge = ["debug-sink", "dep:rand", "dep:libc"]
 # In-memory `MockPlatform` for tests and host simulators.
 mock = ["runtime"]
 
@@ -122,8 +124,9 @@ verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b0
 truapi-verifiable = { path = "../truapi-verifiable", optional = true }
 futures = { workspace = true, features = ["thread-pool"] }
 rand = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"], optional = true }
-tokio-tungstenite = { version = "0.21", default-features = false, features = ["handshake"], optional = true }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
 uniffi = { workspace = true, optional = true }
 subxt = { workspace = true, features = ["native"], optional = true }
 subxt-rpcs = { workspace = true, features = ["jsonrpsee", "native"], optional = true }
@@ -145,6 +148,26 @@ web-sys = { workspace = true, features = ["console"], optional = true }
 scale-info = { workspace = true, features = ["std"] }
 
 [[test]]
+name = "device_permission_revalidation"
+required-features = ["runtime"]
+
+[[test]]
+name = "golden_frame"
+required-features = ["runtime"]
+
+[[test]]
+name = "platform_bounds"
+required-features = ["runtime"]
+
+[[test]]
+name = "wasm_crypto_vectors"
+required-features = ["runtime"]
+
+[[test]]
+name = "wire_result_shape"
+required-features = ["runtime"]
+
+[[test]]
 name = "signing_host_mock_platform"
 required-features = ["mock"]
 
@@ -153,7 +176,10 @@ wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
-tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "handshake"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dev-dependencies]
+socket2 = { workspace = true }
 
 [lints]
 workspace = true

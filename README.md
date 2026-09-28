@@ -325,6 +325,10 @@ A visible page retries a failed reconnect after 250 ms, 1 s and 4 s; after that,
 call or return to a visible page tries again.
 On iOS the host rebinds its localhost listener on the same port each time the app
 returns to the foreground, since the system reclaims a suspended app's listening socket.
+On every platform the bridge also rebinds the port itself when its listening socket is destroyed,
+pausing between failed attempts instead of retrying in a tight loop; other accept errors keep the port.
+When WebKit loses its networking process, every MessagePort a page already holds stops
+delivering; the container detects this after a disconnect and reloads the page.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission
@@ -456,8 +460,9 @@ tester group rather than anyone holding a link. That matters beyond
 convenience: these builds carry configuration that should not be public, so
 attaching them to a release is not an option.
 
-`android-nightly.yml` runs on weekdays at 22:00 UTC, two hours after the iOS
-nightly starts, so the two never overlap. `android-debug-distribution.yml` runs
+`android-nightly.yml` runs daily at 22:00 UTC, two hours after the iOS
+nightly starts, so the two never overlap. Both nightlies skip a scheduled night
+when `main` has not moved past what their last successful run built. `android-debug-distribution.yml` runs
 when a pull request merges to `main`, and answers what `main` does right now.
 It builds the merge commit rather than the pull request's merge preview, which
 is computed while the request is open and would otherwise ship a tree missing
