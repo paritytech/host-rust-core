@@ -17,10 +17,10 @@ struct WalletMainPocketTests {
     /// or the tab sits on a collection that has already moved.
     @Test
     func showsAChangeThatLandedWhileItWasStillWarmingTheLastOne() async throws {
-        let repository = InMemoryPocketCardRepository()
+        let collection = InMemoryPocketCardStore()
         let presenter = RecordingPresenter()
         let interactor = makeInteractor(
-            repository: repository,
+            collection: collection,
             presenter: presenter,
             warmDelay: .milliseconds(400)
         )
@@ -29,7 +29,7 @@ struct WalletMainPocketTests {
         try await settle()
         let beforeTheChange = presenter.pocketCards.count
 
-        await repository.insert(loyalty, face: .nil)
+        await collection.add(loyalty, face: .nil)
         try await settle()
 
         #expect(presenter.pocketCards.count > beforeTheChange)
@@ -40,15 +40,15 @@ struct WalletMainPocketTests {
     /// storage and nothing announces it, so the tab has to see it by following.
     @Test
     func showsACardLeavingTheCollection() async throws {
-        let repository = InMemoryPocketCardRepository([loyalty])
+        let collection = InMemoryPocketCardStore([loyalty])
         let presenter = RecordingPresenter()
-        let interactor = makeInteractor(repository: repository, presenter: presenter)
+        let interactor = makeInteractor(collection: collection, presenter: presenter)
 
         interactor.setup()
         try await settle()
         #expect(presenter.pocketCards.last?.contains { $0.key == loyalty.key } == true)
 
-        _ = try await repository.delete(loyalty.key)
+        _ = try await collection.removeCard(loyalty.key)
         try await settle()
 
         #expect(presenter.pocketCards.last?.contains { $0.key == loyalty.key } == false)
@@ -74,7 +74,7 @@ private func settle() async throws {
 
 @MainActor
 private func makeInteractor(
-    repository: InMemoryPocketCardRepository,
+    collection: InMemoryPocketCardStore,
     presenter: RecordingPresenter,
     warmDelay: Duration = .zero
 ) -> WalletMainInteractor {
@@ -82,9 +82,7 @@ private func makeInteractor(
         collectiblesURLProvider: StubCollectiblesURLProvider(),
         networkStatusObserver: StubNetworkStatusObserver(),
         pocketPrewarmer: PocketPrewarmer(products: StubResolver(), dotNsResolver: SlowArchives(delay: warmDelay)),
-        pocket: PocketService(
-            collection: RealPocketCardStore(pinned: InMemoryPinnedCards([]), repository: repository)
-        )
+        pocket: PocketService(collection: collection)
     )
     interactor.presenter = presenter
     return interactor

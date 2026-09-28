@@ -1,16 +1,46 @@
 import Foundation
 import AsyncExtensions
+import Operation_iOS
+import Products
 import TrUAPIHost
 
 /// The settled collection: the cards the host placed, then the ones the user
 /// added, each with the newest face held for it.
-struct RealPocketCardStore: PocketCardStore {
+///
+/// One type between the callers and CoreData. The cards the user added and the
+/// newest face for any card are rows here; a host-placed card has no membership
+/// row, but its face is kept like every other.
+///
+/// Reads and removals raise what went wrong. The core tells a failure apart from
+/// an empty Pocket and from a card that was already gone, and a product told its
+/// removal succeeded when it did not will not ask again. Surfaces with nowhere
+/// to put a failure, the Wallet tab first of all, fall back to an empty list
+/// themselves.
+///
+/// Faces are the exception: one that no longer reads is answered as none, and
+/// the card keeps its place and waits for its product to draw again.
+final class CoreDataPocketCardStore: PocketCardStore, @unchecked Sendable {
     private let pinned: any PinnedPocketCards
-    private let repository: any PocketCardRepository
+    private let storageFacade: StorageFacadeProtocol
+    private let cardMapper = AnyCoreDataMapper(PocketCardMapper())
+    private let cardRows: AnyDataProviderRepository<StoredPocketCard>
+    private let faceRows: AnyDataProviderRepository<StoredPocketCardFace>
+    private let logger: LoggerProtocol
 
-    init(pinned: any PinnedPocketCards, repository: any PocketCardRepository) {
+    init(
+        pinned: any PinnedPocketCards,
+        storageFacade: StorageFacadeProtocol = UserDataStorageFacade.shared,
+        logger: LoggerProtocol = Logger.shared
+    ) {
         self.pinned = pinned
-        self.repository = repository
+        self.storageFacade = storageFacade
+        cardRows = AnyDataProviderRepository(
+            storageFacade.createRepository(mapper: AnyCoreDataMapper(PocketCardMapper()))
+        )
+        faceRows = AnyDataProviderRepository(
+            storageFacade.createRepository(mapper: AnyCoreDataMapper(PocketCardFaceMapper()))
+        )
+        self.logger = logger
     }
 
     /// Pinned cards keep the front, and a card the user added before the host
@@ -18,25 +48,24 @@ struct RealPocketCardStore: PocketCardStore {
     /// not privileged, so listing it too would offer a permanent card for
     /// removal.
     func cards() async throws -> [PocketCardEntry] {
-        let placed = await pinned.cards()
-        let placedKeys = Set(placed.map(\.key))
-        let added = try await repository.cards().filter { !placedKeys.contains($0.key) }
-
-        return placed + added
+        try await settle(added())
     }
 
-    /// The stored cards as they change, with the host's own placed in front of
-    /// them each time. Placed cards never change within a session, so only the
-    /// stored side is followed.
+    /// Followed rather than announced: every surface showing the collection
+    /// sees a write whoever made it, including the core removing a card through
+    /// its own bridge.
     func observeCards() -> AnyAsyncSequence<[PocketCardEntry]> {
         let pinned = pinned
 
-        return repository.observeCards()
-            .map { added in
+        return storageFacade
+            .subscribeSnapshot(mapper: cardMapper, transform: { $0.sorted { $0.addedAt < $1.addedAt } })
+            .map { stored in
                 let placed = await pinned.cards()
                 let placedKeys = Set(placed.map(\.key))
 
-                return placed + added.filter { !placedKeys.contains($0.key) }
+                return placed + stored
+                    .map { PocketCardEntry(key: $0.key, title: $0.title, privileged: false) }
+                    .filter { !placedKeys.contains($0.key) }
             }
             .eraseToAnyAsyncSequence()
     }
@@ -44,23 +73,83 @@ struct RealPocketCardStore: PocketCardStore {
     func removeCard(_ key: PocketCardKey) async throws -> PocketRemoval {
         guard pinned.pinned(key) == nil else { throw PocketRemoveError.privileged }
 
-        return try await repository.delete(key) ? .removed : .absent
+        // Looked up by id rather than over the whole collection, because this
+        // runs while the core waits on the answer.
+        let held = try await cardRows
+            .fetchOperation(by: { key.storageId }, options: .init())
+            .asyncExecute() != nil
+
+        // The face goes with the card: a card added again must not inherit the
+        // face the last one was approved by.
+        try await cardRows.saveOperation({ [] }, { [key.storageId] }).asyncExecute()
+        try await faceRows.saveOperation({ [] }, { [key.storageId] }).asyncExecute()
+
+        return held ? .removed : .absent
     }
 
     func add(_ card: PocketCardEntry, face: RendererNode) async {
-        await repository.insert(card, face: face)
+        let stored = StoredPocketCard(key: card.key, title: card.title, addedAt: Date())
+
+        do {
+            try await cardRows.saveOperation({ [stored] }, { [] }).asyncExecute()
+        } catch {
+            logger.error("pocket: '\(card.key.storageId)' could not be stored: \(error)")
+        }
+
+        await cacheFace(face, for: card.key)
     }
 
     /// A host-placed card falls back to the face shipped with the app, so it
     /// draws on first run and again after its product stops drawing.
     func face(for key: PocketCardKey) async -> RendererNode? {
-        if let kept = await repository.face(for: key) { return kept }
+        if let kept = await keptFace(for: key) { return kept }
         guard pinned.pinned(key) != nil else { return nil }
 
         return await pinned.face(for: key.cardId)
     }
 
     func cacheFace(_ face: RendererNode, for key: PocketCardKey) async {
-        await repository.saveFace(face, for: key)
+        do {
+            let stored = StoredPocketCardFace(key: key, face: encodeRendererNode(node: face))
+            try await faceRows.saveOperation({ [stored] }, { [] }).asyncExecute()
+        } catch {
+            logger.warning("pocket: the newest face for '\(key.storageId)' could not be kept: \(error)")
+        }
+    }
+}
+
+private extension CoreDataPocketCardStore {
+    /// Oldest first, so the Pocket keeps the order cards were added in rather
+    /// than whatever order the store happens to return them.
+    func added() async throws -> [PocketCardEntry] {
+        try await cardRows.fetchAllOperation(with: .init())
+            .asyncExecute()
+            .sorted { $0.addedAt < $1.addedAt }
+            .map { PocketCardEntry(key: $0.key, title: $0.title, privileged: false) }
+    }
+
+    func settle(_ added: [PocketCardEntry]) async -> [PocketCardEntry] {
+        let placed = await pinned.cards()
+        let placedKeys = Set(placed.map(\.key))
+
+        return placed + added.filter { !placedKeys.contains($0.key) }
+    }
+
+    /// A face the running app can no longer read is answered as none: the card
+    /// keeps its place and waits for its product to draw again.
+    func keptFace(for key: PocketCardKey) async -> RendererNode? {
+        do {
+            guard let stored = try await faceRows
+                .fetchOperation(by: { key.storageId }, options: .init())
+                .asyncExecute()
+            else {
+                return nil
+            }
+
+            return try decodeRendererNode(bytes: stored.face)
+        } catch {
+            logger.warning("pocket: the kept face for '\(key.storageId)' no longer reads: \(error)")
+            return nil
+        }
     }
 }

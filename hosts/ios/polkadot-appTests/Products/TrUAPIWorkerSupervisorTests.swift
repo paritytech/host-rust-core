@@ -216,17 +216,14 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func tellsARunningWorkerAboutACardAddedLater() async throws {
         let builder = StubBuilder()
-        let repository = InMemoryPocketCardRepository([loyalty])
-        let supervisor = TrUAPIWorkerSupervisor(
-            builder: builder,
-            collection: RealPocketCardStore(pinned: InMemoryPinnedCards([]), repository: repository)
-        )
+        let collection = InMemoryPocketCardStore([loyalty])
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collection)
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
         #expect(try builder.bridge?.listCards().map(\.cardId) == ["loyalty"])
 
-        await repository.insert(streak, face: .nil)
+        await collection.add(streak, face: .nil)
         try await settle()
 
         #expect(try builder.bridge?.listCards().map(\.cardId).sorted() == ["loyalty", "streak"])
@@ -257,10 +254,7 @@ private func settle() async throws {
 }
 
 private func collectionHolding(_ cards: [PocketCardEntry]) -> any PocketCardStore {
-    RealPocketCardStore(
-        pinned: InMemoryPinnedCards([]),
-        repository: InMemoryPocketCardRepository(cards)
-    )
+    InMemoryPocketCardStore(cards)
 }
 
 private final class StubBuilder: TrUAPIWorkerBuilding, @unchecked Sendable {

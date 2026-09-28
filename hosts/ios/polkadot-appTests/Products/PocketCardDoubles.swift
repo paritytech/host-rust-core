@@ -31,10 +31,7 @@ let refusingFetch: @Sendable (URL, Int) async throws -> Data = { _, _ in
 func makeAddCardInteractor(
     published: [PocketCardDefinition],
     includesPocket: Bool = true,
-    store: any PocketCardStore = RealPocketCardStore(
-        pinned: InMemoryPinnedCards([]),
-        repository: InMemoryPocketCardRepository()
-    )
+    store: any PocketCardStore = InMemoryPocketCardStore()
 ) -> PocketAddCardInteractor {
     PocketAddCardInteractor(
         publishedCards: StubCardCatalog(

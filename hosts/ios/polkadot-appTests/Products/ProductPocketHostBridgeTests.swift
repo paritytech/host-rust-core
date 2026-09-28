@@ -32,9 +32,9 @@ struct ProductPocketHostBridgeTests {
 
     @Test
     func removesACardTheProductOwns() async throws {
-        let repository = InMemoryPocketCardRepository()
-        await repository.insert(loyalty, face: .nil)
-        let bridge = await makeBridge(repository: repository)
+        let collection = InMemoryPocketCardStore()
+        await collection.add(loyalty, face: .nil)
+        let bridge = await makeBridge(collection: collection)
 
         #expect(try bridge.removeCard(cardId: "loyalty") == NativePocketRemoval.removed)
         #expect(try bridge.listCards().isEmpty)
@@ -53,12 +53,12 @@ struct ProductPocketHostBridgeTests {
     /// even by naming it exactly.
     @Test
     func cannotRemoveAnotherProductsCard() async throws {
-        let repository = InMemoryPocketCardRepository()
-        await repository.insert(otherProductCard, face: .nil)
-        let bridge = await makeBridge(repository: repository)
+        let collection = InMemoryPocketCardStore()
+        await collection.add(otherProductCard, face: .nil)
+        let bridge = await makeBridge(collection: collection)
 
         #expect(try bridge.removeCard(cardId: "trophy") == NativePocketRemoval.absent)
-        #expect(try await repository.cards().count == 1)
+        #expect(try await collection.cards().count == 1)
     }
 
     /// The core is told only when this product's own slice changes. A face
@@ -67,14 +67,14 @@ struct ProductPocketHostBridgeTests {
     /// card changes nothing here at all.
     @Test
     func republishesOnlyWhenItsOwnSliceChanges() async throws {
-        let repository = InMemoryPocketCardRepository()
-        let bridge = await makeBridge(repository: repository)
+        let collection = InMemoryPocketCardStore()
+        let bridge = await makeBridge(collection: collection)
         let published = Published()
         bridge.start { published.record($0) }
 
-        await repository.insert(loyalty, face: .nil)
+        await collection.add(loyalty, face: .nil)
         try await settle()
-        await repository.insert(otherProductCard, face: .nil)
+        await collection.add(otherProductCard, face: .nil)
         try await settle()
 
         // The leading publish is the opening one, of the snapshot as it stood.
@@ -89,9 +89,9 @@ struct ProductPocketHostBridgeTests {
     /// moved, so no later refresh finds anything to report.
     @Test
     func republishesTheSnapshotItAlreadyHoldsWhenItStarts() async throws {
-        let repository = InMemoryPocketCardRepository()
-        await repository.insert(loyalty, face: .nil)
-        let bridge = await makeBridge(repository: repository)
+        let collection = InMemoryPocketCardStore()
+        await collection.add(loyalty, face: .nil)
+        let bridge = await makeBridge(collection: collection)
 
         let published = Published()
         bridge.start { published.record($0) }
@@ -124,16 +124,13 @@ private func makeBridge(
     productId: String = "game.paseo",
     pinned: [PocketCardEntry] = [],
     stored: [PocketCardEntry] = [],
-    repository: InMemoryPocketCardRepository? = nil
+    collection: InMemoryPocketCardStore? = nil
 ) async -> ProductPocketHostBridge {
-    let held = repository ?? InMemoryPocketCardRepository()
+    let held = collection ?? InMemoryPocketCardStore(pinned: InMemoryPinnedCards(pinned))
     for card in stored {
-        await held.insert(card, face: .nil)
+        await held.add(card, face: .nil)
     }
-    let bridge = ProductPocketHostBridge(
-        productId: productId,
-        collection: RealPocketCardStore(pinned: InMemoryPinnedCards(pinned), repository: held)
-    )
+    let bridge = ProductPocketHostBridge(productId: productId, collection: held)
     await bridge.begin()
     return bridge
 }

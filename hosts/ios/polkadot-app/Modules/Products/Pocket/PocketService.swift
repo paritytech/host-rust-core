@@ -43,7 +43,6 @@ final class PocketService {
     /// waited on here.
     static func make(
         tld: any DotNsTldProviding = DotNsTldProviderFacade.shared,
-        repository: any PocketCardRepository = CoreDataPocketCardRepository(),
         logger: LoggerProtocol = Logger.shared
     ) -> PocketService? {
         guard let suffix = try? tld.currentTldOrError() else {
@@ -52,10 +51,7 @@ final class PocketService {
         }
 
         return PocketService(
-            collection: RealPocketCardStore(
-                pinned: AssetPinnedPocketCards(tld: suffix),
-                repository: repository
-            ),
+            collection: CoreDataPocketCardStore(pinned: AssetPinnedPocketCards(tld: suffix)),
             logger: logger
         )
     }

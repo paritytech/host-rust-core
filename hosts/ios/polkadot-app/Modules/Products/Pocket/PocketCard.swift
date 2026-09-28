@@ -75,26 +75,6 @@ protocol PocketCardStore: PocketCollection {
     func cacheFace(_ face: RendererNode, for key: PocketCardKey) async
 }
 
-/// Cards the user added, held across launches, and the newest face held for any
-/// card. A host-placed card has no membership row, but its face is kept here
-/// like every other.
-protocol PocketCardRepository {
-    func cards() async throws -> [PocketCardEntry]
-
-    /// The stored cards as they stand, and again after every write.
-    func observeCards() -> AnyAsyncSequence<[PocketCardEntry]>
-
-    func insert(_ card: PocketCardEntry, face: RendererNode) async
-
-    /// Whether a card was held under `key`. Throws when the removal could not
-    /// be stored, which is not the same as finding nothing to remove.
-    func delete(_ key: PocketCardKey) async throws -> Bool
-
-    func face(for key: PocketCardKey) async -> RendererNode?
-
-    func saveFace(_ face: RendererNode, for key: PocketCardKey) async
-}
-
 /// The cards the host itself places: present on first run, removable by nobody.
 protocol PinnedPocketCards {
     func cards() async -> [PocketCardEntry]

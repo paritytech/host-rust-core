@@ -3,6 +3,11 @@ import Products
 import Testing
 @testable import polkadot_app
 
+/// Loads what the user is being asked to approve, and stores exactly that.
+///
+/// What a product publishes is `PublishedPocketCards`' answer and is proved in
+/// its own suite. What is left here is the interactor's own work: turning an
+/// answer into an offer, and keeping the face the offer was approved by.
 struct PocketAddCardInteractorTests {
     @Test
     func offersThePublishedCard() async throws {
@@ -15,10 +20,10 @@ struct PocketAddCardInteractorTests {
         #expect(offer.key.cardId.value == "loyalty")
     }
 
-    /// A product whose worker does not declare Pocket has nothing to offer,
-    /// however its manifest lists cards.
+    /// A refusal is the card lookup's answer, so it reaches the sheet as it
+    /// came rather than as something the interactor made up.
     @Test
-    func refusesAProductThatPublishesNoPocket() async {
+    func raisesTheRefusalTheCardLookupGave() async {
         let interactor = makeAddCardInteractor(published: [loyaltyDefinition], includesPocket: false)
 
         await #expect(throws: PocketPublishError.noPocket) {
@@ -26,32 +31,19 @@ struct PocketAddCardInteractorTests {
         }
     }
 
-    @Test
-    func refusesACardTheProductDoesNotPublish() async {
-        let interactor = makeAddCardInteractor(published: [loyaltyDefinition])
-
-        await #expect(throws: PocketPublishError.unknownCard) {
-            try await interactor.loadOffer(productId: "game.paseo", cardId: PocketCardId(value: "trophy"))
-        }
-    }
-
     /// The face the user approves is the one that is stored: approving keeps
     /// the offer as loaded rather than re-reading anything.
     @Test
     func approvingAddsTheCardAsUnprivileged() async throws {
-        let store = RealPocketCardStore(
-            pinned: InMemoryPinnedCards([]),
-            repository: InMemoryPocketCardRepository()
-        )
+        let store = InMemoryPocketCardStore()
         let interactor = makeAddCardInteractor(published: [loyaltyDefinition], store: store)
         let offer = try await interactor.loadOffer(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
 
         await interactor.approve(offer)
 
-        let stored = try await store.cards()
-        #expect(stored.map(\.key.cardId.value) == ["loyalty"])
-        #expect(stored.first?.privileged == false)
-        #expect(stored.first?.title == "Loyalty")
+        #expect(try await store.cards() == [
+            PocketCardEntry(key: offer.key, title: "Loyalty", privileged: false)
+        ])
         #expect(await store.face(for: offer.key) == offer.face)
     }
 }
