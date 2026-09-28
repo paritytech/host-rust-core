@@ -47,7 +47,9 @@ enum PocketRemoveError: Error, Equatable {
 /// The host-owned collection as a product sees it. Cards enter only through the
 /// host's own approval flow, so there is no add here.
 protocol PocketCollection {
-    func cards() async -> [PocketCardEntry]
+    /// Throws when the collection cannot be read, which a caller must tell
+    /// apart from an empty Pocket.
+    func cards() async throws -> [PocketCardEntry]
 
     func removeCard(_ key: PocketCardKey) async throws -> PocketRemoval
 }
@@ -71,12 +73,13 @@ protocol PocketCardStore: PocketCollection {
 /// card. A host-placed card has no membership row, but its face is kept here
 /// like every other.
 protocol PocketCardRepository {
-    func cards() async -> [PocketCardEntry]
+    func cards() async throws -> [PocketCardEntry]
 
     func insert(_ card: PocketCardEntry, face: RendererNode) async
 
-    /// Whether a card was held under `key`.
-    func delete(_ key: PocketCardKey) async -> Bool
+    /// Whether a card was held under `key`. Throws when the removal could not
+    /// be stored, which is not the same as finding nothing to remove.
+    func delete(_ key: PocketCardKey) async throws -> Bool
 
     func face(for key: PocketCardKey) async -> RendererNode?
 

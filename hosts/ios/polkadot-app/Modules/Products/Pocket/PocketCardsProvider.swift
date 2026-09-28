@@ -21,15 +21,24 @@ struct PocketCardViewModel: Identifiable {
 struct PocketCardsProvider {
     private let store: any PocketCardStore
     private let resolver: any WidgetDesignTokenResolving
+    private let logger: LoggerProtocol
 
-    init(store: any PocketCardStore, resolver: any WidgetDesignTokenResolving = WidgetDesignTokenResolver()) {
+    init(
+        store: any PocketCardStore,
+        resolver: any WidgetDesignTokenResolving = WidgetDesignTokenResolver(),
+        logger: LoggerProtocol = Logger.shared
+    ) {
         self.store = store
         self.resolver = resolver
+        self.logger = logger
     }
 
+    /// A collection that cannot be read draws as none. The tab has nowhere to
+    /// put a storage failure, and an empty Pocket for one launch is better than
+    /// a tab that does not come up.
     func cards() async -> [PocketCardViewModel] {
         var drawn: [PocketCardViewModel] = []
-        for card in await store.cards() {
+        for card in await held() {
             await drawn.append(viewModel(for: card))
         }
         return drawn
@@ -38,9 +47,18 @@ struct PocketCardsProvider {
     /// The one card `key` names, for a link that arrives naming a single card
     /// rather than the whole collection.
     func card(for key: PocketCardKey) async -> PocketCardViewModel? {
-        guard let card = await store.cards().first(where: { $0.key == key }) else { return nil }
+        guard let card = await held().first(where: { $0.key == key }) else { return nil }
 
         return await viewModel(for: card)
+    }
+
+    private func held() async -> [PocketCardEntry] {
+        do {
+            return try await store.cards()
+        } catch {
+            logger.error("[pocket] the collection could not be read; the tab draws none: \(error)")
+            return []
+        }
     }
 
     private func viewModel(for card: PocketCardEntry) async -> PocketCardViewModel {

@@ -11,12 +11,14 @@ import TrUAPIHost
 final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
     private let productId: String
     private let collection: any PocketCollection
+    private let logger: LoggerProtocol
     private let snapshot = OSAllocatedUnfairLock(initialState: [PocketCard]())
     private let republish = OSAllocatedUnfairLock(initialState: (([PocketCard]) -> Void)?.none)
 
-    init(productId: String, collection: any PocketCollection) {
+    init(productId: String, collection: any PocketCollection, logger: LoggerProtocol = Logger.shared) {
         self.productId = productId
         self.collection = collection
+        self.logger = logger
     }
 
     /// Starts republishing this product's cards to the core, beginning with the
@@ -39,7 +41,12 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
     /// slice changed. A face streaming at frame rate changes the stored
     /// collection continuously without changing any card the core knows about.
     func refresh() async {
-        let current = await collection.cards()
+        guard let held = try? await collection.cards() else {
+            logger.error("[pocket] \(productId)'s slice could not be read; the core keeps the last one")
+            return
+        }
+
+        let current = held
             .filter { $0.key.productId == productId }
             .map { PocketCard(cardId: $0.key.cardId.value, privileged: $0.privileged) }
 
@@ -58,14 +65,16 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
     }
 
     func removeCard(cardId: String) throws -> NativePocketRemoval {
-        // Answered from the snapshot: a card the host placed is refused without
-        // the blocking read below, which runs on the core's own thread.
-        if snapshot.withLock({ $0 }).contains(where: { $0.cardId == cardId && $0.privileged }) {
-            return .privileged
-        }
+        let held = snapshot.withLock { $0 }
+
+        // Both answered from the snapshot, which is what the core was served in
+        // the first place. Neither touches storage, so neither pays the
+        // blocking read below on the core's own thread.
+        if held.contains(where: { $0.cardId == cardId && $0.privileged }) { return .privileged }
+        guard held.contains(where: { $0.cardId == cardId }) else { return .absent }
 
         let key = PocketCardKey(productId: productId, cardId: PocketCardId(value: cardId))
-        let outcome = blockingRemove(key)
+        let outcome = try blockingRemove(key)
 
         if outcome == .removed {
             snapshot.withLock { $0.removeAll { $0.cardId == cardId } }
@@ -75,24 +84,28 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
 
     /// The core waits on this answer, so the removal is completed here rather
     /// than handed to a task the caller cannot observe.
-    private func blockingRemove(_ key: PocketCardKey) -> NativePocketRemoval {
-        let result = OSAllocatedUnfairLock(initialState: NativePocketRemoval.absent)
+    ///
+    /// A removal that could not be stored is raised rather than answered as
+    /// absent: the core tells the two apart, and a product told its card is
+    /// gone while the Pocket still draws it will not ask again.
+    private func blockingRemove(_ key: PocketCardKey) throws -> NativePocketRemoval {
+        let result = OSAllocatedUnfairLock(initialState: Result<NativePocketRemoval, any Error>.success(.absent))
         let done = DispatchSemaphore(value: 0)
 
         Task {
-            let outcome: NativePocketRemoval
+            let outcome: Result<NativePocketRemoval, any Error>
             do {
-                outcome = try await collection.removeCard(key) == .removed ? .removed : .absent
+                outcome = try await .success(collection.removeCard(key) == .removed ? .removed : .absent)
             } catch PocketRemoveError.privileged {
-                outcome = .privileged
+                outcome = .success(.privileged)
             } catch {
-                outcome = .absent
+                outcome = .failure(error)
             }
             result.withLock { $0 = outcome }
             done.signal()
         }
 
         done.wait()
-        return result.withLock { $0 }
+        return try result.withLock { $0 }.get()
     }
 }

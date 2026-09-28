@@ -6,11 +6,14 @@ import TrUAPIHost
 /// Cards the user added, and the newest face held for any card, kept across
 /// launches.
 ///
-/// Nothing here throws to its caller. This is read by the Wallet tab, by the
-/// card list the core asks for and by the deeplink handler, none of which have
-/// anywhere to put a storage failure: a card that cannot be read is one the
-/// Pocket does without until the next launch, where a throw would take the
-/// whole tab down.
+/// Reads and removals raise what went wrong. The core tells a failure apart
+/// from an empty Pocket and from a card that was already gone, and a product
+/// told its removal succeeded when it did not will not ask again. Surfaces with
+/// nowhere to put a failure, the Wallet tab first of all, fall back to an empty
+/// list themselves.
+///
+/// Faces are the exception: one that no longer reads is answered as none, and
+/// the card keeps its place and waits for its product to draw again.
 final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Sendable {
     private let cardRepository: AnyDataProviderRepository<StoredPocketCard>
     private let faceRepository: AnyDataProviderRepository<StoredPocketCardFace>
@@ -31,16 +34,11 @@ final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Senda
 
     /// Oldest first, so the Pocket keeps the order cards were added in rather
     /// than whatever order the store happens to return them.
-    func cards() async -> [PocketCardEntry] {
-        do {
-            return try await cardRepository.fetchAllOperation(with: .init())
-                .asyncExecute()
-                .sorted { $0.addedAt < $1.addedAt }
-                .map { PocketCardEntry(key: $0.key, title: $0.title, privileged: false) }
-        } catch {
-            logger.error("pocket: the stored cards could not be read: \(error)")
-            return []
-        }
+    func cards() async throws -> [PocketCardEntry] {
+        try await cardRepository.fetchAllOperation(with: .init())
+            .asyncExecute()
+            .sorted { $0.addedAt < $1.addedAt }
+            .map { PocketCardEntry(key: $0.key, title: $0.title, privileged: false) }
     }
 
     func insert(_ card: PocketCardEntry, face: RendererNode) async {
@@ -57,16 +55,16 @@ final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Senda
 
     /// The face goes with the card: a card added again must not inherit the
     /// face the last one was approved by.
-    func delete(_ key: PocketCardKey) async -> Bool {
-        let held = await cards().contains { $0.key == key }
+    ///
+    /// Looked up by id rather than over the whole collection, because this runs
+    /// while the core waits on the answer.
+    func delete(_ key: PocketCardKey) async throws -> Bool {
+        let held = try await cardRepository
+            .fetchOperation(by: { key.storageId }, options: .init())
+            .asyncExecute() != nil
 
-        do {
-            try await cardRepository.saveOperation({ [] }, { [key.storageId] }).asyncExecute()
-            try await faceRepository.saveOperation({ [] }, { [key.storageId] }).asyncExecute()
-        } catch {
-            logger.error("pocket: '\(key.storageId)' could not be removed: \(error)")
-            return false
-        }
+        try await cardRepository.saveOperation({ [] }, { [key.storageId] }).asyncExecute()
+        try await faceRepository.saveOperation({ [] }, { [key.storageId] }).asyncExecute()
 
         return held
     }

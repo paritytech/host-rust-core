@@ -16,10 +16,10 @@ struct RealPocketCardStore: PocketCardStore {
     /// came to pin it is listed once, as the pinned one — the stored copy is
     /// not privileged, so listing it too would offer a permanent card for
     /// removal.
-    func cards() async -> [PocketCardEntry] {
+    func cards() async throws -> [PocketCardEntry] {
         let placed = await pinned.cards()
         let placedKeys = Set(placed.map(\.key))
-        let added = await repository.cards().filter { !placedKeys.contains($0.key) }
+        let added = try await repository.cards().filter { !placedKeys.contains($0.key) }
 
         return placed + added
     }
@@ -27,7 +27,7 @@ struct RealPocketCardStore: PocketCardStore {
     func removeCard(_ key: PocketCardKey) async throws -> PocketRemoval {
         guard pinned.pinned(key) == nil else { throw PocketRemoveError.privileged }
 
-        return await repository.delete(key) ? .removed : .absent
+        return try await repository.delete(key) ? .removed : .absent
     }
 
     func add(_ card: PocketCardEntry, face: RendererNode) async {

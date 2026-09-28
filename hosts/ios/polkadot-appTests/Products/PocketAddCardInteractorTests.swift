@@ -48,7 +48,7 @@ struct PocketAddCardInteractorTests {
 
         await interactor.approve(offer)
 
-        let stored = await store.cards()
+        let stored = try await store.cards()
         #expect(stored.map(\.key.cardId.value) == ["loyalty"])
         #expect(stored.first?.privileged == false)
         #expect(stored.first?.title == "Loyalty")

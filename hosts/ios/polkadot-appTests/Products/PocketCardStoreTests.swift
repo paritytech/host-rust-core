@@ -16,7 +16,7 @@ struct PocketCardStoreTests {
             repository: InMemoryPocketCardRepository([loyalty])
         )
 
-        let cards = await store.cards()
+        let cards = try await store.cards()
 
         #expect(cards.map(\.key) == [humanity.key, loyalty.key])
     }
@@ -31,7 +31,7 @@ struct PocketCardStoreTests {
             repository: InMemoryPocketCardRepository([alsoStored, loyalty])
         )
 
-        let cards = await store.cards()
+        let cards = try await store.cards()
 
         #expect(cards.map(\.key) == [humanity.key, loyalty.key])
         #expect(cards.first?.privileged == true)
@@ -71,8 +71,37 @@ struct PocketCardStoreTests {
 
         #expect(try await store.removeCard(loyalty.key) == .removed)
 
-        let remaining = await store.cards()
+        let remaining = try await store.cards()
         #expect(remaining.isEmpty)
+    }
+
+    /// The core tells a removal it performed apart from one it had nothing to
+    /// do, and apart from a failure. A removal that could not be stored
+    /// answered as absent tells the product the card is gone while the Pocket
+    /// still draws it.
+    @Test
+    func raisesARemovalThatCouldNotBeStored() async {
+        let repository = InMemoryPocketCardRepository([loyalty])
+        await repository.failWrites()
+        let store = RealPocketCardStore(pinned: InMemoryPinnedCards([]), repository: repository)
+
+        await #expect(throws: (any Error).self) {
+            try await store.removeCard(loyalty.key)
+        }
+    }
+
+    /// A read that failed is not an empty Pocket. Answered as empty, the core
+    /// is told the product holds nothing and the host offers every card for
+    /// adding again.
+    @Test
+    func raisesAReadThatFailed() async {
+        let repository = InMemoryPocketCardRepository([loyalty])
+        await repository.failReads()
+        let store = RealPocketCardStore(pinned: InMemoryPinnedCards([]), repository: repository)
+
+        await #expect(throws: (any Error).self) {
+            try await store.cards()
+        }
     }
 
     // MARK: - Faces
@@ -161,14 +190,33 @@ private let loyalty = PocketCardEntry(
 // MARK: - In-memory doubles
 
 actor InMemoryPocketCardRepository: PocketCardRepository {
+    struct Unavailable: Error {}
+
     private var stored: [PocketCardEntry]
     private var faces: [PocketCardKey: RendererNode] = [:]
+    private var readsFail = false
+    private var writesFail = false
 
     init(_ stored: [PocketCardEntry] = []) {
         self.stored = stored
     }
 
-    func cards() async -> [PocketCardEntry] { stored }
+    /// Storage the app can no longer read, which is a failure rather than an
+    /// empty Pocket.
+    func failReads() {
+        readsFail = true
+    }
+
+    /// Storage the app can no longer write to, which is a removal that did not
+    /// happen rather than one that found nothing.
+    func failWrites() {
+        writesFail = true
+    }
+
+    func cards() async throws -> [PocketCardEntry] {
+        if readsFail { throw Unavailable() }
+        return stored
+    }
 
     func insert(_ card: PocketCardEntry, face: RendererNode) async {
         stored.removeAll { $0.key == card.key }
@@ -176,7 +224,8 @@ actor InMemoryPocketCardRepository: PocketCardRepository {
         faces[card.key] = face
     }
 
-    func delete(_ key: PocketCardKey) async -> Bool {
+    func delete(_ key: PocketCardKey) async throws -> Bool {
+        if writesFail { throw Unavailable() }
         let before = stored.count
         stored.removeAll { $0.key == key }
         faces[key] = nil

@@ -58,7 +58,7 @@ struct ProductPocketHostBridgeTests {
         let bridge = await makeBridge(repository: repository)
 
         #expect(try bridge.removeCard(cardId: "trophy") == NativePocketRemoval.absent)
-        #expect(await repository.cards().count == 1)
+        #expect(try await repository.cards().count == 1)
     }
 
     /// The core is told only when this product's own slice changes. A face
