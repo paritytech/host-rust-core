@@ -6,13 +6,15 @@
 //! statement-store RPC.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
+use tokio::time::Instant;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -102,8 +104,19 @@ impl ChainProvider for WsChainProvider {
     }
 }
 
+/// A Ping every this often keeps a quiet socket from looking dead to the far side and, with
+/// [`KEEPALIVE_TIMEOUT`], detects one that is.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+/// No inbound frame at all for this long (a Pong counts) means the socket is half-open: the
+/// far side went away without a close frame, reads would block for ever and writes would sink
+/// into the kernel buffer, so every RPC on it would hang until the caller's own deadline. The
+/// connection is closed here instead, which ends its response streams, which is what the
+/// runtime watches before it reconnects.
+const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// One WebSocket JSON-RPC connection: outbound requests are queued to a writer
-/// task, inbound frames are broadcast to every `responses()` stream.
+/// task, inbound frames are broadcast to every `responses()` stream, and a
+/// keepalive task pings the socket and closes it when it falls silent.
 pub struct WsJsonRpcConnection {
     outbound: mpsc::UnboundedSender<Message>,
     inbound: broadcast::Sender<String>,
@@ -111,46 +124,123 @@ pub struct WsJsonRpcConnection {
     /// stream takes it so an immediate RPC response cannot race subscription
     /// setup and disappear while the broadcast channel has no receivers.
     initial_inbound: Mutex<Option<broadcast::Receiver<String>>>,
-    closed: Arc<AtomicBool>,
+    /// True once the socket is gone: set by the reader on a close frame or a
+    /// read error, by the keepalive on silence, or by `close`. Every response
+    /// stream ends on it, and `send` drops requests after it.
+    closed: Arc<watch::Sender<bool>>,
+}
+
+/// Resolves once `closed` is true (or the sender is gone).
+async fn until_closed(mut closed: watch::Receiver<bool>) {
+    while !*closed.borrow_and_update() {
+        if closed.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 impl WsJsonRpcConnection {
     async fn connect(url: &str) -> Result<Self, String> {
+        Self::connect_with_keepalive(url, KEEPALIVE_INTERVAL, KEEPALIVE_TIMEOUT).await
+    }
+
+    async fn connect_with_keepalive(
+        url: &str,
+        keepalive_interval: Duration,
+        keepalive_timeout: Duration,
+    ) -> Result<Self, String> {
         let (stream, _response) = connect_async(url)
             .await
             .map_err(|err| format!("statement-store websocket connect failed: {err}"))?;
         let (mut write, mut read) = stream.split();
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
         let (inbound_tx, initial_inbound) = broadcast::channel(INBOUND_CHANNEL_CAPACITY);
-        let closed = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(watch::channel(false).0);
+        // Milliseconds since `started` of the last inbound frame of any kind.
+        let started = Instant::now();
+        let last_inbound = Arc::new(AtomicU64::new(0));
 
+        let writer_closed = closed.clone();
+        let writer_stop = closed.subscribe();
         tokio::spawn(async move {
-            while let Some(message) = outbound_rx.recv().await {
-                if write.send(message).await.is_err() {
-                    break;
+            loop {
+                tokio::select! {
+                    message = outbound_rx.recv() => match message {
+                        Some(message) => {
+                            if write.send(message).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    },
+                    () = until_closed(writer_stop.clone()) => break,
                 }
             }
+            // A writer that could not send is a dead socket as much as a reader that could not
+            // read; without this the connection stayed open until the reader noticed.
+            writer_closed.send_replace(true);
             let _ = write.close().await;
         });
 
         let reader_inbound = inbound_tx.clone();
         let reader_closed = closed.clone();
+        let reader_stop = closed.subscribe();
+        let reader_last_inbound = last_inbound.clone();
         tokio::spawn(async move {
-            while let Some(message) = read.next().await {
+            loop {
+                let message = tokio::select! {
+                    message = read.next() => message,
+                    () = until_closed(reader_stop.clone()) => break,
+                };
+                reader_last_inbound.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                 match message {
-                    Ok(Message::Text(text)) => {
+                    Some(Ok(Message::Text(text))) => {
                         let _ = reader_inbound.send(text.to_string());
                     }
-                    Ok(Message::Binary(bytes)) => {
+                    Some(Ok(Message::Binary(bytes))) => {
                         if let Ok(text) = String::from_utf8(bytes.to_vec()) {
                             let _ = reader_inbound.send(text);
                         }
                     }
-                    Ok(Message::Close(_)) | Err(_) => break,
-                    Ok(_) => {}
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    // Pings are answered by the socket layer while it is read; a Pong is
+                    // the keepalive's answer and counts as inbound like any frame.
+                    Some(Ok(_)) => {}
                 }
             }
-            reader_closed.store(true, Ordering::Release);
+            reader_closed.send_replace(true);
+        });
+
+        let keepalive_outbound = outbound_tx.clone();
+        let keepalive_closed = closed.clone();
+        let keepalive_stop = closed.subscribe();
+        let keepalive_url = url.to_string();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(keepalive_interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // the first tick completes at once
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    () = until_closed(keepalive_stop.clone()) => break,
+                }
+                let silent_for = started
+                    .elapsed()
+                    .saturating_sub(Duration::from_millis(last_inbound.load(Ordering::Relaxed)));
+                if silent_for > keepalive_timeout {
+                    warn!(
+                        url = %keepalive_url,
+                        silent_secs = silent_for.as_secs(),
+                        "chain socket answered nothing; closing it so the runtime reconnects"
+                    );
+                    keepalive_closed.send_replace(true);
+                    break;
+                }
+                if keepalive_outbound.send(Message::Ping(Vec::new())).is_err() {
+                    keepalive_closed.send_replace(true);
+                    break;
+                }
+            }
         });
 
         Ok(Self {
@@ -160,11 +250,25 @@ impl WsJsonRpcConnection {
             closed,
         })
     }
+
+    #[cfg(test)]
+    fn for_test(
+        outbound: mpsc::UnboundedSender<Message>,
+        inbound: broadcast::Sender<String>,
+        initial_inbound: broadcast::Receiver<String>,
+    ) -> Self {
+        Self {
+            outbound,
+            inbound,
+            initial_inbound: Mutex::new(Some(initial_inbound)),
+            closed: Arc::new(watch::channel(false).0),
+        }
+    }
 }
 
 impl JsonRpcConnection for WsJsonRpcConnection {
     fn send(&self, request: String) {
-        if self.closed.load(Ordering::Acquire) {
+        if *self.closed.borrow() {
             return;
         }
         let _ = self.outbound.send(Message::Text(request));
@@ -177,6 +281,7 @@ impl JsonRpcConnection for WsJsonRpcConnection {
             .expect("initial chain response receiver mutex poisoned")
             .take()
             .unwrap_or_else(|| self.inbound.subscribe());
+        let closed = self.closed.subscribe();
         BroadcastStream::new(receiver)
             .filter_map(|item| async move {
                 match item {
@@ -189,11 +294,12 @@ impl JsonRpcConnection for WsJsonRpcConnection {
                     }
                 }
             })
+            .take_until(until_closed(closed))
             .boxed()
     }
 
     fn close(&self) {
-        self.closed.store(true, Ordering::Release);
+        self.closed.send_replace(true);
     }
 }
 
@@ -208,12 +314,7 @@ mod tests {
     fn first_response_stream_receives_frames_buffered_during_setup() {
         let (outbound, _outbound_rx) = mpsc::unbounded_channel();
         let (inbound, initial_inbound) = broadcast::channel(INBOUND_CHANNEL_CAPACITY);
-        let connection = WsJsonRpcConnection {
-            outbound,
-            inbound: inbound.clone(),
-            initial_inbound: Mutex::new(Some(initial_inbound)),
-            closed: Arc::new(AtomicBool::new(false)),
-        };
+        let connection = WsJsonRpcConnection::for_test(outbound, inbound.clone(), initial_inbound);
 
         inbound
             .send(r#"{"jsonrpc":"2.0","id":1,"result":"ready"}"#.to_string())
@@ -222,6 +323,44 @@ mod tests {
         let mut responses = connection.responses();
         let frame = futures::executor::block_on(responses.next()).expect("buffered response");
         assert_eq!(frame, r#"{"jsonrpc":"2.0","id":1,"result":"ready"}"#);
+    }
+
+    /// The runtime reconnects only when a connection's response stream has ended; a stream
+    /// that outlived its socket kept every later RPC hanging on a dead connection.
+    #[tokio::test]
+    async fn response_streams_end_once_the_connection_is_closed() {
+        let (outbound, _outbound_rx) = mpsc::unbounded_channel();
+        let (inbound, initial_inbound) = broadcast::channel(INBOUND_CHANNEL_CAPACITY);
+        let connection = WsJsonRpcConnection::for_test(outbound, inbound, initial_inbound);
+        let mut responses = connection.responses();
+        connection.close();
+        assert_eq!(responses.next().await, None);
+        connection.send("dropped after close".to_string());
+    }
+
+    /// A peer that holds the socket open but never reads it (so never pongs) is what a load
+    /// balancer or a node leaves behind; without the keepalive the connection stayed "open"
+    /// for good.
+    #[tokio::test]
+    async fn a_silent_socket_is_closed_by_the_keepalive() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let _held = tokio_tungstenite::accept_async(socket).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let connection = WsJsonRpcConnection::connect_with_keepalive(
+            &format!("ws://{address}"),
+            Duration::from_millis(50),
+            Duration::from_millis(200),
+        )
+        .await
+        .unwrap();
+        let mut responses = connection.responses();
+        let ended = tokio::time::timeout(Duration::from_secs(5), responses.next()).await;
+        assert_eq!(ended.expect("the keepalive closes a silent socket"), None);
+        assert!(*connection.closed.borrow());
     }
 
     /// Every role the host says it serves has to route to that role's own chain
