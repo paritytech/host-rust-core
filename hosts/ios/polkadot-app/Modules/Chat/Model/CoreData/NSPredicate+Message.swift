@@ -10,6 +10,10 @@ extension NSPredicate {
         )
     }
 
+    static func messages(in chat: CDChat) -> NSPredicate {
+        NSPredicate(format: "%K == %@", #keyPath(CDChatMessage.chat), chat)
+    }
+
     static func messages(withIds ids: [String]) -> NSPredicate {
         NSPredicate(
             format: "%K IN %@",
