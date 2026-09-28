@@ -44,9 +44,15 @@ final class MockCoinageTxRepository: @unchecked Sendable {
     func updateTxStatus(
         for id: CoinageTxId,
         expectedCurrentStatus: CoinageTxStatus,
+        expectedTxHash: Data,
         verdict: Verdict
     ) async throws -> Bool {
-        try await durable.updateTxStatus(for: id, expectedCurrentStatus: expectedCurrentStatus, verdict: verdict)
+        try await durable.updateTxStatus(
+            for: id,
+            expectedCurrentStatus: expectedCurrentStatus,
+            expectedTxHash: expectedTxHash,
+            verdict: verdict
+        )
     }
 
     func getAllEntries() async throws -> [CoinageTxEntry] {
@@ -91,10 +97,6 @@ final class MockCoinageTxRepository: @unchecked Sendable {
         validation: @escaping (any CoinageTxValidationContextProtocol) throws -> Void
     ) async throws {
         try await ledger.precommitHandOff(assets, validation: validation)
-    }
-
-    func commitHandoffs(_ keys: [PublicKey]) async throws {
-        try await ledger.commitHandoffs(keys)
     }
 
     func releaseUncommittedHandoffs() async throws {

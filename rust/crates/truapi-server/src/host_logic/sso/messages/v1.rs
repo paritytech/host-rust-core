@@ -17,7 +17,7 @@ use super::{
     ProductRequest, ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyResponse,
     ResourceAllocationRequest, ResourceAllocationResponse, Response, RingVrfSignResponse,
     SignRawWithLegacyAccountRequest, SignRawWithLegacyAccountResponse, SignRequest, SignResponse,
-    SignVrfResponse,
+    SignVrfResponse, Withdrawal,
 };
 
 /// v1 messages exchanged with the paired signing host over the encrypted SSO channel.
@@ -84,4 +84,8 @@ pub enum RemoteMessage {
     /// Account Holder's answer to [`RemoteMessage::RingVrfSignRequest`].
     #[codec(index = 23)]
     RingVrfSignResponse(Response<RingVrfSignResponse>),
+    /// The pairing host withdraws a request it published; meaningful only from
+    /// the pairing host.
+    #[codec(index = 24)]
+    Cancel(Withdrawal),
 }

@@ -6,9 +6,10 @@ name: Safetynet Distribution
 # environment, under its own bundle id so it installs alongside the real app. See
 # Configs/base.safetynet.xcconfig.
 #
-# The nightly pipeline already builds Safetynet as a leg of ios-nightly-distribution.yml;
-# this workflow exists for ad-hoc builds outside that pipeline. It deliberately does not
-# reuse ios-build-distribute.yml: that workflow's security gate fails any workflow_dispatch
+# This is the only workflow here that builds Safetynet: the leg in
+# ios-nightly-distribution.yml is held, because Safetynet ships from the app repository.
+# It deliberately does not reuse ios-build-distribute.yml: that workflow's security gate
+# fails any workflow_dispatch
 # not triggered by github-actions[bot], which is exactly the human-triggered case here.
 # The scope is correspondingly narrower — one variant, no release PR,
 # no release notification.

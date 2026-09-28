@@ -28,12 +28,12 @@ public extension TimeInterval {
         let hourInMillis = Self.secondsInHour.milliseconds
 
         guard inMillis % hourInMillis != 0 else {
-            return UInt64(inMillis).timeInterval
+            return UInt64(inMillis).millisecondsToSeconds()
         }
 
         let nextHour = (inMillis / hourInMillis) * hourInMillis + hourInMillis
 
-        return UInt64(nextHour).timeInterval
+        return UInt64(nextHour).millisecondsToSeconds()
     }
 
     func getDaysAndHours(roundingDown: Bool) -> (Int, Int) {
@@ -60,14 +60,5 @@ public extension TimeInterval {
         }
 
         return (days, hours + 1)
-    }
-}
-
-private extension UInt64 {
-    var timeInterval: TimeInterval {
-        let fullSeconds = self / 1_000
-        let milliseconds = TimeInterval(self % 1_000) / 1_000.0
-
-        return TimeInterval(fullSeconds) + milliseconds
     }
 }

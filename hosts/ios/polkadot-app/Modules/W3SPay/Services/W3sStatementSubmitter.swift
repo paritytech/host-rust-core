@@ -1,10 +1,13 @@
 import BackgroundExecution
 import Foundation
 import Coinage
+import CoreData
 import CryptoKit
+import DurableTransactions
 import KeyDerivation
 import MessageExchangeKit
 import NovaCrypto
+import Operation_iOS
 import SDKLogger
 import StatementStore
 import SubstrateOperation
@@ -28,6 +31,7 @@ final class W3sStatementSubmitter {
     private let blockInfoProvider: BlockInfoProviding
     private let priorityFactory: StatementPriorityMaking
     private let backgroundExecutor: any BackgroundExecuting
+    private let databaseService: CoreDataServiceProtocol
     private let logger: SDKLoggerProtocol?
 
     init(
@@ -38,6 +42,7 @@ final class W3sStatementSubmitter {
         blockInfoProvider: BlockInfoProviding,
         priorityFactory: StatementPriorityMaking = StatementPriorityFactory(),
         backgroundExecutor: any BackgroundExecuting,
+        storageFacade: StorageFacadeProtocol = UserDataStorageFacade.shared,
         logger: SDKLoggerProtocol? = nil
     ) {
         self.details = details
@@ -47,14 +52,18 @@ final class W3sStatementSubmitter {
         self.blockInfoProvider = blockInfoProvider
         self.priorityFactory = priorityFactory
         self.backgroundExecutor = backgroundExecutor
+        databaseService = storageFacade.databaseService
         self.logger = logger
     }
 }
 
 extension W3sStatementSubmitter: TransferSubmitting {
-    var isFailureFatal: Bool { true }
-
-    func sendTransfer(_ memo: TransferMemo, to _: AccountId, messageId _: Chat.MessageId) async throws {
+    func sendTransfer(
+        _ memo: TransferMemo,
+        to _: AccountId,
+        messageId _: Chat.MessageId,
+        onSaved: @escaping (any DurableTxRegistrationScope) throws -> Void
+    ) async throws {
         // Save pending record immediately for crash-resilience and recovery UX.
         // Memo entries retained so payment can be revoked later. History is
         // auxiliary — a persistence failure must not abort the payment.
@@ -67,6 +76,18 @@ extension W3sStatementSubmitter: TransferSubmitting {
 
         try await backgroundExecutor.execute {
             try await self.submitStatement(memo: memo)
+
+            // Only now are the keys on their way, so only now may the hook run: it makes the handoff
+            // final and schedules the payment's transactions, and `abandon()` undoes neither — it drops
+            // provisional marks only. Run before the statement, a submit failure would leave the coins
+            // given away and the split broadcast to a recipient holding nothing.
+            //
+            // Inside the same assertion as the submit: the window between the statement leaving and the
+            // commit landing is the one place this flow must not be suspended. The history record is
+            // auxiliary and may have failed, so the hook runs in a transaction of its own.
+            try await self.databaseService.performWrite { context in
+                try onSaved(CoreDataRegistrationScope(context: context))
+            }
         }
     }
 }
@@ -96,11 +117,11 @@ private extension W3sStatementSubmitter {
                 )
             }
         } catch {
-            // Coins already moved on-chain before the statement submit. A submit
-            // error here is often a false-negative (statement landed, response
-            // lost), so never mark the payment failed — leave the record for the
-            // tracking service to reconcile against chain truth. Still rethrow:
-            // the chat submitter is fatal for this flow.
+            // A submit error here is often a false-negative (the statement landed, the response was
+            // lost), so never mark the payment failed — leave the record for the tracking service to
+            // reconcile against chain truth. Still rethrow: this submitter is fatal for the flow, and
+            // the caller drops the reservation rather than giving coins away for a statement that may
+            // never have left.
             logger?.error("W3S payment \(details.paymentId) statement submission failed: \(error)")
             throw error
         }

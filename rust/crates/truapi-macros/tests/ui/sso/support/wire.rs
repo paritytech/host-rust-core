@@ -62,6 +62,11 @@ mod host_logic {
                     BarRequest(BarRequest),
                     BarResponse(Response<BarResponse>),
                     BazRequest(Box<Request<bool>>),
+                    Cancel(Withdrawal),
+                }
+
+                pub struct Withdrawal {
+                    pub message_id: String,
                 }
             }
         }

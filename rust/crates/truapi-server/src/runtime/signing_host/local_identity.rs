@@ -1,6 +1,7 @@
 //! Wallet-local identity proofs and authoritative dotNS metadata refresh.
 
 use super::SigningHost;
+use crate::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
 use crate::host_logic::{attestation, dotns_gateway, features};
 use crate::runtime::{connected_session_ui_info, identity};
 use serde::Serialize;
@@ -121,6 +122,9 @@ impl SigningHost {
         let signed_at = identity::registration_timestamp(&self.services.chain, genesis, account)
             .await
             .map_err(error)?;
+        // Loaded before the activation lock: the browser fetches `verifiable`
+        // on first use, and its operations below are then synchronous.
+        let vrf = crate::runtime::vrf::load().await.map_err(error)?;
         let state = self
             .local_grants
             .lock()
@@ -129,13 +133,22 @@ impl SigningHost {
             return Err(error("local identity activation changed"));
         }
         let entropy = self.root_entropy().map_err(error)?;
-        let registration = attestation::build_lite_registration(
+        let vrf_entropy = derive_lite_person_ring_vrf_entropy(&entropy, self.network_suffix());
+        let registration = attestation::build_lite_registration_with(
             &entropy,
             self.network_suffix(),
             verifier,
             username_base,
             None,
             signed_at,
+            vrf.member(&vrf_entropy).map_err(error)?,
+            |message| {
+                let signature = vrf
+                    .sign(&vrf_entropy, message)
+                    .map_err(|err| err.to_string())?;
+                <[u8; 64]>::try_from(signature.as_slice())
+                    .map_err(|_| format!("ring-VRF signature is {} bytes", signature.len()))
+            },
         )
         .map_err(error)?;
         Ok(registration

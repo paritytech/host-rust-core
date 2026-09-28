@@ -111,6 +111,54 @@ Transfer plans determine how coins are spent:
 - Integrates with chat for payment request/confirmation messages
 - See `architecture/chat-extension.md` for chat integration
 
+## Submission Policies (retries)
+
+A coinage transaction proven unable to land is **built again** rather than failed. Each of the three
+retriable kinds registers a `DurableSubmissionPolicy` (see architecture/durable-transactions.md) at
+`CoinageService.make`, keyed by id: `coinage-split`, `coinage-unload`, `coinage-claim`.
+
+All three are one generic — `InputGatedSubmissionPolicy` — composed with a `CoinageRebuild` that only
+knows how to read one kind of transaction back from the ledger, name its inputs, watch them and build
+it. Deciding *when* to wait, build, give up or retry belongs to the policy alone, so that behaviour is
+written and tested once.
+
+- **Gate**: a rebuild waits until every input it spends is present on chain. `awaitInputs` holds out
+  30s once *some* inputs are visible (an input still landing is the ordinary reason a look is
+  incomplete), gives up a call after 5 minutes of nothing visible, and wakes at the deadline rather
+  than waiting on the chain. The newest look wins outright even when narrower — a fork can take an
+  input away, and building against the widest view ever seen would spend what is no longer there.
+- **Presence**: coins come from the chain (`CoinOnChainQuerying.subscribeCoinInfos`, a storage
+  subscription whose accumulator drops a key that goes absent). Vouchers come from **our own rows**
+  (`DatabaseDependencyFactoring.makeTrackedVoucherSnapshotStream()`, filtered to `recycler != nil`) —
+  deliberately not a chain read, because those are the same rows the rebuild builds from, so the gate
+  and the build can never disagree. A chain read could say "in a recycler" while the row the call is
+  built from still has none, and the build would then fail on every attempt until location sync caught
+  up. A voucher counts as present while it sits in a recycler: that is where an unload proves it.
+  Either way a read that fails is never emitted as a look — it must not erase what the chain last
+  showed; a coin subscription that drops instead ends the wait, and the executor's backoff opens a
+  fresh one.
+- **Params** (`CoinageSubmissionParams`) are SCALE and persisted with the row, so a shape change needs
+  a versioned decoder. A transfer carries `buildUntil` + `retryFailures`; a claim carries `retryUntil`
+  and the peer's key, which only the payment message holds. The transfer window is
+  `CoinageConstants.claimRetryWindow` (6h) — the same one the recipient's claim gets, so neither side
+  gives up while the other still tries.
+- **Bounding**: `retryableFailure` lets an `.expired` attempt be rebuilt however late, but a
+  `.dispatchFailed` or `.rejected` one only while the window is open — nothing else stops a failure
+  that always repeats from being rebuilt for ever.
+- **Building** is shared with the first attempt through the extracted declarers
+  (`SplitExtrinsicBuilder`, `UnloadExtrinsicBuilder`, `ClaimExtrinsicBuilder` over
+  `CoinageExtrinsicParts`), which go through `DurableTxServicing.buildExtrinsics` — one build path, not
+  two. An unload resolves a **fresh** free token and recycler revision on every build and notes the
+  quota only once extrinsics actually exist; it re-reads its vouchers after the look so each carries
+  the recycler location it is proven in now.
+- **Claims register once.** `ClaimCoinsService` stops when every coin *has* a claim
+  (`coins − settled.receivedPublicKeys()`), not when every claim finalized. Rebuilding a failed claim
+  is the policy's job, into the coin that claim recorded — a claim retried into a fresh coin would
+  strand a payment already registered against the first one.
+
+Recycling, voucher loading, offramp unloads and installation registration register with no policy and
+keep failing terminally.
+
 ## External Payments (offramp)
 
 `Packages/Coinage/Sources/ExternalPayment/` moves coins to a destination account for a product
@@ -153,4 +201,6 @@ Transfer plans determine how coins are spent:
 | Contract calls          | `Packages/Revive/` (see architecture/revive.md) | Runtime API encoding, revert handling, `EvmAddress` |
 | Backup recovery         | `Packages/Coinage/Sources/Backup/`, `CoinageBackupSyncService` | Scan rules, progress model, restored-balance card |
 | Durability (oracle, asset ledger) | `Packages/Coinage/Sources/CoinageTx/` | Coin/voucher evidence or invariants; the engine itself is `Packages/DurableTransactions` (see architecture/durable-transactions.md) |
+| Retry policies | `Packages/Coinage/Sources/CoinageTx/Submission/` | When a transaction is rebuilt, what it waits for, how long |
+| Extrinsic declaration | `Packages/Coinage/Sources/Transfer/Plan/Builders/` | The call and origin of a split, unload or claim — shared by the first attempt and every rebuild |
 | Instance ID config      | `AppConfig.Coinage.instanceId` | Remote config schema or app instance strategy changes |

@@ -21,6 +21,8 @@ interface DebugMenuContract {
 
     fun onProductBotsClick()
 
+    fun onPocketFacePreviewClick()
+
     fun onRandomizeAccountClick()
 
     fun onOpenSpaBrowserClick()

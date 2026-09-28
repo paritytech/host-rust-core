@@ -10,8 +10,8 @@ public enum CoinSelectionError: Error, Equatable {
     case zeroAmount
     /// The wallet contains no coins or vouchers.
     case emptyWallet
-    /// Voucher is not ready
-    case selectedVoucherIsNotReady
-    /// A recycler group contains more vouchers than the pallet allows per consolidation.
-    case tooManyVouchersInGroup(count: Int, max: Int)
+    /// A single voucher's unload already mints more coins than the pallet allows, so there is no
+    /// smaller call left to split into. Only reachable on a chain whose `MaxSplitOutputs` is
+    /// smaller than its denomination range.
+    case unloadOutputsExceedLimit(outputs: Int, max: Int)
 }
