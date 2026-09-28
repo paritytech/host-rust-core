@@ -2,9 +2,11 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker
 
 import io.parity.truapi.TrUAPIProductExecution
 import io.paritytech.polkadotapp.common.utils.logFailure
+import io.paritytech.polkadotapp.feature_products_api.domain.error.ProductResolutionError
 import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCardKey
 import io.paritytech.polkadotapp.feature_products_api.model.JsWidget
 import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.PocketFaceStreams
+import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.PocketPublishError
 import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.PublishedPocketCards
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.TrUAPIHostRuntimeProvider
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.renderer.toJsWidget
@@ -60,10 +62,17 @@ class TrUAPIPocketFaceStreams @Inject constructor(
         }
     }
 
-    private suspend fun PublishedPocketCards.isStreamable(key: PocketCardKey): Boolean =
-        find(key.productId, key.cardId)
-            .logFailure("Pocket face ${key.cardId.value} has no published card; it keeps the face it has")
-            .isSuccess
+    private suspend fun PublishedPocketCards.isStreamable(key: PocketCardKey): Boolean {
+        var attempt = 0L
+        while (true) {
+            val failure = find(key.productId, key.cardId)
+                .logFailure("Pocket face ${key.cardId.value} has no published card; it keeps the face it has")
+                .exceptionOrNull() ?: return true
+            // Only the manifest's own answer is final; a read that did not land says nothing about the card.
+            if (failure is PocketPublishError || failure is ProductResolutionError.MalformedManifest) return false
+            delay(reopenDelay(attempt++))
+        }
+    }
 
     /**
      * A render that fails is opened again on the same worker. Ending here instead would leave the
