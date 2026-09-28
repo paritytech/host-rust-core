@@ -3,8 +3,6 @@
 //! [`ProtocolMessage`](crate::frame::ProtocolMessage) frames into a
 //! product-scoped runtime.
 //!
-//! Feature-gated (`ws-bridge`) so wasm32 and builds without a WebSocket listener stay lean.
-//!
 //! Executions under one host share a [`SharedWsBridge`] listener and the
 //! process-wide `tokio` runtime, with independent tokens and connections.
 //!
