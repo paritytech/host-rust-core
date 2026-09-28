@@ -860,10 +860,12 @@ impl SigningHostRuntime {
     pub async fn answer_sso_request(
         &self,
         message: RemoteMessage,
-    ) -> SsoRequestOutcome<RemoteMessage> {
+    ) -> SsoRequestOutcome {
         let service = SigningHostSsoService::new(self.signing_host.clone());
         match service.answer(message).await {
-            Dispatch::Response(answer) => SsoRequestOutcome::Response(answer.message),
+            Dispatch::Response(answer) => SsoRequestOutcome::Response {
+                message: answer.message.encode(),
+            },
             Dispatch::Disconnected => SsoRequestOutcome::Disconnected,
             Dispatch::NotARequest(_) | Dispatch::Withdraw(_) | Dispatch::Withdrawn => {
                 SsoRequestOutcome::Ignored
@@ -3407,9 +3409,11 @@ mod tests {
             )),
         };
         let outcome = futures::executor::block_on(runtime.answer_sso_request(request));
-        let SsoRequestOutcome::Response(response) = outcome else {
+        let SsoRequestOutcome::Response { message } = outcome else {
             panic!("expected a response outcome");
         };
+        let response =
+            RemoteMessage::decode(&mut message.as_slice()).expect("valid response encoding");
         assert_eq!(response.message_id, "m3:response");
         let RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(payload)) =
             response.data
