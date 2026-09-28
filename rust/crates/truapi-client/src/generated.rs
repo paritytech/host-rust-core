@@ -5,7 +5,7 @@
 use super::*;
 
 /// Fingerprint of the generated wire contract.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "bb70fece291da443";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "4562662cc9dd55ae";
 
 /// `account_connection_status_subscribe` method marker.
 pub struct AccountConnectionStatusSubscribe;
@@ -1642,7 +1642,7 @@ impl ProfilePresent {
         direction: Direction::ProductToHost,
         required_execution: None,
         wire: MethodWire::Request(MethodIds {
-            trait_id: 22,
+            trait_id: 69,
             method_id: 0,
         }),
     };
@@ -1669,7 +1669,7 @@ impl ProfileDisclose {
         direction: Direction::ProductToHost,
         required_execution: None,
         wire: MethodWire::Request(MethodIds {
-            trait_id: 22,
+            trait_id: 69,
             method_id: 1,
         }),
     };
@@ -1696,7 +1696,7 @@ impl ProfileRetract {
         direction: Direction::ProductToHost,
         required_execution: None,
         wire: MethodWire::Request(MethodIds {
-            trait_id: 22,
+            trait_id: 69,
             method_id: 2,
         }),
     };
@@ -1723,7 +1723,7 @@ impl ProfilePresentContact {
         direction: Direction::ProductToHost,
         required_execution: None,
         wire: MethodWire::Request(MethodIds {
-            trait_id: 22,
+            trait_id: 69,
             method_id: 3,
         }),
     };
@@ -1750,7 +1750,7 @@ impl ProfilePlaceContactAvatars {
         direction: Direction::ProductToHost,
         required_execution: None,
         wire: MethodWire::Request(MethodIds {
-            trait_id: 22,
+            trait_id: 69,
             method_id: 4,
         }),
     };
