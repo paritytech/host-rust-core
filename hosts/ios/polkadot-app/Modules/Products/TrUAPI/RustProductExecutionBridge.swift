@@ -58,7 +58,7 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         } else if let parsed = URL(string: url) {
             try await dependencies.navigationRouter.openExternalURL(parsed)
         } else {
-            throw HostNavigateRejection.Navigate(.unknown(reason: "invalid navigation url"))
+            throw HostNavigateToError.Unknown(reason: "invalid navigation url")
         }
     }
 
@@ -72,7 +72,7 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         ).hostDecision
     }
 
-    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws -> NativeDevicePermissionStatus {
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws -> DevicePermissionStatus {
         switch request {
         case .camera,
              .microphone,

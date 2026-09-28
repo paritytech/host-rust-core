@@ -3,7 +3,7 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.retryWhen
-import uniffi.truapi_server.ProductRuntimeException
+import uniffi.truapi.ProductRuntimeException
 import kotlin.time.Duration
 
 /**

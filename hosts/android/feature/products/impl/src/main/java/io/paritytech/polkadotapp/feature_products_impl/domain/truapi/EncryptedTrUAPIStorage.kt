@@ -3,9 +3,8 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.EncryptedPreferences
-import uniffi.truapi.HostLocalStorageReadError
-import uniffi.truapi_server.HostRejection
-import uniffi.truapi_server.HostStorageException
+import uniffi.truapi.HostRejection
+import uniffi.truapi.HostLocalStorageReadException
 
 /**
  * Product-scoped storage for the Rust core, encrypted at rest.
@@ -94,8 +93,8 @@ private fun writeValue(preferences: EncryptedPreferences, key: String, value: By
     return if (preferences.getDecryptedString(key) == tagged) null else "failed to persist $key"
 }
 
-private fun storageFailure(reason: String): HostStorageException =
-    HostStorageException.Storage(HostLocalStorageReadError.Unknown(reason))
+private fun storageFailure(reason: String): HostLocalStorageReadException =
+    HostLocalStorageReadException.Unknown(reason)
 
 @OptIn(ExperimentalStdlibApi::class)
 private fun ByteArray.toHex(): String = toHexString()
