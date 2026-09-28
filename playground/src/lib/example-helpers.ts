@@ -546,11 +546,15 @@ function encodeSignedExtensions(
   builder: DynamicBuilder,
   chainState: ChainState,
 ): TxPayloadExtension[] {
-  const exts = metadata.extrinsic.signedExtensions[0] as Array<{
-    identifier: string;
-    type: number;
-    additionalSigned: number;
-  }>;
+  const exts = (
+    metadata.extrinsic.signedExtensions[0] as Array<{
+      identifier: string;
+      type: number;
+      additionalSigned: number;
+    }>
+  )
+    // Left out, VerifyMultiSignature is filled by the host with its signature.
+    .filter((ext) => ext.identifier !== "VerifyMultiSignature");
 
   return exts.map((ext) => {
     const values = signedExtensionValues(ext, lookupFn, chainState);
@@ -603,8 +607,6 @@ function signedExtensionValues(
         extra: { type: "Immortal" },
         additionalSigned: toHex(chainState.genesisHash),
       };
-    case "VerifyMultiSignature":
-      return { extra: { type: "Disabled" }, additionalSigned: undefined };
     case "ChargeAssetTxPayment":
       return {
         extra: { tip: 0, asset_id: undefined },

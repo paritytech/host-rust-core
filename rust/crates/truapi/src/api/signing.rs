@@ -60,13 +60,7 @@ pub trait Signing: Send + Sync {
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
     ///
-    /// // Leaving VerifyMultiSignature to the host lets it sign.
-    /// const result = await truapi.signing.createTransaction({
-    ///   ...payload.value,
-    ///   extensions: payload.value.extensions.filter(
-    ///     (ext) => ext.id !== "VerifyMultiSignature",
-    ///   ),
-    /// });
+    /// const result = await truapi.signing.createTransaction(payload.value);
     /// assert(result.isOk(), "createTransaction failed:", result);
     /// console.log("transaction created:", result.value);
     /// ```
@@ -112,9 +106,6 @@ pub trait Signing: Send + Sync {
     ///
     /// const result = await truapi.signing.createTransactionWithLegacyAccount({
     ///   ...payload.value,
-    ///   extensions: payload.value.extensions.filter(
-    ///     (ext) => ext.id !== "VerifyMultiSignature",
-    ///   ),
     ///   signer: accountResult.value.account.publicKey,
     /// });
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
