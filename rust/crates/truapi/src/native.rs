@@ -5407,30 +5407,25 @@ mod tests {
         let permission = PermissionAuthorizationRequest::Device(motion);
         let authorize =
             || futures::executor::block_on(execution.authorize_device_permission(motion));
-        let prompted = authorize().unwrap();
-        let prompts = callbacks.device_permission_calls.load(Ordering::SeqCst);
+        let prompts = || callbacks.device_permission_calls.load(Ordering::SeqCst);
+        let undecided = (authorize().unwrap(), prompts());
         execution
             .set_permission_authorization_status(
                 permission.clone(),
                 PermissionAuthorizationStatus::Authorized,
             )
             .unwrap();
-        let saved = authorize().unwrap();
+        let saved = (authorize().unwrap(), prompts());
         execution
             .set_permission_authorization_status(permission, PermissionAuthorizationStatus::Denied)
             .unwrap();
-        let denied = authorize().unwrap();
+        let denied = (authorize().unwrap(), prompts());
         execution.shutdown();
-        assert_eq!((prompted, saved, denied), (false, true, false));
+        let closed = matches!(authorize(), Err(HostRejection::Rejected { .. }));
         assert_eq!(
-            (
-                prompts,
-                callbacks.device_permission_calls.load(Ordering::SeqCst)
-            ),
-            (1, 1),
-            "only the undecided request prompts",
+            (undecided, saved, denied, closed),
+            ((false, 1), (true, 1), (false, 1), true),
         );
-        assert!(matches!(authorize(), Err(HostRejection::Rejected { .. })));
     }
 
     #[test]
