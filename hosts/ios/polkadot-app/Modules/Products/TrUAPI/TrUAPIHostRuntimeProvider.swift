@@ -23,11 +23,6 @@ protocol TrUAPIHostRuntimeProviding: AnyObject, Sendable {
     /// retries.
     func sharedRuntime() async throws -> TrUAPIHostRuntime
 
-    /// ``sharedRuntime()`` for the synchronous view factories on the main thread.
-    /// Returns at once when the runtime is built, and otherwise blocks the main
-    /// thread until the build finishes; the build itself never runs on it.
-    @MainActor func sharedRuntimeBlockingMain() throws -> TrUAPIHostRuntime
-
     /// Anchor the host's core confirmations (signing, permission prompts) to
     /// the given view. Until it is attached, host-level prompts deny.
     @MainActor func setPresentationView(_ view: ControllerBackedProtocol)
@@ -49,7 +44,6 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
 
     private let lock = NSLock()
     private var boot: Task<TrUAPIHostRuntime, Error>?
-    private var builtRuntime: TrUAPIHostRuntime?
 
     init(
         chainRegistry: ChainRegistryProtocol,
@@ -77,9 +71,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
     func sharedRuntime() async throws -> TrUAPIHostRuntime {
         let boot = currentBoot()
         do {
-            let runtime = try await boot.value
-            lock.withLock { builtRuntime = runtime }
-            return runtime
+            return try await boot.value
         } catch {
             lock.withLock {
                 if self.boot == boot {
@@ -89,31 +81,10 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
             throw error
         }
     }
-
-    @MainActor
-    func sharedRuntimeBlockingMain() throws -> TrUAPIHostRuntime {
-        if let runtime = lock.withLock({ builtRuntime }) {
-            return runtime
-        }
-
-        let outcome = BootOutcome()
-        let finished = DispatchSemaphore(value: 0)
-        Task.detached(priority: .userInitiated) { [self] in
-            do {
-                outcome.result = .success(try await sharedRuntime())
-            } catch {
-                outcome.result = .failure(error)
-            }
-            finished.signal()
-        }
-        finished.wait()
-        return try outcome.result!.get()
-    }
 }
 
 private extension TrUAPIHostRuntimeProvider {
-    /// Detached so a main-thread caller blocked in
-    /// ``sharedRuntimeBlockingMain()`` never waits on work queued behind it.
+    /// Detached so the build never runs on the caller's actor, whichever that is.
     func currentBoot() -> Task<TrUAPIHostRuntime, Error> {
         lock.withLock {
             if let boot {
@@ -156,10 +127,6 @@ private extension TrUAPIHostRuntimeProvider {
         bridge.attach(runtime)
         return runtime
     }
-}
-
-private final class BootOutcome: @unchecked Sendable {
-    var result: Result<TrUAPIHostRuntime, Error>?
 }
 
 extension TrUAPIHostRuntimeProvider {
