@@ -209,7 +209,7 @@ impl Features for CallbackPlatform {
 #[async_trait]
 impl ProductStorage for CallbackPlatform {
     async fn read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
-        self.callbacks.local_storage_read(key)
+        self.callbacks.local_storage_read(key).await
     }
 
     async fn write(
@@ -218,14 +218,15 @@ impl ProductStorage for CallbackPlatform {
         value: Vec<u8>,
     ) -> Result<(), v01::HostLocalStorageReadError> {
         self.callbacks
-            .local_storage_write(key.clone(), value.clone())?;
+            .local_storage_write(key.clone(), value.clone())
+            .await?;
         self.storage_events
             .notify_storage_changed(&key, Some(value));
         Ok(())
     }
 
     async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
-        self.callbacks.local_storage_clear(key.clone())?;
+        self.callbacks.local_storage_clear(key.clone()).await?;
         self.storage_events.notify_storage_changed(&key, None);
         Ok(())
     }
@@ -242,6 +243,7 @@ impl ProductStorage for CallbackPlatform {
         let current = async move {
             callbacks
                 .local_storage_read(key)
+                .await
                 .map(|value| v01::HostLocalStorageChangeItem { value })
                 .map_err(|error| v01::GenericError {
                     reason: error.to_string(),
@@ -289,6 +291,7 @@ impl CoreStorage for CallbackPlatform {
     ) -> Result<Option<Vec<u8>>, v01::GenericError> {
         self.callbacks
             .core_storage_read(key.encode())
+            .await
             .map_err(v01::GenericError::from)
     }
 
@@ -299,12 +302,14 @@ impl CoreStorage for CallbackPlatform {
     ) -> Result<(), v01::GenericError> {
         self.callbacks
             .core_storage_write(key.encode(), value)
+            .await
             .map_err(v01::GenericError::from)
     }
 
     async fn clear_core_storage(&self, key: CoreStorageKey) -> Result<(), v01::GenericError> {
         self.callbacks
             .core_storage_clear(key.encode())
+            .await
             .map_err(v01::GenericError::from)
     }
 }
@@ -603,7 +608,12 @@ impl crate::platform::PocketPlatform for PocketCallbackPlatform {
         let unknown = |error: HostRejection| v01::HostPocketRemoveCardError::Unknown {
             reason: error.to_string(),
         };
-        match self.pocket.remove_card(request.card_id).map_err(unknown)? {
+        match self
+            .pocket
+            .remove_card(request.card_id)
+            .await
+            .map_err(unknown)?
+        {
             NativePocketRemoval::Privileged => Err(v01::HostPocketRemoveCardError::Privileged),
             // A card this host does not hold is already removed.
             NativePocketRemoval::Absent => Ok(()),
