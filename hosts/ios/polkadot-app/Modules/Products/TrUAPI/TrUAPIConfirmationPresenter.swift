@@ -98,10 +98,13 @@ private extension TrUAPIConfirmationPresenter {
             )
         case let .productSubtree(subtreeReview):
             await confirmAction(promptMapper.makeActionRequest(from: subtreeReview))
+        // No prompt exists for profile disclosure yet, so `confirmPermission`
+        // refuses it.
         case .identityDisclosure,
              .chatAuthority,
              .accountAccess,
-             .accountAlias:
+             .accountAlias,
+             .profileDisclosure:
             await confirmPermission(review: review, from: requesterName) != .deny
         case let .createProof(proofReview):
             try await confirmCreateProof(
