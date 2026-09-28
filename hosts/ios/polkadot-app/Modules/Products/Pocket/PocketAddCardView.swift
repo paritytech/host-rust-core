@@ -68,31 +68,27 @@ struct PocketAddCardView: View {
                 .textStyle(.body16Regular())
                 .foregroundStyle(Color(.fgSecondary))
                 .multilineTextAlignment(.center)
-            Button(String(localized: .pocketAddCardCancel)) { viewModel.onFinish() }
-                .buttonStyle(.bordered)
+            DSButton(.pocketAddCardCancel, style: .secondary) { viewModel.onFinish() }
         }
     }
 
+    /// Both buttons are held while the card is being stored, and the confirm
+    /// one carries the spinner: a sheet that answers nothing on a press reads
+    /// as a press that missed.
     private var actions: some View {
         HStack(spacing: 12) {
-            Button(String(localized: .pocketAddCardCancel)) { viewModel.onFinish() }
-                .buttonStyle(.bordered)
-                .frame(maxWidth: .infinity)
+            DSButton(.pocketAddCardCancel, style: .secondary, expands: true) { viewModel.onFinish() }
                 .disabled(viewModel.isAdding)
 
-            Button {
+            DSButton(.pocketAddCardConfirm, expands: true) {
                 Task { await viewModel.add() }
-            } label: {
+            }
+            .disabled(viewModel.isAdding)
+            .overlay {
                 if viewModel.isAdding {
                     ProgressView()
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Text(String(localized: .pocketAddCardConfirm))
-                        .frame(maxWidth: .infinity)
                 }
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.isAdding)
         }
     }
 }

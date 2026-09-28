@@ -2,7 +2,7 @@ import Products
 import UIKit
 import UIKitExt
 
-final class WalletMainWireframe: WalletMainWireframeProtocol {
+final class WalletMainWireframe: WalletMainWireframeProtocol, AlertPresentable {
     private let personDataStore: DetermineStatePersonDataStore
     private let moduleNavigator: ModuleNavigating
     private let flowState: SPAFlowState
@@ -22,17 +22,22 @@ final class WalletMainWireframe: WalletMainWireframeProtocol {
     }
 
     func confirmPocketCardRemoval(_: PocketCardViewModel, onConfirm: @escaping () -> Void) {
-        let alert = UIAlertController(
-            title: String(localized: .pocketCardRemoveConfirmTitle),
-            message: String(localized: .pocketCardRemoveConfirmMessage),
-            preferredStyle: .alert
+        present(
+            viewModel: AlertPresentableViewModel(
+                title: String(localized: .pocketCardRemoveConfirmTitle),
+                message: String(localized: .pocketCardRemoveConfirmMessage),
+                actions: [
+                    AlertPresentableAction(
+                        title: String(localized: .pocketCardRemove),
+                        style: .destructive,
+                        handler: onConfirm
+                    )
+                ],
+                closeActionTitle: String(localized: .pocketAddCardCancel)
+            ),
+            style: .alert,
+            from: nil
         )
-        alert.addAction(UIAlertAction(title: String(localized: .pocketAddCardCancel), style: .cancel))
-        alert.addAction(
-            UIAlertAction(title: String(localized: .pocketCardRemove), style: .destructive) { _ in onConfirm() }
-        )
-
-        UIWindow.topWindow?.topmostViewController?.present(alert, animated: true)
     }
 
     func showCollectibles(from view: WalletMainViewProtocol?, url: URL) {

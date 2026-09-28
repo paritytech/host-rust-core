@@ -26,11 +26,10 @@ enum PocketAddCardViewFactory {
 
         // Sized to the card rather than to the screen: this asks for one
         // decision, and what is behind it stays visible.
-        controller.modalPresentationStyle = .pageSheet
-        controller.sheetPresentationController?.detents = [
-            .custom { _ in PocketAddCardView.sheetHeight }
-        ]
-        controller.sheetPresentationController?.preferredCornerRadius = PocketCardSize.cornerRadius
+        BottomSheetViewFacade.setupBottomSheet(
+            from: controller,
+            preferredHeight: PocketAddCardView.sheetHeight
+        )
 
         return controller
     }

@@ -6,11 +6,17 @@ import UIKitExt
 /// A link the host claimed but cannot serve must say so: staying silent reads
 /// as the app having ignored the tap, and the user retries it.
 @MainActor
-enum PocketRefusalPresenter {
-    static func show(_ message: String) {
-        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: String(localized: .pocketAlertOk), style: .default))
+final class PocketRefusalPresenter: AlertPresentable {
+    static let shared = PocketRefusalPresenter()
 
-        UIWindow.topWindow?.topmostViewController?.present(alert, animated: true)
+    private init() {}
+
+    static func show(_ message: String) {
+        shared.present(
+            message: message,
+            title: nil,
+            closeAction: String(localized: .pocketAlertOk),
+            from: nil
+        )
     }
 }
