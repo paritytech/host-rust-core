@@ -1,7 +1,7 @@
 // TrUAPIHost - iOS host adapter.
 //
-// The Rust core (compiled to `libtruapi_server`, surfaced through UniFFI in
-// the sibling `truapi_server.swift` file) owns wire decoding, request
+// The Rust core (compiled to `libtruapi`, surfaced through UniFFI in the
+// sibling `truapi.swift` file) owns wire decoding, request
 // routing, subscription lifecycle, and platform trait dispatch.
 //
 // This file exposes the process-owned `TrUAPIHostRuntime`, its independently
@@ -18,96 +18,6 @@ import UIKit
 /// Package metadata.
 public enum TrUAPIHost {
     public static let version = "0.1.0"
-}
-
-/// Immutable process-wide configuration shared by all product executions.
-public struct HostRuntimeConfig: Sendable, Equatable {
-    public let hostName: String
-    public let hostIcon: String?
-    public let hostVersion: String?
-    public let platformType: String?
-    public let platformVersion: String?
-    public let peopleChainGenesisHash: Data
-    public let bulletinChainGenesisHash: Data
-    /// Asset Hub genesis hash, where the dotNS contracts are deployed. Product
-    /// manifests are read from there, so this is what makes a `trustedProducts`
-    /// grant resolvable. 32 zero bytes says this host has no Asset Hub, and no
-    /// manifest then resolves, so every cross-product grant is refused except
-    /// one already cached, which is served without consulting this.
-    public let assetHubChainGenesisHash: Data
-    /// The network's dotNS TLD without the leading dot (`dot`, `paseo`,
-    /// `testnet`). The core derives the wallet's reserved identities under it:
-    /// `uid.<suffix>` for the identity account and `peopl.<suffix>` for the
-    /// person ring-VRF keys, the same person the app's own onboarding derives
-    /// on that network.
-    public let networkSuffix: String
-    public let localSessionSecret: Data?
-    public let localSessionLiteUsername: String?
-
-    public init(
-        hostName: String,
-        hostIcon: String? = nil,
-        hostVersion: String? = nil,
-        platformType: String? = nil,
-        platformVersion: String? = nil,
-        peopleChainGenesisHash: Data,
-        bulletinChainGenesisHash: Data,
-        assetHubChainGenesisHash: Data,
-        networkSuffix: String,
-        localSessionSecret: Data? = nil,
-        localSessionLiteUsername: String? = nil
-    ) {
-        self.hostName = hostName
-        self.hostIcon = hostIcon
-        self.hostVersion = hostVersion
-        self.platformType = platformType
-        self.platformVersion = platformVersion
-        self.peopleChainGenesisHash = peopleChainGenesisHash
-        self.bulletinChainGenesisHash = bulletinChainGenesisHash
-        self.assetHubChainGenesisHash = assetHubChainGenesisHash
-        self.networkSuffix = networkSuffix
-        self.localSessionSecret = localSessionSecret
-        self.localSessionLiteUsername = localSessionLiteUsername
-    }
-
-    fileprivate var native: NativeHostRuntimeConfig {
-        NativeHostRuntimeConfig(
-            hostName: hostName,
-            hostIcon: hostIcon,
-            hostVersion: hostVersion,
-            hostPlatform: .ios,
-            platformType: platformType,
-            platformVersion: platformVersion,
-            peopleChainGenesisHash: peopleChainGenesisHash,
-            bulletinChainGenesisHash: bulletinChainGenesisHash,
-            networkSuffix: networkSuffix,
-            localSessionSecret: localSessionSecret,
-            localSessionLiteUsername: localSessionLiteUsername,
-            assetHubChainGenesisHash: assetHubChainGenesisHash
-        )
-    }
-}
-
-/// Host-selected identity and trusted kind for one executable connection.
-public struct ProductExecutionConfig: Sendable, Equatable {
-    public let productId: String
-    public let executionKind: ProductExecutionKind
-
-    public init(productId: String, executionKind: ProductExecutionKind) {
-        self.productId = productId
-        self.executionKind = executionKind
-    }
-
-    fileprivate init(native: NativeProductExecutionConfig) {
-        self.init(productId: native.productId, executionKind: native.executionKind)
-    }
-
-    fileprivate var native: NativeProductExecutionConfig {
-        NativeProductExecutionConfig(
-            productId: productId,
-            executionKind: executionKind
-        )
-    }
 }
 
 /// Bootstrap helper for the native localhost WebSocket bridge that a product
@@ -128,7 +38,7 @@ public protocol HostStorageBackend: AnyObject, Sendable {
 }
 
 /// Core-owned host-private storage backend. Keys are SCALE-encoded
-/// `truapi_platform::CoreStorageKey` values, so embedders can persist them
+/// `truapi::platform::CoreStorageKey` values, so embedders can persist them
 /// opaquely or decode them to choose a secure backing store per slot.
 public protocol HostCoreStorageBackend: AnyObject, Sendable {
     func read(key: Data) throws -> Data?
@@ -181,7 +91,7 @@ public protocol HostBridge: AnyObject, Sendable {
     /// governing. Defaults to `.notApplicable`, so an app that does not
     /// implement it keeps today's behaviour.
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> NativeDevicePermissionStatus
+        -> DevicePermissionStatus
 
     /// Prompt for a remote permission bundle `product` requested on the main
     /// actor, suspending until the user decides.
@@ -298,13 +208,13 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     /// normalized these arguments and screened the icon scheme; escaping them
     /// for the surface that renders them is still the host's job.
     func createRoom(roomId: String, name: String, icon: String) async throws
-        -> NativeChatRoomRegistrationStatus
+        -> ChatRoomRegistrationStatus
 
     /// Register or resolve a native product Chat bot. The core has bounded and
     /// normalized these arguments and screened the icon scheme; escaping them
     /// for the surface that renders them is still the host's job.
     func registerBot(botId: String, name: String, icon: String) async throws
-        -> NativeChatBotRegistrationStatus
+        -> ChatBotRegistrationStatus
 
     /// Persist a product-authored message in native Chat storage. Throw for a
     /// content variant this host cannot render.
@@ -364,7 +274,7 @@ public protocol ContactsHostBridge: AnyObject, Sendable {
     /// Present the picker on behalf of `productId` and report what the user
     /// did. With no contacts, answer `.noContacts` instead of drawing an empty
     /// overlay.
-    func pickContact(productId: String) async throws -> NativeContactPick
+    func pickContact(productId: String) async throws -> HostContactPick
 }
 
 public extension HostBridge {
@@ -393,7 +303,7 @@ public extension HostBridge {
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
     func devicePaired(device: PairedSsoPeer) {}
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> NativeDevicePermissionStatus { .notApplicable }
+        -> DevicePermissionStatus { .notApplicable }
     /// Defaults opt out of worker keep-alive; override to run background work
     /// past the product's surface. The id is still distinct per call, because
     /// an `OperationId` names one operation: a host overriding only
@@ -438,7 +348,7 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         roomId: String,
         name: String,
         icon: String
-    ) async throws -> NativeChatRoomRegistrationStatus {
+    ) async throws -> ChatRoomRegistrationStatus {
         try await withHostRejection {
             try await bridge.createRoom(roomId: roomId, name: name, icon: icon)
         }
@@ -448,7 +358,7 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         botId: String,
         name: String,
         icon: String
-    ) async throws -> NativeChatBotRegistrationStatus {
+    ) async throws -> ChatBotRegistrationStatus {
         try await withHostRejection {
             try await bridge.registerBot(botId: botId, name: name, icon: icon)
         }
@@ -522,23 +432,13 @@ private final class ContactsCallbackAdapter: NativeContactsCallbacks, @unchecked
         }
     }
 
-    func pickContact(productId: String) async throws -> NativeContactPick {
+    func pickContact(productId: String) async throws -> HostContactPick {
         do {
             return try await bridge.pickContact(productId: productId)
         } catch let error as HostRejection {
             throw error
         } catch {
             throw HostRejection.Rejected(reason: hostRejectionReason(error))
-        }
-    }
-}
-
-private extension PermissionDecision {
-    var native: NativePermissionDecision {
-        switch self {
-        case .allowOnce: .allowOnce
-        case .allowAlways: .allowAlways
-        case .deny: .deny
         }
     }
 }
@@ -584,19 +484,19 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     }
 
     func devicePermission(
-        product: NativeProductExecutionConfig,
+        product: ProductExecutionConfig,
         request: HostDevicePermissionRequest
-    ) async throws -> NativePermissionDecision {
+    ) async throws -> PermissionDecision {
         try await withHostRejection {
             try await bridge.devicePermission(
-                product: ProductExecutionConfig(native: product),
+                product: product,
                 request: request
-            ).native
+            )
         }
     }
 
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> NativeDevicePermissionStatus
+        -> DevicePermissionStatus
     {
         try await withHostRejection {
             try await bridge.devicePermissionStatus(request: request)
@@ -604,14 +504,14 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     }
 
     func remotePermission(
-        product: NativeProductExecutionConfig,
+        product: ProductExecutionConfig,
         request: RemotePermission
-    ) async throws -> NativePermissionDecision {
+    ) async throws -> PermissionDecision {
         try await withHostRejection {
             try await bridge.remotePermission(
-                product: ProductExecutionConfig(native: product),
+                product: product,
                 request: request
-            ).native
+            )
         }
     }
 
@@ -661,9 +561,9 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func confirmPermission(review: UserConfirmationReview) async throws -> NativePermissionDecision {
+    func confirmPermission(review: UserConfirmationReview) async throws -> PermissionDecision {
         try await withHostRejection {
-            try await bridge.confirmPermission(review: review).native
+            try await bridge.confirmPermission(review: review)
         }
     }
 
@@ -750,30 +650,30 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     private func withNavigationRejection<T>(_ operation: () throws -> T) throws -> T {
         do {
             return try operation()
-        } catch let error as HostNavigateRejection {
+        } catch let error as HostNavigateToError {
             throw error
         } catch {
-            throw HostNavigateRejection.Navigate(.unknown(reason: hostRejectionReason(error)))
+            throw HostNavigateToError.Unknown(reason: hostRejectionReason(error))
         }
     }
 
     private func withNavigationRejection<T>(_ operation: () async throws -> T) async throws -> T {
         do {
             return try await operation()
-        } catch let error as HostNavigateRejection {
+        } catch let error as HostNavigateToError {
             throw error
         } catch {
-            throw HostNavigateRejection.Navigate(.unknown(reason: hostRejectionReason(error)))
+            throw HostNavigateToError.Unknown(reason: hostRejectionReason(error))
         }
     }
 
     private func withStorageError<T>(_ operation: () throws -> T) throws -> T {
         do {
             return try operation()
-        } catch let error as HostStorageError {
+        } catch let error as HostLocalStorageReadError {
             throw error
         } catch {
-            throw HostStorageError.Storage(.unknown(reason: hostRejectionReason(error)))
+            throw HostLocalStorageReadError.Unknown(reason: hostRejectionReason(error))
         }
     }
 }
@@ -800,7 +700,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         callbackRetainer = adapter
         let inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
             callbacks: adapter,
-            runtimeConfig: runtimeConfig.native
+            runtimeConfig: runtimeConfig
         )
         self.inner = inner
         self.notificationCenter = notificationCenter
@@ -858,7 +758,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
             callbacks: adapter,
             chatCallbacks: chatAdapter,
             pocketCallbacks: pocketAdapter,
-            executionConfig: configuration.native
+            executionConfig: configuration
         )
         return TrUAPIProductExecution(
             inner: execution,
@@ -999,7 +899,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// dropped by the next pass after ``activateLocalSession(secret:liteUsername:)``
     /// installs a different identity. Re-track those whenever the identity changes.
     public func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws {
-        try inner.trackStatementRenewalTargets(targets: targets.map(\.native))
+        try inner.trackStatementRenewalTargets(targets: targets)
     }
 
     /// The accounts the ledger tracks, in the order they were tracked.
@@ -1007,7 +907,7 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// Needs no active session, so a `BGTaskScheduler` wake can read it on a
     /// cold start before deciding whether a pass is worth running.
     public func statementRenewalTargets() throws -> [TrackedStatementRenewalTarget] {
-        try inner.statementRenewalTargets().map(TrackedStatementRenewalTarget.init(native:))
+        try inner.statementRenewalTargets()
     }
 
     /// The root public key the active identity records its fixed entries under.
@@ -1064,56 +964,6 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// fix and a person may need telling about.
     public func lastStatementRenewalReport() -> StatementRenewalReport? {
         inner.lastStatementRenewalReport()
-    }
-}
-
-/// An account renewal should keep allowed on the Statement Store.
-public enum StatementRenewalTarget: Sendable {
-    /// The statement-store allowance account derived for one product. Resolves
-    /// under whatever root entropy is active, so it survives a rotation.
-    case productStatementAllowance(productId: String)
-    /// The wallet's own SSO account. Also a derivation, so it survives a rotation.
-    case walletSso
-    /// A fixed account, such as a pairing peer's device statement key. Must be
-    /// exactly 32 bytes, and is dropped when the promising identity changes.
-    case account(accountId: Data, label: String)
-
-    var native: NativeStatementRenewalTarget {
-        switch self {
-        case let .productStatementAllowance(productId):
-            .productStatementAllowance(productId: productId)
-        case .walletSso:
-            .walletSso
-        case let .account(accountId, label):
-            .account(accountId: accountId, label: label)
-        }
-    }
-
-    init(native: NativeStatementRenewalTarget) {
-        switch native {
-        case let .productStatementAllowance(productId):
-            self = .productStatementAllowance(productId: productId)
-        case .walletSso:
-            self = .walletSso
-        case let .account(accountId, label):
-            self = .account(accountId: accountId, label: label)
-        }
-    }
-}
-
-/// One entry the renewal ledger holds, as a host reads it back.
-public struct TrackedStatementRenewalTarget: Sendable {
-    /// The account, or the recipe for one, that the host promised to renew.
-    public let target: StatementRenewalTarget
-    /// Root public key that promised a fixed account. A recipe carries none and
-    /// resolves under whichever identity is active. Compare it against
-    /// ``TrUAPIHostRuntime/statementRenewalOwnerKey()`` to tell an entry a pass
-    /// will renew from one it will prune.
-    public let owner: Data?
-
-    init(native: NativeTrackedStatementRenewalTarget) {
-        target = StatementRenewalTarget(native: native.target)
-        owner = native.owner
     }
 }
 

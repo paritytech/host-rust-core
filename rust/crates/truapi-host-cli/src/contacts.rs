@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use truapi::latest::GenericError;
-use truapi_platform::{
+use truapi::platform::{
     ContactsPlatform, HostContactLookup, HostContactMatches, HostContactPick, ProductContext,
     async_trait,
 };
@@ -104,9 +104,7 @@ impl ContactsPlatform for CliContactsHost {
                 self.contacts
                     .iter()
                     .map(|contact| contact.account)
-                    .find(|account| {
-                        &truapi_server::contact_handle(&lookup.handle_key, account) == handle
-                    })
+                    .find(|account| &truapi::contact_handle(&lookup.handle_key, account) == handle)
             })
             .collect();
         Ok(HostContactMatches { accounts })

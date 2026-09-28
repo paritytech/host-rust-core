@@ -10,7 +10,7 @@ name = "truapi-codegen"
 path = "src/main.rs"
 
 [dependencies]
-truapi = { path = "../truapi" }
+truapi = { path = "../truapi", default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

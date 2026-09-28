@@ -50,7 +50,7 @@ mod imp {
     use tokio::net::{TcpListener, TcpStream};
     use tokio_tungstenite::tungstenite::Message;
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-    use truapi_platform::ChainProvider;
+    use truapi_provider::platform::ChainProvider;
     use truapi_provider::{ChainSource, EmbeddedChainProvider};
 
     pub async fn run() {
@@ -143,10 +143,7 @@ mod imp {
         let connection = match provider.connect(*genesis).await {
             Ok(connection) => connection,
             Err(err) => {
-                eprintln!(
-                    "[gateway] {peer}: connect for {path} failed: {}",
-                    err.reason
-                );
+                eprintln!("[gateway] {peer}: connect for {path} failed: {err}");
                 return;
             }
         };

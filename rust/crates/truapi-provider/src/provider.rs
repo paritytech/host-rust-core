@@ -7,8 +7,7 @@ use std::collections::HashMap;
 #[cfg(feature = "smoldot")]
 use std::sync::Mutex;
 
-use truapi::latest::GenericError;
-use truapi_platform::{ChainProvider, JsonRpcConnection};
+use crate::platform::{ChainProvider, JsonRpcConnection};
 
 use crate::config::ChainSource;
 use crate::error::ProviderError;
@@ -259,10 +258,8 @@ impl EmbeddedChainProvider {
     /// The store this provider keeps blobs in, or an error naming what is
     /// missing. Warm start is never skipped quietly: a host that meant to have
     /// it and did not configure one is told so.
-    fn storage(&self) -> Result<std::sync::Arc<dyn crate::storage::StorageClient>, GenericError> {
-        self.storage.clone().ok_or_else(|| GenericError {
-            reason: "this provider was built without storage, so there is nowhere to keep finalized state".to_owned(),
-        })
+    fn storage(&self) -> Result<std::sync::Arc<dyn crate::storage::StorageClient>, ProviderError> {
+        self.storage.clone().ok_or(ProviderError::NoStorage)
     }
 
     /// Whether the embedded client is running this chain right now, whether a
@@ -317,7 +314,7 @@ impl EmbeddedChainProvider {
     /// later read could not take effect. A blob registered through
     /// [`EmbeddedChainProviderBuilder::database`] wins and is not overwritten.
     ///
-    /// Call this before [`connect`](truapi_platform::ChainProvider::connect),
+    /// Call this before [`connect`](crate::platform::ChainProvider::connect),
     /// not from inside a connection callback: on the native bindings `connect`
     /// blocks the calling thread, and a store that needs the main thread would
     /// deadlock underneath it.
@@ -327,7 +324,7 @@ impl EmbeddedChainProvider {
     /// has nothing stored yet, so missing configuration is reported rather than
     /// swallowed. A chain that is already running, or already holds a blob,
     /// answers without consulting storage at all.
-    pub async fn load_database(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
+    pub async fn load_database(&self, genesis_hash: [u8; 32]) -> Result<bool, ProviderError> {
         // A parachain is only as cold as the relay under it, and the relay is
         // the one that warp syncs, so it is seeded first.
         if let Some(relay) = self.relay_of(genesis_hash)
@@ -376,7 +373,7 @@ impl EmbeddedChainProvider {
     ///
     /// Fails when the provider was built without a store, for the same reason
     /// [`load_database`](Self::load_database) does.
-    pub async fn save_database(&self, genesis_hash: [u8; 32]) -> Result<bool, GenericError> {
+    pub async fn save_database(&self, genesis_hash: [u8; 32]) -> Result<bool, ProviderError> {
         // Checked before the snapshot, so a provider with nowhere to write
         // fails without paying for a round trip through the light client.
         self.storage()?;
@@ -402,7 +399,11 @@ impl EmbeddedChainProvider {
     /// exists for: a snapshot that lost the runtime code arriving over a stored
     /// blob that still has it.
     #[cfg(feature = "smoldot")]
-    async fn store_blob(&self, genesis_hash: [u8; 32], blob: String) -> Result<bool, GenericError> {
+    async fn store_blob(
+        &self,
+        genesis_hash: [u8; 32],
+        blob: String,
+    ) -> Result<bool, ProviderError> {
         let store = self.storage()?;
         // A blob carrying the runtime code is never worse than what is stored,
         // so it needs no comparison. Only the weaker case reads what is there,
@@ -448,7 +449,7 @@ impl EmbeddedChainProvider {
     /// Meaningful only for light-client chains. A remote node has no local
     /// database to snapshot and answers the request with a JSON-RPC error,
     /// which surfaces here as an error rather than a wait.
-    pub async fn snapshot(&self, genesis_hash: [u8; 32]) -> Result<String, GenericError> {
+    pub async fn snapshot(&self, genesis_hash: [u8; 32]) -> Result<String, ProviderError> {
         use futures::future::{self, Either};
         use futures::stream::StreamExt;
 
@@ -478,8 +479,7 @@ impl EmbeddedChainProvider {
                         connection.close();
                         return Err(ProviderError::Transport {
                             reason: format!("finalized-database snapshot failed: {reason}"),
-                        }
-                        .into());
+                        });
                     }
                     None => {}
                 },
@@ -488,8 +488,7 @@ impl EmbeddedChainProvider {
                     return Err(ProviderError::Transport {
                         reason: "connection ended before the finalized-database snapshot"
                             .to_owned(),
-                    }
-                    .into());
+                    });
                 }
                 Either::Right(((), _)) => {
                     connection.close();
@@ -498,8 +497,7 @@ impl EmbeddedChainProvider {
                             "no finalized-database snapshot within {}s",
                             SNAPSHOT_TIMEOUT.as_secs()
                         ),
-                    }
-                    .into());
+                    });
                 }
             }
         }
@@ -514,13 +512,13 @@ impl EmbeddedChainProvider {
     }
 }
 
-#[truapi_platform::async_trait]
+#[async_trait::async_trait]
 impl ChainProvider for EmbeddedChainProvider {
     #[tracing::instrument(skip_all, fields(genesis = %hex::encode(genesis_hash)))]
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         // Explicit registrations win; otherwise the catalog resolves the whole
         // network from the genesis hash alone.
         if let Some(source) = self.chains.get(&genesis_hash) {
@@ -536,7 +534,7 @@ impl ChainProvider for EmbeddedChainProvider {
             if connected.is_err() {
                 self.return_seed(genesis_hash, source);
             }
-            return Ok(connected?);
+            return connected;
         }
         #[cfg(feature = "networks")]
         if let Some((catalog, relay)) = crate::networks::catalog_network_chains(genesis_hash) {
@@ -554,18 +552,17 @@ impl ChainProvider for EmbeddedChainProvider {
             if connected.is_err() {
                 self.return_seed(genesis_hash, source);
             }
-            return Ok(connected?);
+            return connected;
         }
         Err(ProviderError::UnknownGenesis {
             genesis: genesis_hash,
-        }
-        .into())
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use truapi_platform::ChainProvider;
+    use crate::platform::ChainProvider;
 
     use super::EmbeddedChainProvider;
     use crate::config::ChainSource;
@@ -576,7 +573,7 @@ mod tests {
         let error = futures::executor::block_on(provider.connect([0xab; 32]))
             .err()
             .expect("connect must fail for an unregistered genesis");
-        assert!(error.reason.contains(&"ab".repeat(32)));
+        assert!(error.to_string().contains(&"ab".repeat(32)));
     }
 
     /// A blob registered for a relay reaches it even when the relay is never
@@ -646,7 +643,7 @@ mod tests {
     }
 
     #[cfg(feature = "smoldot")]
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl crate::storage::StorageClient for MemoryStorageClient {
         async fn load(
             &self,
@@ -934,7 +931,7 @@ mod tests {
             .build();
         let error = futures::executor::block_on(provider.load_database([5; 32]))
             .expect_err("a provider with no storage cannot load a database");
-        assert!(error.reason.contains("without storage"), "{}", error.reason);
+        assert!(error.to_string().contains("without storage"), "{error}");
     }
 
     #[cfg(feature = "ws")]

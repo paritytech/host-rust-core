@@ -25,9 +25,9 @@
 
 use std::sync::Arc;
 
+use crate::platform::{ChainProvider as _, JsonRpcConnection};
 use futures::lock::Mutex;
 use futures::stream::{BoxStream, StreamExt};
-use truapi_platform::{ChainProvider as _, JsonRpcConnection};
 use wasm_bindgen::prelude::*;
 
 use crate::config::ChainSource;
@@ -173,7 +173,7 @@ impl ChainProviderBuilder {
             .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
         let (builder, chains) = builder
             .add_network(name)
-            .map_err(|err| JsError::new(&err.reason))?;
+            .map_err(|err| JsError::new(&err.to_string()))?;
         self.inner = Some(builder);
         Ok(NetworkChains {
             relay: hex0x(&chains.relay),
@@ -269,7 +269,7 @@ impl ChainProviderHandle {
                 if let Err(error) = strong.save_database(genesis).await {
                     tracing::warn!(
                         genesis = %hex0x(&genesis),
-                        reason = %error.reason,
+                        reason = %error,
                         "could not store finalized state"
                     );
                 }
@@ -311,7 +311,7 @@ impl ChainProviderHandle {
             .await
             {
                 futures::future::Either::Left((Err(error), _)) => tracing::warn!(
-                    reason = %error.reason,
+                    reason = %error,
                     "storage unavailable, syncing from the chain-spec checkpoint"
                 ),
                 futures::future::Either::Left((Ok(_), _)) => {}
@@ -325,7 +325,7 @@ impl ChainProviderHandle {
             .inner
             .connect(genesis)
             .await
-            .map_err(|err| JsError::new(&err.reason))?;
+            .map_err(|err| JsError::new(&err.to_string()))?;
         #[cfg(feature = "smoldot")]
         {
             // The relay a parachain syncs through is the chain that actually
@@ -355,7 +355,7 @@ impl ChainProviderHandle {
         self.inner
             .load_database(genesis)
             .await
-            .map_err(|err| JsError::new(&err.reason))
+            .map_err(|err| JsError::new(&err.to_string()))
     }
 
     /// Snapshot the finalized state of the chain and write it to storage.
@@ -373,7 +373,7 @@ impl ChainProviderHandle {
         self.inner
             .save_database(genesis)
             .await
-            .map_err(|err| JsError::new(&err.reason))
+            .map_err(|err| JsError::new(&err.to_string()))
     }
 }
 
@@ -530,7 +530,7 @@ fn describe_js(error: &JsValue) -> String {
 }
 
 #[cfg(feature = "smoldot")]
-#[truapi_platform::async_trait]
+#[async_trait::async_trait]
 impl crate::storage::StorageClient for HostStorageClient {
     async fn load(
         &self,

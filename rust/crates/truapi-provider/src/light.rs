@@ -27,13 +27,13 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
+use crate::platform::JsonRpcConnection;
 use futures::channel::mpsc;
 use futures::stream::{self, BoxStream, StreamExt};
 use smoldot_light::{
     AddChainConfig, AddChainConfigJsonRpc, ChainId, Client, HandleRpcError, JsonRpcResponses,
     StatementProtocolConfig,
 };
-use truapi_platform::JsonRpcConnection;
 
 use crate::config::ChainSource;
 use crate::error::{ProviderError, synthetic_error_frame};
@@ -564,9 +564,9 @@ impl Drop for LightConnection {
 mod tests {
     use std::sync::Arc;
 
+    use crate::platform::ChainProvider;
     use futures::executor::block_on;
     use futures::stream::StreamExt;
-    use truapi_platform::ChainProvider;
 
     use crate::{ChainSource, EmbeddedChainProvider};
 
@@ -658,7 +658,7 @@ mod tests {
             .err()
             .expect("a connect over the cap must fail");
         assert_eq!(
-            error.reason,
+            error.to_string(),
             format!(
                 "the light client already holds {} connections",
                 super::MAX_CONNECTIONS
@@ -712,7 +712,7 @@ mod tests {
             .err()
             .expect("a connect over the cap must fail");
         assert_eq!(
-            error.reason,
+            error.to_string(),
             format!(
                 "the light client already holds {} connections",
                 super::MAX_CONNECTIONS
@@ -739,7 +739,7 @@ mod tests {
         let error = block_on(provider.connect([1; 32]))
             .err()
             .expect("a malformed chain spec must fail to connect");
-        assert!(error.reason.contains("failed to add a chain"));
+        assert!(error.to_string().contains("failed to add a chain"));
     }
 
     #[test]
@@ -754,7 +754,11 @@ mod tests {
         let error = block_on(provider.connect(RELAY_GENESIS))
             .err()
             .expect("an unregistered relay must fail to connect");
-        assert!(error.reason.contains("not a registered light-client chain"));
+        assert!(
+            error
+                .to_string()
+                .contains("not a registered light-client chain")
+        );
     }
 
     #[test]

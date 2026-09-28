@@ -2,7 +2,7 @@
 //!
 //! Emits the server-side wire dispatcher (`dispatcher.rs`) and the
 //! discriminant lookup table (`wire_table.rs`). The generated files are
-//! intended to be included in the `truapi-server` crate.
+//! intended to be included in the `truapi` crate.
 
 use std::fs;
 use std::path::Path;
@@ -22,7 +22,7 @@ pub use dispatcher::generate_dispatcher;
 pub use wasm_bridge::generate_wasm_bridge;
 pub use wire_table::generate_wire_table;
 
-/// Generates the `truapi-server` wire dispatcher, wire table, and the `mod.rs`
+/// Generates the `truapi` wire dispatcher, wire table, and the `mod.rs`
 /// that declares them, into `output_dir`.
 pub fn generate(api: &ApiDefinition, output_dir: &Path, schema_hash: &str) -> Result<()> {
     fs::create_dir_all(output_dir)?;

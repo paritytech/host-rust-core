@@ -8,7 +8,10 @@ use parity_scale_codec::{Decode, Encode};
 ///
 /// [RFC 0019]: https://github.com/paritytech/host-rust-core/blob/main/docs/rfcs/0019-scheduled-notifications.md
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct HostPushNotificationRequest {
     /// Notification text.
     pub text: String,

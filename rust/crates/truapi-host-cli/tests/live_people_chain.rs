@@ -15,8 +15,8 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use truapi_server::statement_allowance::collection::PersonhoodCollection;
-use truapi_server::statement_allowance::{self as alloc, ChainContextCache};
+use truapi::statement_allowance::collection::PersonhoodCollection;
+use truapi::statement_allowance::{self as alloc, ChainContextCache};
 
 /// Default People-chain endpoint, kept in step with `network.rs`.
 const DEFAULT_PEOPLE_WS: &str = "wss://paseo-people-next-system-rpc.polkadot.io";

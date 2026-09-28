@@ -10,11 +10,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::sync::Mutex;
 
+use crate::platform::JsonRpcConnection;
 use futures::channel::mpsc;
 use futures::stream::{self, AbortHandle, BoxStream, Stream, StreamExt};
 use jsonrpsee_client_transport::ws::WsTransportClientBuilder;
 use jsonrpsee_core::client::{ReceivedMessage, TransportReceiverT, TransportSenderT};
-use truapi_platform::JsonRpcConnection;
 use url::Url;
 
 use crate::error::ProviderError;
@@ -231,10 +231,10 @@ fn response_stream<R: TransportReceiverT + Send>(receiver: R) -> impl Stream<Ite
 mod tests {
     use std::sync::Mutex;
 
+    use crate::platform::JsonRpcConnection;
     use futures::channel::mpsc;
     use futures::stream::StreamExt;
     use jsonrpsee_core::client::{ReceivedMessage, TransportReceiverT, TransportSenderT};
-    use truapi_platform::JsonRpcConnection;
 
     use super::WsConnection;
 
@@ -254,7 +254,7 @@ mod tests {
         closed: std::sync::Arc<Mutex<bool>>,
     }
 
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl TransportSenderT for FakeSender {
         type Error = FakeError;
 
@@ -273,7 +273,7 @@ mod tests {
     /// Sender whose `send` always fails, modelling a dead socket.
     struct FailingSender;
 
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl TransportSenderT for FailingSender {
         type Error = FakeError;
 
@@ -290,7 +290,7 @@ mod tests {
     /// request and the bounded buffer fills.
     struct StalledSender;
 
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl TransportSenderT for StalledSender {
         type Error = FakeError;
 
@@ -307,7 +307,7 @@ mod tests {
         frames: mpsc::UnboundedReceiver<Result<ReceivedMessage, FakeError>>,
     }
 
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl TransportReceiverT for FakeReceiver {
         type Error = FakeError;
 
@@ -411,7 +411,7 @@ mod tests {
     /// the connection and `receive()` neither returns nor errors, ever.
     struct SilentReceiver;
 
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl TransportReceiverT for SilentReceiver {
         type Error = FakeError;
 

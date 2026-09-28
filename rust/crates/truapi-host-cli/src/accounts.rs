@@ -9,15 +9,15 @@ use bip39::Mnemonic;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
-use truapi_server::host_logic::product_account::{
+use truapi::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_identity_keypair,
     derive_lite_person_ring_vrf_entropy, product_public_key_to_address,
 };
 
 use crate::attestation;
 use crate::network::NetworkConfig;
-use truapi_server::statement_allowance as alloc;
-use truapi_server::statement_allowance::collection::PersonhoodCollection;
+use truapi::statement_allowance as alloc;
+use truapi::statement_allowance::collection::PersonhoodCollection;
 use zeroize::ZeroizeOnDrop;
 
 const ACCOUNT_STORE_FILE: &str = "accounts.json";
