@@ -2,7 +2,7 @@
 
 *Kotlin wrapper around the TrUAPI Rust core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge.*
 
-Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature), the UniFFI Kotlin bindings (`uniffi.truapi.*`), the Kotlin host adapter (`io.parity.truapi.*`), and the browser container asset. Consumers need no Rust toolchain or NDK.
+Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi.so` for arm64-v8a, armeabi-v7a and x86_64, the UniFFI Kotlin bindings (`uniffi.truapi.*`), the Kotlin host adapter (`io.parity.truapi.*`), and the browser container asset. Consumers need no Rust toolchain or NDK.
 
 ## Consume
 

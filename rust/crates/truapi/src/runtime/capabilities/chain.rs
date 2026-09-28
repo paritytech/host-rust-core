@@ -249,12 +249,10 @@ impl Chain for ProductRuntimeHost {
         CallError<RemoteChainTransactionBroadcastError>,
     > {
         let RemoteChainTransactionBroadcastRequest::V1(inner) = request;
-        self.require_chain_submit(RemoteChainTransactionBroadcastError::V1(
-            v01::GenericError {
-                reason: PERMISSION_DENIED_REASON.to_string(),
-            },
-        ))
-        .await?;
+        let denied = RemoteChainTransactionBroadcastError::V1(v01::GenericError {
+            reason: PERMISSION_DENIED_REASON.to_string(),
+        });
+        self.require_chain_submit(denied).await?;
         if let Some(reason) = cx.cancel().reason() {
             return Err(CallError::Domain(RemoteChainTransactionBroadcastError::V1(
                 v01::GenericError {
