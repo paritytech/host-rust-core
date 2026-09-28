@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -16,7 +17,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
-import io.paritytech.polkadotapp.common.utils.CurrencyConfig
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetBrand
 import io.paritytech.polkadotapp.design.components.bottomsheet.NovaBottomSheetSurface
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
@@ -65,7 +67,7 @@ fun IdDetailsBottomSheetContent(
             VerticalSpacer { small }
 
             NovaText(
-                text = stringResource(RCommon.string.pocket_id_share_subtitle, CurrencyConfig.symbol)
+                text = stringResource(RCommon.string.pocket_id_share_subtitle, LocalPaymentAssetBrand.current.symbol)
                     .withCurrencyTickerStyle(PolkadotTheme.typography.paragraph.large),
                 style = PolkadotTheme.typography.paragraph.large
             )
@@ -132,7 +134,9 @@ internal fun IdShareQrCard(
 
 @Preview
 @Composable
-private fun IdDetailsBottomSheetContentPreview() {
+private fun IdDetailsBottomSheetContentPreview() = CompositionLocalProvider(
+    LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
+) {
     PolkadotTheme {
         IdDetailsBottomSheetContent(
             username = "aboba.77",

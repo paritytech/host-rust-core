@@ -19,8 +19,6 @@ class RootNavigator @Inject constructor(
         performNavigation(R.id.action_global_to_main_graph)
     }
 
-    override fun openAddContact() = performNavigation(R.id.action_global_to_addContactFragment)
-
     override fun openActiveProduct() = performNavigation(R.id.action_global_to_spaBrowserFragment)
 
     override fun openClaimUsername() = performNavigationToGraph(

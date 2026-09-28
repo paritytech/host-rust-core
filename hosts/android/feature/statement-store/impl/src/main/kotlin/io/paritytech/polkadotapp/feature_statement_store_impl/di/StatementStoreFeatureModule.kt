@@ -10,8 +10,10 @@ import io.paritytech.polkadotapp.feature_statement_store_api.data.encryption.Com
 import io.paritytech.polkadotapp.feature_statement_store_api.domain.CommunicationSessionCreator
 import io.paritytech.polkadotapp.feature_statement_store_api.domain.OurDeviceKeypairProvider
 import io.paritytech.polkadotapp.feature_statement_store_api.domain.StatementStoreMessageProver
+import io.paritytech.polkadotapp.feature_statement_store_api.domain.StatementStorePeer
 import io.paritytech.polkadotapp.feature_statement_store_api.domain.slotAllocator.StatementStoreSlotAllocator
 import io.paritytech.polkadotapp.feature_statement_store_impl.data.RealStatementRequestDecoder
+import io.paritytech.polkadotapp.feature_statement_store_impl.data.RealStatementStorePeer
 import io.paritytech.polkadotapp.feature_statement_store_impl.data.RealStatementStoreService
 import io.paritytech.polkadotapp.feature_statement_store_impl.data.encryption.CommunicationEncryptionFactory
 import io.paritytech.polkadotapp.feature_statement_store_impl.data.repository.RealStatementStoreSlotAllocationRepository
@@ -44,6 +46,9 @@ interface StatementStoreFeatureApiModule {
     @Binds
     @Singleton
     fun bindStatementStoreService(impl: RealStatementStoreService): StatementStoreService
+
+    @Binds
+    fun bindStatementStorePeer(impl: RealStatementStorePeer): StatementStorePeer
 
     @Binds
     @Singleton

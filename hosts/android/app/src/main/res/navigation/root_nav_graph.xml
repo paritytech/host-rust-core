@@ -15,11 +15,6 @@
         android:label="ChatFeedFragment" />
 
     <fragment
-        android:id="@+id/addContactFragment"
-        android:name="io.paritytech.polkadotapp.feature_chats_impl.presentation.search.AddContactFragment"
-        android:label="AddContactFragment" />
-
-    <fragment
         android:id="@+id/chatSearchFragment"
         android:name="io.paritytech.polkadotapp.feature_chats_impl.presentation.chatSearch.ChatSearchFragment"
         android:label="ChatSearchFragment" />
@@ -200,10 +195,6 @@
         android:id="@+id/action_global_to_chatFeedFragment"
         app:destination="@id/chatFeedFragment"
         app:popUpTo="@id/mainFragment" />
-
-    <action
-        android:id="@+id/action_global_to_addContactFragment"
-        app:destination="@id/addContactFragment" />
 
     <action
         android:id="@+id/action_global_to_chatSearchFragment"

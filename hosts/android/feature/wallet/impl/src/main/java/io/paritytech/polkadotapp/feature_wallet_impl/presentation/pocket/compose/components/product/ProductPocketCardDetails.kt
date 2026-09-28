@@ -4,9 +4,13 @@ import android.webkit.WebView
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.EnterExitState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -18,6 +22,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -37,6 +43,7 @@ import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.pocketCardSharedElement
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.PocketCardUiModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlin.math.roundToInt
 import io.paritytech.polkadotapp.common.R as RCommon
 
 /**
@@ -63,6 +70,8 @@ fun ProductPocketCardDetails(
         if (arrived) onSettled()
     }
 
+    val fold = rememberExpandedCardFoldState()
+
     Column(modifier = modifier.fillMaxSize()) {
         PolkadotTopBar(
             title = card.title,
@@ -70,23 +79,59 @@ fun ProductPocketCardDetails(
             titleAlignment = TopBarTitleAlignment.Center
         )
 
-        ProductPocketCard(
-            modifier = Modifier
-                .padding(horizontal = PolkadotTheme.spacings.mediumIncreased)
-                .pocketCardSharedElement(cardIndex),
-            card = card,
-            bindings = bindings,
-            onOpen = null,
-            onRemoveRequested = null
-        )
+        FoldableCard(fold = fold) {
+            ProductPocketCard(
+                modifier = Modifier
+                    .padding(horizontal = PolkadotTheme.spacings.mediumIncreased)
+                    .pocketCardSharedElement(cardIndex),
+                card = card,
+                bindings = bindings,
+                onOpen = null,
+                onRemoveRequested = null
+            )
 
-        VerticalSpacer { mediumIncreased }
+            VerticalSpacer { mediumIncreased }
+        }
 
         ExpandedProductContent(
             modifier = Modifier.fillMaxSize(),
             session = session
         )
     }
+}
+
+/**
+ * The card above the product, draggable out of the way.
+ *
+ * Reporting a shorter height as it folds is what grows the product: the column hands on whatever the
+ * card stops asking for. The drag lives here rather than on the product, because the product is a
+ * WebView and forwards no scrolling to Compose.
+ */
+@Composable
+private fun FoldableCard(
+    fold: ExpandedCardFoldState,
+    content: @Composable () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clipToBounds()
+            .layout { measurable, constraints ->
+                val placeable = measurable.measure(constraints)
+                fold.maxFoldPx = placeable.height.toFloat()
+                val shown = (placeable.height - fold.foldedPx).roundToInt().coerceAtLeast(0)
+
+                layout(placeable.width, shown) {
+                    placeable.place(0, -fold.foldedPx.roundToInt())
+                }
+            }
+            .draggable(
+                orientation = Orientation.Vertical,
+                state = rememberDraggableState { delta -> fold.drag(delta) },
+                onDragStopped = { fold.settle() },
+            ),
+        content = { content() },
+    )
 }
 
 @Composable

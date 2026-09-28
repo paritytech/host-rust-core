@@ -2,6 +2,8 @@ package io.paritytech.polkadotapp.app.root.presentation.root.compose
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Transition
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +42,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,6 +76,7 @@ import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
 import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
+import io.paritytech.polkadotapp.design.utils.modifyIf
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.ChainHealthPanel
 import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixin.ChainHealthIndicatorsModel
 import io.paritytech.polkadotapp.feature_products_api.domain.browser.TabInfo
@@ -123,7 +129,6 @@ fun RootNavBar(
     onAppClose: (Long) -> Unit,
     onScanClicked: () -> Unit,
     onScanHandled: (navigate: (() -> Unit)?) -> Unit,
-    onUsernameSearchClick: () -> Unit,
     onScannerTooltipDismiss: () -> Unit,
 ) {
     val availableTabs = BottomTab.availableEntries
@@ -134,15 +139,27 @@ fun RootNavBar(
     val networkStatusSlot = availableTabs.size
     val selectedIndex = if (networkStatusUp) networkStatusSlot else availableTabs.indexOf(currentTab).coerceAtLeast(0)
 
+    val scanPanel = updateTransition(targetState = scanExpanded, label = "ScanPanel")
+    val scanPanelShown = scanPanel.currentState || scanPanel.targetState
+    val focusManager = LocalFocusManager.current
+
+    // The scan panel holds the username field. Its focus goes as soon as the panel starts closing, so the keyboard
+    // leaves while the panel animates out and the bar, still padded above it, rides down with it.
+    LaunchedEffect(scanExpanded) {
+        if (!scanExpanded) focusManager.clearFocus()
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
             .padding(vertical = PolkadotTheme.spacings.small)
-            .navigationBarsPadding(),
+            .navigationBarsPadding()
+            .modifyIf(scanPanelShown) { imePadding() },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        ExpandablePanel(visible = scanExpanded) {
-            ScanPanel(onScanHandled = onScanHandled, onUsernameSearchClick = onUsernameSearchClick)
+        // Weighted so that on a short screen the panel, not the bar below it, gives up height.
+        ExpandablePanel(modifier = Modifier.weight(1f, fill = false), transition = scanPanel) {
+            ScanPanel(onScanHandled = onScanHandled)
         }
         ExpandablePanel(visible = appsExpanded) {
             OpenAppsRow(apps = apps, onAppClick = onAppClick, onAppClose = onAppClose)
@@ -209,15 +226,27 @@ fun RootNavBar(
 }
 
 @Composable
-private fun ExpandablePanel(visible: Boolean, content: @Composable () -> Unit) {
-    AnimatedVisibility(
-        visible = visible,
+private fun ExpandablePanel(modifier: Modifier = Modifier, visible: Boolean, content: @Composable () -> Unit) {
+    ExpandablePanel(
+        modifier = modifier,
+        transition = updateTransition(targetState = visible, label = "ExpandablePanel"),
+        content = content,
+    )
+}
+
+@Composable
+private fun ExpandablePanel(modifier: Modifier = Modifier, transition: Transition<Boolean>, content: @Composable () -> Unit) {
+    transition.AnimatedVisibility(
+        visible = { it },
+        modifier = modifier,
         enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
         exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             PolkadotSurface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false),
                 shape = RoundedCornerShape(NavBarCornerRadius),
                 color = PolkadotTheme.colors.bg.surface.container,
                 border = BorderStroke(PolkadotTheme.borders.default, PolkadotTheme.colors.stroke.primary),

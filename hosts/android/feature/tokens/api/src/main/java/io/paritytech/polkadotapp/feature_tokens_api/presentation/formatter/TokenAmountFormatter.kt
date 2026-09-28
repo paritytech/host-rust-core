@@ -1,10 +1,12 @@
 package io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter
 
 import androidx.compose.runtime.staticCompositionLocalOf
+import io.paritytech.polkadotapp.common.utils.CurrencyConfig
 import io.paritytech.polkadotapp.common.utils.Fraction
 import io.paritytech.polkadotapp.design.utils.noLocalProvidedFor
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.RoundPrecision
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.TokenAmountModel
+import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.TokenSymbolAppearance
 import java.math.BigDecimal
 
 val LocalTokenAmountFormatter = staticCompositionLocalOf<TokenAmountFormatter> {
@@ -53,10 +55,9 @@ private class MockedAmountFormatter : TokenAmountFormatter {
         }
     }
 
-    override fun formatToSymbol(
-        tokenAmount: TokenAmountModel,
-    ): String {
-        return tokenAmount.appearance.symbol
+    override fun formatToSymbol(tokenAmount: TokenAmountModel): String = when (val appearance = tokenAmount.appearance) {
+        TokenSymbolAppearance.DigitalDollar -> CurrencyConfig.defaultSymbol
+        is TokenSymbolAppearance.Symbol -> appearance.symbol
     }
 
     override fun formatAmount(amount: BigDecimal, precision: RoundPrecision): String {

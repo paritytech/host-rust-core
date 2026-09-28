@@ -9,8 +9,6 @@ interface RootRouter : ReturnableRouter {
 
     fun openMain()
 
-    fun openAddContact()
-
     fun openActiveProduct()
 
     fun openDebugMenu()
