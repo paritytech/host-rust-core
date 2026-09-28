@@ -30,7 +30,6 @@ use crate::platform::{
     UserConfirmationReview, async_trait,
 };
 use futures::channel::mpsc;
-use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use parity_scale_codec::Encode;
 use truapi::{Bytes32, latest::HostPlatform, v01};
@@ -235,10 +234,14 @@ impl TryFrom<HostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     type Error = NativeRuntimeConfigError;
 
     fn try_from(config: HostRuntimeConfig) -> Result<Self, Self::Error> {
-        let people_chain_genesis_hash =
-            genesis_hash("people_chain_genesis_hash", &config.people_chain_genesis_hash)?;
-        let bulletin_chain_genesis_hash =
-            genesis_hash("bulletin_chain_genesis_hash", &config.bulletin_chain_genesis_hash)?;
+        let people_chain_genesis_hash = genesis_hash(
+            "people_chain_genesis_hash",
+            &config.people_chain_genesis_hash,
+        )?;
+        let bulletin_chain_genesis_hash = genesis_hash(
+            "bulletin_chain_genesis_hash",
+            &config.bulletin_chain_genesis_hash,
+        )?;
         let asset_hub_chain_genesis_hash = genesis_hash(
             "asset_hub_chain_genesis_hash",
             &config.asset_hub_chain_genesis_hash,
@@ -284,7 +287,6 @@ impl TryFrom<ProductExecutionConfig> for ProductContext {
             .map_err(NativeRuntimeConfigError::from)
     }
 }
-
 
 /// Classify a navigation input exactly like the core's internal navigate host
 /// call: dotNS first, then `localhost`, then normalized external, with
@@ -528,9 +530,16 @@ pub trait HostCallbacks: Send + Sync {
     fn device_paired(&self, device: PairedSsoPeer);
 
     /// Read a value from the host's scoped key-value store.
-    fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError>;
+    fn local_storage_read(
+        &self,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError>;
     /// Write a value to the host's scoped key-value store.
-    fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), v01::HostLocalStorageReadError>;
+    fn local_storage_write(
+        &self,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), v01::HostLocalStorageReadError>;
     /// Clear a value from the host's scoped key-value store.
     fn local_storage_clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError>;
 
@@ -708,13 +717,12 @@ impl NativeTrUApiHostRuntime {
                     reason: err.to_string(),
                 }
             })?;
-        let core = executor.handle();
         if initialized {
             callbacks.on_core_log(
                 "truapi.native.executor.started".to_string(),
                 format!(
                     "runtime_id={} worker_threads={}",
-                    core.id(),
+                    executor.handle().id(),
                     executor.worker_threads()
                 ),
             );
@@ -725,7 +733,7 @@ impl NativeTrUApiHostRuntime {
             events: events.clone(),
             storage_events: events.clone(),
         });
-        let spawner = native_spawner(&core);
+        let spawner = executor.spawner();
         let runtime = Arc::new(SigningHostRuntime::new(
             platform.clone(),
             runtime_config.signing,
@@ -1606,14 +1614,6 @@ pub fn set_log_level(level: String) {
     crate::logging::set_level_from_str(&level);
 }
 
-/// Spawns core tasks on the process-wide runtime.
-fn native_spawner(core: &tokio::runtime::Handle) -> Spawner {
-    let core = core.clone();
-    Arc::new(move |fut: BoxFuture<'static, ()>| {
-        core.spawn(fut);
-    })
-}
-
 struct CallbackPlatform {
     callbacks: Arc<dyn HostCallbacks>,
     events: Arc<NativeEventBus>,
@@ -2423,28 +2423,6 @@ mod tests {
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
-    /// Core tasks run on the shared native runtime, including those spawned
-    /// from a thread outside any runtime, such as a host thread.
-    #[test]
-    fn native_spawner_runs_core_work_on_the_shared_tokio_runtime() {
-        let (shared, _) = crate::native_executor::shared_native_executor().unwrap();
-        let spawner = native_spawner(&shared.handle());
-        let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
-
-        spawner(
-            async move {
-                let runtime = tokio::runtime::Handle::try_current().map(|handle| handle.id());
-                runtime_tx.send(runtime.ok()).unwrap();
-            }
-            .boxed(),
-        );
-
-        let ran_on = runtime_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("spawned core work never ran");
-        assert_eq!(ran_on, Some(shared.handle().id()));
-    }
-
     fn pocket_card(card_id: &str, privileged: bool) -> v01::PocketCard {
         v01::PocketCard {
             card_id: card_id.to_string(),
@@ -2838,7 +2816,10 @@ mod tests {
                 chains: Vec::new(),
             })
         }
-        fn local_storage_read(&self, _key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
+        fn local_storage_read(
+            &self,
+            _key: String,
+        ) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
             Ok(None)
         }
         fn local_storage_write(
@@ -4433,7 +4414,9 @@ mod tests {
             assert_eq!(
                 err,
                 NativeRuntimeConfigError::Invalid {
-                    reason: format!("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {len}"),
+                    reason: format!(
+                        "asset_hub_chain_genesis_hash must be exactly 32 bytes, got {len}"
+                    ),
                 }
             );
         }
@@ -4632,7 +4615,10 @@ mod tests {
             ) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
-            fn local_storage_clear(&self, _key: String) -> Result<(), v01::HostLocalStorageReadError> {
+            fn local_storage_clear(
+                &self,
+                _key: String,
+            ) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
             async fn begin_operation(
@@ -4809,7 +4795,10 @@ mod tests {
             ) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
-            fn local_storage_clear(&self, _key: String) -> Result<(), v01::HostLocalStorageReadError> {
+            fn local_storage_clear(
+                &self,
+                _key: String,
+            ) -> Result<(), v01::HostLocalStorageReadError> {
                 Ok(())
             }
             async fn begin_operation(

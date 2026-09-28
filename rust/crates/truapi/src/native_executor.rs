@@ -3,16 +3,19 @@
 //! and the WebSocket bridge's connections.
 
 use std::io;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use futures::future::BoxFuture;
 use tokio::runtime::{Handle, Runtime};
+
+use crate::subscription::Spawner;
 
 /// Process-wide executor shared by every native host runtime and product bridge.
 ///
 /// The runtime intentionally lives until process exit. Host runtimes and
 /// product bridges have independent lifecycles, so shutting the executor down
 /// with any one of them would interrupt the others.
-pub(crate) struct SharedNativeExecutor {
+pub struct SharedNativeExecutor {
     runtime: Runtime,
 }
 
@@ -27,13 +30,21 @@ impl SharedNativeExecutor {
     }
 
     /// Handle for spawning onto the runtime from any thread, inside it or not.
-    pub(crate) fn handle(&self) -> Handle {
+    pub fn handle(&self) -> Handle {
         self.runtime.handle().clone()
     }
 
     /// Number of worker threads the runtime schedules tasks on.
-    pub(crate) fn worker_threads(&self) -> usize {
+    pub fn worker_threads(&self) -> usize {
         self.runtime.metrics().num_workers()
+    }
+
+    /// Spawner that runs core tasks on this runtime, whichever thread spawns them.
+    pub fn spawner(&self) -> Spawner {
+        let handle = self.handle();
+        Arc::new(move |task: BoxFuture<'static, ()>| {
+            handle.spawn(task);
+        })
     }
 }
 
@@ -42,7 +53,7 @@ static SHARED_NATIVE_EXECUTOR_INIT: Mutex<()> = Mutex::new(());
 
 /// The shared executor, built on first use; the flag is `true` for the call
 /// that built it.
-pub(crate) fn shared_native_executor() -> io::Result<(&'static SharedNativeExecutor, bool)> {
+pub fn shared_native_executor() -> io::Result<(&'static SharedNativeExecutor, bool)> {
     if let Some(executor) = SHARED_NATIVE_EXECUTOR.get() {
         return Ok((executor, false));
     }
@@ -68,7 +79,7 @@ pub(crate) fn shared_native_executor() -> io::Result<(&'static SharedNativeExecu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use futures::FutureExt;
 
     #[test]
     fn shared_executor_uses_multithread_scheduler() {
@@ -109,6 +120,27 @@ mod tests {
             first.expect("first dispatch task"),
             second.expect("second dispatch task"),
         );
+    }
+
+    /// Core tasks run on the shared native runtime, including those spawned
+    /// from a thread outside any runtime, such as a host thread.
+    #[test]
+    fn spawned_core_tasks_run_on_the_shared_runtime() {
+        let (executor, _) = shared_native_executor().expect("shared native executor");
+        let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
+
+        executor.spawner()(
+            async move {
+                let runtime = Handle::try_current().map(|handle| handle.id());
+                runtime_tx.send(runtime.ok()).unwrap();
+            }
+            .boxed(),
+        );
+
+        let ran_on = runtime_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("spawned core task never ran");
+        assert_eq!(ran_on, Some(executor.handle().id()));
     }
 
     #[test]
