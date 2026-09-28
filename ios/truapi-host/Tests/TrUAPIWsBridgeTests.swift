@@ -274,13 +274,13 @@ final class StubChatHostBridge: ChatHostBridge {
         roomId _: String,
         name _: String,
         icon _: String
-    ) async throws -> NativeChatRoomRegistrationStatus { .new }
+    ) async throws -> ChatRoomRegistrationStatus { .new }
 
     func registerBot(
         botId _: String,
         name _: String,
         icon _: String
-    ) async throws -> NativeChatBotRegistrationStatus { .new }
+    ) async throws -> ChatBotRegistrationStatus { .new }
 
     func postMessage(roomId _: String, content _: ChatMessageContent) async throws -> String {
         "message-id"

@@ -27,13 +27,13 @@ use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
+use crate::platform::JsonRpcConnection;
 use futures::channel::mpsc;
 use futures::stream::{self, BoxStream, StreamExt};
 use smoldot_light::{
     AddChainConfig, AddChainConfigJsonRpc, ChainId, Client, HandleRpcError, JsonRpcResponses,
     StatementProtocolConfig,
 };
-use truapi_platform::JsonRpcConnection;
 
 use crate::config::ChainSource;
 use crate::error::{ProviderError, synthetic_error_frame};
@@ -168,12 +168,12 @@ struct AddedChain {
 }
 
 /// Lazily-started shared smoldot client owned by a provider.
-pub(crate) struct LightState {
+pub struct LightState {
     inner: OnceLock<Arc<Mutex<LightInner>>>,
 }
 
 impl LightState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         LightState {
             inner: OnceLock::new(),
         }
@@ -191,7 +191,7 @@ impl LightState {
 
     /// Number of implicit relay chains currently held.
     #[cfg(test)]
-    pub(crate) fn relay_count(&self) -> usize {
+    pub fn relay_count(&self) -> usize {
         lock(self.inner())
             .added
             .values()
@@ -205,7 +205,7 @@ impl LightState {
     /// Answered from the bookkeeping the client keeps rather than from a count of
     /// handed-out connections, because a relay behind a parachain has no
     /// connection and is exactly the chain a stored blob most needs to cover.
-    pub(crate) fn is_added(&self, genesis_hash: [u8; 32]) -> bool {
+    pub fn is_added(&self, genesis_hash: [u8; 32]) -> bool {
         self.inner
             .get()
             .is_some_and(|inner| lock(inner).added.contains_key(&genesis_hash))
@@ -216,7 +216,7 @@ impl LightState {
     ///
     /// Specs pass through [`dialable_spec`] first, so a `/wss`-only bootnode set
     /// is reachable on native targets.
-    pub(crate) async fn connect(
+    pub async fn connect(
         &self,
         genesis_hash: [u8; 32],
         source: &ChainSource,
@@ -564,9 +564,9 @@ impl Drop for LightConnection {
 mod tests {
     use std::sync::Arc;
 
+    use crate::platform::ChainProvider;
     use futures::executor::block_on;
     use futures::stream::StreamExt;
-    use truapi_platform::ChainProvider;
 
     use crate::{ChainSource, EmbeddedChainProvider};
 
@@ -658,7 +658,7 @@ mod tests {
             .err()
             .expect("a connect over the cap must fail");
         assert_eq!(
-            error.reason,
+            error.to_string(),
             format!(
                 "the light client already holds {} connections",
                 super::MAX_CONNECTIONS
@@ -712,7 +712,7 @@ mod tests {
             .err()
             .expect("a connect over the cap must fail");
         assert_eq!(
-            error.reason,
+            error.to_string(),
             format!(
                 "the light client already holds {} connections",
                 super::MAX_CONNECTIONS
@@ -739,7 +739,7 @@ mod tests {
         let error = block_on(provider.connect([1; 32]))
             .err()
             .expect("a malformed chain spec must fail to connect");
-        assert!(error.reason.contains("failed to add a chain"));
+        assert!(error.to_string().contains("failed to add a chain"));
     }
 
     #[test]
@@ -754,7 +754,11 @@ mod tests {
         let error = block_on(provider.connect(RELAY_GENESIS))
             .err()
             .expect("an unregistered relay must fail to connect");
-        assert!(error.reason.contains("not a registered light-client chain"));
+        assert!(
+            error
+                .to_string()
+                .contains("not a registered light-client chain")
+        );
     }
 
     #[test]

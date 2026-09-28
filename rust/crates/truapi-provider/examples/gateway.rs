@@ -50,10 +50,10 @@ mod imp {
     use tokio::net::{TcpListener, TcpStream};
     use tokio_tungstenite::tungstenite::Message;
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-    use truapi_platform::ChainProvider;
+    use truapi_provider::platform::ChainProvider;
     use truapi_provider::{ChainSource, EmbeddedChainProvider};
 
-    pub(super) async fn run() {
+    pub async fn run() {
         let config_path = std::env::args().nth(1).unwrap_or_else(|| usage());
         let config: Value = serde_json::from_str(
             &std::fs::read_to_string(&config_path).expect("the config file must be readable"),
@@ -143,10 +143,7 @@ mod imp {
         let connection = match provider.connect(*genesis).await {
             Ok(connection) => connection,
             Err(err) => {
-                eprintln!(
-                    "[gateway] {peer}: connect for {path} failed: {}",
-                    err.reason
-                );
+                eprintln!("[gateway] {peer}: connect for {path} failed: {err}");
                 return;
             }
         };

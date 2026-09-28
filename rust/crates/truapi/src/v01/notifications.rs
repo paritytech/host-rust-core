@@ -1,8 +1,5 @@
 use parity_scale_codec::{Decode, Encode};
 
-/// Opaque identifier for a push notification, unique per product.
-pub type NotificationId = u32;
-
 /// Push notification payload.
 ///
 /// When `scheduled_at` is `Some`, the notification is deferred to the given
@@ -11,7 +8,10 @@ pub type NotificationId = u32;
 ///
 /// [RFC 0019]: https://github.com/paritytech/host-rust-core/blob/main/docs/rfcs/0019-scheduled-notifications.md
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct HostPushNotificationRequest {
     /// Notification text.
     pub text: String,
@@ -26,7 +26,7 @@ pub struct HostPushNotificationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPushNotificationResponse {
     /// Host-assigned notification identifier.
-    pub id: NotificationId,
+    pub id: u32,
 }
 
 /// Push notification error.
@@ -45,5 +45,5 @@ pub enum HostPushNotificationError {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPushNotificationCancelRequest {
     /// The notification identifier returned by [`HostPushNotificationResponse`].
-    pub id: NotificationId,
+    pub id: u32,
 }

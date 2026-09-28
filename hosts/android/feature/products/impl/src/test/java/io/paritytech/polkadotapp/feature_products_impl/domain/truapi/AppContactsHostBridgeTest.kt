@@ -9,7 +9,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
-import uniffi.truapi_platform.HostContactLookup
+import uniffi.truapi.HostContactLookup
 
 /**
  * The bridge answers lookups from the latest contact snapshot and a handle

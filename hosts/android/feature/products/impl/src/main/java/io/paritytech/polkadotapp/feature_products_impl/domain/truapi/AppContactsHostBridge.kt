@@ -11,9 +11,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
-import uniffi.truapi_platform.HostContactLookup
-import uniffi.truapi_platform.HostContactMatches
-import uniffi.truapi_server.NativeContactPick
+import uniffi.truapi.HostContactLookup
+import uniffi.truapi.HostContactMatches
+import uniffi.truapi.HostContactPick
 import javax.inject.Inject
 
 /**
@@ -77,7 +77,7 @@ class AppContactsHostBridge @Inject constructor(
      * Resolution does not go through here: a handle minted earlier still
      * resolves, because that goes through [contacts] alone.
      */
-    override suspend fun pickContact(productId: String): NativeContactPick {
+    override suspend fun pickContact(productId: String): HostContactPick {
         val options = directory.getContacts().map { contact ->
             ContactPickOption(
                 account = contact.accountId.value,
@@ -85,12 +85,12 @@ class AppContactsHostBridge @Inject constructor(
             )
         }
 
-        if (options.isEmpty()) return NativeContactPick.NoContacts
+        if (options.isEmpty()) return HostContactPick.NoContacts
 
         val picked = pickLauncher.awaitPick(productId, options)
-            ?: return NativeContactPick.Dismissed
+            ?: return HostContactPick.Dismissed
 
-        return NativeContactPick.Picked(picked.account)
+        return HostContactPick.Picked(picked.account)
     }
 
     /**

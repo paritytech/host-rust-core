@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use futures::stream::StreamExt;
 use serde_json::Value;
-use truapi_platform::ChainProvider;
+use truapi_provider::platform::ChainProvider;
 use truapi_provider::{ChainSource, EmbeddedChainProvider};
 
 const PASEO_GENESIS: [u8; 32] = [0; 32]; // Registry key only; not validated.
