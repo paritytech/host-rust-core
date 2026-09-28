@@ -4,20 +4,22 @@ import Products
 import Testing
 @testable import polkadot_app
 
-/// Pressing a card lands on its product, so the archive that product loads from
-/// is fetched ahead of the press. Only for host-placed cards: they are few and
-/// fixed, where a Pocket full of added cards would turn one visit to the tab
-/// into a fetch per product.
+/// Pressing a card opens the product's widget, so the archive the widget is
+/// served from is fetched ahead of the press. Only for host-placed cards: they
+/// are few and fixed, where a Pocket full of added cards would turn one visit
+/// to the tab into a fetch per product.
 @MainActor
 struct PocketPrewarmerTests {
+    /// A pressed card opens the widget, so warming the app archive fetches
+    /// something the press never loads and leaves the press slow anyway.
     @Test
-    func warmsTheArchiveAHostPlacedCardsProductLoadsFrom() async {
+    func warmsTheArchiveAPressedCardOpens() async {
         let archives = RecordingArchives()
         let prewarmer = PocketPrewarmer(products: StubResolver(), dotNsResolver: archives)
 
         await prewarmer.warm([humanity])
 
-        #expect(archives.warmed == ["app.peopl.testnet"])
+        #expect(archives.warmed == ["widget.peopl.testnet"])
     }
 
     /// The bound that makes this safe: a user may hold many added cards, and
@@ -42,7 +44,7 @@ struct PocketPrewarmerTests {
         await prewarmer.warm([humanity, humanity])
         await prewarmer.warm([humanity])
 
-        #expect(archives.warmed == ["app.peopl.testnet"])
+        #expect(archives.warmed == ["widget.peopl.testnet"])
     }
 
     /// A warm that failed left nothing on disk, so the next visit tries again
@@ -56,7 +58,7 @@ struct PocketPrewarmerTests {
         archives.failing = false
         await prewarmer.warm([humanity])
 
-        #expect(archives.warmed == ["app.peopl.testnet", "app.peopl.testnet"])
+        #expect(archives.warmed == ["widget.peopl.testnet", "widget.peopl.testnet"])
     }
 }
 
@@ -85,7 +87,13 @@ private struct StubResolver: ProductResolving {
             icon: nil,
             executables: ProductExecutables(
                 app: ProductExecutable.App(identifier: "app.\(productId)", appVersion: .zero),
-                widget: nil,
+                widget: ProductExecutable.Widget(
+                    identifier: "widget.\(productId)",
+                    appVersion: .zero,
+                    description: nil,
+                    heights: [2],
+                    width: 4
+                ),
                 worker: nil
             ),
             hasManifest: true
