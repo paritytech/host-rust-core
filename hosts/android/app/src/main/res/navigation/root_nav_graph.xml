@@ -367,6 +367,14 @@
         android:id="@+id/action_global_to_truapiConfirmationBottomSheet"
         app:destination="@id/truapiConfirmationBottomSheet" />
 
+    <dialog
+        android:id="@+id/truapiContactPickBottomSheet"
+        android:name="io.paritytech.polkadotapp.feature_products_impl.presentation.truapiContactPick.TrUAPIContactPickBottomSheet" />
+
+    <action
+        android:id="@+id/action_global_to_truapiContactPickBottomSheet"
+        app:destination="@id/truapiContactPickBottomSheet" />
+
     <action
         android:id="@+id/action_global_to_resourceAllocationRequestBottomSheet"
         app:destination="@id/resourceAllocationRequestBottomSheet" />

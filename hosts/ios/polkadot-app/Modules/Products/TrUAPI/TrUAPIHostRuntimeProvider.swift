@@ -44,6 +44,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
 
     private let lock = NSLock()
     private var boot: Task<TrUAPIHostRuntime, Error>?
+    private var contactsChangeNotifier: ContactsChangeNotifier?
 
     init(
         chainRegistry: ChainRegistryProtocol,
@@ -125,6 +126,24 @@ private extension TrUAPIHostRuntimeProvider {
 
         let runtime = try await TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
         bridge.attach(runtime)
+        // Before any product execution opens, so a product never sees the
+        // window where the host lists no contacts.
+        let contactsBridge = AppContactsHostBridge(
+            repositoryFactory: ChatContactRepositoryFactory(),
+            operationQueue: OperationManagerFacade.sharedDefaultQueue,
+            routerFacade: confirmationRouterFacade
+        )
+        runtime.setContacts(contactsBridge)
+        contactsChangeNotifier = ContactsChangeNotifier(
+            dataProviderFactory: ChatContactDataProviderFactory(),
+            logger: logger,
+            onSnapshot: { [weak contactsBridge] contacts in
+                contactsBridge?.update(contacts: contacts)
+            },
+            onRemoval: { [weak runtime] in
+                runtime?.notifyContactsChanged()
+            }
+        )
         return runtime
     }
 }
