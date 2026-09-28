@@ -308,7 +308,7 @@ pub fn has_dotns_tld(normalized: &str) -> bool {
         .is_some_and(|(_, tld)| DOTNS_TLDS.contains(&tld))
 }
 
-/// Blessed product labels across every network in [`DOTNS_TLDS`].
+/// Trusted product labels across every network in [`DOTNS_TLDS`].
 ///
 /// These products bypass recorded permissions and prompt only for device access.
 pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", "dim2", "stash"];

@@ -97,10 +97,12 @@ and tests live in `runtime/tests.rs` and `runtime/tests/`.
 Permission grants are scoped by product id and typed request, so a grant for
 one product never authorizes another product or another permission class.
 
-Blessed products in `truapi::platform::REMOTE_PERMISSION_TRUSTED_LABELS` bypass
+Trusted products in `truapi::platform::REMOTE_PERMISSION_TRUSTED_LABELS` bypass
 recorded permissions. Only device permissions require consent.
 Account access, username disclosure, signing with their own product accounts and
 AutoSigning proceed without approval. Legacy-account signing still asks the user.
+A paired host names the product it relays for without proof, so the policy
+applies only to products this host runs.
 
 ```text
 Product app
@@ -118,7 +120,7 @@ ProductRuntime
         v
 PermissionsService(storage, platform, product_id)
         |
-        +-- blessed product, non-device --> allow without storage or prompt
+        +-- trusted product, non-device --> allow without storage or prompt
         |
         | builds storage key:
         |
@@ -162,7 +164,7 @@ CoreStorage lookup
 
 #### Auto-granted remote permissions
 
-A valid remote permission request from a blessed product is authorized before
+A valid remote permission request from a trusted product is authorized before
 reading or writing permission storage. Empty or invalid domain bundles are denied.
 Other products resolve saved decisions and prompt when undecided.
 
@@ -355,7 +357,7 @@ register product names under, one entry per network a host can be pointed at. A
 name ending in one of them is also what navigation resolves back into the host's
 own product surface, so it bypasses the outbound domain grant.
 
-`REMOTE_PERMISSION_TRUSTED_LABELS` lists the blessed product labels across
+`REMOTE_PERMISSION_TRUSTED_LABELS` lists the trusted product labels across
 all networks in `DOTNS_TLDS`. These products bypass recorded permissions and
 prompt only for device permissions. The runtime grants
 account access, username disclosure, signing with their own product accounts and

@@ -99,7 +99,7 @@ fn reject_undecodable_deeplink(deeplink: &str) -> Result<(), NativePairingError>
 /// Whether `product_id` is a first-party product the host grants every
 /// [`truapi::latest::RemotePermission`] without prompting.
 ///
-/// Blessed products bypass recorded permissions. Only device permissions require
+/// Trusted products bypass recorded permissions. Only device permissions require
 /// consent. Hosts mediating product network access can use this check before storage.
 ///
 /// Normalizes before matching, and answers `false` for an id that does not

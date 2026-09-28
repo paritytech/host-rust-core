@@ -3192,7 +3192,7 @@ fn get_account_other_product_accepts_confirmation_then_derives_key() {
 }
 
 #[test]
-fn get_account_other_product_skips_confirmation_for_a_blessed_product() {
+fn get_account_other_product_skips_confirmation_for_a_trusted_product() {
     let platform = stub_platform();
     let host =
         ProductRuntimeHost::new(platform.clone(), runtime_config("dim2.dot"), test_spawner());

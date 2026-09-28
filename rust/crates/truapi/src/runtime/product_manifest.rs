@@ -27,6 +27,7 @@ use crate::host_logic::dotns_gateway::{
     DotnsTransport, DotnsViewError, call_bytes32, call_no_args, decode_address, decode_string,
     discover_pop_controller, namehash_under,
 };
+use crate::runtime::authority::Caller;
 use crate::runtime::dotns_lookup::DotnsLookup;
 use crate::runtime::services::RuntimeServices;
 use crate::unix_time::current_unix_secs;
@@ -258,7 +259,7 @@ impl RefusedBecause {
     }
 }
 
-/// Scopes `target`'s published manifest grants `caller_id`.
+/// Scopes `target`'s published manifest grants `caller`.
 ///
 /// A grant that cannot be established answers `false` whatever the reason — the
 /// product does not resolve, it published no manifest, the fetch failed, or the
@@ -268,11 +269,11 @@ impl RefusedBecause {
 pub async fn grants_scope(
     services: &RuntimeServices,
     platform: &dyn Platform,
-    caller_id: &str,
+    caller: &Caller,
     target: &str,
     scope: Granted,
 ) -> bool {
-    scope_grant(services, platform, caller_id, target, scope)
+    scope_grant(services, platform, caller, target, scope)
         .await
         .is_ok()
 }
@@ -281,7 +282,7 @@ pub async fn grants_scope(
 pub async fn scope_grant(
     services: &RuntimeServices,
     platform: &dyn Platform,
-    caller_id: &str,
+    caller: &Caller,
     target: &str,
     scope: Granted,
 ) -> Result<(), RefusedBecause> {
@@ -307,7 +308,7 @@ pub async fn scope_grant(
     let Ok(manifest) = RootManifest::parse(&json) else {
         return Err(RefusedBecause::ManifestMalformed);
     };
-    if !manifest.grants(bare_product_label(caller_id), scope) {
+    if !manifest.grants(bare_product_label(caller.product_id()), scope) {
         return Err(RefusedBecause::NotGranted);
     }
     // A publisher's grant waives the publisher's own prompt. For ordinary
@@ -327,10 +328,8 @@ pub async fn scope_grant(
     // its storage, and keeping it here means the frontend and the authority
     // inherit one implementation. A later scope that also implies account access
     // has to name itself here; it does not inherit this.
-    if scope == Granted::Context
-        && !crate::platform::normalizes_to_trusted_remote_permissions(caller_id)
-    {
-        match stored_account_decision(platform, caller_id, target).await {
+    if scope == Granted::Context && !caller.is_trusted() {
+        match stored_account_decision(platform, caller.product_id(), target).await {
             StoredDecision::Denied => return Err(RefusedBecause::UserDenied),
             StoredDecision::Unreadable => return Err(RefusedBecause::DecisionUnreadable),
             StoredDecision::Absent => {}
@@ -509,7 +508,7 @@ pub struct AuthorizedAccess {
     pub owner: String,
 }
 
-/// Whether `calling_product_id` may act on `handle`'s ring-VRF key, adjudicated
+/// Whether `caller` may act on `handle`'s ring-VRF key, adjudicated
 /// by the component that holds the key.
 ///
 /// The caller owns the key, or the owner's published manifest grants the caller
@@ -531,7 +530,7 @@ pub struct AuthorizedAccess {
 pub async fn ring_vrf_key_access_granted(
     services: &RuntimeServices,
     platform: &dyn Platform,
-    calling_product_id: &str,
+    caller: &Caller,
     handle: &v01::ProductAccountId,
 ) -> Result<AuthorizedAccess, RingVrfError> {
     // A caller id that does not normalize names no product, so it holds no key
@@ -539,7 +538,7 @@ pub async fn ring_vrf_key_access_granted(
     // granted nothing rather than an error carrying the string back: on the wire
     // path this field is peer-supplied, and one refusal for every reason is the
     // whole design of this seam.
-    let Ok(caller) = normalize_product_identifier(calling_product_id) else {
+    let Some(caller) = caller.normalized() else {
         return Err(RingVrfError::NotAllowlisted);
     };
     // The handle is normalized here, not only at the frontend. The frontend
@@ -554,8 +553,11 @@ pub async fn ring_vrf_key_access_granted(
     let Ok(owner) = normalize_product_identifier(&handle.dot_ns_identifier) else {
         return Err(RingVrfError::NotAllowlisted);
     };
-    if caller == owner {
-        return Ok(AuthorizedAccess { caller, owner });
+    if caller.product_id() == owner {
+        return Ok(AuthorizedAccess {
+            caller: owner.clone(),
+            owner,
+        });
     }
     let decision = scope_grant(services, platform, &caller, &owner, Granted::Context).await;
     if decision.is_ok() {
@@ -568,11 +570,14 @@ pub async fn ring_vrf_key_access_granted(
         // decision about a pair they were never asked about, but it is what any
         // such surface would have to be built on.
         info!(
-            caller = %caller,
+            caller = %caller.product_id(),
             owner = %owner,
             "ring-VRF key access granted by the owner's manifest"
         );
-        return Ok(AuthorizedAccess { caller, owner });
+        return Ok(AuthorizedAccess {
+            caller: caller.product_id().to_owned(),
+            owner,
+        });
     }
     // The wire answer is one refusal for every reason, so the reason lives here
     // or nowhere. Which door the request came through is not repeated: the
@@ -592,7 +597,7 @@ pub async fn ring_vrf_key_access_granted(
     // the CLI defaults to `info`, so at `debug` this reaches nobody on any
     // shipped host and the refusal is invisible everywhere.
     info!(
-        caller = %caller,
+        caller = %caller.product_id(),
         owner = %owner,
         because = decision.err().map_or("granted", RefusedBecause::as_str),
         "ring-VRF key access refused"

@@ -25,7 +25,7 @@ use super::allowances::{self, AllowanceCacheKey, AllowanceResource};
 use super::auth_state::AuthStateMachine;
 use super::authority::{
     AuthorityError, AuthoritySession, AutoSigningGrant, AutoSigningKey, BulletinAllowanceKey,
-    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
+    Caller, CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
     SignRawAuthorityRequest, StatementStoreAllowanceKey, authority_session,
     require_current_session,
 };
@@ -1962,7 +1962,7 @@ impl PairingHost {
         let access = crate::runtime::product_manifest::ring_vrf_key_access_granted(
             &self.services,
             self.platform.as_ref(),
-            calling_product_id,
+            &Caller::local(calling_product_id),
             handle,
         )
         .await?;
@@ -2154,10 +2154,9 @@ impl PairingHost {
             );
             return Ok(v01::VrfSignature { pre_output, proof });
         }
-        if !super::authority::is_blessed_owner(
-            &calling_product_id,
-            &request.account.dot_ns_identifier,
-        ) {
+        if !Caller::local(&calling_product_id)
+            .is_trusted_owner(&request.account.dot_ns_identifier)
+        {
             let confirmed = super::until_cancelled(
                 cx,
                 self.platform

@@ -26,6 +26,7 @@ use crate::host_internal::sso_messages::{
     SignVrfResponse, SsoAllocatedResource, SsoAllocationOutcome,
 };
 use crate::host_internal::sso_wire::ResponseOutcome;
+use crate::runtime::authority::Caller;
 use crate::host_logic::product_account::{
     derive_ring_vrf_domain_entropy, product_public_key_to_address,
 };
@@ -398,7 +399,11 @@ impl SigningHostSsoService {
         request: ProductRequest<api::HostAccountGetAliasRequest>,
     ) -> GetAccountAliasResponse {
         self.signing_host
-            .account_alias(&cx.call, &cx.session, request)
+            .account_alias_as(
+                &cx.session,
+                &Caller::relayed(request.calling_product_id),
+                request.payload,
+            )
             .await
     }
 
@@ -516,7 +521,11 @@ impl SigningHostSsoService {
         request: ProductRequest<api::HostAccountCreateProofRequest>,
     ) -> CreateAccountProofResponse {
         self.signing_host
-            .create_proof(&cx.call, &cx.session, request)
+            .create_proof_as(
+                &cx.session,
+                &Caller::relayed(request.calling_product_id),
+                request.payload,
+            )
             .await
     }
 
@@ -530,9 +539,8 @@ impl SigningHostSsoService {
             .sign_vrf_request(
                 &cx.call,
                 &cx.session,
-                request.calling_product_id,
+                Caller::relayed(request.calling_product_id),
                 request.payload,
-                false,
             )
             .await
             .map_err(api::HostAccountSignVrfError::from)
@@ -568,7 +576,11 @@ impl SigningHostSsoService {
         request: ProductRequest<api::HostAccountListRingVrfKeysRequest>,
     ) -> ListRingVrfKeysResponse {
         self.signing_host
-            .list_ring_vrf_keys(&cx.call, &cx.session, request)
+            .list_ring_vrf_keys_as(
+                &cx.session,
+                &Caller::relayed(request.calling_product_id),
+                request.payload,
+            )
             .await
     }
 
@@ -579,7 +591,11 @@ impl SigningHostSsoService {
         request: ProductRequest<api::HostAccountRingVrfSignRequest>,
     ) -> RingVrfSignResponse {
         self.signing_host
-            .ring_vrf_sign(&cx.call, &cx.session, request)
+            .ring_vrf_sign_as(
+                &cx.session,
+                &Caller::relayed(request.calling_product_id),
+                request.payload,
+            )
             .await
     }
 }
