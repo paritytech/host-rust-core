@@ -1,6 +1,6 @@
 //! Swift/UniFFI bindings (the `uniffi` feature, native targets).
 //!
-//! Exposes the embedded smoldot [`ChainProvider`](truapi_platform::ChainProvider)
+//! Exposes the embedded smoldot [`ChainProvider`](crate::platform::ChainProvider)
 //! to Swift (and other UniFFI targets): build a provider, connect to a chain by
 //! genesis hash, and drive the raw JSON-RPC string pipe. Chain specs, relay
 //! topology, and statement-store placement come from the bundled network
@@ -21,13 +21,24 @@
 use std::fmt;
 use std::sync::{Arc, Weak};
 
+use crate::platform::{ChainProvider as _, JsonRpcConnection};
 use futures::executor::block_on;
 use futures::stream::BoxStream;
 use futures::stream::StreamExt;
-use truapi_platform::{ChainProvider as _, JsonRpcConnection};
 
 use crate::EmbeddedChainProvider;
 use crate::storage::{StorageClient, StorageClientError};
+
+// uniffi has no fixed-size array type, so a genesis hash crosses as bytes and
+// converts back here. `custom_type!` only accepts a single identifier, which is
+// all this private name is for.
+type GenesisHash = [u8; 32];
+
+uniffi::custom_type!(GenesisHash, Vec<u8>, {
+    remote,
+    lower: |hash| hash.to_vec(),
+    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
+});
 
 /// Errors surfaced to the foreign caller.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -284,7 +295,7 @@ impl ChainProvider {
             // this reason, so it is unbounded at the source and crosses the
             // boundary twice.
             .map_err(|error| ChainProviderError::Storage {
-                reason: bounded_reason(error.reason),
+                reason: bounded_reason(error.to_string()),
             })
     }
 
@@ -306,7 +317,7 @@ impl ChainProvider {
             // this reason, so it is unbounded at the source and crosses the
             // boundary twice.
             .map_err(|error| ChainProviderError::Storage {
-                reason: bounded_reason(error.reason),
+                reason: bounded_reason(error.to_string()),
             })
     }
 
@@ -333,7 +344,7 @@ impl ChainProvider {
         let genesis = genesis_from(genesis_hash)?;
         let connection =
             block_on(self.inner.connect(genesis)).map_err(|error| ChainProviderError::Connect {
-                reason: error.reason,
+                reason: error.to_string(),
             })?;
         let connection: Arc<dyn JsonRpcConnection> = Arc::from(connection);
 
@@ -935,7 +946,7 @@ mod tests {
         }
     }
 
-    #[truapi_platform::async_trait]
+    #[async_trait::async_trait]
     impl StorageClient for RecordingStore {
         async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, StorageClientError> {
             self.calls

@@ -26,7 +26,7 @@ every build and is inert until a sink is installed; the decoder is absent from a
 production product bundle.
 
 ```
- product ──frames──▶ host core (truapi-server)
+ product ──frames──▶ host core (truapi)
                       │  tap: opaque {channelId, dir, bytes}
                       ▼
                    DebugSink ──host dials outward──▶ debugger
@@ -36,12 +36,12 @@ production product bundle.
 
 ## 1. Tap placement
 
-The tap **MUST** live in the Rust host core (`truapi-server`) behind a sink trait.
+The tap **MUST** live in the Rust host core (`truapi`) behind a sink trait.
 It **MUST NOT** exist in `@parity/truapi` or the TypeScript transport, and **MUST
 NOT** be reachable from the product side. The product package carries no debug
 seam.
 
-`truapi-server` has two frame choke points; every host — web, iOS, Android, CLI —
+`truapi` has two frame choke points; every host — web, iOS, Android, CLI —
 funnels through them:
 
 | Direction                 | Choke point                                            | Ordering                      |
