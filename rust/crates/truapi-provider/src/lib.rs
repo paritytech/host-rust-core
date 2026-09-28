@@ -19,7 +19,7 @@
 //!   through the loopback TLS tunnels in `wss_tunnel`; on `wasm32` it runs on a
 //!   vendored browser platform (JS event loop, browser `WebSocket`, which
 //!   speaks TLS itself).
-//!   [`EmbeddedChainProvider::lifecycle`] reports its sync progress per chain.
+//!   `EmbeddedChainProvider::lifecycle` reports its sync progress per chain.
 //! - `networks` feature — a bundled catalog so `connect(genesis_hash)`
 //!   resolves the whole network (relay wiring + statement placement included)
 //!   from the genesis hash alone, with no prior registration.
