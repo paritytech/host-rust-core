@@ -70,6 +70,9 @@ scripts/battery.sh         run the generated battery against both headless CLI h
                            plus the Pocket phase a Worker execution serves
 scripts/refresh-host-import.sh
                            refresh a vendored host tree from its source repository
+scripts/host-papp-fixtures.ts
+                           print host-papp's encoding of the SSO messages the core
+                           pins, from a triangle-js-sdks checkout
 scripts/truapi-host-installer.sh
                            one-liner installer for the prebuilt truapi-host CLI
 scripts/build-cli-runner.ts

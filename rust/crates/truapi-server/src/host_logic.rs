@@ -7,6 +7,7 @@
 // Links `verifiable` directly, which the browser core loads on demand instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod attestation;
+pub mod contact_substitution;
 pub mod device_key;
 pub mod dotns;
 pub mod dotns_gateway;

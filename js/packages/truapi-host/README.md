@@ -121,6 +121,7 @@ const callbacks: HostCallbacks = {
   chat, // optional: leave it out and chat products get `Unsupported`
   permissionStatus, // optional: reports live OS permission state
   pocket, // optional: serves the host's Pocket card collection
+  contacts, // optional: leave it out and contacts calls get `Unsupported`
 };
 ```
 
@@ -224,6 +225,16 @@ already carries, so the 32-byte chain code behind it stays core-owned and a host
 never reconstructs it. `productAccountAddress` applies the prefix host-spec C.6
 fixes, rather than leaving each host to choose one.
 
+`contacts` needs both callbacks, or the group counts as absent. `pickContact`
+draws the picker and returns the chosen account, or `NoContacts` when there is
+nobody to show. `contacts({ handleKey, handles })` resolves the handles a
+transaction names: one entry per handle, in order, the account or `undefined`.
+A contact's handle is BLAKE2b-256 keyed with `handleKey` over its 32-byte
+account (`blake2b(account, { key: handleKey, dkLen: 32 })` in `@noble/hashes`).
+The core re-checks every account returned. It caches what it resolves, so call
+`notifyContactsChanged()` whenever a contact is removed or blocked. Omit blocked
+contacts from both. See the contacts RFC (`docs/rfcs/contacts-api.md`).
+
 ## Generated WASM artefacts
 
 The ignored bundle under `dist/wasm/web/` is built with host-owned chain access.
@@ -277,6 +288,7 @@ transition below reports the resulting `AuthState` the same way.
 | `activateStoredSession()`       | Await the restore of the `AuthSession` slot before opening providers.        |
 | `activateExternalSession(blob)` | Install a session the host holds itself, without writing it to core storage. |
 | `notifySessionStoreChanged()`   | Tell the core the persisted blob may have changed; it re-reads it.           |
+| `notifyContactsChanged()`       | Tell the core a contact was removed or blocked; it drops cached handles.     |
 | `disconnectSession()`           | Log out: clears the session and notifies the peer.                           |
 | `resetSessionState()`           | Drop the local session without notifying the peer.                           |
 
