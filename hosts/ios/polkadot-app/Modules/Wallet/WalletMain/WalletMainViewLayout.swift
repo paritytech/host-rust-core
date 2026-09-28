@@ -62,27 +62,31 @@ struct WalletView: View {
     }
 
     /// Product-backed cards follow the host's own, and are hidden while a
-    /// native card is expanded so they do not sit under it.
+    /// native card is expanded so they do not sit under it. The Pocket is a
+    /// product surface, so it ships with the rest of them.
     @ViewBuilder
     private var pocketCards: some View {
-        if viewModel.expandedSection == .none {
-            ForEach(viewModel.pocketCards) { card in
-                // A press takes the user into the product the card belongs to,
-                // at the page the card names. The shape is named so the peek a
-                // card shows is all of it that takes a press — the rest is
-                // under the card above.
-                PocketCollectionCardView(card: card)
-                    .contentShape(RoundedRectangle(cornerRadius: PocketCardSize.cornerRadius))
-                    .onTapGesture { viewModel.onOpenPocketCard?(card) }
-                    // A host-placed card is removable by nobody, so a long
-                    // press offers it nothing rather than a prompt that refuses.
-                    .onLongPressGesture {
-                        guard !card.privileged else { return }
+        #if FEATURE_PRODUCTS
+            if viewModel.expandedSection == .none {
+                ForEach(viewModel.pocketCards) { card in
+                    // A press takes the user into the product the card belongs
+                    // to, at the page the card names. The shape is named so the
+                    // peek a card shows is all of it that takes a press — the
+                    // rest is under the card above.
+                    PocketCollectionCardView(card: card)
+                        .contentShape(RoundedRectangle(cornerRadius: PocketCardSize.cornerRadius))
+                        .onTapGesture { viewModel.onOpenPocketCard?(card) }
+                        // A host-placed card is removable by nobody, so a long
+                        // press offers it nothing rather than a prompt that
+                        // refuses.
+                        .onLongPressGesture {
+                            guard !card.privileged else { return }
 
-                        viewModel.onRemovePocketCard?(card)
-                    }
+                            viewModel.onRemovePocketCard?(card)
+                        }
+                }
             }
-        }
+        #endif
     }
 
     @ViewBuilder

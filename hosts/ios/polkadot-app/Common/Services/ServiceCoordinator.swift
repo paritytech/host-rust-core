@@ -328,12 +328,14 @@ extension ServiceCoordinator {
         // from one worker per product, and hanging that off chat's assembly
         // would let any chat service failing take every live card face with it,
         // silently.
-        TrUAPIWorkerFacade.shared.install(
-            runtimeProvider: truapiRuntimeProvider,
-            flowState: spaFlowState,
-            productFileProvider: productFileProvider,
-            chainRegistry: ChainRegistryFacade.sharedRegistry
-        )
+        #if FEATURE_PRODUCTS
+            TrUAPIWorkerFacade.shared.install(
+                runtimeProvider: truapiRuntimeProvider,
+                flowState: spaFlowState,
+                productFileProvider: productFileProvider,
+                chainRegistry: ChainRegistryFacade.sharedRegistry
+            )
+        #endif
 
         guard
             let signInHostCoordinator = createSignInHostCoordinator(
