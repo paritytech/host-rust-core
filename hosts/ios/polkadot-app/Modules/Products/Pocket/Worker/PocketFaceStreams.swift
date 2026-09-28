@@ -23,7 +23,7 @@ struct TrUAPIPocketFaceStreams: PocketFaceStreaming {
     private enum Retry {
         /// A worker that has just booted is not yet listening, so the first
         /// renders are expected to be refused.
-        static let connectAttempts = 40
+        static let connectWindow = Duration.seconds(10)
         static let connectDelay = Duration.milliseconds(250)
 
         /// Doubling from a second up to half a minute: a worker that is simply
@@ -166,7 +166,7 @@ private extension TrUAPIPocketFaceStreams {
     }
 
     /// The worker registers its handler after it connects, so the first renders
-    /// are refused rather than answered; they are retried at a fixed short
+    /// are refused rather than answered. They are asked again at a fixed short
     /// interval instead of backing off, because the wait is a boot, not a fault.
     func connect(
         _ execution: TrUAPIProductExecutionProtocol,
@@ -174,13 +174,11 @@ private extension TrUAPIPocketFaceStreams {
     ) async throws -> AsyncThrowingStream<RendererNode, Error> {
         let request = ProductRendererRenderRequest(context: .pocketCard(cardId: key.cardId.value), payload: Data())
 
-        for _ in 0 ..< Retry.connectAttempts {
-            try Task.checkCancellation()
-            if let stream = try? execution.render(request) { return stream }
-            try await Task.sleep(for: Retry.connectDelay)
-        }
-
-        return try execution.render(request)
+        return try await execution.renderWhenConnected(
+            request,
+            until: .now + Retry.connectWindow,
+            retryEvery: Retry.connectDelay
+        )
     }
 
     func reopenDelay(after attempt: Int) -> Duration {

@@ -40,6 +40,11 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
     private let renderStartupWindow: Duration
     private let logger: LoggerProtocol
 
+    /// How often a cell asks again while the product is still coming up. The
+    /// worker's own refusals are waited out by ``renderWhenConnected``; this
+    /// one covers the window before there is a worker to ask at all.
+    private static let renderRetryInterval = Duration.milliseconds(25)
+
     /// Held while this session's reference is out, so dispose gives back
     /// exactly what start took and never more.
     private var reference: (any TrUAPIWorkerReferencing)?
@@ -246,13 +251,17 @@ private extension ChatRustRuntime {
         while true {
             try checkNotDisposed()
             do {
-                return try requireExecution().render(request)
-            } catch let error where error.isTransientRenderStartupError {
+                return try await requireExecution().renderWhenConnected(
+                    request,
+                    until: deadline,
+                    retryEvery: Self.renderRetryInterval
+                )
+            } catch let error where (error as? ChatSeamError) == .notStarted {
                 guard ContinuousClock.now < deadline else {
                     logger.error("Custom render gave up waiting for the product: \(messageId)")
                     throw error
                 }
-                try await Task.sleep(for: .milliseconds(25))
+                try await Task.sleep(for: Self.renderRetryInterval)
             }
         }
     }
@@ -281,16 +290,5 @@ private extension ChatRustRuntime {
                 logger.error("Rust chat runtime rooms forwarding ended: \(error)")
             }
         }
-    }
-}
-
-private extension Error {
-    /// A cell can render before the worker is up (`notStarted`) or before the
-    /// product attaches (`NotConnected`); the retry waits both out. Everything
-    /// else surfaces at once. Only covers synchronous throws — a failure
-    /// delivered inside the node stream never reaches here.
-    var isTransientRenderStartupError: Bool {
-        if (self as? ProductRuntimeError) == .NotConnected { return true }
-        return (self as? ChatRustRuntime.ChatSeamError) == .notStarted
     }
 }

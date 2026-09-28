@@ -75,6 +75,29 @@ struct PocketFaceStreamsTests {
         #expect(published.lookups == 1)
         #expect(references.acquired.isEmpty)
     }
+
+    /// A worker that has just booted refuses the first renders because it has
+    /// not registered its renderer yet, and those are worth waiting out. A
+    /// refusal the product meant is not: asking again for ten seconds holds the
+    /// card blank on an answer that will not change.
+    @Test
+    func doesNotWaitOutARefusalTheProductMeant() async throws {
+        let workers = StubWorkerSupervisor()
+        let execution = MockProductExecution()
+        execution.renderErrors = Array(repeating: ProductRuntimeError.Denied, count: 50)
+        execution.keepsRenderStreamOpen = true
+        workers.publish(["game.paseo": execution])
+
+        let streams = makeStreams(workers: workers)
+        let drawing = Task { for try await _ in streams.renderFaces(for: loyalty) {} }
+        // Longer than the connect retry interval by several times, and shorter
+        // than the first reopen.
+        try await Task.sleep(for: .milliseconds(900))
+        drawing.cancel()
+
+        // One ask. Waiting a boot out would have made four by now.
+        #expect(execution.renderRequests.count == 1)
+    }
 }
 
 // MARK: - Fixtures
