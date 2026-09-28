@@ -255,9 +255,10 @@ impl Signing for ProductRuntimeHost {
         .await?;
         let confirmed = until_cancelled(
             cx,
-            self.confirm_product_action(UserConfirmationReview::SignPayload(
-                SignPayloadReview::LegacyAccount(inner.clone()),
-            )),
+            self.platform
+                .confirm_user_action(UserConfirmationReview::SignPayload(
+                    SignPayloadReview::LegacyAccount(inner.clone()),
+                )),
         )
         .await
         .map_err(|reason| signing_call_error(HostSignPayloadWithLegacyAccountError::V1, reason))?
@@ -348,9 +349,10 @@ impl Signing for ProductRuntimeHost {
         .await?;
         let confirmed = until_cancelled(
             cx,
-            self.confirm_product_action(UserConfirmationReview::CreateTransaction(
-                CreateTransactionReview::LegacyAccount(inner.clone()),
-            )),
+            self.platform
+                .confirm_user_action(UserConfirmationReview::CreateTransaction(
+                    CreateTransactionReview::LegacyAccount(inner.clone()),
+                )),
         )
         .await
         .map_err(|reason| {
@@ -521,12 +523,13 @@ impl ProductRuntimeHost {
         .await?;
         let confirmed = until_cancelled(
             cx,
-            self.confirm_product_action(UserConfirmationReview::SignRaw(
-                SignRawReview::LegacyAccount {
-                    request: inner.clone(),
-                    watermarked,
-                },
-            )),
+            self.platform
+                .confirm_user_action(UserConfirmationReview::SignRaw(
+                    SignRawReview::LegacyAccount {
+                        request: inner.clone(),
+                        watermarked,
+                    },
+                )),
         )
         .await
         .map_err(|reason| signing_call_error(HostSignRawWithLegacyAccountError::V1, reason))?

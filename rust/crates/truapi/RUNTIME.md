@@ -99,7 +99,8 @@ one product never authorizes another product or another permission class.
 
 Blessed products in `truapi::platform::REMOTE_PERMISSION_TRUSTED_LABELS` bypass
 recorded permissions. Only device permissions require consent.
-Account access, username disclosure, signing and AutoSigning proceed without approval.
+Account access, username disclosure, signing with their own product accounts and
+AutoSigning proceed without approval. Legacy-account signing still asks the user.
 
 ```text
 Product app
@@ -357,7 +358,8 @@ own product surface, so it bypasses the outbound domain grant.
 `REMOTE_PERMISSION_TRUSTED_LABELS` lists the blessed product labels across
 all networks in `DOTNS_TLDS`. These products bypass recorded permissions and
 prompt only for device permissions. The runtime grants
-account access, username disclosure, signing and AutoSigning without approval.
+account access, username disclosure, signing with their own product accounts and
+AutoSigning without approval. Legacy-account signing still asks the user.
 
 ### Host Callback Traits
 
