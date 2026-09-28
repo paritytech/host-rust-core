@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost, PocketPlatform};
+use truapi_platform::{ChatPlatform, GamePlatform, PermissionStatusHost, PocketPlatform};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -287,6 +287,17 @@ impl PairingHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_pocket_platform"))]
     pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
         self.services.install_pocket_platform(platform)
+    }
+
+    /// Install the host's [`GamePlatform`], which holds each product's game
+    /// reminder.
+    ///
+    /// Set-once, so reminders cannot change hands under a running product.
+    /// Returns whether this call installed it. Call it before serving any
+    /// product runtime.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_game_platform"))]
+    pub fn set_game_platform(&self, platform: Arc<dyn GamePlatform>) -> bool {
+        self.services.install_game_platform(platform)
     }
 
     /// Build a product-facing runtime from this pairing host.
@@ -647,6 +658,17 @@ impl SigningHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_pocket_platform"))]
     pub fn set_pocket_platform(&self, platform: Arc<dyn PocketPlatform>) -> bool {
         self.services.install_pocket_platform(platform)
+    }
+
+    /// Install the host's [`GamePlatform`], which holds each product's game
+    /// reminder.
+    ///
+    /// Set-once, so reminders cannot change hands under a running product.
+    /// Returns whether this call installed it. Call it before serving any
+    /// product runtime.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_game_platform"))]
+    pub fn set_game_platform(&self, platform: Arc<dyn GamePlatform>) -> bool {
+        self.services.install_game_platform(platform)
     }
 
     /// Install the host's [`DevicePairingObserver`], told whenever a device
@@ -1014,7 +1036,7 @@ impl SigningHostRuntime {
 /// host-fed action streams. Non-native connections use [`Self::from_services`].
 ///
 /// `pocket_platform` is the same kind of optional adapter for the card
-/// collection.
+/// collection, and `game_platform` for the product's game reminder.
 #[derive(Clone)]
 pub(crate) struct ConnectionAdapters {
     pub(crate) platform: Arc<dyn Platform>,
@@ -1030,6 +1052,7 @@ pub(crate) struct ConnectionAdapters {
     pub(crate) renderer:
         Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
     pub(crate) pocket_platform: Option<Arc<dyn PocketPlatform>>,
+    pub(crate) game_platform: Option<Arc<dyn GamePlatform>>,
 }
 
 impl ConnectionAdapters {
@@ -1043,6 +1066,7 @@ impl ConnectionAdapters {
             chat: Arc::new(ActionChannel::chat()),
             renderer: Arc::new(ActionChannel::renderer()),
             pocket_platform: services.pocket_platform(),
+            game_platform: services.game_platform(),
         }
     }
 }

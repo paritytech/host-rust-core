@@ -235,7 +235,7 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Demand is runtime-wide, so the core invokes this only on the bridge
     /// ``TrUAPIHostRuntime/init(bridge:runtimeConfig:)`` was given, never on
     /// the per-execution bridge passed to
-    /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``.
+    /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:game:)``.
     /// Can arrive on any thread, including synchronously on the calling
     /// thread during `acquireWorker`/`releaseWorker`, often the main thread
     /// and re-entrantly: hand the transition off rather than blocking on
@@ -273,7 +273,7 @@ public protocol HostBridge: AnyObject, Sendable {
 }
 
 /// Native Chat storage and UI surface. Implement and pass to
-/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:game:)``
 /// when the host supports the Chat modality; hosts without it pass nothing.
 /// Native Chat storage and UI surface, called from the process-wide dispatch
 /// pool shared by every product execution: implementations must be safe to
@@ -313,7 +313,7 @@ public protocol ChatHostBridge: AnyObject, Sendable {
 }
 
 /// Native Pocket collection surface. Implement and pass to
-/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:)``
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:game:)``
 /// when the host has a Pocket surface; hosts without one pass nothing. Called
 /// from the process-wide dispatch pool shared by every product execution:
 /// implementations must be safe to enter concurrently, and one that blocks
@@ -330,6 +330,28 @@ public protocol PocketHostBridge: AnyObject, Sendable {
     /// remove together, under whatever lock this host holds, so a card cannot
     /// be pinned between the two.
     func removeCard(cardId: String) throws -> NativePocketRemoval
+}
+
+/// Native game-reminder surface. Implement and pass to
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:game:)``
+/// when the host can hold reminders; hosts without one pass nothing. Called
+/// from the process-wide dispatch pool shared by every product execution:
+/// implementations must be safe to enter concurrently, and one that blocks
+/// stalls the others.
+///
+/// The host owns the reminder: one per product, replaced by every schedule,
+/// kept across app kill and reboot, rung as an alarm or delivered as a
+/// notification when the OS refuses alarms, and dropped once the game starts.
+///
+/// Throw ``HostRejection`` (or an error conforming to `LocalizedError`) to
+/// decline a call.
+public protocol GameHostBridge: AnyObject, Sendable {
+    /// Hold `startsAt` (Unix milliseconds, UTC) as this product's reminder,
+    /// replacing any it holds.
+    func scheduleReminder(startsAt: UInt64) throws
+
+    /// Drop this product's reminder. Dropping none succeeds.
+    func cancelReminder() throws
 }
 
 public extension HostBridge {
@@ -455,6 +477,34 @@ private final class PocketCallbackAdapter: NativePocketCallbacks, @unchecked Sen
 
     func removeCard(cardId: String) throws -> NativePocketRemoval {
         try withHostRejection { try bridge.removeCard(cardId: cardId) }
+    }
+
+    private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
+        do {
+            return try operation()
+        } catch let error as HostRejection {
+            throw error
+        } catch {
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
+        }
+    }
+}
+
+/// Adapter that bridges the public `GameHostBridge` to the generated UniFFI
+/// `NativeGameCallbacks` protocol.
+private final class GameCallbackAdapter: NativeGameCallbacks, @unchecked Sendable {
+    private let bridge: GameHostBridge
+
+    init(bridge: GameHostBridge) {
+        self.bridge = bridge
+    }
+
+    func scheduleReminder(startsAt: UInt64) throws {
+        try withHostRejection { try bridge.scheduleReminder(startsAt: startsAt) }
+    }
+
+    func cancelReminder() throws {
+        try withHostRejection { try bridge.cancelReminder() }
     }
 
     private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
@@ -719,27 +769,32 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// Open one executable connection with a host-assigned immutable context.
     /// Pass `chat` to install the host's Chat adapter; hosts without the Chat
     /// modality omit it. Pass `pocket` to install the card collection, and
-    /// omit that where the host has no Pocket surface.
+    /// omit that where the host has no Pocket surface. Pass `game` to hold
+    /// game reminders, and omit it where the host cannot.
     public func openProductExecution(
         bridge: HostBridge,
         configuration: ProductExecutionConfig,
         chat: ChatHostBridge? = nil,
-        pocket: PocketHostBridge? = nil
+        pocket: PocketHostBridge? = nil,
+        game: GameHostBridge? = nil
     ) throws -> TrUAPIProductExecution {
         let adapter = HostCallbackAdapter(bridge: bridge)
         let chatAdapter = chat.map { ChatCallbackAdapter(bridge: $0) }
         let pocketAdapter = pocket.map { PocketCallbackAdapter(bridge: $0) }
+        let gameAdapter = game.map { GameCallbackAdapter(bridge: $0) }
         let execution = try inner.openProductExecution(
             callbacks: adapter,
             chatCallbacks: chatAdapter,
             pocketCallbacks: pocketAdapter,
+            gameCallbacks: gameAdapter,
             executionConfig: configuration.native
         )
         return TrUAPIProductExecution(
             inner: execution,
             callbackRetainer: adapter,
             chatRetainer: chatAdapter,
-            pocketRetainer: pocketAdapter
+            pocketRetainer: pocketAdapter,
+            gameRetainer: gameAdapter
         )
     }
 
@@ -1024,17 +1079,20 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     private let callbackRetainer: HostCallbacks
     private let chatRetainer: NativeChatCallbacks?
     private let pocketRetainer: NativePocketCallbacks?
+    private let gameRetainer: NativeGameCallbacks?
 
     fileprivate init(
         inner: NativeProductExecution,
         callbackRetainer: HostCallbacks,
         chatRetainer: NativeChatCallbacks?,
-        pocketRetainer: NativePocketCallbacks?
+        pocketRetainer: NativePocketCallbacks?,
+        gameRetainer: NativeGameCallbacks?
     ) {
         self.inner = inner
         self.callbackRetainer = callbackRetainer
         self.chatRetainer = chatRetainer
         self.pocketRetainer = pocketRetainer
+        self.gameRetainer = gameRetainer
     }
 
     deinit {

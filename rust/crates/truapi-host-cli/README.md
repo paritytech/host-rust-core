@@ -742,6 +742,9 @@ Scripts under `js/scripts/` include:
   in `TRUAPI_POCKET_LOG`. The cases read that transcript, so a pass means the
   host and the product agree rather than resting on the product's word.
 
+  The CLI holds Game reminders in memory for the length of the process, on
+  every execution kind.
+
   The paired phase gives its pairing host a throwaway `--base-path` under
   `target/battery/pairing-host-state`, so it performs a real handshake on every
   run. A pairing host that restores an earlier session reports

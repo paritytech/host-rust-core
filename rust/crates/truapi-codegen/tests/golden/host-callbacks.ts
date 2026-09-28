@@ -1206,6 +1206,36 @@ export interface Features {
 }
 
 /**
+ * Host-implemented adapter that holds a product's next-game reminder.
+ * Optional: a host that omits it leaves Game requests answered `Unsupported`.
+ * See `OptionalPlatform`.
+ *
+ * The core checks the `Alarm` grant and refuses a start that is not in the
+ * future before it calls here. The host owns everything else: one reminder
+ * per product, replaced by every schedule; kept across app kill and device
+ * reboot; rung as an alarm, or delivered as an ordinary notification when the
+ * OS refuses alarms; dropped once the game has started, when the product's
+ * `Alarm` grant is revoked, and when the product is uninstalled. A host
+ * reports `Alarm` as OS-`Denied` only when the OS allows neither alarms nor
+ * notifications.
+ */
+export interface GamePlatform {
+  /**
+   * Hold `starts_at` (Unix milliseconds, UTC) as the product's reminder,
+   * replacing any it holds.
+   */
+  scheduleGameReminder(
+    product: ProductContext,
+    startsAt: bigint,
+  ): Promise<void>;
+
+  /**
+   * Drop the product's reminder. Idempotent: dropping none succeeds.
+   */
+  cancelGameReminder(product: ProductContext): Promise<void>;
+}
+
+/**
  * A live JSON-RPC connection to a chain.
  */
 export interface JsonRpcConnection {
@@ -1495,6 +1525,7 @@ export interface HostCallbacks {
   preimage: PreimageHost;
   productOperations: ProductOperations;
   chat?: ChatPlatform;
+  game?: GamePlatform;
   permissionStatus?: PermissionStatusHost;
   pocket?: PocketPlatform;
 }
@@ -1514,6 +1545,7 @@ export interface RequiredHostCallbacks {
   preimage: Required<PreimageHost>;
   productOperations: Required<ProductOperations>;
   chat?: Required<ChatPlatform>;
+  game?: Required<GamePlatform>;
   permissionStatus?: Required<PermissionStatusHost>;
   pocket?: Required<PocketPlatform>;
 }

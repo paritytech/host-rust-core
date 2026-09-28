@@ -20,6 +20,8 @@ export const CALLBACK_NAMES = [
   "clearCoreStorage",
   "featureSupported",
   "supportedChains",
+  "scheduleGameReminder",
+  "cancelGameReminder",
   "navigateTo",
   "pushNotification",
   "cancelNotification",
@@ -217,6 +219,22 @@ function chatRawCallbacks(
   };
 }
 
+function gameRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "scheduleGameReminder" | "cancelGameReminder">> {
+  return {
+    scheduleGameReminder: (product, startsAt) =>
+      bridge.callbackRequest("scheduleGameReminder", [
+        product,
+        startsAt,
+      ]) as ReturnType<Required<RawCallbacks>["scheduleGameReminder"]>,
+    cancelGameReminder: (product) =>
+      bridge.callbackRequest("cancelGameReminder", [product]) as ReturnType<
+        Required<RawCallbacks>["cancelGameReminder"]
+      >,
+  };
+}
+
 function permissionStatusRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<Pick<RawCallbacks, "devicePermissionStatus">> {
@@ -256,6 +274,8 @@ export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   chat?: boolean;
   /** Whether the host serves this capability. */
+  game?: boolean;
+  /** Whether the host serves this capability. */
   permissionStatus?: boolean;
   /** Whether the host serves this capability. */
   pocket?: boolean;
@@ -271,6 +291,7 @@ export function createWorkerRawCallbacks(
     chainConnect: bridge.chainConnect,
   };
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
+  if (capabilities.game) Object.assign(callbacks, gameRawCallbacks(bridge));
   if (capabilities.permissionStatus)
     Object.assign(callbacks, permissionStatusRawCallbacks(bridge));
   if (capabilities.pocket) Object.assign(callbacks, pocketRawCallbacks(bridge));

@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 
 use parity_scale_codec::Encode;
 use truapi::api::{
-    Account, Chain, Entropy, LocalStorage, Notifications, Permissions, Preimage,
+    Account, Chain, Entropy, Game, LocalStorage, Notifications, Permissions, Preimage,
     ResourceAllocation, Signing, StatementStore, System, Theme, Worker,
 };
 use truapi::v02;
@@ -23,6 +23,10 @@ use truapi::versioned::chain::{
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
+};
+use truapi::versioned::game::{
+    HostCancelNextGameError, HostCancelNextGameRequest, HostCancelNextGameResponse,
+    HostRemindNextGameError, HostRemindNextGameRequest, HostRemindNextGameResponse,
 };
 use truapi::versioned::local_storage::{
     HostLocalStorageChangeItem, HostLocalStorageClearRequest, HostLocalStorageReadError,
@@ -1221,6 +1225,437 @@ fn pocket_is_denied_to_apps_and_sessionless_workers_and_unsupported_without_an_a
         first_pocket_item(&no_adapter),
         Some(Err(CallError::Unsupported))
     ));
+}
+
+/// A game start far enough ahead that no test run reaches it.
+const FUTURE_START: u64 = u64::MAX / 2;
+
+/// Records every reminder call, and fails them all when `fail` is set.
+#[derive(Default)]
+struct RecordingGamePlatform {
+    scheduled: Mutex<Vec<(String, u64)>>,
+    cancelled: Mutex<Vec<String>>,
+    fail: bool,
+}
+
+#[truapi::async_trait]
+impl truapi_platform::GamePlatform for RecordingGamePlatform {
+    async fn schedule_game_reminder(
+        &self,
+        product: &ProductContext,
+        starts_at: u64,
+    ) -> Result<(), truapi::latest::GenericError> {
+        if self.fail {
+            return Err(truapi::latest::GenericError {
+                reason: "alarm store unavailable".to_string(),
+            });
+        }
+        self.scheduled
+            .lock()
+            .expect("scheduled mutex poisoned")
+            .push((product.product_id.clone(), starts_at));
+        Ok(())
+    }
+
+    async fn cancel_game_reminder(
+        &self,
+        product: &ProductContext,
+    ) -> Result<(), truapi::latest::GenericError> {
+        if self.fail {
+            return Err(truapi::latest::GenericError {
+                reason: "alarm store unavailable".to_string(),
+            });
+        }
+        self.cancelled
+            .lock()
+            .expect("cancelled mutex poisoned")
+            .push(product.product_id.clone());
+        Ok(())
+    }
+}
+
+/// A product runtime over `platform`, with `game` installed when given and no
+/// session.
+fn game_host(
+    kind: truapi_platform::ProductExecutionKind,
+    platform: Arc<StubPlatform>,
+    game: Option<Arc<RecordingGamePlatform>>,
+) -> ProductRuntimeHost {
+    let (host_config, _) = runtime_config("game.dot");
+    let product = ProductContext::new_with_execution("game.dot".to_string(), kind)
+        .expect("test game product context is valid");
+    let platform: Arc<dyn Platform> = platform;
+    let services = RuntimeServices::new(
+        platform,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    adapters.game_platform = game.map(|game| game as Arc<dyn truapi_platform::GamePlatform>);
+    ProductRuntimeHost::from_services(services, adapters, pairing_host, product)
+}
+
+fn remind(
+    host: &ProductRuntimeHost,
+    starts_at: u64,
+) -> Result<HostRemindNextGameResponse, CallError<HostRemindNextGameError>> {
+    futures::executor::block_on(Game::remind_next_game(
+        host,
+        &CallContext::default(),
+        HostRemindNextGameRequest::V1(v01::HostRemindNextGameRequest { starts_at }),
+    ))
+}
+
+fn cancel(
+    host: &ProductRuntimeHost,
+) -> Result<HostCancelNextGameResponse, CallError<HostCancelNextGameError>> {
+    futures::executor::block_on(Game::cancel_next_game(
+        host,
+        &CallContext::default(),
+        HostCancelNextGameRequest::V1(v01::HostCancelNextGameRequest {}),
+    ))
+}
+
+fn scheduled(game: &RecordingGamePlatform) -> Vec<(String, u64)> {
+    game.scheduled
+        .lock()
+        .expect("scheduled mutex poisoned")
+        .clone()
+}
+
+fn prompts(platform: &StubPlatform) -> Vec<v01::HostDevicePermissionRequest> {
+    platform
+        .device_permission_requests
+        .lock()
+        .expect("device permission list mutex poisoned")
+        .clone()
+}
+
+#[test]
+fn game_is_unsupported_without_an_adapter_and_open_to_apps_and_workers_without_a_session() {
+    let platform = stub_platform();
+    let no_adapter = game_host(
+        truapi_platform::ProductExecutionKind::App,
+        platform.clone(),
+        None,
+    );
+    assert!(matches!(
+        remind(&no_adapter, FUTURE_START),
+        Err(CallError::Unsupported)
+    ));
+    assert!(matches!(cancel(&no_adapter), Err(CallError::Unsupported)));
+    assert_eq!(
+        prompts(&platform),
+        vec![],
+        "no prompt for a host that cannot remind"
+    );
+
+    for kind in [
+        truapi_platform::ProductExecutionKind::App,
+        truapi_platform::ProductExecutionKind::Worker,
+    ] {
+        let game = Arc::new(RecordingGamePlatform::default());
+        let host = game_host(kind, stub_platform(), Some(game.clone()));
+        assert_eq!(
+            remind(&host, FUTURE_START),
+            Ok(HostRemindNextGameResponse::V1),
+            "{kind:?}"
+        );
+        assert_eq!(
+            cancel(&host),
+            Ok(HostCancelNextGameResponse::V1),
+            "{kind:?}"
+        );
+        assert_eq!(
+            scheduled(&game),
+            vec![("game.dot".to_string(), FUTURE_START)],
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn remind_next_game_rejects_a_past_start_without_prompting_or_calling_the_host() {
+    let platform = stub_platform();
+    let game = Arc::new(RecordingGamePlatform::default());
+    let host = game_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        platform.clone(),
+        Some(game.clone()),
+    );
+
+    assert_eq!(
+        (remind(&host, 0), scheduled(&game), prompts(&platform)),
+        (
+            Err(CallError::Domain(HostRemindNextGameError::V1(
+                v01::HostRemindNextGameError::StartsInPast
+            ))),
+            vec![],
+            vec![],
+        )
+    );
+}
+
+/// The user can take longer to answer the prompt than the game takes to start,
+/// and a reminder for a game that has begun brings nobody back.
+#[test]
+fn remind_next_game_rejects_a_start_that_passes_while_the_prompt_is_open() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new(
+            [truapi_platform::PermissionDecision::AllowOnce].into(),
+        ),
+        device_permission_answer_delay: std::time::Duration::from_millis(400),
+        ..Default::default()
+    });
+    let game = Arc::new(RecordingGamePlatform::default());
+    let host = game_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        platform.clone(),
+        Some(game.clone()),
+    );
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after the epoch")
+            .as_millis(),
+    )
+    .expect("epoch milliseconds fit in u64");
+    let starts_during_prompt = now_ms + 200;
+
+    assert_eq!(
+        (
+            remind(&host, starts_during_prompt),
+            scheduled(&game),
+            prompts(&platform),
+        ),
+        (
+            Err(CallError::Domain(HostRemindNextGameError::V1(
+                v01::HostRemindNextGameError::StartsInPast
+            ))),
+            vec![],
+            vec![v01::HostDevicePermissionRequest::Alarm],
+        )
+    );
+}
+
+#[test]
+fn remind_next_game_denial_never_reaches_the_host_and_is_not_asked_again() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        ..Default::default()
+    });
+    let game = Arc::new(RecordingGamePlatform::default());
+    let host = game_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        platform.clone(),
+        Some(game.clone()),
+    );
+    let denied = Err(CallError::Domain(HostRemindNextGameError::V1(
+        v01::HostRemindNextGameError::PermissionDenied,
+    )));
+
+    assert_eq!(
+        (
+            remind(&host, FUTURE_START),
+            remind(&host, FUTURE_START),
+            scheduled(&game),
+            prompts(&platform),
+        ),
+        (
+            denied.clone(),
+            denied,
+            vec![],
+            vec![v01::HostDevicePermissionRequest::Alarm],
+        )
+    );
+}
+
+#[test]
+fn remind_next_game_consumes_allow_once_before_scheduling() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new(
+            [
+                truapi_platform::PermissionDecision::AllowOnce,
+                truapi_platform::PermissionDecision::Deny,
+            ]
+            .into(),
+        ),
+        ..Default::default()
+    });
+    let game = Arc::new(RecordingGamePlatform::default());
+    let host = game_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        platform.clone(),
+        Some(game.clone()),
+    );
+
+    assert_eq!(
+        (
+            remind(&host, FUTURE_START),
+            remind(&host, FUTURE_START),
+            scheduled(&game),
+            prompts(&platform),
+        ),
+        (
+            Ok(HostRemindNextGameResponse::V1),
+            Err(CallError::Domain(HostRemindNextGameError::V1(
+                v01::HostRemindNextGameError::PermissionDenied
+            ))),
+            vec![("game.dot".to_string(), FUTURE_START)],
+            vec![v01::HostDevicePermissionRequest::Alarm; 2],
+        )
+    );
+}
+
+#[test]
+fn remind_next_game_reuses_allow_always_for_each_replacement() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new(
+            [
+                truapi_platform::PermissionDecision::AllowAlways,
+                truapi_platform::PermissionDecision::Deny,
+            ]
+            .into(),
+        ),
+        ..Default::default()
+    });
+    let game = Arc::new(RecordingGamePlatform::default());
+    let host = game_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        platform.clone(),
+        Some(game.clone()),
+    );
+
+    assert_eq!(
+        (
+            remind(&host, FUTURE_START),
+            remind(&host, FUTURE_START + 1),
+            scheduled(&game),
+            prompts(&platform),
+        ),
+        (
+            Ok(HostRemindNextGameResponse::V1),
+            Ok(HostRemindNextGameResponse::V1),
+            vec![
+                ("game.dot".to_string(), FUTURE_START),
+                ("game.dot".to_string(), FUTURE_START + 1),
+            ],
+            vec![v01::HostDevicePermissionRequest::Alarm],
+        )
+    );
+}
+
+#[test]
+fn cancel_next_game_delegates_without_prompting() {
+    let platform = Arc::new(StubPlatform {
+        device_permission_decisions: Mutex::new([truapi_platform::PermissionDecision::Deny].into()),
+        ..Default::default()
+    });
+    let game = Arc::new(RecordingGamePlatform::default());
+    let host = game_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        platform.clone(),
+        Some(game.clone()),
+    );
+
+    assert_eq!(
+        (
+            cancel(&host),
+            game.cancelled
+                .lock()
+                .expect("cancelled mutex poisoned")
+                .clone(),
+            prompts(&platform),
+        ),
+        (
+            Ok(HostCancelNextGameResponse::V1),
+            vec!["game.dot".to_string()],
+            vec![],
+        )
+    );
+}
+
+#[test]
+fn game_host_failures_reach_the_product_with_their_reason() {
+    let game = Arc::new(RecordingGamePlatform {
+        fail: true,
+        ..Default::default()
+    });
+    let host = game_host(
+        truapi_platform::ProductExecutionKind::Worker,
+        stub_platform(),
+        Some(game),
+    );
+
+    assert_eq!(
+        (remind(&host, FUTURE_START), cancel(&host)),
+        (
+            Err(CallError::Domain(HostRemindNextGameError::V1(
+                v01::HostRemindNextGameError::Unknown {
+                    reason: "alarm store unavailable".to_string(),
+                }
+            ))),
+            Err(CallError::Domain(HostCancelNextGameError::V1(
+                truapi::latest::GenericError {
+                    reason: "alarm store unavailable".to_string(),
+                }
+            ))),
+        )
+    );
+}
+
+/// Reports every device permission as refused by the OS.
+struct OsRefusesEverything;
+
+#[truapi::async_trait]
+impl truapi_platform::PermissionStatusHost for OsRefusesEverything {
+    async fn device_permission_status(
+        &self,
+        _request: truapi::latest::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::DevicePermissionStatus, truapi::latest::GenericError> {
+        Ok(truapi_platform::DevicePermissionStatus::Denied)
+    }
+}
+
+/// A host reports `Alarm` as OS-refused only when it can deliver neither an
+/// alarm nor a notification, so the product learns it cannot be reminded.
+#[test]
+fn remind_next_game_is_denied_when_the_os_refuses_every_way_to_remind() {
+    let platform = stub_platform();
+    let game = Arc::new(RecordingGamePlatform::default());
+    let (host_config, _) = runtime_config("game.dot");
+    let product = ProductContext::new_with_execution(
+        "game.dot".to_string(),
+        truapi_platform::ProductExecutionKind::Worker,
+    )
+    .expect("test game product context is valid");
+    let services = RuntimeServices::new(
+        platform.clone() as Arc<dyn Platform>,
+        host_config.host.host_info.clone(),
+        host_config.people_chain_genesis_hash,
+        host_config.bulletin_chain_genesis_hash,
+        host_config.asset_hub_chain_genesis_hash,
+        test_spawner(),
+    );
+    let pairing_host = PairingHost::new(services.clone(), host_config);
+    let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+    adapters.game_platform = Some(game.clone() as Arc<dyn truapi_platform::GamePlatform>);
+    adapters.permission_status = Some(Arc::new(OsRefusesEverything));
+    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+
+    assert_eq!(
+        (remind(&host, FUTURE_START), scheduled(&game)),
+        (
+            Err(CallError::Domain(HostRemindNextGameError::V1(
+                v01::HostRemindNextGameError::PermissionDenied
+            ))),
+            vec![],
+        )
+    );
 }
 
 #[test]

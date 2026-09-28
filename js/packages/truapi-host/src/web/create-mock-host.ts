@@ -135,6 +135,14 @@ export interface NotificationLogEntry {
   timestamp: number;
 }
 
+/** A game reminder the mock host holds for one product. */
+export interface GameReminderEntry {
+  /** Product the reminder belongs to. */
+  productId: string;
+  /** Start of the game, Unix milliseconds. */
+  startsAt: bigint;
+}
+
 /** A subscription that reports an injected fault instead of opening. */
 async function* failedSubscription<T>(
   reason: string,
@@ -362,6 +370,8 @@ export interface MockHost {
   getNavigationLog(): string[];
   /** Notifications the core asked the host to show, in order. */
   getNotificationLog(): NotificationLogEntry[];
+  /** Game reminders held per product, in insertion order of the product. */
+  getGameReminders(): GameReminderEntry[];
   /**
    * Deliver a SCALE-encoded signed statement to the product as a chain
    * notification, returning how many live subscriptions it reached. Zero means
@@ -483,6 +493,8 @@ export interface MockHost {
   clearNavigationLog(): void;
   /** Drop the recorded shown and cancelled notifications. */
   clearNotificationLog(): void;
+  /** Drop every held game reminder. */
+  clearGameReminders(): void;
   /** Drop the recorded confirmation reviews. */
   clearSigningLog(): void;
   /** Drop the recorded permission answers, keeping explicit grants. */
@@ -736,6 +748,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
   const preimages = new Map<string, Uint8Array>();
   const navigations: string[] = [];
   const pushedNotifications: NotificationLogEntry[] = [];
+  const gameReminders = new Map<string, bigint>();
   // Subscription ids the chain assigned to statement subscribes, and the live
   // chain connections a synthesized notification can be delivered through.
   const statementSubscriptions = new Set<string>();
@@ -979,6 +992,15 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       },
     },
 
+    game: {
+      async scheduleGameReminder(product, startsAt) {
+        gameReminders.set(product.productId, startsAt);
+      },
+      async cancelGameReminder(product) {
+        gameReminders.delete(product.productId);
+      },
+    },
+
     permissions: {
       async devicePermission(request) {
         if (faults.permissionError) throw new Error(faults.permissionError);
@@ -1198,6 +1220,11 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     callbacks,
     getNavigationLog: () => [...navigations],
     getNotificationLog: () => pushedNotifications.map((n) => ({ ...n })),
+    getGameReminders: () =>
+      [...gameReminders.entries()].map(([productId, startsAt]) => ({
+        productId,
+        startsAt,
+      })),
     injectStatement: (statement) => {
       if (usingLoopback) {
         const encoded =
@@ -1356,6 +1383,9 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       pushedNotifications.length = 0;
       cancelledNotifications.length = 0;
     },
+    clearGameReminders: () => {
+      gameReminders.clear();
+    },
     clearSigningLog: () => {
       reviews.length = 0;
     },
@@ -1381,6 +1411,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     reset() {
       this.clearNavigationLog();
       this.clearNotificationLog();
+      this.clearGameReminders();
       this.clearSigningLog();
       this.clearPermissionLog();
       this.clearPermissionDecisions();
