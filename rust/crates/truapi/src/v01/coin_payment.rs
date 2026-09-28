@@ -1,31 +1,7 @@
 use parity_scale_codec::{Decode, Encode};
 
-/// RFC 0017 CoinPayment purse identifier.
-pub type CoinPaymentPurseId = u32;
-
 /// Well-known ordinary user-owned CoinPayment purse.
-pub const MAIN_PURSE: CoinPaymentPurseId = u32::MAX;
-
-/// Balance amount for CoinPayment operations.
-pub type CoinPaymentBalance = u32;
-
-/// Milliseconds since Unix epoch.
-pub type CoinPaymentTimestamp = u64;
-
-/// Authenticated product identifier recorded for a product-created purse.
-pub type CoinPaymentProductId = String;
-
-/// Public key identifying a CoinPayment receivable.
-pub type CoinPaymentReceivable = [u8; 32];
-
-/// Merkle root for a product-visible clearing reference.
-pub type CoinPaymentMerkleRoot = [u8; 32];
-
-/// Transaction hash for a product-visible clearing reference.
-pub type CoinPaymentTransactionHash = [u8; 32];
-
-/// Public Coinage key referenced by clearing evidence.
-pub type CoinPaymentCoinagePubKey = [u8; 32];
+pub const MAIN_PURSE: u32 = u32::MAX;
 
 /// Product-visible metadata and balance state for a CoinPayment purse.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -33,20 +9,20 @@ pub struct CoinPaymentPurseInfo {
     /// Human-readable purse name supplied by the creating product.
     pub name: String,
     /// Creation timestamp.
-    pub created: CoinPaymentTimestamp,
+    pub created: u64,
     /// Product that created the purse.
-    pub creator: CoinPaymentProductId,
+    pub creator: String,
     /// Current product-visible balance.
-    pub balance: CoinPaymentBalance,
+    pub balance: u32,
 }
 
 /// Standardized encrypted Coinage secret transmission payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct CoinPaymentCheque {
     /// Receivable public key protecting the cheque contents.
-    pub id: CoinPaymentReceivable,
+    pub id: [u8; 32],
     /// Claimed payment amount.
-    pub amount: CoinPaymentBalance,
+    pub amount: u32,
     /// Concatenated coin secrets encrypted to the receivable.
     pub encrypted_secrets: Vec<u8>,
 }
@@ -78,9 +54,9 @@ pub enum CoinPaymentError {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct CoinPaymentClearingReference {
     /// Clearing Merkle root.
-    pub root: CoinPaymentMerkleRoot,
+    pub root: [u8; 32],
     /// Product-visible coin key and transaction hash leaves.
-    pub leaves: Vec<(CoinPaymentCoinagePubKey, CoinPaymentTransactionHash)>,
+    pub leaves: Vec<([u8; 32], [u8; 32])>,
 }
 
 /// Clearing status stream item.
@@ -89,23 +65,23 @@ pub enum CoinPaymentStatus {
     /// More coins have cleared.
     Clearing {
         /// Amount clearing in this update.
-        clearing: CoinPaymentBalance,
+        clearing: u32,
         /// Cumulative cleared amount.
-        cleared: CoinPaymentBalance,
+        cleared: u32,
     },
     /// Some or all coins failed to transfer.
     Failed {
         /// Failure reason.
         error: CoinPaymentError,
         /// Cumulative cleared amount.
-        cleared: CoinPaymentBalance,
+        cleared: u32,
         /// Clearing reference for any cleared portion.
         reference: CoinPaymentClearingReference,
     },
     /// All coins cleared.
     Done {
         /// Cleared amount.
-        cleared: CoinPaymentBalance,
+        cleared: u32,
         /// Clearing reference.
         reference: CoinPaymentClearingReference,
     },
@@ -132,14 +108,14 @@ pub struct HostCoinPaymentCreatePurseRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentCreatePurseResponse {
     /// Assigned purse identifier.
-    pub purse: CoinPaymentPurseId,
+    pub purse: u32,
 }
 
 /// Request to query product-visible purse metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentQueryPurseRequest {
     /// Purse to query.
-    pub purse: CoinPaymentPurseId,
+    pub purse: u32,
 }
 
 /// Product-visible purse metadata response.
@@ -153,45 +129,45 @@ pub struct HostCoinPaymentQueryPurseResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentRebalancePurseRequest {
     /// Source purse.
-    pub from: CoinPaymentPurseId,
+    pub from: u32,
     /// Destination purse.
-    pub to: CoinPaymentPurseId,
+    pub to: u32,
     /// Amount to move.
-    pub amount: CoinPaymentBalance,
+    pub amount: u32,
 }
 
 /// Request to delete a purse after draining its balance.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentDeletePurseRequest {
     /// Purse to delete.
-    pub target: CoinPaymentPurseId,
+    pub target: u32,
     /// Purse that receives drained funds.
-    pub drain_into: CoinPaymentPurseId,
+    pub drain_into: u32,
 }
 
 /// Request to create a fresh receivable for a purse.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentCreateReceivableRequest {
     /// Target purse for future deposits.
-    pub into: CoinPaymentPurseId,
+    pub into: u32,
 }
 
 /// Created receivable response.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentCreateReceivableResponse {
     /// Receivable public key.
-    pub receivable: CoinPaymentReceivable,
+    pub receivable: [u8; 32],
 }
 
 /// Request to create a cheque from a local purse to a receivable.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentCreateChequeRequest {
     /// Source purse.
-    pub from: CoinPaymentPurseId,
+    pub from: u32,
     /// Destination receivable.
-    pub to: CoinPaymentReceivable,
+    pub to: [u8; 32],
     /// Payment amount.
-    pub amount: CoinPaymentBalance,
+    pub amount: u32,
 }
 
 /// Created cheque response.
@@ -212,14 +188,14 @@ pub struct HostCoinPaymentDepositRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentRefundRequest {
     /// Receivable to refund.
-    pub receivable: CoinPaymentReceivable,
+    pub receivable: [u8; 32],
 }
 
 /// Request to listen for a cheque delivered to a receivable.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCoinPaymentListenForRequest {
     /// Receivable to listen for.
-    pub receivable: CoinPaymentReceivable,
+    pub receivable: [u8; 32],
 }
 
 /// Stream item for `host_coin_payment_listen_for`.

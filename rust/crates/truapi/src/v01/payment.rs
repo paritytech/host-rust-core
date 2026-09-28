@@ -1,17 +1,12 @@
 use parity_scale_codec::{Decode, Encode};
 
 use super::account::DerivationIndex;
-use super::coin_payment::CoinPaymentPurseId;
-
-/// Balance amount for payment operations. Interpreted according to the host's
-/// single fixed payment asset (e.g. pUSD).
-pub type Balance = u128;
 
 /// Request to subscribe to payment balance updates.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPaymentBalanceSubscribeRequest {
     /// Optional purse selector. `None` means MAIN_PURSE.
-    pub purse: Option<CoinPaymentPurseId>,
+    pub purse: Option<u32>,
 }
 
 /// Current payment balance state pushed to subscribers.
@@ -22,7 +17,7 @@ pub struct HostPaymentBalanceSubscribeRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPaymentBalanceSubscribeItem {
     /// Balance that can be spent right now.
-    pub available: Balance,
+    pub available: u128,
 }
 
 /// Source for a payment top-up operation.
@@ -58,9 +53,9 @@ pub enum PaymentTopUpSource {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPaymentTopUpRequest {
     /// Optional purse selector. `None` means MAIN_PURSE.
-    pub into: Option<CoinPaymentPurseId>,
+    pub into: Option<u32>,
     /// Amount to top up.
-    pub amount: Balance,
+    pub amount: u128,
     /// Funding source for the top-up.
     pub source: PaymentTopUpSource,
 }
@@ -69,9 +64,9 @@ pub struct HostPaymentTopUpRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostPaymentRequest {
     /// Optional purse selector. `None` means MAIN_PURSE.
-    pub from: Option<CoinPaymentPurseId>,
+    pub from: Option<u32>,
     /// Amount to pay.
-    pub amount: Balance,
+    pub amount: u128,
     /// Destination account.
     pub destination: [u8; 32],
 }
@@ -138,7 +133,7 @@ pub enum HostPaymentTopUpError {
     /// Some coins were claimed but the total fell short of the requested amount.
     PartialPayment {
         /// Amount that was successfully credited.
-        credited: Balance,
+        credited: u128,
     },
     /// Catch-all.
     Unknown {

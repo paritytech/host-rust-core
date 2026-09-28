@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Rebuild the browser truapi-server WASM artefacts generated under
-// `dist/wasm/`. wasm-pack is required.
+// Rebuild the browser WASM artefacts of the `truapi` runtime generated under
+// `dist/wasm/`. wasm-pack is required. The core keeps its published
+// `truapi_server` file names, which bundler setups copy by name.
 //
 // Two bundles are built, and the difference is deliberate:
 //
-//   web/      the production browser host. Built `--no-default-features`, so it
-//             carries no signing host: a browser host pairs with a wallet that
+//   web/      the production browser host. Built with the `runtime` feature
+//             alone, so it carries no signing host: a browser host pairs with a wallet that
 //             holds the keys, and never holds key material itself.
 //   testing/  the mock host used by tests. Adds `wasm-signing-host`, because a
 //             test host owns dev accounts and signs locally instead of waiting
@@ -42,7 +43,7 @@ const pkgRoot = resolve(__dirname, "..");
 const repoRoot = resolve(pkgRoot, "../../..");
 const wasmProfile = process.env.TRUAPI_WASM_PROFILE ?? "release";
 
-function args(crate, target, outDir, features = []) {
+function args(crate, outName, target, outDir, features = []) {
   const command = [
     "build",
     "--target",
@@ -50,7 +51,7 @@ function args(crate, target, outDir, features = []) {
     "--out-dir",
     outDir,
     "--out-name",
-    crate.replaceAll("-", "_"),
+    outName,
   ];
   if (wasmProfile === "dev") {
     command.push("--dev");
@@ -177,7 +178,7 @@ async function writeCompressedSidecars(wasmPath) {
   );
 }
 
-async function build(crate, target, subdir, features = [], env = {}) {
+async function build(crate, outName, target, subdir, features = [], env = {}) {
   const outDir = resolve(pkgRoot, "dist/wasm", subdir);
   process.stdout.write(
     `wasm-pack build ${crate} --target ${target} --${wasmProfile}${
@@ -185,7 +186,7 @@ async function build(crate, target, subdir, features = [], env = {}) {
     } → ${outDir}\n`,
   );
   try {
-    await execFileAsync("wasm-pack", args(crate, target, outDir, features), {
+    await execFileAsync("wasm-pack", args(crate, outName, target, outDir, features), {
       cwd: repoRoot,
       env: { ...process.env, ...env },
     });
@@ -202,7 +203,7 @@ async function build(crate, target, subdir, features = [], env = {}) {
   // wasm-pack writes a nested `.gitignore: *`; the repo-level ignore already
   // owns generated WASM outputs.
   await rm(resolve(outDir, ".gitignore"), { force: true });
-  const wasmPath = resolve(outDir, `${crate.replaceAll("-", "_")}_bg.wasm`);
+  const wasmPath = resolve(outDir, `${outName}_bg.wasm`);
   await Promise.all([
     rm(`${wasmPath}.br`, { force: true }),
     rm(`${wasmPath}.gz`, { force: true }),
@@ -218,6 +219,7 @@ async function build(crate, target, subdir, features = [], env = {}) {
 const verifiableStage = resolve(pkgRoot, "dist/wasm/.verifiable");
 const verifiableWasm = await build(
   "truapi-verifiable",
+  "truapi_verifiable",
   "web",
   ".verifiable",
 );
@@ -226,9 +228,10 @@ const env = {
     .update(await readFile(verifiableWasm))
     .digest("hex"),
 };
-await build("truapi-server", "web", "web", [], env);
+await build("truapi", "truapi_server", "web", "web", ["runtime"], env);
 await build(
-  "truapi-server",
+  "truapi",
+  "truapi_server",
   "web",
   "testing",
   ["wasm-signing-host", "test-host"],

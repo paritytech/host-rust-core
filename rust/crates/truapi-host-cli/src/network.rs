@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 use truapi::latest::ChainIdentifier;
-use truapi_platform::{HostChainEntry, HostChainSet};
+use truapi::platform::{HostChainEntry, HostChainSet};
 
 /// Supported live network presets for the headless hosts.
 ///
@@ -81,7 +81,7 @@ fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> Ne
 // usernames) resolves through Asset Hub, SSO through People, preimages through
 // Bulletin.
 
-pub(crate) const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
+pub const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
         "4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
     ),
@@ -148,6 +148,7 @@ pub struct NetworkConfig {
     pub network_suffix: &'static str,
     pub identity_backend_base: &'static str,
     pub people_ws: &'static str,
+    // Read only by tests; production routing goes through `live_chain_endpoints`.
     #[allow(dead_code)]
     pub bulletin_ws: &'static str,
     /// Asset Hub RPC, where PGAS allowances are claimed.
@@ -213,7 +214,7 @@ impl NetworkConfig {
     /// should stop this compiling rather than reach a `None` that only a test
     /// run notices, and one of those tests is `#[ignore]`d.
     #[cfg(test)]
-    pub(crate) fn url_for_role(&self, role: ChainIdentifier) -> Option<&'static str> {
+    pub fn url_for_role(&self, role: ChainIdentifier) -> Option<&'static str> {
         match role {
             ChainIdentifier::People => Some(self.people_ws),
             ChainIdentifier::Bulletin => Some(self.bulletin_ws),
@@ -375,7 +376,7 @@ mod tests {
         for network in Network::value_variants() {
             let config = network.preset();
             assert!(
-                truapi_platform::DOTNS_TLDS.contains(&config.network_suffix),
+                truapi::platform::DOTNS_TLDS.contains(&config.network_suffix),
                 "preset `{}` derives reserved identities under `.{}`, a TLD navigation does not \
                  accept",
                 config.id,
@@ -445,7 +446,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs network access to the preset's chains"]
     async fn the_advertised_genesis_matches_what_each_chain_reports() {
-        use truapi_server::statement_allowance as alloc;
+        use truapi::statement_allowance as alloc;
 
         let mut checked = 0usize;
         let mut drifted = Vec::new();
