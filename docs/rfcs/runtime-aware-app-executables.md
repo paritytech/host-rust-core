@@ -13,7 +13,7 @@ to declare whether it runs as a web application or as a PolkaVM program.
 
 Web remains the mandatory App runtime. PolkaVM is an optional runtime that a
 Host may additionally support. A PolkaVM App declares the versioned graphics
-and other runtime capabilities it requires.
+and optional audio capabilities it requires.
 
 PolkaVM is a runtime, not a new modality or executable kind. A PolkaVM App
 retains the identity, lifecycle, and TruAPI access of an App.
@@ -99,9 +99,6 @@ capabilities:
       "abiVersion": 1,
       "profile": "tri2d"
     },
-    "deviceInput": {
-      "abiVersion": 1
-    },
     "audio": {
       "abiVersion": 1
     }
@@ -113,8 +110,8 @@ PolkaVM support is optional. A Host that does not implement the PolkaVM runtime
 skips the App executable and reports it as unsupported. This does not make the
 Product malformed or affect its other executable records.
 
-A PolkaVM App must declare a graphics capability. Device input and audio are
-optional and should be omitted when unused.
+A PolkaVM App must declare a graphics capability. Audio is optional and should
+be omitted when unused.
 
 Runtime entrypoints are relative to the executable artifact. A web entrypoint
 identifies an HTML document. A PolkaVM entrypoint identifies a `.polkavm`
@@ -142,9 +139,32 @@ runtime-profile specifications.
 The unqualified name `webgpu` is reserved for a future contract with a defined
 level of WebGPU conformance.
 
-Device input and audio follow the same versioning model: the App manifest
-declares the required ABI version, while a separate runtime specification
-defines its operations and behavior.
+Audio follows the same versioning model: the App manifest declares the
+required ABI version, while a separate runtime specification defines its
+operations and behavior.
+
+### Baseline application input
+
+PolkaVM application ABI version 1 includes baseline interactive input. A Host
+that implements this ABI provides pointer movement and buttons, physical key
+transitions, committed UTF-8 text, wheel scrolling, focus changes, and surface
+dimensions and scale. The Host normalizes platform input into this contract.
+For example, a touch screen can provide pointer interaction and a software
+keyboard can provide committed text.
+
+Baseline input is neither a manifest capability nor a permission. An App does
+not declare pointer, keyboard, text, wheel, focus, or surface-metric
+requirements, and a Host does not reject an App based on those declarations.
+Committed text is distinct from clipboard access. It contains text entered
+through the platform text system and grants no access to clipboard contents.
+
+Physical motion sensors and clipboard access are runtime-authorized facilities.
+An App requests them when needed. The Host reports granted, denied, or
+unavailable without changing whether the executable is structurally valid.
+Physical motion access is foreground-scoped and stops when its execution loses
+the foreground, closes, or loses authorization. Clipboard access requires a
+separate permission and explicit user action; approved pasted text may then be
+delivered through baseline committed-text input.
 
 ### Host behavior
 
@@ -152,7 +172,7 @@ Before launch, the Host checks whether it supports:
 
 - the declared runtime and runtime ABI;
 - the declared graphics profile and ABI;
-- the ABI versions of any other declared capabilities.
+- the ABI version of a declared audio capability.
 
 If a requirement is unsupported, the Host skips that App executable and
 reports it as incompatible. The Product and its other executable records
@@ -172,8 +192,8 @@ identity and update signal.
 `appVersion` remains a publisher-defined, user-visible release label. Hosts
 must not use it to determine whether executable bytes changed.
 
-The manifest schema, PolkaVM application ABI, runtime-capability ABIs, and
-`appVersion` evolve independently.
+The manifest schema, PolkaVM application ABI, graphics and audio capability
+ABIs, and `appVersion` evolve independently.
 
 ### Compatibility
 
@@ -181,6 +201,11 @@ A Host that does not recognize App manifest version 2 skips the App executable.
 It must not interpret its artifact as a version 1 web application.
 
 A Host supporting version 2 continues to accept version 1 App manifests.
+
+Draft implementations emitted a `deviceInput` capability before the baseline
+input contract was settled. That field is not part of App manifest version 2.
+Publishers must republish those executable manifests without it; Hosts must not
+derive permission or input-delivery behavior from it.
 
 This RFC changes only the App executable. Other executable kinds and
 user-facing surfaces are outside its scope.
@@ -215,5 +240,4 @@ introduce a separate user-facing surface.
 
 ## Unresolved Questions
 
-The detailed graphics, device-input, and audio contracts will be proposed
-separately.
+The detailed graphics and audio contracts will be proposed separately.
