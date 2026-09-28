@@ -371,7 +371,7 @@ pub fn has_trusted_remote_permissions(product_id: String) -> bool {
 /// the entire bridge — not just the request being served. Async callbacks
 /// (`navigate_to`, `push_notification`, `device_permission`,
 /// `remote_permission`, `feature_supported`, `confirm_user_action`, `confirm_permission`,
-/// `lookup_preimage`, and the core and local storage callbacks) are awaited by the core — implementations hop to the
+/// `lookup_preimage`, and the core and local storage callbacks) are awaited by the core. Implementations hop to the
 /// main thread for any UI and may keep the future pending arbitrarily long,
 /// but must suspend rather than block the polling thread (foreign
 /// implementations bridged through UniFFI suspend naturally; the rule
