@@ -6,7 +6,7 @@
   },
   "ios": {
     "branch": "develop",
-    "ref": "5963378daf939c7e93d7472e31f9048e59d4aeb0",
+    "ref": "01fb8c7fe4b637d11322c33eda9f5acf2f5d4f22",
     "source": "https://github.com/paritytech/polkadot-ios-community.git"
   }
 }

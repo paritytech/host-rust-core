@@ -1,5 +1,7 @@
 use parity_scale_codec::{Decode, Encode};
 
+use crate::v01::contacts::ContactHandle;
+
 use super::ProductAccountId;
 
 /// A 32-byte chain genesis hash used to identify the target chain.
@@ -38,6 +40,15 @@ pub struct ProductAccountTxPayload {
     pub extensions: Vec<TxPayloadExtension>,
     /// 0 for Extrinsic V4, runtime-supported value for V5.
     pub tx_ext_version: u8,
+    /// Contact handles `call_data` names, which the host replaces with the
+    /// accounts they resolve to before anything is signed or shown.
+    ///
+    /// A product declares them rather than passing offsets: an offset is a
+    /// number it computes about its own encoding and gets wrong silently,
+    /// while a declared handle is either in the call or it is not, and a host
+    /// that cannot find one refuses rather than signing a call that names
+    /// somebody else. A call naming nobody leaves this empty.
+    pub contacts: Vec<ContactHandle>,
 }
 
 /// Transaction payload for a legacy (non-product) account.
@@ -78,4 +89,9 @@ pub enum HostCreateTransactionError {
         /// Human-readable failure reason.
         reason: String,
     },
+    /// A declared contact handle names nobody this host has a contact for, or
+    /// does not appear in the call it was declared for, or a handle appears in
+    /// the call without being declared. One refusal for all three, because
+    /// telling them apart would say whether a handle is current.
+    UnknownContact,
 }
