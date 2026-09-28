@@ -18,7 +18,7 @@ struct SPAConfiguration {
     let browserTabId: UUID?
     /// Which of the product's executables this screen serves. A Pocket card
     /// opens the widget, everything else the app.
-    let executable: ProductExecutableSurface
+    let executable: ExecutableKind
 
     init(
         title: String?,
@@ -28,7 +28,7 @@ struct SPAConfiguration {
         contentSource: SPAContentSource = .dotNs,
         isBrowserTab: Bool = false,
         browserTabId: UUID? = nil,
-        executable: ProductExecutableSurface = .app
+        executable: ExecutableKind = .app
     ) {
         self.title = title
         self.isRootScreen = isRootScreen

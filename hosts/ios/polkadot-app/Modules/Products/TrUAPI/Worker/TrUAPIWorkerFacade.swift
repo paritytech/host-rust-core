@@ -39,7 +39,7 @@ final class TrUAPIWorkerFacade: @unchecked Sendable {
         guard let assembled = assembled.withLock({ $0 }) else { return nil }
 
         return PocketImageResolver(
-            contentId: { try? await assembled.products.resolve(productId).executables.worker?.identifier },
+            contentId: { try? await assembled.products.resolve(productId).contentId(for: .worker) },
             dotNsResolver: assembled.dotNsResolver,
             ipfsUrl: assembled.ipfsUrl
         )

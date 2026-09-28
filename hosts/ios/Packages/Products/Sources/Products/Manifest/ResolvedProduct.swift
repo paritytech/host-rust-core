@@ -57,18 +57,17 @@ public struct ResolvedProduct: Hashable, Sendable {
         executables.app?.identifier ?? id
     }
 
-    /// Name the widget's content archive resolves under. A product that
-    /// publishes no widget falls back to its app, which is what a legacy
-    /// product has.
-    public var widgetContentId: ProductId {
-        executables.widget?.identifier ?? appContentId
-    }
-
-    /// The archive `executable` is served from.
-    public func contentId(for executable: ProductExecutableSurface) -> ProductId {
-        switch executable {
+    /// The archive `kind` is served from.
+    ///
+    /// A product that publishes no executable of that kind is served from its
+    /// base name, which is where a legacy product and a script installed by
+    /// hand through debug settings both live. Everything that asks which
+    /// archive backs a surface asks here, so no two callers can disagree.
+    public func contentId(for kind: ExecutableKind) -> ProductId {
+        switch kind {
         case .app: appContentId
-        case .widget: widgetContentId
+        case .widget: executables.widget?.identifier ?? id
+        case .worker: executables.worker?.identifier ?? id
         }
     }
 }

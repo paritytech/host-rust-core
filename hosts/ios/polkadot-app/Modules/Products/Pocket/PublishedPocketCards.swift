@@ -39,7 +39,7 @@ struct PublishedPocketCards: PublishedPocketCardsResolving {
             return PublishedPocketCard(
                 productId: resolved.id,
                 productName: resolved.displayName,
-                workerContentId: worker.identifier,
+                workerContentId: resolved.contentId(for: .worker),
                 definition: definition
             )
         }
@@ -64,7 +64,7 @@ struct PublishedPocketCards: PublishedPocketCardsResolving {
         return PublishedPocketCard(
             productId: resolved?.id ?? productId,
             productName: resolved?.displayName ?? productId,
-            workerContentId: resolved?.id ?? productId,
+            workerContentId: resolved?.contentId(for: .worker) ?? productId,
             definition: definition
         )
     }
