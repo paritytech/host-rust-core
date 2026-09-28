@@ -33,7 +33,8 @@
 //! authorized for every remote permission while nothing is stored, and never
 //! reaches the prompt callback. A stored decision still wins, so a denial
 //! written through the admin surface revokes the grant. Device permissions,
-//! identity disclosure, account access, and Chat authority are never covered.
+//! identity disclosure, account access, Chat authority, and profile disclosure
+//! are never covered.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -47,8 +48,9 @@ use truapi_platform::{
     BLESSED_REMOTE_DOMAINS, ChatAuthorityReview, CoreStorage, CoreStorageKey,
     DevicePermissionStatus, IdentityDisclosureReview, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, PermissionDecision, PermissionStatusHost, Permissions,
-    ProductContext, UserConfirmation, UserConfirmationReview, has_trusted_remote_permissions,
-    is_valid_remote_domain_pattern, normalize_remote_domain, remote_domain_candidates,
+    ProductContext, ProfileDisclosureReview, UserConfirmation, UserConfirmationReview,
+    has_trusted_remote_permissions, is_valid_remote_domain_pattern, normalize_remote_domain,
+    remote_domain_candidates,
 };
 
 /// Persisted answer for a single permission request. Keep `Authorized` at
@@ -415,6 +417,13 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                 )
                 .await
             }
+            PermissionAuthorizationRequest::ProfileDisclosure => {
+                authorization_status(
+                    self.storage,
+                    CoreStorageKey::profile_disclosure_authorization(self.product_id()),
+                )
+                .await
+            }
         }
     }
 
@@ -479,6 +488,9 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                     derivation_index.clone(),
                 )
             }
+            PermissionAuthorizationRequest::ProfileDisclosure => {
+                CoreStorageKey::profile_disclosure_authorization(self.product_id())
+            }
         };
         self.temporary_permissions.revoke(&key);
         set_authorization_status(self.storage, key, status).await
@@ -541,6 +553,41 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             .confirm_permission(UserConfirmationReview::ChatAuthority(ChatAuthorityReview {
                 product_id: self.product_id().to_string(),
             }))
+            .await
+        {
+            Ok(decision) => decision,
+            Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
+        };
+        let status = match decision {
+            PermissionDecision::AllowOnce => return Ok(PermissionAuthorizationStatus::Authorized),
+            PermissionDecision::AllowAlways => PermissionAuthorizationStatus::Authorized,
+            PermissionDecision::Deny => PermissionAuthorizationStatus::Denied,
+        };
+        self.set_authorization_status(&request, status).await?;
+        Ok(status)
+    }
+
+    /// Resolve the product's grant to disclose a profile reference to the
+    /// user's Chat contacts, prompting once when no durable user decision
+    /// exists.
+    pub async fn check_or_prompt_profile_disclosure(
+        &self,
+    ) -> Result<PermissionAuthorizationStatus, GenericError>
+    where
+        P: UserConfirmation,
+    {
+        let request = PermissionAuthorizationRequest::ProfileDisclosure;
+        let cached = self.authorization_status(&request).await?;
+        if cached != PermissionAuthorizationStatus::NotDetermined {
+            return Ok(cached);
+        }
+        let decision = match self
+            .prompt
+            .confirm_permission(UserConfirmationReview::ProfileDisclosure(
+                ProfileDisclosureReview {
+                    product_id: self.product_id().to_string(),
+                },
+            ))
             .await
         {
             Ok(decision) => decision,
