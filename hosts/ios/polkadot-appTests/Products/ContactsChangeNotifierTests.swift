@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Operation_iOS
+import SubstrateSdk
 @testable import polkadot_app
 
 /// The core caches the contact handles it resolves, so the host has to say when

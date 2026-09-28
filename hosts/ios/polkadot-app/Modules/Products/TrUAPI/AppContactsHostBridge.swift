@@ -103,9 +103,7 @@ final class AppContactsHostBridge: ContactsHostBridge, @unchecked Sendable {
     }
 
     private func currentAccounts() async throws -> [Data] {
-        lock.lock()
-        let snapshot = accounts
-        lock.unlock()
+        let snapshot = lock.withLock { accounts }
         if let snapshot { return snapshot }
         return try await fetchUnblockedContacts().map(\.accountId)
     }

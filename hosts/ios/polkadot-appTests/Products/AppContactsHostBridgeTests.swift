@@ -1,7 +1,9 @@
 import Testing
 import Foundation
+import Products
 import SubstrateSdk
 import TrUAPIHost
+import UIKitExt
 @testable import polkadot_app
 
 /// The bridge answers lookups from the latest contact snapshot and a handle
