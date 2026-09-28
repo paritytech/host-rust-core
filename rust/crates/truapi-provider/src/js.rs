@@ -171,6 +171,21 @@ impl ChainProviderBuilder {
         Ok(())
     }
 
+    /// Limit the kinds of connection the light client opens to peers.
+    #[cfg(feature = "smoldot")]
+    #[wasm_bindgen(js_name = setConnectionTypes)]
+    pub fn set_connection_types(
+        &mut self,
+        connection_types: &crate::ConnectionTypes,
+    ) -> Result<(), JsError> {
+        let builder = self
+            .inner
+            .take()
+            .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
+        self.inner = Some(builder.connection_types(*connection_types));
+        Ok(())
+    }
+
     /// Register every chain of the bundled network `name` (relay plus system
     /// parachains, with relay wiring and statement-store placement supplied by
     /// the catalog). Returns the network's genesis hashes.

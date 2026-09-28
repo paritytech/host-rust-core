@@ -85,27 +85,21 @@ type Platform = crate::light_platform_test::ShortDeadlinePlatform<
 #[cfg(target_arch = "wasm32")]
 type Platform = crate::light_platform_web::SubxtPlatform;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn new_platform() -> Platform {
-    #[cfg(not(target_arch = "wasm32"))]
+    // Before the client starts, or its first log lines are dropped.
+    crate::logging_native::init_from_env();
+    let platform = smoldot_light::platform::DefaultPlatform::new(
+        env!("CARGO_PKG_NAME").into(),
+        env!("CARGO_PKG_VERSION").into(),
+    );
+    #[cfg(test)]
     {
-        // Before the client starts, or its first log lines are dropped.
-        crate::logging_native::init_from_env();
-        let platform = smoldot_light::platform::DefaultPlatform::new(
-            env!("CARGO_PKG_NAME").into(),
-            env!("CARGO_PKG_VERSION").into(),
-        );
-        #[cfg(test)]
-        {
-            crate::light_platform_test::ShortDeadlinePlatform::new(platform)
-        }
-        #[cfg(not(test))]
-        {
-            platform
-        }
+        crate::light_platform_test::ShortDeadlinePlatform::new(platform)
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(test))]
     {
-        crate::light_platform_web::SubxtPlatform::new()
+        platform
     }
 }
 
@@ -192,19 +186,28 @@ struct AddedChain {
 /// Lazily-started shared smoldot client owned by a provider.
 pub struct LightState {
     inner: OnceLock<Arc<Mutex<LightInner>>>,
+    /// The peer connections the browser platform opens.
+    #[cfg(target_arch = "wasm32")]
+    connection_types: crate::ConnectionTypes,
 }
 
 impl LightState {
-    pub fn new() -> Self {
+    pub fn new(#[cfg(target_arch = "wasm32")] connection_types: crate::ConnectionTypes) -> Self {
         LightState {
             inner: OnceLock::new(),
+            #[cfg(target_arch = "wasm32")]
+            connection_types,
         }
     }
 
     fn inner(&self) -> &Arc<Mutex<LightInner>> {
         self.inner.get_or_init(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            let platform = new_platform();
+            #[cfg(target_arch = "wasm32")]
+            let platform = crate::light_platform_web::SubxtPlatform::new(self.connection_types);
             Arc::new(Mutex::new(LightInner {
-                client: Client::new(new_platform()),
+                client: Client::new(platform),
                 added: HashMap::new(),
                 connections: 0,
             }))

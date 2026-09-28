@@ -35,6 +35,9 @@ pub struct EmbeddedChainProviderBuilder {
     /// Where warm-start blobs are read from and written back to.
     #[cfg(feature = "smoldot")]
     storage: Option<std::sync::Arc<dyn crate::storage::StorageClient>>,
+    /// The peer connections the browser light client opens.
+    #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
+    connection_types: crate::ConnectionTypes,
 }
 
 impl core::fmt::Debug for EmbeddedChainProviderBuilder {
@@ -46,6 +49,8 @@ impl core::fmt::Debug for EmbeddedChainProviderBuilder {
             .field("relays", &self.relays)
             .field("seeded_databases", &self.seeded_databases)
             .field("storage", &self.storage.is_some());
+        #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
+        builder.field("connection_types", &self.connection_types);
         builder.finish()
     }
 }
@@ -103,6 +108,13 @@ impl EmbeddedChainProviderBuilder {
         self
     }
 
+    /// Limit the kinds of connection the browser light client opens to peers.
+    #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
+    pub fn connection_types(mut self, connection_types: crate::ConnectionTypes) -> Self {
+        self.connection_types = connection_types;
+        self
+    }
+
     /// Build the provider. Light-client resources start lazily on the first
     /// light-client connect.
     pub fn build(self) -> EmbeddedChainProvider {
@@ -116,7 +128,9 @@ impl EmbeddedChainProviderBuilder {
             storage: self.storage,
             #[cfg(feature = "smoldot")]
             stored_quality: Mutex::new(HashMap::new()),
-            #[cfg(feature = "smoldot")]
+            #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
+            light: crate::light::LightState::new(self.connection_types),
+            #[cfg(all(feature = "smoldot", not(target_arch = "wasm32")))]
             light: crate::light::LightState::new(),
         }
     }
