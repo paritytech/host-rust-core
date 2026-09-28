@@ -71,22 +71,15 @@ runtime = [
     "dep:web-time",
     "dep:web-sys",
     "dep:tokio",
+    "dep:tokio-tungstenite",
+    "dep:base64",
+    "dep:rand",
+    "dep:libc",
 ]
 wasm-signing-host = ["runtime"]
 # Test-host-only shortcuts a shipping host must not carry, such as answering
 # resource allocation as granted without allocating anything.
 test-host = ["runtime"]
-debug-sink = [
-    "runtime",
-    "tokio/net",
-    "tokio/sync",
-    "tokio/macros",
-    "tokio/io-util",
-    "tokio/time",
-    "dep:tokio-tungstenite",
-    "dep:base64",
-]
-ws-bridge = ["debug-sink", "dep:rand", "dep:libc"]
 # In-memory `MockPlatform` for tests and host simulators.
 mock = ["runtime"]
 
@@ -134,7 +127,7 @@ verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b0
 truapi-verifiable = { path = "../truapi-verifiable", optional = true }
 rand = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"], optional = true }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
 uniffi = { workspace = true, optional = true }
 subxt = { workspace = true, features = ["native"], optional = true }
