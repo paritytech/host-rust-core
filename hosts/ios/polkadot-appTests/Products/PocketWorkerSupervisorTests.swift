@@ -303,7 +303,7 @@ private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
         self.firstStartFailsAfter = firstStartFailsAfter
     }
 
-    func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> PocketWorkerRuntime {
+    func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> TrUAPIWorkerRuntime {
         if cannotBuild { throw PocketWorkerError.noPocketWorker(productId) }
         if buildDelay > .zero { try await Task.sleep(for: buildDelay) }
 
@@ -317,7 +317,7 @@ private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
         let isFirstBuild = buildCount == 1
         let firstStartFailsAfter = firstStartFailsAfter
         let engineFails = engineFails
-        return PocketWorkerRuntime(
+        return TrUAPIWorkerRuntime(
             productUrl: URL(string: "https://product.invalid/worker.js")!,
             executionModel: RustRuntimeEnvironment.ExecutionModel(
                 execution: execution,

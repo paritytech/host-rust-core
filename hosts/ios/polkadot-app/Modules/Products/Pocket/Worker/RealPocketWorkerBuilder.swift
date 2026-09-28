@@ -35,7 +35,7 @@ struct RealPocketWorkerBuilder: PocketWorkerBuilding {
         self.logger = logger
     }
 
-    func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> PocketWorkerRuntime {
+    func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> TrUAPIWorkerRuntime {
         let resolved = try? await products.resolve(productId)
         let source = try await workerSource(for: resolved, productId: productId)
 
@@ -45,7 +45,7 @@ struct RealPocketWorkerBuilder: PocketWorkerBuilding {
             logger: logger
         )
 
-        return try PocketWorkerRuntime(
+        return try TrUAPIWorkerRuntime(
             productUrl: context.productUrl,
             executionModel: environment().makePocketWorkerExecution(
                 productId: productId,

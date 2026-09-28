@@ -30,7 +30,7 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
     /// starts would close the execution the live one is about to use.
     private let makeExecutionModel: @Sendable (any ProductChatMessaging) throws
         -> RustRuntimeEnvironment.ExecutionModel
-    private var executionModel: RustRuntimeEnvironment.ExecutionModel?
+    private var worker: TrUAPIWorkerRuntime?
     /// Bound for as long as the chat surface is alive, like the shared worker's
     /// native api.
     private let chatSurface = ProductChatSurface()
@@ -41,9 +41,6 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
     private let renderStartupWindow: Duration
     private let logger: LoggerProtocol
 
-    private var engine: JSEngineProtocol?
-    private var engineMonitor: JSEngineMonitor?
-    private var moduleBridge: JSESModuleBridge?
     private var roomsForwardingTask: Task<Void, Never>?
     private var started = false
     private var disposed = false
@@ -182,13 +179,8 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
         // is what releases the chat context.
         chatSurface.unbind()
 
-        await destroyEngineResources()
-
-        if let executionModel {
-            executionModel.execution.stopWsBridge()
-            executionModel.execution.close()
-            executionModel.chainConnections.closeAll()
-        }
+        await worker?.dispose()
+        worker = nil
 
         logger.debug("Rust chat runtime disposed for: \(productUrl)")
     }
@@ -203,71 +195,19 @@ private extension ChatRustRuntime {
         chatSurface.bind(messagingSupport)
 
         let model = try makeExecutionModel(chatSurface)
-        executionModel = model
+        let worker = TrUAPIWorkerRuntime(
+            productUrl: productUrl,
+            executionModel: model,
+            engineFactory: engineFactory,
+            logger: logger
+        )
+        self.worker = worker
         startRoomsForwarding(chatMessaging: chatSurface, execution: model.execution)
 
-        let bootstrapScript = try model.startBridge()
-        let scriptsFactory = RustRuntimeScriptsFactory(bootstrapScript: bootstrapScript)
-        let jsEngine = try await bootEngine(
-            scripts: scriptsFactory.makeScripts(),
-            osPermissionAsker: model.osPermissionAsker
-        )
+        try await worker.start()
         try checkNotDisposed()
-
-        let modBridge = JSESModuleBridge(engine: jsEngine)
-        await modBridge.install()
-
-        try checkNotDisposed()
-        moduleBridge = modBridge
-
-        try await modBridge.executeScript(url: productUrl)
 
         logger.debug("Rust chat runtime started for: \(productUrl)")
-    }
-
-    func bootEngine(
-        scripts: [JSEngineScript],
-        osPermissionAsker: OSPermissionAsking
-    ) async throws -> JSEngineProtocol {
-        let jsEngine = engineFactory()
-        do {
-            await jsEngine.registerJSDeviceCapabilityHandler(
-                osPermissionAsker.makeDeviceCapabilityHandler()
-            )
-            try checkNotDisposed()
-            try await jsEngine.initialize(with: scripts)
-            guard await jsEngine.getState() == .ready else {
-                throw ScriptExecutorError.engineInitFailed
-            }
-            try checkNotDisposed()
-        } catch {
-            await jsEngine.destroy()
-            throw error
-        }
-
-        let monitor = JSEngineMonitor(
-            engine: jsEngine,
-            pauseEvent: .willResignActive,
-            resumeEvent: .didBecomeActive
-        )
-        monitor.start()
-        engineMonitor = monitor
-
-        engine = jsEngine
-        return jsEngine
-    }
-
-    func destroyEngineResources() async {
-        engineMonitor?.stop()
-        engineMonitor = nil
-
-        let moduleBridge = moduleBridge
-        self.moduleBridge = nil
-        await moduleBridge?.dispose()
-
-        let engine = engine
-        self.engine = nil
-        await engine?.destroy()
     }
 
     func checkNotDisposed() throws {
@@ -307,8 +247,8 @@ private extension ChatRustRuntime {
     }
 
     func requireExecution() throws -> TrUAPIProductExecutionProtocol {
-        guard let executionModel else { throw ChatSeamError.notStarted }
-        return executionModel.execution
+        guard let worker else { throw ChatSeamError.notStarted }
+        return worker.execution
     }
 
     /// Mirror the native room list into the core so product-side

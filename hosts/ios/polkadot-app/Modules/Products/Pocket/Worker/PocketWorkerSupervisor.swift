@@ -26,13 +26,13 @@ protocol PocketWorkerSupervising: AnyObject, Sendable {
 /// Builds the pieces one product's worker needs: its archive, its execution and
 /// the engine its script runs in.
 protocol PocketWorkerBuilding: Sendable {
-    func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> PocketWorkerRuntime
+    func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> TrUAPIWorkerRuntime
 }
 
 actor PocketWorkerSupervisor: PocketWorkerSupervising {
     private struct Running {
         let boot: Boot
-        let runtime: PocketWorkerRuntime
+        let runtime: TrUAPIWorkerRuntime
         let pocket: ProductPocketHostBridge
     }
 
