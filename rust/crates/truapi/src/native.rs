@@ -234,14 +234,10 @@ impl TryFrom<HostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
     type Error = NativeRuntimeConfigError;
 
     fn try_from(config: HostRuntimeConfig) -> Result<Self, Self::Error> {
-        let people_chain_genesis_hash = genesis_hash(
-            "people_chain_genesis_hash",
-            &config.people_chain_genesis_hash,
-        )?;
-        let bulletin_chain_genesis_hash = genesis_hash(
-            "bulletin_chain_genesis_hash",
-            &config.bulletin_chain_genesis_hash,
-        )?;
+        let people_chain_genesis_hash =
+            genesis_hash("people_chain_genesis_hash", &config.people_chain_genesis_hash)?;
+        let bulletin_chain_genesis_hash =
+            genesis_hash("bulletin_chain_genesis_hash", &config.bulletin_chain_genesis_hash)?;
         let asset_hub_chain_genesis_hash = genesis_hash(
             "asset_hub_chain_genesis_hash",
             &config.asset_hub_chain_genesis_hash,
@@ -287,6 +283,7 @@ impl TryFrom<ProductExecutionConfig> for ProductContext {
             .map_err(NativeRuntimeConfigError::from)
     }
 }
+
 
 /// Classify a navigation input exactly like the core's internal navigate host
 /// call: dotNS first, then `localhost`, then normalized external, with
@@ -4486,9 +4483,7 @@ mod tests {
             assert_eq!(
                 err,
                 NativeRuntimeConfigError::Invalid {
-                    reason: format!(
-                        "asset_hub_chain_genesis_hash must be exactly 32 bytes, got {len}"
-                    ),
+                    reason: format!("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {len}"),
                 }
             );
         }
