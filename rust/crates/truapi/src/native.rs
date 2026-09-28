@@ -636,28 +636,12 @@ pub trait NativeContactsCallbacks: Send + Sync {
     ) -> Result<crate::platform::HostContactMatches, HostRejection>;
 
     /// Present the picker on behalf of `product_id` and report what the user
-    /// did. A host with no contacts answers [`NativeContactPick::NoContacts`]
+    /// did. A host with no contacts answers `NoContacts`
     /// instead of drawing an empty overlay.
-    async fn pick_contact(&self, product_id: String) -> Result<NativeContactPick, HostRejection>;
-}
-
-/// How a native host's picker ended.
-///
-/// Mirrors [`crate::platform::HostContactPick`] because UniFFI cannot lower a
-/// record from another crate out of an async callback return.
-#[derive(Debug, Clone, uniffi::Enum)]
-pub enum NativeContactPick {
-    /// The user chose this account, as 32 bytes.
-    Picked {
-        /// The chosen contact's account.
-        account: Vec<u8>,
-    },
-    /// The user closed the picker without choosing.
-    Dismissed,
-    /// The user has no contacts, so the host drew nothing.
-    NoContacts,
-    /// This host resolves contacts but cannot present a picker.
-    Unsupported,
+    async fn pick_contact(
+        &self,
+        product_id: String,
+    ) -> Result<crate::platform::HostContactPick, HostRejection>;
 }
 
 /// [`crate::platform::ContactsPlatform`] served by host-provided
@@ -683,29 +667,12 @@ impl crate::platform::ContactsPlatform for ContactsCallbackPlatform {
         &self,
         product: &ProductContext,
     ) -> Result<crate::platform::HostContactPick, v01::GenericError> {
-        let picked = self
-            .contacts
+        self.contacts
             .pick_contact(product.product_id.clone())
             .await
             .map_err(|error| v01::GenericError {
                 reason: error.to_string(),
-            })?;
-        Ok(match picked {
-            NativeContactPick::Dismissed => crate::platform::HostContactPick::Dismissed,
-            NativeContactPick::NoContacts => crate::platform::HostContactPick::NoContacts,
-            NativeContactPick::Unsupported => crate::platform::HostContactPick::Unsupported,
-            NativeContactPick::Picked { account } => {
-                // An account that is not 32 bytes names nobody, and minting a
-                // handle from it would hand the product a durable id for a
-                // person who does not exist.
-                let Ok(account) = <[u8; 32]>::try_from(account.as_slice()) else {
-                    return Err(v01::GenericError {
-                        reason: "picked account must be 32 bytes".to_string(),
-                    });
-                };
-                crate::platform::HostContactPick::Picked { account }
-            }
-        })
+            })
     }
 }
 

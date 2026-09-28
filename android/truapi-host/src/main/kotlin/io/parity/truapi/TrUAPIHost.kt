@@ -84,7 +84,7 @@ import uniffi.truapi.HostRuntimeConfig
 import uniffi.truapi.ProductExecutionConfig
 import uniffi.truapi.HostContactLookup
 import uniffi.truapi.HostContactMatches
-import uniffi.truapi.NativeContactPick
+import uniffi.truapi.HostContactPick
 import uniffi.truapi.NativeContactsCallbacks
 
 /** Package metadata. */
@@ -621,18 +621,18 @@ interface ContactsHostBridge {
 
     /**
      * Present the picker on behalf of [productId] and report what the user
-     * did. With no contacts, answer [NativeContactPick.NoContacts] instead of
+     * did. With no contacts, answer [HostContactPick.NoContacts] instead of
      * drawing an empty overlay.
      */
     @Throws(HostRejection::class)
-    suspend fun pickContact(productId: String): NativeContactPick
+    suspend fun pickContact(productId: String): HostContactPick
 }
 
 private class ContactsCallbackAdapter(private val bridge: ContactsHostBridge) : NativeContactsCallbacks {
     override fun contacts(lookup: HostContactLookup): HostContactMatches =
         withHostRejection { bridge.contacts(lookup) }
 
-    override suspend fun pickContact(productId: String): NativeContactPick =
+    override suspend fun pickContact(productId: String): HostContactPick =
         try {
             bridge.pickContact(productId)
         } catch (error: HostRejection) {

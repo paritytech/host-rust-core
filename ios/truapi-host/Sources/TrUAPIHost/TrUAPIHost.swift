@@ -274,7 +274,7 @@ public protocol ContactsHostBridge: AnyObject, Sendable {
     /// Present the picker on behalf of `productId` and report what the user
     /// did. With no contacts, answer `.noContacts` instead of drawing an empty
     /// overlay.
-    func pickContact(productId: String) async throws -> NativeContactPick
+    func pickContact(productId: String) async throws -> HostContactPick
 }
 
 public extension HostBridge {
@@ -432,7 +432,7 @@ private final class ContactsCallbackAdapter: NativeContactsCallbacks, @unchecked
         }
     }
 
-    func pickContact(productId: String) async throws -> NativeContactPick {
+    func pickContact(productId: String) async throws -> HostContactPick {
         do {
             return try await bridge.pickContact(productId: productId)
         } catch let error as HostRejection {
