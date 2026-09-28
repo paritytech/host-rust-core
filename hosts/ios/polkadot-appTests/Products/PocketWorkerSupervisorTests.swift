@@ -172,6 +172,47 @@ struct PocketWorkerSupervisorTests {
         #expect(builder.execution?.closeCallCount == 1)
     }
 
+    /// The ledger delivers its transitions in order, so the supervisor has to
+    /// apply them in order. A start, a stop and a start leave the worker
+    /// running; applied out of order the pair of starts collapses into one and
+    /// the stop lands last, leaving the card with no worker at all.
+    @Test
+    func appliesABurstOfTransitionsInTheOrderTheyArrive() async throws {
+        let builder = StubBuilder(buildDelay: .milliseconds(40))
+        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+
+        supervisor.demandChanged(productId: "game.paseo", transition: .start)
+        supervisor.demandChanged(productId: "game.paseo", transition: .stop)
+        supervisor.demandChanged(productId: "game.paseo", transition: .start)
+
+        try await settle()
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(supervisor.currentExecution(of: "game.paseo") != nil)
+    }
+
+    /// A boot that fails after a stop has already cleared it must not take the
+    /// boot that replaced it down too. The core counts the card's reference and
+    /// reports only transitions across zero, so a start swallowed here never
+    /// comes again and the card is left on whatever it last drew.
+    @Test
+    func aFailedBootDoesNotClearTheBootThatReplacedIt() async throws {
+        let builder = StubBuilder(firstStartFailsAfter: .milliseconds(300))
+        let supervisor = PocketWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+
+        supervisor.demandChanged(productId: "game.paseo", transition: .start)
+        try await Task.sleep(for: .milliseconds(50))
+
+        supervisor.demandChanged(productId: "game.paseo", transition: .stop)
+        try await Task.sleep(for: .milliseconds(20))
+        supervisor.demandChanged(productId: "game.paseo", transition: .start)
+
+        try await settle()
+        try await Task.sleep(for: .milliseconds(400))
+
+        #expect(supervisor.currentExecution(of: "game.paseo") != nil)
+    }
+
     /// The supervisor follows the collection for the whole life of the process,
     /// and a worker already running is only told about a card added later
     /// because of that. Without it a product's own list silently goes stale the
@@ -245,11 +286,21 @@ private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
     var cannotBuild: Bool
     var engineFails: Bool
     private let buildDelay: Duration
+    /// How long the first worker sits inside `start()` before failing. The
+    /// window a stop and a restart have to land in.
+    private let firstStartFailsAfter: Duration?
+    private var buildCount = 0
 
-    init(cannotBuild: Bool = false, engineFails: Bool = false, buildDelay: Duration = .zero) {
+    init(
+        cannotBuild: Bool = false,
+        engineFails: Bool = false,
+        buildDelay: Duration = .zero,
+        firstStartFailsAfter: Duration? = nil
+    ) {
         self.cannotBuild = cannotBuild
         self.engineFails = engineFails
         self.buildDelay = buildDelay
+        self.firstStartFailsAfter = firstStartFailsAfter
     }
 
     func makeRuntime(productId: ProductId, pocket: ProductPocketHostBridge) async throws -> PocketWorkerRuntime {
@@ -262,6 +313,9 @@ private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
         let execution = MockProductExecution()
         self.execution = execution
 
+        buildCount += 1
+        let isFirstBuild = buildCount == 1
+        let firstStartFailsAfter = firstStartFailsAfter
         let engineFails = engineFails
         return PocketWorkerRuntime(
             productUrl: URL(string: "https://product.invalid/worker.js")!,
@@ -272,10 +326,36 @@ private final class StubBuilder: PocketWorkerBuilding, @unchecked Sendable {
             ),
             engineFactory: { [weak self] in
                 self?.cardsWhenTheEngineBooted = (try? pocket.listCards()) ?? []
-                return engineFails ? FailingJSEngine() as JSEngineProtocol : MockJSEngine()
+                if engineFails { return FailingJSEngine() }
+                if isFirstBuild, let firstStartFailsAfter {
+                    return SlowFailingJSEngine(after: firstStartFailsAfter)
+                }
+                return MockJSEngine()
             }
         )
     }
+}
+
+/// An engine that hangs and then fails, which is what a worker whose page is
+/// still loading when its execution is closed underneath it looks like.
+private final class SlowFailingJSEngine: JSEngineProtocol, @unchecked Sendable {
+    private let delay: Duration
+
+    init(after delay: Duration) {
+        self.delay = delay
+    }
+
+    func getState() async -> JSEngineState { .error("no page") }
+    func initialize(with _: [JSEngineScript]) async throws {
+        try? await Task.sleep(for: delay)
+        throw ScriptExecutorError.engineInitFailed
+    }
+
+    func evaluate(_: String) async throws -> Any? { nil }
+    func registerFunction(name _: String, handler _: @escaping JSNativeHandler) async {}
+    func dispatchEvent(actionId _: String, payload _: String) async throws {}
+    func destroy() async {}
+    func registerJSDeviceCapabilityHandler(_: @escaping JSDeviceCapabilityHandler) async {}
 }
 
 /// An engine whose page never comes up, which is what a worker archive that

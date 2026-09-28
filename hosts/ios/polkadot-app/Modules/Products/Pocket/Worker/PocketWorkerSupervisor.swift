@@ -31,6 +31,7 @@ protocol PocketWorkerBuilding: Sendable {
 
 actor PocketWorkerSupervisor: PocketWorkerSupervising {
     private struct Running {
+        let boot: Boot
         let runtime: PocketWorkerRuntime
         let pocket: ProductPocketHostBridge
     }
@@ -41,9 +42,23 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
     /// landed mid-boot would find nothing to remove and leave the worker
     /// running with no way back to it.
     private enum Held {
-        case booting
+        case booting(Boot)
         case running(Running)
+
+        /// Whether this entry belongs to `boot`, so a boot only ever clears
+        /// what it built. Android keys the same check on the worker itself.
+        func belongsTo(_ boot: Boot) -> Bool {
+            switch self {
+            case let .booting(claimed): claimed === boot
+            case let .running(worker): worker.boot === boot
+            }
+        }
     }
+
+    /// One attempt to bring a product's worker up, as an identity. A stop and a
+    /// restart can both land while an attempt is still in flight, and the one
+    /// that finishes last must not clear what the others left.
+    private final class Boot {}
 
     private let builder: any PocketWorkerBuilding
     private let pocket: PocketFacade
@@ -51,7 +66,13 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
 
     private var held: [ProductId: Held] = [:]
     private var following: Task<Void, Never>?
+    private var draining: Task<Void, Never>?
     private var isShutDown = false
+
+    /// Transitions are applied one at a time, in the order the ledger sent
+    /// them. Handing each to its own task leaves the order to the scheduler,
+    /// where a start and the stop that cancels it can overtake each other.
+    private let transitions = AsyncStream<(ProductId, WorkerTransition)>.makeStream()
     private let executionSubject = AsyncCurrentValueSubject<[ProductId: TrUAPIProductExecutionProtocol]>([:])
 
     init(builder: any PocketWorkerBuilding, pocket: PocketFacade = .shared, logger: LoggerProtocol = Logger.shared) {
@@ -71,6 +92,13 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
         guard !isShutDown else { return }
 
         following = Task { await self.followCollection() }
+        draining = Task { await self.drainTransitions() }
+    }
+
+    private func drainTransitions() async {
+        for await (productId, transition) in transitions.stream {
+            await apply(transition, to: productId)
+        }
     }
 
     /// The workers outlive every screen, so nothing else ever tears them down:
@@ -78,8 +106,11 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
     /// chain connections running for the rest of the process.
     func shutdown() async {
         isShutDown = true
+        transitions.continuation.finish()
         following?.cancel()
         following = nil
+        draining?.cancel()
+        draining = nil
 
         // Over a snapshot: `stop` takes each product out of the map it would
         // otherwise be iterating, and awaits inside it let more land.
@@ -104,7 +135,7 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
     }
 
     nonisolated func demandChanged(productId: ProductId, transition: WorkerTransition) {
-        Task { await apply(transition, to: productId) }
+        transitions.continuation.yield((productId, transition))
     }
 
     nonisolated func executions(of productId: ProductId) -> AnyAsyncSequence<TrUAPIProductExecutionProtocol?> {
@@ -126,10 +157,11 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
 
     private func start(_ productId: ProductId) async {
         guard held[productId] == nil else { return }
-        held[productId] = .booting
+        let boot = Boot()
+        held[productId] = .booting(boot)
 
         guard let store = await pocket.store() else {
-            held[productId] = nil
+            discard(productId, of: boot)
             logger.error("[pocket] no collection to serve \(productId)'s worker from")
             return
         }
@@ -138,18 +170,18 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
 
         do {
             let runtime = try await builder.makeRuntime(productId: productId, pocket: bridge)
-            guard case .booting = held[productId] else {
+            guard held[productId]?.belongsTo(boot) == true else {
                 await runtime.dispose()
                 return
             }
-            held[productId] = .running(Running(runtime: runtime, pocket: bridge))
+            held[productId] = .running(Running(boot: boot, runtime: runtime, pocket: bridge))
 
             // The worker's card list is served from the bridge's snapshot, and
             // the script that subscribes to it comes up inside `start()`.
             await bridge.refresh()
             try await runtime.start()
 
-            guard case let .running(worker) = held[productId], worker.runtime === runtime else { return }
+            guard case let .running(worker)? = held[productId], worker.boot === boot else { return }
 
             // Published before the bridge republishes, because republishing
             // reads the execution back out of this map.
@@ -158,12 +190,24 @@ actor PocketWorkerSupervisor: PocketWorkerSupervising {
                 self?.publishCards(cards, of: productId)
             }
         } catch {
+            // Only a failure of the boot still holding the product: a stop may
+            // already have cleared this one and a restart taken its place, and
+            // clearing that would swallow a start the core never repeats.
+            guard held[productId]?.belongsTo(boot) == true else { return }
+
             logger.error("[pocket] \(productId)'s worker failed to start: \(error)")
             // A failed boot left in the map would swallow every later start,
             // while the core keeps counting the reference the card holds and
             // so never sends another stop to clear it.
             await stop(productId)
         }
+    }
+
+    /// Clears `productId` only while `boot` still holds it.
+    private func discard(_ productId: ProductId, of boot: Boot) {
+        guard held[productId]?.belongsTo(boot) == true else { return }
+
+        held[productId] = nil
     }
 
     private func stop(_ productId: ProductId) async {
