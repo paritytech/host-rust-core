@@ -1,3 +1,4 @@
+import AlarmKit
 import AVFoundation
 import Foundation
 import Products
@@ -15,6 +16,8 @@ extension OSPermissionAsker: OSPermissionAsking {
         switch capability {
         case .notifications:
             await checkNotificationStatus()
+        case .alarm:
+            await checkAlarmStatus()
         case .camera:
             checkCaptureDeviceStatus(.video)
         case .microphone:
@@ -36,6 +39,8 @@ extension OSPermissionAsker: OSPermissionAsking {
         switch capability {
         case .notifications:
             await askNotifications()
+        case .alarm:
+            await askAlarm()
         case .camera:
             await askCaptureDevice(.video)
         case .microphone:
@@ -65,6 +70,60 @@ private extension OSPermissionAsker {
             notificationService.requestNotificationsAuthorization { granted in
                 continuation.resume(returning: granted)
             }
+        }
+    }
+
+    func checkAlarmStatus() async -> OSPermissionStatus {
+        let notificationStatus = await checkNotificationStatus()
+
+        guard #available(iOS 26.1, *) else {
+            return notificationStatus
+        }
+
+        switch (alarmAuthorizationStatus(), notificationStatus) {
+        case (.allowed, _),
+             (_, .allowed):
+            return .allowed
+        case (.denied, .denied):
+            return .denied
+        default:
+            return .notDetermined
+        }
+    }
+
+    func askAlarm() async -> Bool {
+        if #available(iOS 26.1, *) {
+            switch alarmAuthorizationStatus() {
+            case .allowed:
+                return true
+            case .notDetermined:
+                let state = try? await AlarmManager.shared.requestAuthorization()
+                if state == .authorized {
+                    return true
+                }
+            case .denied:
+                break
+            }
+        }
+
+        if await checkNotificationStatus().isAllowed {
+            return true
+        }
+
+        return await askNotifications()
+    }
+
+    @available(iOS 26.1, *)
+    func alarmAuthorizationStatus() -> OSPermissionStatus {
+        switch AlarmManager.shared.authorizationState {
+        case .authorized:
+            .allowed
+        case .denied:
+            .denied
+        case .notDetermined:
+            .notDetermined
+        @unknown default:
+            .notDetermined
         }
     }
 

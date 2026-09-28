@@ -110,7 +110,7 @@ private extension DeviceCapabilityPermissionHandler {
         currentStatus: OSPermissionStatus,
         capability: DeviceCapabilityType
     ) async throws -> Bool {
-        if currentStatus.isNotDetermined {
+        if currentStatus.isNotDetermined || (capability == .alarm && !currentStatus.isDenied) {
             await osAsker.requestPermission(for: capability)
         } else {
             true

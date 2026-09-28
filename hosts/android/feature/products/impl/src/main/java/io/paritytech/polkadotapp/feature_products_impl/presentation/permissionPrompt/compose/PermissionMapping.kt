@@ -6,6 +6,7 @@ import androidx.compose.ui.res.stringResource
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.Bluetooth
 import io.paritytech.polkadotapp.design.components.icon.vectors.CallFilled
+import io.paritytech.polkadotapp.design.components.icon.vectors.Clock
 import io.paritytech.polkadotapp.design.components.icon.vectors.CloudOn
 import io.paritytech.polkadotapp.design.components.icon.vectors.ContentCopy
 import io.paritytech.polkadotapp.design.components.icon.vectors.Dollar
@@ -47,6 +48,7 @@ private val DeviceCapabilityType.icon: ImageVector
         DeviceCapabilityType.Clipboard -> NovaIcons.ContentCopy
         DeviceCapabilityType.Biometrics -> NovaIcons.Fingerprint
         DeviceCapabilityType.OpenUrl -> NovaIcons.Share
+        DeviceCapabilityType.Alarm -> NovaIcons.Clock
     }
 
 @Composable
@@ -76,6 +78,7 @@ private fun DeviceCapabilityType.title(productId: String): String {
         DeviceCapabilityType.Clipboard -> RCommon.string.product_permission_device_clipboard_title
         DeviceCapabilityType.Biometrics -> RCommon.string.product_permission_device_biometrics_title
         DeviceCapabilityType.OpenUrl -> RCommon.string.product_permission_device_open_url_title
+        DeviceCapabilityType.Alarm -> RCommon.string.product_permission_device_alarm_title
     }
     return stringResource(resId, productId)
 }
@@ -108,6 +111,7 @@ private fun DeviceCapabilityType.subtitle(manageLater: String): String {
         DeviceCapabilityType.Clipboard -> RCommon.string.product_permission_device_clipboard_subtitle
         DeviceCapabilityType.Biometrics -> RCommon.string.product_permission_device_biometrics_subtitle
         DeviceCapabilityType.OpenUrl -> RCommon.string.product_permission_device_open_url_subtitle
+        DeviceCapabilityType.Alarm -> RCommon.string.product_permission_device_alarm_subtitle
     }
     return stringResource(resId, manageLater)
 }

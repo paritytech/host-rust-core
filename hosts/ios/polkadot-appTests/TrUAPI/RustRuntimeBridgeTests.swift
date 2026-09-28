@@ -139,7 +139,7 @@ struct RustRuntimeBridgeTests {
     }
 
     @Test func devicePermissionStatusReadsOSWithoutPrompting() async throws {
-        for request in [HostDevicePermissionRequest.camera, .microphone, .notifications] {
+        for request in [HostDevicePermissionRequest.camera, .microphone, .notifications, .alarm] {
             for status in [OSPermissionStatus.allowed, .denied, .notDetermined] {
                 let osAsker = MockOSPermissionAsker()
                 osAsker.statusToReturn = status

@@ -73,7 +73,8 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         switch request {
         case .camera,
              .microphone,
-             .notifications:
+             .notifications,
+             .alarm:
             switch await dependencies.osPermissionAsker.checkPermission(for: request.deviceCapabilityType) {
             case .allowed: .granted
             case .denied: .denied
@@ -219,6 +220,7 @@ extension HostDevicePermissionRequest {
         case .clipboard: .clipboard
         case .openUrl: .openUrl
         case .biometrics: .biometrics
+        case .alarm: .alarm
         }
     }
 }
