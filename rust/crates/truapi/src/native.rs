@@ -45,13 +45,11 @@ use crate::host_internal::sso_messages::{
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::{NavigateDecision, PocketDeeplinkAction};
 use crate::host_logic::worker::WorkerTransition;
-#[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeRendererObserver, NativeRendererSubscription};
 use crate::runtime::AnnouncedPairing;
 use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
-#[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, SharedWsBridge, WsBridgeEndpoint, WsBridgeStartError};
 use crate::{
     DevicePairingObserver, PairedSsoPeer, PairingProposal, ResponderExit, SigningHostRuntime,
@@ -667,9 +665,7 @@ impl crate::platform::ContactsPlatform for ContactsCallbackPlatform {
 pub struct NativeTrUApiHostRuntime {
     runtime: Arc<SigningHostRuntime>,
     events: Arc<NativeEventBus>,
-    #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
-    #[cfg(feature = "ws-bridge")]
     ws_bridge: Arc<SharedWsBridge>,
     /// The one Worker execution per product; opening another replaces it.
     worker_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
@@ -718,9 +714,7 @@ impl NativeTrUApiHostRuntime {
         Ok(Arc::new(Self {
             runtime,
             events,
-            #[cfg(feature = "ws-bridge")]
             spawner,
-            #[cfg(feature = "ws-bridge")]
             ws_bridge: Arc::new(SharedWsBridge::new(Arc::new(move |marker, detail| {
                 callbacks.on_core_log(marker.to_string(), detail.to_string());
             }))),
@@ -768,18 +762,13 @@ impl NativeTrUApiHostRuntime {
             permission_grants: Arc::new(TemporaryPermissions::default()),
             events,
             shared_events: self.events.clone(),
-            #[cfg(feature = "ws-bridge")]
             spawner: self.spawner.clone(),
-            #[cfg(feature = "ws-bridge")]
             callbacks,
             closed: AtomicBool::new(false),
             chat_connection: Arc::new(crate::runtime::ActionChannel::chat()),
             renderer_connection: Arc::new(crate::runtime::ActionChannel::renderer()),
-            #[cfg(feature = "ws-bridge")]
             ws_bridge: self.ws_bridge.clone(),
-            #[cfg(feature = "ws-bridge")]
             bridge_token: Mutex::new(None),
-            #[cfg(feature = "ws-bridge")]
             product_control: Arc::new(Mutex::new(None)),
         });
 
@@ -1211,9 +1200,7 @@ pub struct NativeProductExecution {
     /// product execution (chain, Statement Store, and Bulletin). Native
     /// responses must reach this bus as well as the execution-scoped bus.
     shared_events: Arc<NativeEventBus>,
-    #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
-    #[cfg(feature = "ws-bridge")]
     callbacks: Arc<dyn HostCallbacks>,
     /// Single Chat action buffer shared with every product connection this
     /// execution opens; survives bridge restarts until [`Self::shutdown`].
@@ -1225,11 +1212,8 @@ pub struct NativeProductExecution {
         crate::runtime::ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>,
     >,
     closed: AtomicBool,
-    #[cfg(feature = "ws-bridge")]
     ws_bridge: Arc<SharedWsBridge>,
-    #[cfg(feature = "ws-bridge")]
     bridge_token: Mutex<Option<String>>,
-    #[cfg(feature = "ws-bridge")]
     product_control: Arc<Mutex<Option<crate::ProductRuntimeControl>>>,
 }
 
@@ -1270,7 +1254,6 @@ impl NativeProductExecution {
         crate::runtime::renderer_access_for(self.product.execution_kind)
     }
 
-    #[cfg(feature = "ws-bridge")]
     fn stop_bridge(&self) {
         // Release the token lock before waiting for connection cancellation.
         let token = self
@@ -1444,23 +1427,15 @@ impl NativeProductExecution {
         observer: Box<dyn NativeRendererObserver>,
     ) -> Result<Arc<NativeRendererSubscription>, crate::ProductRuntimeError> {
         self.require_renderer()?;
-        #[cfg(feature = "ws-bridge")]
-        {
-            let control = self
-                .product_control
-                .lock()
-                .expect("native product control mutex poisoned")
-                .clone()
-                .ok_or(crate::ProductRuntimeError::NotConnected)?;
-            let stream = control.render(request)?;
-            let observer: Arc<dyn NativeRendererObserver> = observer.into();
-            Ok(observe_renderer(stream, observer, self.spawner.clone()))
-        }
-        #[cfg(not(feature = "ws-bridge"))]
-        {
-            let _ = (request, observer);
-            Err(crate::ProductRuntimeError::NotConnected)
-        }
+        let control = self
+            .product_control
+            .lock()
+            .expect("native product control mutex poisoned")
+            .clone()
+            .ok_or(crate::ProductRuntimeError::NotConnected)?;
+        let stream = control.render(request)?;
+        let observer: Arc<dyn NativeRendererObserver> = observer.into();
+        Ok(observe_renderer(stream, observer, self.spawner.clone()))
     }
 
     /// Publish one action triggered inside a product-rendered body, buffering
@@ -1488,7 +1463,6 @@ impl NativeProductExecution {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        #[cfg(feature = "ws-bridge")]
         self.stop_bridge();
         self.permission_grants.clear();
         self.chat_connection.close();
@@ -1496,7 +1470,6 @@ impl NativeProductExecution {
     }
 }
 
-#[cfg(feature = "ws-bridge")]
 #[uniffi::export]
 impl NativeProductExecution {
     /// Register this execution with its own token on the host's shared listener.
@@ -1545,7 +1518,6 @@ impl NativeProductExecution {
     }
 }
 
-#[cfg(feature = "ws-bridge")]
 #[uniffi::export]
 impl NativeTrUApiHostRuntime {
     /// Rebind the shared bridge listener on its port, keeping every
@@ -3083,7 +3055,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "ws-bridge")]
     fn native_product_execution(
         callbacks: Arc<dyn HostCallbacks>,
         product_id: &str,
@@ -4471,7 +4442,6 @@ mod tests {
     /// without an intervening `stop_ws_bridge` is a hard error. The bridge
     /// is single-instance per execution, so the second start must surface
     /// `AlreadyRunning` rather than silently leaking a worker thread.
-    #[cfg(feature = "ws-bridge")]
     #[test]
     fn start_ws_bridge_twice_returns_already_running() {
         struct Noop;
@@ -4627,7 +4597,6 @@ mod tests {
     /// A permission callback suspends while awaiting the user's decision and
     /// holds no executor worker, so an unrelated request on the same
     /// connection still round-trips while the decision is pending.
-    #[cfg(feature = "ws-bridge")]
     #[test]
     fn pending_permission_decision_does_not_stall_bridge() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4935,7 +4904,6 @@ mod tests {
         execution.stop_ws_bridge();
     }
 
-    #[cfg(feature = "ws-bridge")]
     #[test]
     fn closing_an_execution_releases_its_callbacks_while_the_host_lives() {
         let host = native_host_runtime_no_session();
@@ -4961,7 +4929,6 @@ mod tests {
         drop(host);
     }
 
-    #[cfg(feature = "ws-bridge")]
     #[test]
     fn bridge_logs_follow_the_host_and_authenticated_execution() {
         use futures::SinkExt;
@@ -5042,7 +5009,6 @@ mod tests {
         drop(socket);
     }
 
-    #[cfg(feature = "ws-bridge")]
     #[test]
     fn two_executions_share_one_bridge_through_the_native_api() {
         use futures::SinkExt;

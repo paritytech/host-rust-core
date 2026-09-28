@@ -711,7 +711,7 @@ impl SigningHostRuntime {
 
     /// Build one product connection with adapters scoped to one native
     /// executable while sharing this runtime's authentication and services.
-    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn product_runtime_with(
         &self,
         product: ProductContext,
@@ -2654,7 +2654,7 @@ mod tests {
         );
         assert!(
             manifest.contains("[profile.codegen]") && manifest.contains("inherits = \"release\""),
-            "codegen no longer inherits release: recheck what the ws-bridge artifacts build with"
+            "codegen no longer inherits release: recheck what the native artifacts build with"
         );
     }
 
