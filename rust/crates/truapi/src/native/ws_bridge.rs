@@ -31,7 +31,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::{Response as HttpResponse, StatusCode};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
-use crate::native_executor::shared_native_executor;
+use super::executor::shared_native_executor;
 use crate::{FrameSink, ProductRuntime};
 
 // Allow reconnect overlap without one execution exhausting the shared limit.
