@@ -384,7 +384,7 @@ pub fn has_trusted_remote_permissions(product_id: String) -> bool {
 /// cancels the foreign task. The remaining sync callbacks run inline on the
 /// dispatcher thread and must return promptly without blocking; in
 /// particular `auth_state_changed` should only hand the state to the host
-/// UI thread, never wait for the user. `chain_send` and `chain_close` stay
+/// UI thread, never wait for the user. `chain_send` and `chain_close` are
 /// sync so requests reach the connection in the order the core sent them;
 /// they must only enqueue work on the host's connection, never wait on the
 /// network.
