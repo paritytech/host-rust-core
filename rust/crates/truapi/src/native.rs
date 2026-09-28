@@ -1597,8 +1597,8 @@ pub fn set_log_level(level: String) {
     crate::logging::set_level_from_str(&level);
 }
 
-/// Spawns core tasks on the process-wide runtime, which the WebSocket bridge
-/// also uses. If that runtime cannot start, each task gets its own thread.
+/// Spawns core tasks on the process-wide runtime. If that runtime cannot
+/// start, each task gets its own thread.
 fn native_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
     match crate::native_executor::shared_native_executor() {
         Ok((executor, initialized)) => {
