@@ -59,17 +59,18 @@ struct Cli {
     /// Output directory for the generated Rust dispatcher / wire-table (optional).
     ///
     /// When set, emits `dispatcher.rs` and `wire_table.rs` for the
-    /// `truapi-server` crate to include.
+    /// `truapi` crate to include.
     #[arg(long)]
     rust_output: Option<PathBuf>,
 
-    /// Path to rustdoc JSON for the `truapi-platform` crate (optional).
+    /// Path to rustdoc JSON for a crate with a `platform` module; repeat for
+    /// each such crate (`truapi`, `truapi-provider`).
     ///
     /// When provided together with `--platform-ts-output`, walks the
-    /// platform crate's capability traits and emits the typed TS
+    /// `platform` modules' capability traits and emits the typed TS
     /// `HostCallbacks` surface plus the WASM raw callback adapter.
     #[arg(long)]
-    platform_input: Option<String>,
+    platform_input: Vec<String>,
 
     /// Output directory for the generated typed `HostCallbacks` TypeScript
     /// surface (optional). Only honored when `--platform-input` is also set.
@@ -169,16 +170,21 @@ fn main() -> Result<()> {
             .with_context(|| format!("writing Rust dispatcher to {}", path.display()))?;
         println!("Wrote Rust dispatcher to {}", path.display());
     }
-    if let Some(input) = &cli.platform_input {
+    if !cli.platform_input.is_empty() {
         if cli.platform_wasm_adapter_output.is_some() && cli.platform_ts_output.is_none() {
             anyhow::bail!("--platform-wasm-adapter-output requires --platform-ts-output");
         }
-        let json = std::fs::read_to_string(input)
-            .with_context(|| format!("reading platform rustdoc JSON from {input}"))?;
-        let krate =
-            rustdoc::parse(&json).with_context(|| format!("parsing platform rustdoc {input}"))?;
-        let definition = platform::extract(&krate)
-            .with_context(|| format!("extracting platform definition from {input}"))?;
+        let krates = cli
+            .platform_input
+            .iter()
+            .map(|input| {
+                let json = std::fs::read_to_string(input)
+                    .with_context(|| format!("reading platform rustdoc JSON from {input}"))?;
+                rustdoc::parse(&json).with_context(|| format!("parsing platform rustdoc {input}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let definition =
+            platform::extract_all(&krates).context("extracting platform definition")?;
         if let Some(output) = &cli.platform_ts_output {
             let codec_types = api
                 .types

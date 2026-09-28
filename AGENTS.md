@@ -33,6 +33,10 @@ Two ways to lose work that involve no pushing at all:
 - Say what a thing actually is. No invented shorthands, no jargon where a plain
   word exists.
 - No em dashes in prose. Use a comma or a full stop.
+- Plain engineering prose: no ornate phrasing, stock transitions, inflated
+  claims, or private provenance. Say directly what changed, why it matters,
+  and what the reader needs to do.
+- Link to the document that owns a procedure instead of copying it.
 
 ## Scope of a change
 
@@ -51,6 +55,8 @@ rest.
   says why, never what.
 - Code that is never committed is exempt: a throwaway probe, a scratch script,
   a mutation run. Anything that lands is read by people.
+- Documentation explains contracts and non-obvious invariants, not a history
+  of how the change was developed.
 
 ## Code is read by people and only incidentally run
 
@@ -59,6 +65,41 @@ rest.
 - Review what you just wrote and simplify it. Fewer lines is better. If a fix
   feels hacky, redo it as though you had known at the start what you know now.
   Skip this for small obvious changes; do not over-engineer.
+
+## Types and implementation
+
+- Do not alias primitive types. `type Counter = u64` adds another name to
+  remember without preventing a counter from being confused with any other
+  `u64`. Use the primitive directly, or a newtype when distinguishing values
+  or enforcing construction rules provides actual type safety.
+- Reuse canonical types, constants, and helpers. Do not introduce a second
+  representation or a new dependency just to convert to and from the type the
+  surrounding code already uses.
+- Keep one source of truth. If one field already determines a fact, do not
+  carry a second field describing it and add checks to keep them
+  synchronized. Fix the representation.
+- Add abstractions and derives for concrete needs, not possible future
+  callers. Keep fields private where they protect invariants; do not add
+  accessors that merely expose every implementation detail. 
+- Keep dependencies in the workspace and inherit them from member crates.
+- Prefer safe operations. 
+- Fix the underlying cause instead of suppressing a diagnostic or adding a
+  fallback that hides an error.
+
+## Establish visibility through module hierarchy
+
+Do not use scoped visibility modifiers such as `pub(crate)`, `pub(super)`, or
+`pub(in ...)`. Structure module hierarchies properly and expose the intended
+interface through focused public re-exports. Per-item modifiers require
+remembering the restriction on every type and item; a proper hierarchy
+establishes the boundary once. Scoped modifiers also make it easy to work
+around a poorly structured module tree instead of fixing it.
+
+Keep implementation modules private. An item can be `pub` within a private
+module without exposing it outside the crate. Re-export the items that belong
+to the public interface. Do not make an entire module public to expose one
+helper or to make a test compile. Prefer an inherent method when an operation
+belongs to an existing type rather than adding another free-standing export.
 
 ## Tests
 

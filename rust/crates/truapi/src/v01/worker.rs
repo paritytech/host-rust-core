@@ -1,9 +1,6 @@
 use derive_more::Display;
 use parity_scale_codec::{Decode, Encode};
 
-/// Opaque host-assigned pending-operation identifier, unique per product.
-pub type OperationId = u32;
-
 /// Request to begin a pending operation.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostWorkerBeginOperationRequest {
@@ -15,19 +12,22 @@ pub struct HostWorkerBeginOperationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostWorkerBeginOperationResponse {
     /// Id to pass to `end_operation`.
-    pub id: OperationId,
+    pub id: u32,
 }
 
 /// Request to end a pending operation.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostWorkerEndOperationRequest {
     /// Id returned by `begin_operation`.
-    pub id: OperationId,
+    pub id: u32,
 }
 
 /// Pending-operation error.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum HostWorkerOperationError {
     /// The product is already at the host's per-product limit of open
     /// operations.

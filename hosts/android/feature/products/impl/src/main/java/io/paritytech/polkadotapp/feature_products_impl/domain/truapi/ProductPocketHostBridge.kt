@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import uniffi.truapi_server.NativePocketRemoval
+import uniffi.truapi.NativePocketRemoval
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import uniffi.truapi.PocketCard as NativePocketCard
