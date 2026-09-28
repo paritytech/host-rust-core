@@ -2929,7 +2929,7 @@ fn a_host_call_from_a_plain_thread_runs_its_core_work_on_the_core_runtime() {
     ))
     .expect("status write");
 
-    let (shared, _) = super::executor::shared_native_executor().unwrap();
+    let shared = super::executor::shared_native_executor().unwrap();
     let mut runtimes = callbacks
         .core_storage_write_runtimes
         .lock()

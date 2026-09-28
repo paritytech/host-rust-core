@@ -170,7 +170,7 @@ mod tests {
     }
 
     fn core() -> &'static SharedNativeExecutor {
-        shared_native_executor().expect("shared native executor").0
+        shared_native_executor().expect("shared native executor")
     }
 
     #[test]
