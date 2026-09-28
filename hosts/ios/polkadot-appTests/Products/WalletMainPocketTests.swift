@@ -82,7 +82,9 @@ private func makeInteractor(
         collectiblesURLProvider: StubCollectiblesURLProvider(),
         networkStatusObserver: StubNetworkStatusObserver(),
         pocketPrewarmer: PocketPrewarmer(products: StubResolver(), dotNsResolver: SlowArchives(delay: warmDelay)),
-        pocket: PocketFacade(tld: { "paseo" }, repository: repository)
+        pocket: PocketService(
+            collection: RealPocketCardStore(pinned: InMemoryPinnedCards([]), repository: repository)
+        )
     )
     interactor.presenter = presenter
     return interactor

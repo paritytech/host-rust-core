@@ -10,14 +10,13 @@ enum PocketAddCardViewFactory {
     static func createView(
         for link: PocketDeeplink,
         flowState: SPAFlowState,
-        pocket: PocketFacade = .shared
-    ) async -> UIViewController? {
-        guard let store = await pocket.store() else { return nil }
-
+        pocket: PocketService
+    ) -> UIViewController? {
         let viewModel = PocketAddCardViewModel(
             productId: link.productHost,
             cardId: link.cardId,
-            interactor: makeInteractor(store: store, flowState: flowState)
+            interactor: makeInteractor(store: pocket.collection, flowState: flowState),
+            images: { pocket.images(of: $0) }
         )
 
         let controller = UIHostingController(rootView: PocketAddCardView(viewModel: viewModel))

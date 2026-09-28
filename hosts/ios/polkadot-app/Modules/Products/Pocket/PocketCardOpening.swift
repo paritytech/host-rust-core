@@ -13,14 +13,15 @@ enum PocketCardOpening {
     static func open(
         _ card: PocketCardViewModel,
         flowState: SPAFlowState,
-        navigator: ModuleNavigating
+        navigator: ModuleNavigating,
+        pocket: PocketService
     ) {
         guard
             let url = card.key.launchUrl,
             let page = flowState.hostProvider.page(url: url)
         else { return }
 
-        let product = PocketCardHosts.shared.view(for: card.key) {
+        let product = pocket.cardHosts.view(for: card.key) {
             let configuration = SPAConfiguration(
                 title: card.title,
                 isRootScreen: false,
@@ -43,20 +44,17 @@ enum PocketCardOpening {
         link: PocketDeeplink,
         flowState: SPAFlowState,
         navigator: ModuleNavigating,
-        pocket: PocketFacade = .shared
+        pocket: PocketService
     ) {
         let key = PocketCardKey(productId: link.productHost, cardId: link.cardId)
 
         Task { @MainActor in
-            guard
-                let store = await pocket.store(),
-                let card = await PocketCardsProvider(store: store).card(for: key)
-            else {
+            guard let card = await PocketCardsProvider(store: pocket.collection).card(for: key) else {
                 PocketRefusalPresenter.show(String(localized: .pocketDeeplinkUnknownCard))
                 return
             }
 
-            open(card, flowState: flowState, navigator: navigator)
+            open(card, flowState: flowState, navigator: navigator, pocket: pocket)
         }
     }
 }

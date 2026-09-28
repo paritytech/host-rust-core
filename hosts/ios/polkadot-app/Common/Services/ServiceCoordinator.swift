@@ -228,10 +228,10 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
         messageExpansionService.stop()
         durableTransactionEngine.txService.stop()
 
-        // The opened card's product belongs to this session's runtime provider,
-        // so it goes with the session rather than waiting for the next tap that
-        // may come after another user has signed in.
-        Task { @MainActor in PocketCardHosts.shared.release() }
+        // The workers and the product behind an opened card belong to this
+        // session's runtime provider, so they go with the session rather than
+        // waiting for a tap that may come after another user has signed in.
+        Task { @MainActor in PocketService.current?.stop() }
 
         Task {
             await deviceSyncService.throttle()
@@ -324,17 +324,22 @@ extension ServiceCoordinator {
             contentHashCache: ContentHashCache.shared
         )
 
-        // Installed here rather than alongside chat: every modality is served
-        // from one worker per product, and hanging that off chat's assembly
+        // Built here rather than alongside chat: every modality is served from
+        // one worker per product, and hanging the Pocket off chat's assembly
         // would let any chat service failing take every live card face with it,
         // silently.
         #if FEATURE_PRODUCTS
-            TrUAPIWorkerFacade.shared.install(
-                runtimeProvider: truapiRuntimeProvider,
-                flowState: spaFlowState,
-                productFileProvider: productFileProvider,
-                chainRegistry: ChainRegistryFacade.sharedRegistry
-            )
+            MainActor.assumeIsolated {
+                guard let pocket = PocketService.make() else { return }
+
+                RootDependencyLocator.setDependency(pocket)
+                pocket.start(
+                    runtimeProvider: truapiRuntimeProvider,
+                    flowState: spaFlowState,
+                    productFileProvider: productFileProvider,
+                    chainRegistry: ChainRegistryFacade.sharedRegistry
+                )
+            }
         #endif
 
         guard

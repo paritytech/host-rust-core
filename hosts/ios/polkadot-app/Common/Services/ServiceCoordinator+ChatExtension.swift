@@ -40,7 +40,7 @@ extension ServiceCoordinator {
         let botFactory = ProductBotFactory(
             productFileProvider: productFileProvider,
             runtimeProvider: truapiRuntimeProvider,
-            workers: { TrUAPIWorkerFacade.shared.supervisor },
+            workers: { MainActor.assumeIsolated { PocketService.current?.supervisor } },
             workerManager: workerFacade.manager
         )
 

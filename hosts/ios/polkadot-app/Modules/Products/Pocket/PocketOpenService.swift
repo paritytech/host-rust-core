@@ -49,11 +49,20 @@ extension PocketOpenService {
         PocketOpenService(
             present: { link in
                 Task { @MainActor in
+                    // A session with no Pocket has nowhere to put the card and
+                    // nothing to open. The host claimed the link, so it says so
+                    // rather than dropping it.
+                    guard let pocket = PocketService.current else {
+                        PocketRefusalPresenter.show(String(localized: .pocketDeeplinkNoPocket))
+                        return
+                    }
+
                     switch link.action {
                     case .add:
-                        guard let view = await PocketAddCardViewFactory.createView(
+                        guard let view = PocketAddCardViewFactory.createView(
                             for: link,
-                            flowState: flowState
+                            flowState: flowState,
+                            pocket: pocket
                         ) else {
                             return
                         }
@@ -66,7 +75,8 @@ extension PocketOpenService {
                         PocketCardOpening.open(
                             link: link,
                             flowState: flowState,
-                            navigator: moduleNavigator
+                            navigator: moduleNavigator,
+                            pocket: pocket
                         )
                     }
                 }

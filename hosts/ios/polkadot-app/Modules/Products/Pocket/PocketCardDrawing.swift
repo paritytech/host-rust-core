@@ -15,15 +15,17 @@ struct PocketCardDrawing {
     /// the sources themselves, which are values and carry no identity.
     let installation: Int
 
-    /// What draws `productId`'s cards right now.
-    static func current(
-        for productId: ProductId,
-        facade: TrUAPIWorkerFacade = .shared
-    ) -> PocketCardDrawing {
-        PocketCardDrawing(
-            faces: facade.faces,
-            images: facade.images(of: productId),
-            installation: facade.installation
+    /// What draws `productId`'s cards right now, from the session's Pocket.
+    @MainActor
+    static func current(for productId: ProductId, pocket: PocketService? = nil) -> PocketCardDrawing {
+        guard let pocket = pocket ?? .current else {
+            return PocketCardDrawing(faces: nil, images: nil, installation: 0)
+        }
+
+        return PocketCardDrawing(
+            faces: pocket.faces,
+            images: pocket.images(of: productId),
+            installation: pocket.installation
         )
     }
 

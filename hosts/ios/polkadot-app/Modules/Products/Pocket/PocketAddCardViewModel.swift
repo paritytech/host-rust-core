@@ -33,7 +33,7 @@ final class PocketAddCardViewModel {
         productId: ProductId,
         cardId: PocketCardId,
         interactor: PocketAddCardInteractor,
-        images: (ProductId) -> PocketImageResolver? = { TrUAPIWorkerFacade.shared.images(of: $0) },
+        images: (ProductId) -> PocketImageResolver?,
         resolver: any WidgetDesignTokenResolving = WidgetDesignTokenResolver()
     ) {
         self.productId = productId

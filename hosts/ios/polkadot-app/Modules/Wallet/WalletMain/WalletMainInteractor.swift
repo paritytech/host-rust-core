@@ -6,8 +6,7 @@ final class WalletMainInteractor {
     private let collectiblesURLProvider: CollectiblesURLProviding
     private let networkStatusObserver: NetworkStatusObserving
     private let pocketPrewarmer: PocketPrewarmer
-    private let pocket: PocketFacade
-    private let cardHosts: PocketCardHosts
+    private let pocket: PocketService?
     private var resolutionTask: Task<Void, Never>?
     private var pocketTask: Task<Void, Never>?
     private var warming: Task<Void, Never>?
@@ -16,14 +15,12 @@ final class WalletMainInteractor {
         collectiblesURLProvider: CollectiblesURLProviding,
         networkStatusObserver: NetworkStatusObserving,
         pocketPrewarmer: PocketPrewarmer,
-        pocket: PocketFacade = .shared,
-        cardHosts: PocketCardHosts = .shared
+        pocket: PocketService?
     ) {
         self.collectiblesURLProvider = collectiblesURLProvider
         self.networkStatusObserver = networkStatusObserver
         self.pocketPrewarmer = pocketPrewarmer
         self.pocket = pocket
-        self.cardHosts = cardHosts
     }
 
     deinit {
@@ -58,11 +55,9 @@ extension WalletMainInteractor: WalletMainInteractorInputProtocol {
     /// the card leaves the screen when it leaves storage rather than because
     /// this said so.
     func removePocketCard(_ card: PocketCardViewModel) {
-        Task { [pocket] in
-            guard let store = await pocket.store() else { return }
+        guard let collection = pocket?.collection else { return }
 
-            _ = try? await store.removeCard(card.key)
-        }
+        Task { _ = try? await collection.removeCard(card.key) }
     }
 }
 
@@ -71,14 +66,14 @@ private extension WalletMainInteractor {
     /// holds without waiting on any product's worker, and shows every change
     /// whoever made it, the core removing a card included.
     func followPocket() {
-        pocketTask = Task { [weak self, pocket] in
-            guard let store = await pocket.store() else { return }
+        guard let collection = pocket?.collection else { return }
 
+        pocketTask = Task { [weak self] in
             do {
-                for try await cards in store.observeCards() {
+                for try await cards in collection.observeCards() {
                     guard let self else { return }
 
-                    await show(cards, from: store)
+                    await show(cards, from: collection)
                 }
             } catch {
                 Logger.shared.error("[pocket] the wallet tab stopped following the collection: \(error)")
@@ -90,9 +85,9 @@ private extension WalletMainInteractor {
         let drawn = await PocketCardsProvider(store: store).cards(cards)
         let held = Set(drawn.map(\.key))
 
-        await MainActor.run { [cardHosts] in
+        await MainActor.run { [pocket] in
             presenter?.didReceive(pocketCards: drawn)
-            cardHosts.keepOnly { held.contains($0) }
+            pocket?.cardHosts.keepOnly { held.contains($0) }
         }
 
         prewarm(drawn)

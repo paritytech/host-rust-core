@@ -11,7 +11,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func startsTheWorkerOnTheFirstDemand() async throws {
         let builder = StubBuilder()
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -26,7 +26,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func doesNotStartASecondWorkerForTheSameProduct() async throws {
         let builder = StubBuilder()
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -39,7 +39,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func stopsTheWorkerAndForgetsItsExecution() async throws {
         let builder = StubBuilder()
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -56,7 +56,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func leavesNothingBehindWhenTheEngineFailsToBoot() async throws {
         let builder = StubBuilder(engineFails: true)
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -75,7 +75,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func leavesNothingBehindWhenTheWorkerCannotBeBuilt() async throws {
         let builder = StubBuilder(cannotBuild: true)
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -94,7 +94,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func ignoresAStopForAWorkerThatNeverStarted() async throws {
         let builder = StubBuilder()
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -111,7 +111,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func fillsTheCardListBeforeTheWorkersScriptComesUp() async throws {
         let builder = StubBuilder()
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -125,7 +125,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func tellsTheCoreWhatTheWorkerHoldsOnceItsExecutionIsPublished() async throws {
         let builder = StubBuilder()
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -133,18 +133,15 @@ struct TrUAPIWorkerSupervisorTests {
         #expect(builder.execution?.pocketCardNotifications.last?.map(\.cardId) == ["loyalty"])
     }
 
-    /// Reading the collection waits on the network's dotNS suffix, which is a
-    /// chain read on first use — exactly when two cards for one product scroll
-    /// into view together. Actors are reentrant, so both starts reach the guard
-    /// while the first is still waiting on it: two workers for one product is
-    /// two headless web views, and only the last is ever stopped.
+    /// Building a worker fetches its archive, which is exactly when two cards
+    /// for one product scroll into view together. Actors are reentrant, so both
+    /// starts reach the guard while the first is still waiting on it: two
+    /// workers for one product is two headless web views, and only the last is
+    /// ever stopped.
     @Test
     func doesNotStartASecondWorkerWhenTwoDemandsOverlap() async throws {
-        let builder = StubBuilder()
-        let supervisor = TrUAPIWorkerSupervisor(
-            builder: builder,
-            pocket: pocketHolding([loyalty], tldDelay: .milliseconds(30))
-        )
+        let builder = StubBuilder(buildDelay: .milliseconds(30))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
@@ -160,7 +157,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func disposesAWorkerThatWasStoppedWhileItWasStillBooting() async throws {
         let builder = StubBuilder(buildDelay: .milliseconds(80))
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await Task.sleep(for: .milliseconds(20))
@@ -179,7 +176,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func appliesABurstOfTransitionsInTheOrderTheyArrive() async throws {
         let builder = StubBuilder(buildDelay: .milliseconds(40))
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         supervisor.demandChanged(productId: "game.paseo", transition: .stop)
@@ -198,7 +195,7 @@ struct TrUAPIWorkerSupervisorTests {
     @Test
     func aFailedBootDoesNotClearTheBootThatReplacedIt() async throws {
         let builder = StubBuilder(firstStartFailsAfter: .milliseconds(300))
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocketHolding([loyalty]))
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await Task.sleep(for: .milliseconds(50))
@@ -220,8 +217,10 @@ struct TrUAPIWorkerSupervisorTests {
     func tellsARunningWorkerAboutACardAddedLater() async throws {
         let builder = StubBuilder()
         let repository = InMemoryPocketCardRepository([loyalty])
-        let pocket = PocketFacade(tld: { "paseo" }, repository: repository)
-        let supervisor = TrUAPIWorkerSupervisor(builder: builder, pocket: pocket)
+        let supervisor = TrUAPIWorkerSupervisor(
+            builder: builder,
+            collection: RealPocketCardStore(pinned: InMemoryPinnedCards([]), repository: repository)
+        )
 
         supervisor.demandChanged(productId: "game.paseo", transition: .start)
         try await settle()
@@ -257,14 +256,9 @@ private func settle() async throws {
     try await Task.sleep(for: .milliseconds(20))
 }
 
-/// `tldDelay` stands in for the chain read the suffix costs on first use, which
-/// is the window two overlapping starts land in.
-private func pocketHolding(_ cards: [PocketCardEntry], tldDelay: Duration = .zero) -> PocketFacade {
-    PocketFacade(
-        tld: {
-            if tldDelay > .zero { try? await Task.sleep(for: tldDelay) }
-            return "paseo"
-        },
+private func collectionHolding(_ cards: [PocketCardEntry]) -> any PocketCardStore {
+    RealPocketCardStore(
+        pinned: InMemoryPinnedCards([]),
         repository: InMemoryPocketCardRepository(cards)
     )
 }

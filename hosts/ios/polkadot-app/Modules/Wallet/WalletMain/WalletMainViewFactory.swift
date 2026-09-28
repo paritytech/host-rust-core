@@ -41,7 +41,8 @@ enum WalletMainViewFactory {
             pocketPrewarmer: PocketPrewarmer(
                 products: context.flowState.productResolver,
                 dotNsResolver: context.flowState.dotNsResolver
-            )
+            ),
+            pocket: .current
         )
 
         let presenter = WalletMainPresenter(

@@ -71,7 +71,7 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
     private final class Boot {}
 
     private let builder: any TrUAPIWorkerBuilding
-    private let pocket: PocketFacade
+    private let collection: any PocketCardStore
     private let logger: LoggerProtocol
 
     private var held: [ProductId: Held] = [:]
@@ -88,9 +88,13 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
     private let transitions = AsyncStream<(ProductId, WorkerTransition)>.makeStream()
     private let executionSubject = AsyncCurrentValueSubject<[ProductId: TrUAPIProductExecutionProtocol]>([:])
 
-    init(builder: any TrUAPIWorkerBuilding, pocket: PocketFacade = .shared, logger: LoggerProtocol = Logger.shared) {
+    init(
+        builder: any TrUAPIWorkerBuilding,
+        collection: any PocketCardStore,
+        logger: LoggerProtocol = Logger.shared
+    ) {
         self.builder = builder
-        self.pocket = pocket
+        self.collection = collection
         self.logger = logger
 
         Task { await self.beginFollowing() }
@@ -164,13 +168,7 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
         let boot = Boot()
         held[productId] = .booting(boot)
 
-        guard let store = await pocket.store() else {
-            discard(productId, of: boot)
-            logger.error("[truapi] no Pocket collection to serve \(productId)'s worker from")
-            return
-        }
-
-        let bridge = ProductPocketHostBridge(productId: productId, collection: store)
+        let bridge = ProductPocketHostBridge(productId: productId, collection: collection)
 
         do {
             let runtime = try await builder.makeRuntime(
