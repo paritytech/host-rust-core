@@ -33,7 +33,7 @@ protocol TrUAPIHostRuntimeProviding: AnyObject, Sendable {
 /// session, and caches it. The build runs off the caller's thread, is started
 /// at launch and retried on demand, so it can wait until chains are synced
 /// and a session secret exists.
-final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Sendable {
+actor TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding {
     private let chainRegistry: ChainRegistryProtocol
     private let entropyManager: RootEntropyManaging
     private let settingsManager: SettingsManagerProtocol
@@ -42,8 +42,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
     private let tldProvider: DotNsTldProviding
     private let logger: LoggerProtocol
 
-    private let lock = NSLock()
-    private var boot: Task<TrUAPIHostRuntime, Error>?
+    private var buildTask: Task<TrUAPIHostRuntime, Error>?
 
     init(
         chainRegistry: ChainRegistryProtocol,
@@ -69,14 +68,13 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
     }
 
     func sharedRuntime() async throws -> TrUAPIHostRuntime {
-        let boot = currentBoot()
+        let task = buildTask ?? Task { try await buildRuntime() }
+        buildTask = task
         do {
-            return try await boot.value
+            return try await task.value
         } catch {
-            lock.withLock {
-                if self.boot == boot {
-                    self.boot = nil
-                }
+            if buildTask == task {
+                buildTask = nil
             }
             throw error
         }
@@ -84,18 +82,6 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
 }
 
 private extension TrUAPIHostRuntimeProvider {
-    /// Detached so the build never runs on the caller's actor, whichever that is.
-    func currentBoot() -> Task<TrUAPIHostRuntime, Error> {
-        lock.withLock {
-            if let boot {
-                return boot
-            }
-            let boot = Task.detached(priority: .userInitiated) { [self] in try await buildRuntime() }
-            self.boot = boot
-            return boot
-        }
-    }
-
     func buildRuntime() async throws -> TrUAPIHostRuntime {
         let secret = try entropyManager.fetchRootEntropy()
         let networkSuffix = try tldProvider.currentTldOrError()
