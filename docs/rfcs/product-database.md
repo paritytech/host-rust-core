@@ -26,7 +26,7 @@ t3ams (team chat over Statement Store) submits statements with a 24-hour expiry,
 
 ## Approach
 
-The host keeps one SQLite database per product per signed-in account. With no account signed in the product gets the anonymous database, and its rows do not move into the account's database at sign-in.
+The host keeps one SQLite database per product per signed-in account. With no account signed in the product gets the anonymous database ([Unauthenticated Product Access](0009-unauthenticated-product-access.md)), and its rows do not move into the account's database at sign-in. An executable is one of the product's App, Widget or Worker, as the [Product Manifest](product-manifest.md) defines them.
 
 The design has seven parts:
 
@@ -44,17 +44,17 @@ The design has seven parts:
 
 Each `execute` call runs inside a savepoint. A statement that fails rolls back that call and leaves the transaction open, so the product decides whether to retry, carry on or roll back. A product may open savepoints of its own. A read transaction rejects a statement that writes.
 
-A database has at most one write transaction at a time; a write `begin`, or an `execute` without a transaction, waits for the current one to end. Each executable holds at most one write transaction, so a second write `begin` from the same executable fails with `Busy` instead of waiting on itself. A read transaction sees a snapshot and never waits for a writer.
+A database has at most one write transaction at a time; a write `begin`, or an `execute` without a transaction, waits for the current one to end. Each executable holds at most one write transaction, so a second write `begin` from the same executable fails with `Busy` instead of waiting on itself. An `execute` without a transaction runs as a read transaction when every statement reads, otherwise as a write transaction under the same rule. A read transaction sees a snapshot and never waits for a writer.
 
 A transaction id is valid only for the executable that began it. The host rolls a transaction back on `rollback`, when no call arrives within the idle timeout, when the executable ends, and when the signed-in account changes. A later call on its id fails with `TransactionClosed`.
 
-The host admits `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE` and `WITH`; `CREATE`, `ALTER` and `DROP` of tables, indexes, views and triggers, including FTS5 virtual tables; savepoints inside an open transaction; `PRAGMA foreign_keys` and `PRAGMA defer_foreign_keys`; and reads of `sqlite_master` and `pragma_table_info`, which a library's introspection uses. It rejects with `Rejected` every statement that would reach outside the product's database or around the trait: `ATTACH`, every other `PRAGMA`, `VACUUM`, `TEMP` objects, `BEGIN`, `COMMIT` and `ROLLBACK`, extension loading, and writes to `sqlite_` tables. Hosts ship SQLite 3.45.0 or later with FTS5 and the JSON functions.
+The host admits `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE` and `WITH`; `CREATE`, `ALTER` and `DROP` of tables, indexes, views and triggers, including FTS5 virtual tables; savepoints inside an open transaction; `PRAGMA foreign_keys` and `PRAGMA defer_foreign_keys`; and reads of `sqlite_master` and `pragma_table_info`, which a library's introspection uses. Everything else fails with `Rejected`, in particular every statement that would reach outside the product's database or around the trait: `ATTACH`, every other `PRAGMA`, `VACUUM`, `TEMP` objects, `BEGIN`, `COMMIT` and `ROLLBACK`, extension loading, and writes to `sqlite_` tables. Hosts ship SQLite 3.45.0 or later with FTS5 and the JSON functions.
 
 ### Migrations
 
 The host stores one schema version per database, starting at 0. `begin` reports it and `commit` sets it, so a migration's DDL, its data rewrite and the new version commit together or not at all. The host does not interpret the version.
 
-Migrations run on the product side. A library migrator keeps its own migrations table in the database and runs the pending steps in one write transaction. A product without a library begins a write transaction, compares the reported version with the one its code expects, runs its steps and commits with the new version. A stored version above the one the code expects means a rolled-back release, and the product refuses to open rather than downgrade.
+Migrations run on the product side. A library migrator keeps its own migrations table in the database and runs the pending steps in one write transaction; its adapter sets the host's version in that commit, so the host's version is authoritative for every product. A product without a library begins a write transaction, compares the reported version with the one its code expects, runs its steps and commits with the new version. A stored version above the one the code expects means a rolled-back release, and the product refuses to open rather than downgrade.
 
 Because only one write transaction runs at a time, a webview and a worker that open the database together do not both migrate: the second waits for the first to commit, reads the state the first left, and has nothing to do.
 
@@ -80,7 +80,7 @@ The host guarantees every product at least these floors and may allow more.
 
 ### Lifecycle
 
-The trait needs no permission prompt. A host that does not implement it does not register it, so every call fails with `Unsupported` and the product falls back to `LocalStorage`. Sign-out keeps the account's database. Removing the product from the device deletes every database of that product.
+The trait needs no permission prompt. A host that does not implement it does not register it, so every call fails with `Unsupported` and the product falls back to `LocalStorage`. Sign-out keeps the account's database; removing the account from the device deletes it. Removing the product from the device deletes every database of that product.
 
 ### Isolation
 
