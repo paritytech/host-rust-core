@@ -50,6 +50,21 @@ struct PocketCardHostsTests {
         #expect(factory.built == 2)
     }
 
+    /// The product is wired to the runtime provider of the session that opened
+    /// it, so one kept across a sign-out would be handed to the next session
+    /// still talking to the last one's core.
+    @Test
+    func buildsAgainAfterTheSessionLetItGo() {
+        let hosts = PocketCardHosts()
+        let factory = CountingFactory()
+        _ = hosts.view(for: loyalty, make: factory.make)
+
+        hosts.release()
+        _ = hosts.view(for: loyalty, make: factory.make)
+
+        #expect(factory.built == 2)
+    }
+
     @Test
     func keepsAProductWhoseCardIsStillHeld() {
         let hosts = PocketCardHosts()

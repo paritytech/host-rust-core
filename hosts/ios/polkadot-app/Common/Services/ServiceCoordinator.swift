@@ -228,6 +228,11 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
         messageExpansionService.stop()
         durableTransactionEngine.txService.stop()
 
+        // The opened card's product belongs to this session's runtime provider,
+        // so it goes with the session rather than waiting for the next tap that
+        // may come after another user has signed in.
+        Task { @MainActor in PocketCardHosts.shared.release() }
+
         Task {
             await deviceSyncService.throttle()
             await coinageTransferMonitor.throttle()

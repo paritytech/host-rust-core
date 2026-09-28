@@ -10,6 +10,10 @@ import UIKit
 /// One at a time: opening another card takes the previous one down. A Pocket
 /// can hold many cards, and one live web view each is not a cost worth carrying
 /// for taps that may never come.
+///
+/// Held for one session only. The product is wired to the runtime provider of
+/// the session that opened it, so one carried across a sign-out would be
+/// handed to the next session still talking to the last one's core.
 @MainActor
 final class PocketCardHosts {
     static let shared = PocketCardHosts()
