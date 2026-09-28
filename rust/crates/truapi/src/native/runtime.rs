@@ -61,21 +61,11 @@ impl NativeTrUApiHostRuntime {
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         crate::logging::init();
         callbacks.on_core_log(log_marker.to_string(), log_detail.to_string());
-        let (executor, initialized) = shared_native_executor().map_err(|err| {
+        let executor = shared_native_executor().map_err(|err| {
             NativeRuntimeConfigError::RuntimeUnavailable {
                 reason: err.to_string(),
             }
         })?;
-        if initialized {
-            callbacks.on_core_log(
-                "truapi.native.executor.started".to_string(),
-                format!(
-                    "runtime_id={} worker_threads={}",
-                    executor.handle().id(),
-                    executor.worker_threads()
-                ),
-            );
-        }
         let events = Arc::new(NativeEventBus::default());
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),

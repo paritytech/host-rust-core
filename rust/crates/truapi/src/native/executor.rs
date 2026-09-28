@@ -24,7 +24,12 @@ impl SharedNativeExecutor {
             .enable_all()
             .build()
             .map_err(|err| io::Error::other(err.to_string()))?;
-        Ok(Self { runtime })
+        let executor = Self { runtime };
+        tracing::info!(
+            worker_threads = executor.worker_threads(),
+            "native core runtime started"
+        );
+        Ok(executor)
     }
 
     /// Handle for spawning onto the runtime from any thread, inside it or not.
@@ -49,11 +54,10 @@ impl SharedNativeExecutor {
 static SHARED_NATIVE_EXECUTOR: OnceLock<SharedNativeExecutor> = OnceLock::new();
 static SHARED_NATIVE_EXECUTOR_INIT: Mutex<()> = Mutex::new(());
 
-/// The shared executor, built on first use; the flag is `true` for the call
-/// that built it.
-pub fn shared_native_executor() -> io::Result<(&'static SharedNativeExecutor, bool)> {
+/// The shared executor, built on first use.
+pub fn shared_native_executor() -> io::Result<&'static SharedNativeExecutor> {
     if let Some(executor) = SHARED_NATIVE_EXECUTOR.get() {
-        return Ok((executor, false));
+        return Ok(executor);
     }
 
     // Serialize fallible initialization without caching a transient thread
@@ -62,16 +66,11 @@ pub fn shared_native_executor() -> io::Result<(&'static SharedNativeExecutor, bo
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(executor) = SHARED_NATIVE_EXECUTOR.get() {
-        return Ok((executor, false));
+        return Ok(executor);
     }
 
-    let initialized = SHARED_NATIVE_EXECUTOR
-        .set(SharedNativeExecutor::new()?)
-        .is_ok();
-    let executor = SHARED_NATIVE_EXECUTOR
-        .get()
-        .ok_or_else(|| io::Error::other("shared native executor initialization failed"))?;
-    Ok((executor, initialized))
+    let executor = SharedNativeExecutor::new()?;
+    Ok(SHARED_NATIVE_EXECUTOR.get_or_init(|| executor))
 }
 
 #[cfg(test)]
@@ -81,7 +80,7 @@ mod tests {
 
     #[test]
     fn shared_executor_uses_multithread_scheduler() {
-        let (executor, _) = shared_native_executor().expect("shared native executor");
+        let executor = shared_native_executor().expect("shared native executor");
         let handle = executor.handle();
         assert_eq!(
             handle.runtime_flavor(),
@@ -124,7 +123,7 @@ mod tests {
     /// from a thread outside any runtime, such as a host thread.
     #[test]
     fn spawned_core_tasks_run_on_the_shared_runtime() {
-        let (executor, _) = shared_native_executor().expect("shared native executor");
+        let executor = shared_native_executor().expect("shared native executor");
         let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
 
         executor.spawner()(
@@ -143,10 +142,9 @@ mod tests {
 
     #[test]
     fn shared_executor_is_reused() {
-        let (first, _) = shared_native_executor().expect("first executor access");
-        let (second, initialized) = shared_native_executor().expect("second executor access");
+        let first = shared_native_executor().expect("first executor access");
+        let second = shared_native_executor().expect("second executor access");
 
-        assert!(!initialized);
         assert_eq!(first.handle().id(), second.handle().id());
     }
 }

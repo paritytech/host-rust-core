@@ -383,7 +383,7 @@ impl WsBridge {
         let socket = bind_loopback(bind_port)?;
         let port = socket.local_addr()?.port();
 
-        let (executor, _) = shared_native_executor()?;
+        let executor = shared_native_executor()?;
         let handle = executor.handle();
         let runtime_id = handle.id();
         let registry = Arc::new(WsBridgeRegistry::default());
@@ -412,7 +412,7 @@ impl WsBridge {
             listener.stop(!self.on_shared_executor());
         }
         let socket = bind_loopback(self.port)?;
-        let (executor, _) = shared_native_executor()?;
+        let executor = shared_native_executor()?;
         self.listener = Some(Listener::serve(
             socket,
             &executor.handle(),
@@ -476,7 +476,7 @@ fn join_aborted_connections(handles: Vec<tokio::task::JoinHandle<()>>) {
     if handles.is_empty() {
         return;
     }
-    let Ok((executor, _)) = shared_native_executor() else {
+    let Ok(executor) = shared_native_executor() else {
         return;
     };
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn drop_from_shared_executor_does_not_block_worker() {
         let bridge = start_test_bridge();
-        let (executor, _) = shared_native_executor().expect("shared native executor");
+        let executor = shared_native_executor().expect("shared native executor");
         let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
 
         executor.handle().spawn(async move {
@@ -1598,7 +1598,7 @@ mod tests {
         let registry = Arc::new(WsBridgeRegistry::default());
         let token = "a".repeat(64);
         registry.insert(token.clone(), test_runtime_factory(), no_log());
-        let (executor, _) = shared_native_executor().expect("shared native executor");
+        let executor = shared_native_executor().expect("shared native executor");
         let listener =
             Listener::serve(socket, &executor.handle(), registry, logger).expect("serve");
 
