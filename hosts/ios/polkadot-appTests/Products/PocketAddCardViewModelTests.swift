@@ -21,7 +21,10 @@ struct PocketAddCardViewModelTests {
                 asked.note(productId)
                 return PocketImageResolver(
                     contentId: { productId },
-                    dotNsResolver: StubArchiveRoot(),
+                    archive: ProductWorkerArchive(
+                        dotNsResolver: StubArchiveRoot(),
+                        cachedRoot: { _ in nil }
+                    ),
                     ipfsUrl: { _ in nil }
                 )
             }

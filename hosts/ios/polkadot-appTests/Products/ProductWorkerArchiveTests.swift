@@ -4,11 +4,11 @@ import AsyncExtensions
 import Testing
 @testable import polkadot_app
 
-struct DotNsPocketArchiveTests {
+struct ProductWorkerArchiveTests {
     @Test
     func readsAFaceOutOfTheWorkerArchive() async throws {
         let root = try makeArchive(files: ["faces/loyalty.json": "{}"])
-        let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
+        let archive = ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil })
 
         let data = try await archive.file(
             contentId: "worker.game.paseo",
@@ -25,7 +25,7 @@ struct DotNsPocketArchiveTests {
     func refusesAPathThatClimbsOutOfTheArchive() async throws {
         let root = try makeArchive(files: ["faces/loyalty.json": "{}"])
         try Data("secret".utf8).write(to: root.deletingLastPathComponent().appending(path: "outside.json"))
-        let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
+        let archive = ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil })
 
         await #expect(throws: (any Error).self) {
             try await archive.file(contentId: "worker.game.paseo", path: "../outside.json", maxBytes: 1_024)
@@ -41,7 +41,7 @@ struct DotNsPocketArchiveTests {
         let sibling = root.deletingLastPathComponent().appending(path: "content.staging")
         try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
         try Data("secret".utf8).write(to: sibling.appending(path: "secret.json"))
-        let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
+        let archive = ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil })
 
         await #expect(throws: (any Error).self) {
             try await archive.file(
@@ -63,7 +63,7 @@ struct DotNsPocketArchiveTests {
             at: root.appending(path: "faces/escape.json"),
             withDestinationURL: outside
         )
-        let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
+        let archive = ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil })
 
         await #expect(throws: (any Error).self) {
             try await archive.file(contentId: "worker.game.paseo", path: "faces/escape.json", maxBytes: 1_024)
@@ -76,7 +76,7 @@ struct DotNsPocketArchiveTests {
     @Test
     func stopsReadingAFileOnceItPassesTheBound() async throws {
         let root = try makeArchive(files: ["faces/big.json": String(repeating: "x", count: 8_192)])
-        let archive = DotNsPocketArchive(dotNsResolver: StubResolver(root: root))
+        let archive = ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil })
 
         let refusal = await #expect(throws: PocketPreviewError.self) {
             try await archive.file(contentId: "worker.game.paseo", path: "faces/big.json", maxBytes: 1_024)

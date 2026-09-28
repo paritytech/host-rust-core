@@ -41,7 +41,7 @@ enum PocketAddCardViewFactory {
         PocketAddCardInteractor(
             publishedCards: PublishedPocketCards.makeDefault(products: flowState.productResolver),
             previews: PocketPreviewLoader(
-                archive: DotNsPocketArchive(dotNsResolver: flowState.dotNsResolver),
+                archive: ProductWorkerArchive(dotNsResolver: flowState.dotNsResolver),
                 fetch: PocketPreviewFetch.bounded
             ),
             store: store

@@ -47,7 +47,7 @@ final class TrUAPIWorkerFacade: @unchecked Sendable {
 
         return PocketImageResolver(
             contentId: { try? await assembled.products.resolve(productId).contentId(for: .worker) },
-            dotNsResolver: assembled.dotNsResolver,
+            archive: ProductWorkerArchive(dotNsResolver: assembled.dotNsResolver),
             ipfsUrl: assembled.ipfsUrl
         )
     }

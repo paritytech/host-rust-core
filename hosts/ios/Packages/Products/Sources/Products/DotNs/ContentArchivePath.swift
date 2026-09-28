@@ -1,15 +1,15 @@
 import Foundation
 
-/// Resolves a path a product wrote against the archive it belongs to, answering
-/// nil for one that would leave it.
+/// Resolves a path written by a product against the archive it belongs to,
+/// answering nil for one that would leave it.
 ///
 /// `..` and absolute paths are refused before the filesystem is touched, so a
 /// link the archive itself carries is never walked into place. Both sides are
 /// then symlink-resolved, because the archive's contents are the product's word
-/// as much as the path is — and because on iOS the container is reached through
+/// as much as the path is, and because on iOS the container is reached through
 /// the `/var` -> `/private/var` link, which a raw comparison would never match.
-enum PocketArchivePath {
-    static func inside(_ root: URL, path: String) -> URL? {
+public enum ContentArchivePath {
+    public static func inside(_ root: URL, path: String) -> URL? {
         let components = path.split(separator: "/", omittingEmptySubsequences: true)
         guard !path.hasPrefix("/"), !components.contains("..") else { return nil }
 

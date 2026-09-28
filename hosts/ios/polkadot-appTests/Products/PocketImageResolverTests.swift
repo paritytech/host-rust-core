@@ -14,7 +14,7 @@ struct PocketImageResolverTests {
         let root = try makeArchive(files: ["art/badge.png": "png"])
         let resolver = PocketImageResolver(
             contentId: { "worker.game.paseo" },
-            dotNsResolver: StubResolver(root: root),
+            archive: ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil }),
             ipfsUrl: { _ in nil }
         )
 
@@ -32,7 +32,7 @@ struct PocketImageResolverTests {
         try Data("secret".utf8).write(to: root.deletingLastPathComponent().appending(path: "outside.png"))
         let resolver = PocketImageResolver(
             contentId: { "worker.game.paseo" },
-            dotNsResolver: StubResolver(root: root),
+            archive: ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil }),
             ipfsUrl: { _ in nil }
         )
 
@@ -49,7 +49,7 @@ struct PocketImageResolverTests {
         try Data("secret".utf8).write(to: sibling.appending(path: "secret.png"))
         let resolver = PocketImageResolver(
             contentId: { "worker.game.paseo" },
-            dotNsResolver: StubResolver(root: root),
+            archive: ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil }),
             ipfsUrl: { _ in nil }
         )
 
@@ -65,8 +65,7 @@ struct PocketImageResolverTests {
         let root = try makeArchive(files: ["art/badge.png": "png"])
         let resolver = PocketImageResolver(
             contentId: { "worker.game.paseo" },
-            cachedArchive: { _ in root },
-            dotNsResolver: FailingResolver(),
+            archive: ProductWorkerArchive(dotNsResolver: FailingResolver(), cachedRoot: { _ in root }),
             ipfsUrl: { _ in nil }
         )
 
@@ -82,8 +81,7 @@ struct PocketImageResolverTests {
         let root = try makeArchive(files: ["art/badge.png": "png"])
         let resolver = PocketImageResolver(
             contentId: { "worker.game.paseo" },
-            cachedArchive: { _ in nil },
-            dotNsResolver: StubResolver(root: root),
+            archive: ProductWorkerArchive(dotNsResolver: StubResolver(root: root), cachedRoot: { _ in nil }),
             ipfsUrl: { _ in nil }
         )
 
@@ -94,7 +92,10 @@ struct PocketImageResolverTests {
     func resolvesABulletinImageToItsGatewayAddress() async throws {
         let resolver = PocketImageResolver(
             contentId: { "worker.game.paseo" },
-            dotNsResolver: StubResolver(root: URL(fileURLWithPath: "/tmp/none")),
+            archive: ProductWorkerArchive(
+                dotNsResolver: StubResolver(root: URL(fileURLWithPath: "/tmp/none")),
+                cachedRoot: { _ in nil }
+            ),
             ipfsUrl: { URL(string: "https://gateway.invalid/ipfs/\($0)") }
         )
 
@@ -108,7 +109,7 @@ struct PocketImageResolverTests {
     func answersNoUrlWhenTheArchiveCannotBeRead() async {
         let resolver = PocketImageResolver(
             contentId: { "worker.game.paseo" },
-            dotNsResolver: FailingResolver(),
+            archive: ProductWorkerArchive(dotNsResolver: FailingResolver(), cachedRoot: { _ in nil }),
             ipfsUrl: { _ in nil }
         )
 

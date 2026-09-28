@@ -12,21 +12,16 @@ struct PocketImageResolver: Sendable {
     /// Resolved per call: the archive a face is drawn from is the product's
     /// worker, whose subname is only known once the product's manifest is read.
     private let contentId: @Sendable () async -> ProductId?
-    /// Where the product's archive is already unpacked, when it is. Answered
-    /// off the disk the host has, with no chain read and no download.
-    private let cachedArchive: @Sendable (ProductId) -> URL?
-    private let dotNsResolver: any DotNsResolverProtocol
+    private let archive: ProductWorkerArchive
     private let ipfsUrl: @Sendable (String) -> URL?
 
     init(
         contentId: @escaping @Sendable () async -> ProductId?,
-        cachedArchive: @escaping @Sendable (ProductId) -> URL? = PocketArchiveCache.onDisk,
-        dotNsResolver: any DotNsResolverProtocol,
+        archive: ProductWorkerArchive,
         ipfsUrl: @escaping @Sendable (String) -> URL?
     ) {
         self.contentId = contentId
-        self.cachedArchive = cachedArchive
-        self.dotNsResolver = dotNsResolver
+        self.archive = archive
         self.ipfsUrl = ipfsUrl
     }
 
@@ -37,23 +32,11 @@ struct PocketImageResolver: Sendable {
         }
     }
 
-    /// The path is written by the product, so it is checked to stay inside the
-    /// archive it belongs to rather than trusted to.
-    ///
-    /// Every image node in a face asks again each time it appears. The archive
-    /// already on disk answers all of them with no chain read and no download,
-    /// which is also what lets a card drawn from a kept face keep its images
-    /// offline. The fetch is paid only for a product nothing has been read for
-    /// yet.
+    /// The path is written by the product, so the archive checks it stays
+    /// inside the one it belongs to rather than trusting it.
     private func archived(_ path: String) async -> URL? {
         guard let contentId = await contentId() else { return nil }
 
-        if let cached = cachedArchive(contentId) {
-            return PocketArchivePath.inside(cached, path: path)
-        }
-
-        guard let fetched = try? await dotNsResolver.resolveToLocalURL(dotNsName: contentId) else { return nil }
-
-        return PocketArchivePath.inside(fetched, path: path)
+        return await archive.url(contentId: contentId, path: path)
     }
 }
