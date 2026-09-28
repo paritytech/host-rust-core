@@ -423,6 +423,12 @@ extension MainTabBarViewController {
 
 extension MainTabBarViewController: SPAHosting {
     func openProduct(page: ProductPage) {
+        // Whatever is presented over the container hides what is mounted
+        // behind it. An opened Pocket card is a full-screen modal, so a
+        // product it follows a link to would otherwise open unseen and the
+        // press would read as having done nothing.
+        presentedViewController?.dismiss(animated: true)
+
         #if FEATURE_PRODUCTS
             let tab = browserCoordinator.findOrCreateTab(for: page)
             mountSPA(for: tab)
