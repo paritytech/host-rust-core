@@ -27,6 +27,7 @@ import io.paritytech.polkadotapp.feature_people_api.data.AliasContextProvider
 import io.paritytech.polkadotapp.feature_people_api.data.SetAliasContext
 import io.paritytech.polkadotapp.feature_people_api.domain.dim.DimCommitmentHandler
 import io.paritytech.polkadotapp.feature_products_api.domain.accountsProtocol.aliasAccountDerivationPath
+import io.paritytech.polkadotapp.feature_products_api.domain.game.ProductGameReminder
 import io.paritytech.polkadotapp.feature_videogame_api.data.repositories.VideoGameRepository
 import io.paritytech.polkadotapp.feature_videogame_api.data.voucher.ScoreVouchersSyncManager
 import io.paritytech.polkadotapp.feature_videogame_api.domain.collectibles.CollectiblesUrlResolver
@@ -71,6 +72,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.data.telemetry.NoOpGameD
 import io.paritytech.polkadotapp.feature_videogame_impl.data.telemetry.RealGameDashboardTelemetryRepository
 import io.paritytech.polkadotapp.feature_videogame_impl.data.tracked.LocalTxOverrideInterceptor
 import io.paritytech.polkadotapp.feature_videogame_impl.data.voucher.RealScoreVouchersSyncManager
+import io.paritytech.polkadotapp.feature_videogame_impl.domain.autoLaunch.ProductGameAutoOpener
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.autoLaunch.VideoGameAutoLauncher
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.bot.WeeklyGameBot
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.chat.GameChatOriginConfiguration
@@ -88,6 +90,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.VideoG
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.VideoGameChatBotInteractor
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.VideoGameVoteInteractor
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.models.GameContactOrigins
+import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealProductGameReminder
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealVideoGameReminderScheduler
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.VideoGameNotificationAutoCanceller
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.VideoGameReminderScheduler
@@ -184,6 +187,9 @@ internal interface VideoGameFeatureModule {
     fun bindVideoGameReminderScheduler(impl: RealVideoGameReminderScheduler): VideoGameReminderScheduler
 
     @Binds
+    fun bindProductGameReminder(impl: RealProductGameReminder): ProductGameReminder
+
+    @Binds
     fun bindVideoGameKeepPlayingWarningUseCase(impl: RealVideoGameKeepPlayingWarningUseCase): VideoGameKeepPlayingWarningUseCase
 
     @Binds
@@ -251,6 +257,10 @@ internal interface VideoGameFeatureModule {
     @Binds
     @IntoSet
     fun bindVideoGameAutoLauncher(impl: VideoGameAutoLauncher): AppInitializer
+
+    @Binds
+    @IntoSet
+    fun bindProductGameAutoOpener(impl: ProductGameAutoOpener): AppInitializer
 
     @Binds
     @IntoSet

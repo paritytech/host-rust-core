@@ -51,6 +51,13 @@ class VideoGameReminderBroadcastReceiver : BroadcastReceiver() {
                         }
                     }
 
+                    VideoGameNotificationType.ProductGameStartsSoon -> {
+                        // In the foreground the pill and the auto-open take over.
+                        if (appLifecycleObserver.getCurrentState() != AppLifecycleState.FOREGROUND) {
+                            notificationPublisher.publishProductGameStartsSoonNotification()
+                        }
+                    }
+
                     null -> Unit
                 }
             }

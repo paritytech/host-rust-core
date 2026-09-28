@@ -17,6 +17,8 @@ interface VideoGameReminderScheduler {
     fun scheduleWaitingRoom(gameStartMillis: Timestamp)
     fun scheduleGameAboutToStart(gameStartMillis: Timestamp)
     fun scheduleGameStart(gameStartMillis: Timestamp)
+    fun scheduleProductGameStart(gameStartMillis: Timestamp)
+    fun cancelProductGameStart()
 }
 
 class RealVideoGameReminderScheduler @Inject constructor(
@@ -48,16 +50,28 @@ class RealVideoGameReminderScheduler @Inject constructor(
         )
     }
 
-    override fun scheduleGameStart(gameStartMillis: Timestamp) {
+    override fun scheduleGameStart(gameStartMillis: Timestamp) =
+        scheduleStartAlarm(VideoGameNotificationType.GameStartsSoon, gameStartMillis)
+
+    override fun scheduleProductGameStart(gameStartMillis: Timestamp) =
+        scheduleStartAlarm(VideoGameNotificationType.ProductGameStartsSoon, gameStartMillis, inexactFallback = true)
+
+    override fun cancelProductGameStart() = cancelAlarm(VideoGameNotificationType.ProductGameStartsSoon)
+
+    private fun scheduleStartAlarm(
+        notificationType: VideoGameNotificationType,
+        gameStartMillis: Timestamp,
+        inexactFallback: Boolean = false,
+    ) {
         val offsetMillis = alarmPreferences.getAlarmOffset().seconds.seconds.inWholeMilliseconds
         val triggerAtMillis = gameStartMillis - offsetMillis
 
         if (triggerAtMillis <= System.currentTimeMillis()) {
-            cancelAlarm(VideoGameNotificationType.GameStartsSoon)
+            cancelAlarm(notificationType)
             return
         }
 
-        scheduleAlarm(VideoGameNotificationType.GameStartsSoon, triggerAtMillis)
+        scheduleAlarm(notificationType, triggerAtMillis, inexactFallback)
     }
 
     private fun cancelAlarm(notificationType: VideoGameNotificationType) {
@@ -67,7 +81,8 @@ class RealVideoGameReminderScheduler @Inject constructor(
     @SuppressLint("MissingPermission")
     private fun scheduleAlarm(
         notificationType: VideoGameNotificationType,
-        timestamp: Timestamp
+        timestamp: Timestamp,
+        inexactFallback: Boolean = false,
     ) {
         val pendingIntent = createPendingIntent(notificationType)
 
@@ -83,6 +98,8 @@ class RealVideoGameReminderScheduler @Inject constructor(
                 timestamp,
                 pendingIntent
             )
+        } else if (inexactFallback) {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, timestamp, pendingIntent)
         }
     }
 
@@ -107,5 +124,6 @@ class RealVideoGameReminderScheduler @Inject constructor(
         VideoGameNotificationType.WaitingRoomAvailable -> 2
         VideoGameNotificationType.GameAboutToStart -> 3
         VideoGameNotificationType.GameStartsSoon -> 4
+        VideoGameNotificationType.ProductGameStartsSoon -> 5
     }
 }

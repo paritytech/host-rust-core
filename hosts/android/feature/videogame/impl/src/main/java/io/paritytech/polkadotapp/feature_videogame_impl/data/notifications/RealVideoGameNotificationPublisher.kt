@@ -3,6 +3,7 @@ package io.paritytech.polkadotapp.feature_videogame_impl.data.notifications
 import android.app.Notification
 import android.content.Context
 import android.media.RingtoneManager
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.paritytech.polkadotapp.common.domain.model.Timestamp
@@ -23,6 +24,7 @@ class RealVideoGameNotificationPublisher @Inject constructor(
 ) : NotificationPublisher(context, intentProvider), VideoGameNotificationPublisher {
     private companion object {
         const val REGISTERED_GAME_NOTIFICATION_ID = 128
+        const val PRODUCT_GAME_NOTIFICATION_ID = 129
     }
 
     override fun publishRegistrationOpenedNotification(timestamp: Timestamp) {
@@ -70,8 +72,24 @@ class RealVideoGameNotificationPublisher @Inject constructor(
     }
 
     override fun publishGameStartsSoonNotification() {
+        publishGameStartsSoon(videoGameDeeplinkMapper.toWaitingRoomDeeplink(), REGISTERED_GAME_NOTIFICATION_ID)
+    }
+
+    override fun publishProductGameStartsSoonNotification() {
+        publishGameStartsSoon(videoGameDeeplinkMapper.toProductGameDeeplink(), PRODUCT_GAME_NOTIFICATION_ID)
+    }
+
+    override fun cancelProductGameStartsSoonNotification() {
+        cancel(PRODUCT_GAME_NOTIFICATION_ID)
+    }
+
+    override fun cancelGameStartNotifications() {
+        cancel(REGISTERED_GAME_NOTIFICATION_ID)
+        cancel(PRODUCT_GAME_NOTIFICATION_ID)
+    }
+
+    private fun publishGameStartsSoon(deeplink: Uri, notificationId: Int) {
         val channel = PolkadotNotificationChannel.VIDEO_GAME_ALARM
-        val deeplink = videoGameDeeplinkMapper.toWaitingRoomDeeplink()
 
         val notification = NotificationCompat.Builder(appContext, channel.id)
             .setupDefaultNotification(deepLink = deeplink)
@@ -85,14 +103,10 @@ class RealVideoGameNotificationPublisher @Inject constructor(
             .applyAlarmFlags()
 
         publish(
-            notificationId = REGISTERED_GAME_NOTIFICATION_ID,
+            notificationId = notificationId,
             channel = channel,
             notification = notification
         )
-    }
-
-    override fun cancelGameStartNotifications() {
-        cancel(REGISTERED_GAME_NOTIFICATION_ID)
     }
 
     private fun Notification.applyAlarmFlags(): Notification {
