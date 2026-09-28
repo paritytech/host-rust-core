@@ -59,14 +59,15 @@
 
         @available(iOS 26.0, *)
         func clearAlarmKitAlarms() {
-            guard let alarmIdString = SettingsManager.shared.string(for: .gameAlarmId),
-                  let alarmId = UUID(uuidString: alarmIdString) else {
-                return
-            }
-            do {
-                try AlarmManager.shared.cancel(id: alarmId)
-            } catch {
-                logger.error("Failure to cancel alarm: \(error)")
+            for key in [SettingsKey.gameAlarmId, .productGameAlarmId] {
+                guard let alarmId = SettingsManager.shared.string(for: key).flatMap(UUID.init(uuidString:)) else {
+                    continue
+                }
+                do {
+                    try AlarmManager.shared.cancel(id: alarmId)
+                } catch {
+                    logger.error("Failure to cancel alarm: \(error)")
+                }
             }
         }
 

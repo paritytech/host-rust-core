@@ -11,6 +11,7 @@ final class MainTabBarViewController: UIViewController {
     let viewFactory: TabFactoryProtocol
     let browserCoordinator: SPABrowserCoordinating
     let flowStateProvider: any SPAFlowStateProviding
+    let gameReminders: ProductGameReminderCenter
 
     private let chromeController = TabBarBottomChromeController()
 
@@ -36,12 +37,14 @@ final class MainTabBarViewController: UIViewController {
         presenter: MainTabBarPresenterProtocol,
         viewFactory: TabFactoryProtocol,
         browserCoordinator: SPABrowserCoordinating,
-        flowStateProvider: any SPAFlowStateProviding
+        flowStateProvider: any SPAFlowStateProviding,
+        gameReminders: ProductGameReminderCenter
     ) {
         self.presenter = presenter
         self.viewFactory = viewFactory
         self.browserCoordinator = browserCoordinator
         self.flowStateProvider = flowStateProvider
+        self.gameReminders = gameReminders
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -56,7 +59,6 @@ final class MainTabBarViewController: UIViewController {
         view.backgroundColor = .bgSurfaceMain
 
         installStatusBar()
-
         installChromeController()
 
         chromeController.statusStripAnchorProvider = { [weak self] in self?.chainStatusAnchorGuide }
@@ -73,11 +75,7 @@ final class MainTabBarViewController: UIViewController {
         }
 
         chromeController.onChipTapped = { [weak self] id in
-            guard let self, let tab = browserCoordinator.tabs.first(where: { $0.id == id }) else {
-                return
-            }
-            chromeController.setPanel(nil, animated: true)
-            mountSPA(for: tab)
+            self?.mountExistingTab { $0.id == id }
         }
 
         chromeController.onChipCloseRequested = { [weak self] id in
@@ -92,6 +90,7 @@ final class MainTabBarViewController: UIViewController {
         }
 
         presenter.setup()
+        gameReminders.start(widgets: self)
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -281,6 +280,20 @@ extension MainTabBarViewController {
 
         container.select(index: index)
         reconcileChromeWithSelectedTab()
+    }
+
+    var mountedProductId: ProductId? {
+        mountedSPATabId.flatMap { id in browserCoordinator.tabs.first { $0.id == id }?.dotDomain }
+    }
+
+    @discardableResult
+    func mountExistingTab(where predicate: (SPATab) -> Bool) -> Bool {
+        guard let tab = browserCoordinator.tabs.first(where: predicate) else {
+            return false
+        }
+        chromeController.setPanel(nil, animated: true)
+        mountSPA(for: tab)
+        return true
     }
 }
 
@@ -475,6 +488,7 @@ private extension MainTabBarViewController {
             DSTabBarChip(id: $0.id, name: $0.name, icon: $0.icon)
         }
         chromeController.setSPATabs(chips, selected: mountedSPATabId)
+        gameReminders.mountedProductId = mountedProductId
     }
 
     var mountedSPATabId: UUID? {

@@ -8,6 +8,7 @@ final class AppPermissionsInteractor {
     private let providerFactory: ProductPermissionDataProviderMaking
     private let repository: ProductPermissionRepositoryProtocol
     private let notificationScheduler: ProductNotificationScheduling
+    private let gameReminders: ProductGameReminderScheduling
     private let logger: LoggerProtocol
 
     private var subscriptionTask: Task<Void, Never>?
@@ -16,12 +17,14 @@ final class AppPermissionsInteractor {
         productId: ProductId,
         providerFactory: ProductPermissionDataProviderMaking,
         repository: ProductPermissionRepositoryProtocol,
+        gameReminders: ProductGameReminderScheduling,
         notificationScheduler: ProductNotificationScheduling = ProductNotificationScheduler.shared,
         logger: LoggerProtocol = Logger.shared
     ) {
         self.productId = productId
         self.providerFactory = providerFactory
         self.repository = repository
+        self.gameReminders = gameReminders
         self.notificationScheduler = notificationScheduler
         self.logger = logger
     }
@@ -57,11 +60,15 @@ extension AppPermissionsInteractor: AppPermissionsInteractorInputProtocol {
         subscriptionTask?.cancel()
 
         let revokesNotifications = permissions.contains(.deviceCapability(.notifications))
+        let revokesAlarm = permissions.contains(.deviceCapability(.alarm))
 
-        Task { [repository, notificationScheduler, productId, logger] in
+        Task { [repository, notificationScheduler, gameReminders, productId, logger] in
             do {
                 try await repository.revoke(productId: productId, permissions: permissions)
 
+                if revokesAlarm {
+                    await gameReminders.cancel(productId: productId)
+                }
                 if revokesNotifications {
                     try await notificationScheduler.cancelAll(forProductId: productId)
                 }

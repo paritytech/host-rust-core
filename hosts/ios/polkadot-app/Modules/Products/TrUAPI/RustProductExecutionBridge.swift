@@ -19,6 +19,7 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         let permissionGuard: ProductPermissionGuarding
         let osPermissionAsker: OSPermissionAsking
         let notificationScheduler: ProductNotificationScheduling
+        let gameReminders: ProductGameReminderScheduling
         let navigationRouter: ProductsNavigationRouting
         let chainRegistry: ChainRegistryProtocol
         let chainConnections: TrUAPIChainConnecting
@@ -192,6 +193,32 @@ extension RustProductExecutionBridge: TrUAPIChainEventHandling {
 
     func chainDidClose(connectionId: UInt32) {
         execution?.notifyChainClosed(connectionId: connectionId)
+    }
+}
+
+// MARK: - Game reminders
+
+/// Called on a shared dispatch pool; hopping to the main queue keeps schedule and cancel in order.
+extension RustProductExecutionBridge: GameHostBridge {
+    func scheduleReminder(startsAt: UInt64) throws {
+        let productId = dependencies.productId
+        let gameReminders = dependencies.gameReminders
+        let date = Date(timeIntervalSince1970: TimeInterval(startsAt) / 1000)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                gameReminders.schedule(productId: productId, startsAt: date)
+            }
+        }
+    }
+
+    func cancelReminder() throws {
+        let productId = dependencies.productId
+        let gameReminders = dependencies.gameReminders
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                gameReminders.cancel(productId: productId)
+            }
+        }
     }
 }
 

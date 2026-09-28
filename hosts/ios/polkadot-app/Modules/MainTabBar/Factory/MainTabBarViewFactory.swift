@@ -87,7 +87,8 @@ enum MainTabBarViewFactory {
             presenter: presenter,
             viewFactory: tabFactory,
             browserCoordinator: browserCoordinator,
-            flowStateProvider: flowStateProvider
+            flowStateProvider: flowStateProvider,
+            gameReminders: .shared
         )
 
         presenter.view = view
