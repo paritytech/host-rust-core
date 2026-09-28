@@ -4,7 +4,7 @@
 //! text record, following [RFC — Product Manifest Format][manifest]: derive the
 //! node under the network's own TLD, find the resolver through the registry,
 //! read the record. Parsing that JSON is
-//! [`crate::host_logic::product_manifest`]'s job.
+//! [`crate::host_internal::product_manifest`]'s job.
 //!
 //! [manifest]: ../../../../docs/rfcs/product-manifest.md
 
@@ -19,17 +19,17 @@ use truapi_platform::{
 };
 
 use crate::chain_runtime::ChainRuntime;
+use crate::dotns_views::{call_bytes32_string, network_tld, protocol_component, tld_node};
+use crate::host_internal::permissions::account_access_status;
+use crate::host_internal::product_manifest::{Granted, RootManifest, bare_product_label};
+use crate::host_internal::sso_messages::RingVrfError;
 use crate::host_logic::dotns_gateway::{
-    DotnsTransport, DotnsViewError, call_bytes32, call_bytes32_string, call_no_args,
-    decode_address, decode_string, discover_pop_controller, namehash_under, network_tld,
-    protocol_component, tld_node,
+    DotnsTransport, DotnsViewError, call_bytes32, call_no_args, decode_address, decode_string,
+    discover_pop_controller, namehash_under,
 };
-use crate::host_logic::permissions::account_access_status;
-use crate::host_logic::product_manifest::{Granted, RootManifest, bare_product_label};
-use crate::host_logic::sso::messages::RingVrfError;
-use crate::host_logic::statement_store::current_unix_secs;
 use crate::runtime::dotns_lookup::DotnsLookup;
 use crate::runtime::services::RuntimeServices;
+use crate::unix_time::current_unix_secs;
 
 /// Text record a base name publishes its root manifest at.
 const MANIFEST_RECORD_KEY: &str = "manifest";
@@ -47,7 +47,7 @@ const MANIFEST_RECORD_KEY: &str = "manifest";
 ///
 /// [tlds]: truapi_platform::DOTNS_TLDS
 #[instrument(skip_all, fields(runtime.method = "product_manifest.fetch"))]
-pub(crate) async fn fetch_root_manifest(
+pub async fn fetch_root_manifest(
     chain: &ChainRuntime,
     asset_hub_chain_genesis_hash: [u8; 32],
     product_id: &str,
@@ -180,16 +180,16 @@ mod tests {
 /// This is a revocation bound, not a performance knob: dotNS attaches no signal
 /// to a record edit, so a grant a publisher withdraws stays in force until the
 /// manifest is read again.
-pub(crate) const MANIFEST_TTL_SECS: u64 = 24 * 60 * 60;
+pub const MANIFEST_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// A cached root manifest lookup and when it was made.
 ///
 /// The document is stored verbatim rather than reduced to the grants this core
 /// reads today, so a later consumer needs no cache migration.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub(crate) struct CachedManifest {
+pub struct CachedManifest {
     /// Seconds since the Unix epoch at which the lookup was made.
-    pub(crate) fetched_at_secs: u64,
+    pub fetched_at_secs: u64,
     /// The manifest JSON exactly as published, or `None` where the chain
     /// answered that the product publishes none.
     ///
@@ -197,7 +197,7 @@ pub(crate) struct CachedManifest {
     /// refused call reopens a chainHead follow and re-reads the contracts, and
     /// the round trip tells the caller which targets have a manifest and which
     /// do not — the distinction one uniform refusal exists to hide.
-    pub(crate) json: Option<String>,
+    pub json: Option<String>,
 }
 
 /// Encode a root manifest the way the core caches it, for a host that seeds a
@@ -233,7 +233,7 @@ pub fn encode_cached_root_manifest(json: Option<&str>, fetched_at_secs: u64) -> 
 /// to parse alike, and whoever debugs it goes to fix a manifest that is already
 /// correct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RefusedBecause {
+pub enum RefusedBecause {
     /// The published manifest does not name this caller for this scope.
     NotGranted,
     /// The user has already refused this pair.
@@ -265,7 +265,7 @@ impl RefusedBecause {
 /// manifest names this caller with a narrower scope. Callers turn that into one
 /// refusal, so the outcome never reveals which of those it was. Failing closed
 /// also means an unreachable chain withdraws grants rather than assuming them.
-pub(crate) async fn grants_scope(
+pub async fn grants_scope(
     services: &RuntimeServices,
     platform: &dyn Platform,
     caller_id: &str,
@@ -278,7 +278,7 @@ pub(crate) async fn grants_scope(
 }
 
 /// `grants_scope`, keeping the reason for an operator.
-pub(crate) async fn scope_grant(
+pub async fn scope_grant(
     services: &RuntimeServices,
     platform: &dyn Platform,
     caller_id: &str,
@@ -448,7 +448,7 @@ async fn with_ceiling<T>(ceiling: Duration, future: impl Future<Output = T>) -> 
 /// This binds every call that returns the alias, not only the ones that return
 /// a proof: the alias and the proof come out of one VRF evaluation, so guarding
 /// the proof alone leaves the same bytes reachable through the read.
-pub(crate) fn require_own_context(
+pub fn require_own_context(
     access: &AuthorizedAccess,
     context: &v01::ProductProofContext,
 ) -> Result<(), RingVrfError> {
@@ -500,11 +500,11 @@ fn same_product_on_one_network(left: &str, right: &str) -> bool {
 /// exists to remove: `sso_responder` hands `calling_product_id` through
 /// untouched, so a caller that re-derives it compares a peer's spelling against
 /// a normalized owner.
-pub(crate) struct AuthorizedAccess {
+pub struct AuthorizedAccess {
     /// The caller the gate authorized, normalized.
-    pub(crate) caller: String,
+    pub caller: String,
     /// The owner of the key, normalized.
-    pub(crate) owner: String,
+    pub owner: String,
 }
 
 /// Whether `calling_product_id` may act on `handle`'s ring-VRF key, adjudicated
@@ -526,7 +526,7 @@ pub(crate) struct AuthorizedAccess {
 /// The owner check runs first and costs nothing, so a product proving with its
 /// own key never touches the network. Everything after it is a cross-product
 /// access, and every reason it is refused answers the same way.
-pub(crate) async fn ring_vrf_key_access_granted(
+pub async fn ring_vrf_key_access_granted(
     services: &RuntimeServices,
     platform: &dyn Platform,
     calling_product_id: &str,

@@ -9,7 +9,7 @@ use schnorrkel::Keypair;
 /// `&'static [u8]`. The lifetime extension is confined to this call: the
 /// transcript is created, populated, consumed by `vrf_sign`, and dropped before
 /// any input borrow ends. No extended reference can escape this function.
-pub(crate) fn sign_dynamic_vrf<'a>(
+pub fn sign_dynamic_vrf<'a>(
     keypair: &Keypair,
     transcript_label: &'a [u8],
     items: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,

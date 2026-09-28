@@ -106,8 +106,7 @@ pub struct CliPlatform {
     pairing_scope: Option<PairingStorageScope>,
     bulletin: Arc<BulletinLookup<BitswapRpc>>,
     next_notification_id: AtomicU32,
-    scheduled_notifications:
-        Arc<Mutex<HashMap<api::NotificationId, api::HostPushNotificationRequest>>>,
+    scheduled_notifications: Arc<Mutex<HashMap<u32, api::HostPushNotificationRequest>>>,
     approval: Mutex<ApprovalPolicy>,
     /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
     /// `<approved|denied> <action>` line per decided confirmation.
@@ -122,7 +121,7 @@ impl CliPlatform {
     /// The URL a genesis routes to, so a test can assert a routing override
     /// rather than assume it.
     #[cfg(test)]
-    pub(crate) fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
+    pub fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
         self.chain.routed_url(genesis_hash)
     }
 
@@ -375,7 +374,7 @@ impl CliPlatform {
         persist_current_pairing_user(&scope.bootstrap_dir, user_id)
     }
 
-    async fn decide(&self, action: &str, detail: String) -> bool {
+    pub async fn decide(&self, action: &str, detail: String) -> bool {
         self.decide_with(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
     }
 
@@ -690,7 +689,7 @@ impl Notifications for CliPlatform {
         Ok(api::HostPushNotificationResponse { id })
     }
 
-    async fn cancel_notification(&self, id: api::NotificationId) -> Result<(), api::GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), api::GenericError> {
         if self
             .scheduled_notifications
             .lock()
@@ -1250,7 +1249,7 @@ fn save_string_map(path: &Path, values: &HashMap<String, Vec<u8>>) -> Result<(),
     atomic_write(path, text.as_bytes())
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("storage path has no parent: {}", path.display()))?;

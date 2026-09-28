@@ -297,7 +297,7 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, StatementAllowanceError> {
 }
 
 #[cfg(test)]
-pub(crate) mod testing {
+pub mod testing {
     //! Scripted JSON-RPC transport for exercising request shapes in tests.
 
     use std::sync::{Arc, Mutex};
@@ -307,7 +307,7 @@ pub(crate) mod testing {
     /// Records every request as `(method, params)` and replays canned JSON
     /// results in order; subscriptions replay the scripted notification items.
     #[derive(Clone, Default)]
-    pub(crate) struct ScriptedRpc(Arc<Inner>);
+    pub struct ScriptedRpc(Arc<Inner>);
 
     #[derive(Default)]
     struct Inner {
@@ -319,7 +319,7 @@ pub(crate) mod testing {
 
     impl ScriptedRpc {
         /// A script answering requests with `responses`, in order.
-        pub(crate) fn new<'a>(responses: impl IntoIterator<Item = &'a str>) -> Self {
+        pub fn new<'a>(responses: impl IntoIterator<Item = &'a str>) -> Self {
             let scripted = Self::default();
             *scripted.0.responses.lock().unwrap() =
                 responses.into_iter().map(str::to_owned).collect();
@@ -328,7 +328,7 @@ pub(crate) mod testing {
 
         /// Queue the notification items for one subscription. Call once per
         /// expected submission; batches are replayed in order.
-        pub(crate) fn script_subscription<'a>(&self, items: impl IntoIterator<Item = &'a str>) {
+        pub fn script_subscription<'a>(&self, items: impl IntoIterator<Item = &'a str>) {
             self.0
                 .subscription_batches
                 .lock()
@@ -338,13 +338,13 @@ pub(crate) mod testing {
 
         /// Fail the next `n` subscriptions with `message`, as the node does when
         /// it rejects a submission outright.
-        pub(crate) fn script_subscription_errors(&self, message: &str, count: usize) {
+        pub fn script_subscription_errors(&self, message: &str, count: usize) {
             *self.0.subscription_errors.lock().unwrap() =
                 std::iter::repeat_n(message.to_owned(), count).collect();
         }
 
         /// The `(method, params)` pairs seen so far.
-        pub(crate) fn calls(&self) -> Vec<(String, String)> {
+        pub fn calls(&self) -> Vec<(String, String)> {
             self.0.calls.lock().unwrap().clone()
         }
     }

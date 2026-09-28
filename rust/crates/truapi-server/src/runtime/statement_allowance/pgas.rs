@@ -25,7 +25,8 @@ use thiserror::Error;
 
 use super::collection::PersonhoodCollection;
 use super::extension::{AS_PGAS, Metadata, MetadataError};
-use super::ring::{self, RingParams, blake2_128_concat, twox_64_concat};
+use super::key_hash::{blake2_128_concat, twox_64_concat};
+use super::ring::{self, RingParams};
 use super::rpc::RpcClient;
 use super::{
     ChainContext, StatementAllowanceError, duplicate_submit_error, extension, extrinsic, proof,

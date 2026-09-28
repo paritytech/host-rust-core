@@ -2,7 +2,7 @@
 #![allow(deprecated)]
 
 use super::*;
-use crate::host_logic::sso::messages::{
+use crate::host_internal::sso_messages::{
     RemoteMessage, RemoteMessageData, SignRawWithLegacyAccountRequest, SignRequest, v1,
 };
 use crate::runtime::signing_host::sso_service::SigningHostSsoService;

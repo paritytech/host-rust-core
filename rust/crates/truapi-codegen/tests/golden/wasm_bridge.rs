@@ -25,44 +25,47 @@ use super::{
 /// stub when the host omits the group. The core never reaches them: it
 /// only holds an adapter for a capability whose `has_*` accessor is
 /// true, and answers the rest with `Unsupported`.
-pub(super) struct JsBridge {
-    pub(super) auth_state_changed: Function,
-    pub(super) chain_connect: Function,
-    pub(super) create_chat_room: Function,
-    pub(super) register_chat_bot: Function,
-    pub(super) post_chat_message: Function,
-    pub(super) subscribe_chat_rooms: Function,
-    pub(super) read_core_storage: Function,
-    pub(super) write_core_storage: Function,
-    pub(super) clear_core_storage: Function,
-    pub(super) feature_supported: Function,
-    pub(super) supported_chains: Function,
-    pub(super) subscribe_locale: Function,
-    pub(super) navigate_to: Function,
-    pub(super) push_notification: Function,
-    pub(super) cancel_notification: Function,
-    pub(super) device_permission_status: Function,
-    pub(super) device_permission: Function,
-    pub(super) remote_permission: Function,
-    pub(super) subscribe_pocket_cards: Function,
-    pub(super) remove_pocket_card: Function,
-    pub(super) lookup_preimage: Function,
-    pub(super) begin_operation: Function,
-    pub(super) end_operation: Function,
-    pub(super) read: Function,
-    pub(super) write: Function,
-    pub(super) clear: Function,
-    pub(super) subscribe_storage: Function,
-    pub(super) subscribe_theme: Function,
-    pub(super) confirm_permission: Function,
-    pub(super) confirm_user_action: Function,
-    pub(super) chat_present: bool,
-    pub(super) permission_status_present: bool,
-    pub(super) pocket_present: bool,
+pub struct JsBridge {
+    pub auth_state_changed: Function,
+    pub chain_connect: Function,
+    pub create_chat_room: Function,
+    pub register_chat_bot: Function,
+    pub post_chat_message: Function,
+    pub subscribe_chat_rooms: Function,
+    pub contacts: Function,
+    pub pick_contact: Function,
+    pub read_core_storage: Function,
+    pub write_core_storage: Function,
+    pub clear_core_storage: Function,
+    pub feature_supported: Function,
+    pub supported_chains: Function,
+    pub subscribe_locale: Function,
+    pub navigate_to: Function,
+    pub push_notification: Function,
+    pub cancel_notification: Function,
+    pub device_permission_status: Function,
+    pub device_permission: Function,
+    pub remote_permission: Function,
+    pub subscribe_pocket_cards: Function,
+    pub remove_pocket_card: Function,
+    pub lookup_preimage: Function,
+    pub begin_operation: Function,
+    pub end_operation: Function,
+    pub read: Function,
+    pub write: Function,
+    pub clear: Function,
+    pub subscribe_storage: Function,
+    pub subscribe_theme: Function,
+    pub confirm_permission: Function,
+    pub confirm_user_action: Function,
+    pub chat_present: bool,
+    pub contacts_present: bool,
+    pub permission_status_present: bool,
+    pub pocket_present: bool,
 }
 
 impl JsBridge {
-    pub(super) fn from_js(callbacks: &JsValue) -> Result<Self, JsValue> {
+    pub fn from_js(callbacks: &JsValue) -> Result<Self, JsValue> {
         Ok(Self {
             auth_state_changed: get_function(callbacks, "authStateChanged")?,
             chain_connect: get_function(callbacks, "chainConnect")?,
@@ -74,6 +77,10 @@ impl JsBridge {
                 .unwrap_or_else(|| missing_callback("postChatMessage")),
             subscribe_chat_rooms: get_optional_function(callbacks, "subscribeChatRooms")?
                 .unwrap_or_else(|| missing_callback("subscribeChatRooms")),
+            contacts: get_optional_function(callbacks, "contacts")?
+                .unwrap_or_else(|| missing_callback("contacts")),
+            pick_contact: get_optional_function(callbacks, "pickContact")?
+                .unwrap_or_else(|| missing_callback("pickContact")),
             read_core_storage: get_function(callbacks, "readCoreStorage")?,
             write_core_storage: get_function(callbacks, "writeCoreStorage")?,
             clear_core_storage: get_function(callbacks, "clearCoreStorage")?,
@@ -105,6 +112,8 @@ impl JsBridge {
                 && get_optional_function(callbacks, "registerChatBot")?.is_some()
                 && get_optional_function(callbacks, "postChatMessage")?.is_some()
                 && get_optional_function(callbacks, "subscribeChatRooms")?.is_some(),
+            contacts_present: get_optional_function(callbacks, "contacts")?.is_some()
+                && get_optional_function(callbacks, "pickContact")?.is_some(),
             permission_status_present: get_optional_function(callbacks, "devicePermissionStatus")?
                 .is_some(),
             pocket_present: get_optional_function(callbacks, "subscribePocketCards")?.is_some()
@@ -113,17 +122,22 @@ impl JsBridge {
     }
 
     /// Whether the host supplied every `chat` callback.
-    pub(super) fn has_chat(&self) -> bool {
+    pub fn has_chat(&self) -> bool {
         self.chat_present
     }
 
+    /// Whether the host supplied every `contacts` callback.
+    pub fn has_contacts(&self) -> bool {
+        self.contacts_present
+    }
+
     /// Whether the host supplied every `permission_status` callback.
-    pub(super) fn has_permission_status(&self) -> bool {
+    pub fn has_permission_status(&self) -> bool {
         self.permission_status_present
     }
 
     /// Whether the host supplied every `pocket` callback.
-    pub(super) fn has_pocket(&self) -> bool {
+    pub fn has_pocket(&self) -> bool {
         self.pocket_present
     }
 }
@@ -213,6 +227,43 @@ impl truapi_platform::ChatPlatform for WasmPlatform {
             Some(Uint8Array::from(product.encode().as_slice()).into()),
             parse_host_chat_list_subscribe_item_item,
         )
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::ContactsPlatform for WasmPlatform {
+    async fn contacts(
+        &self,
+        lookup: &truapi_platform::HostContactLookup,
+    ) -> Result<truapi_platform::HostContactMatches, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.contacts,
+            vec![Uint8Array::from(lookup.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::HostContactMatches>(
+            bytes,
+            "contacts response did not decode",
+        )
+        .map_err(generic)
+    }
+
+    async fn pick_contact(
+        &self,
+        _product: &truapi_platform::ProductContext,
+    ) -> Result<truapi_platform::HostContactPick, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.pick_contact,
+            vec![Uint8Array::from(_product.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::HostContactPick>(
+            bytes,
+            "pickContact response did not decode",
+        )
+        .map_err(generic)
     }
 }
 
@@ -331,7 +382,7 @@ impl truapi_platform::Notifications for WasmPlatform {
         .map_err(generic)
     }
 
-    async fn cancel_notification(&self, id: v01::NotificationId) -> Result<(), v01::GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), v01::GenericError> {
         invoke_unit(
             &self.bridge.cancel_notification,
             vec![JsValue::from_f64(f64::from(id))],

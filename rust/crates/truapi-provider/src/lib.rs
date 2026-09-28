@@ -58,7 +58,7 @@ mod logging_native;
 mod networks;
 mod provider;
 #[cfg(feature = "smoldot")]
-pub mod storage;
+mod storage;
 #[cfg(all(feature = "ws", not(target_arch = "wasm32")))]
 mod ws;
 #[cfg(all(feature = "ws", target_arch = "wasm32"))]
@@ -74,7 +74,7 @@ pub use config::LightClientBuilder;
 pub use networks::{NetworkChains, known_networks};
 pub use provider::{EmbeddedChainProvider, EmbeddedChainProviderBuilder};
 #[cfg(feature = "smoldot")]
-pub use storage::{StorageClient, StorageClientError};
+pub use storage::{GenesisHash, StorageClient, StorageClientError};
 
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
 uniffi::setup_scaffolding!();

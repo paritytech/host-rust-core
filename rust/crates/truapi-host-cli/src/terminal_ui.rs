@@ -756,7 +756,7 @@ pub enum DriveResult<T> {
     Cancelled,
 }
 
-pub(super) enum PairingImageInput {
+pub enum PairingImageInput {
     Pixels(RgbaFrame),
     Path(PathBuf),
 }
@@ -3057,7 +3057,7 @@ fn redact_pairing_link(text: &str) -> String {
     format!("{}<pairing link>", &text[..start])
 }
 
-pub(crate) fn sanitize_terminal_text(text: &str) -> String {
+pub fn sanitize_terminal_text(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut characters = text.chars().peekable();
     while let Some(character) = characters.next() {

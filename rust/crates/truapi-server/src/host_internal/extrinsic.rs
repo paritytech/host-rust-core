@@ -53,7 +53,7 @@ where
 /// JS-derived keys use scure/ed25519-expanded scalar bytes. Signatures are
 /// identical for both once parsed, so callers never need to know which form
 /// they hold.
-pub(crate) fn sr25519_secret_from_bytes(secret: &[u8; 64]) -> Result<SecretKey, String> {
+pub fn sr25519_secret_from_bytes(secret: &[u8; 64]) -> Result<SecretKey, String> {
     match SecretKey::from_bytes(secret) {
         Ok(secret) => Ok(secret),
         Err(canonical_error) => SecretKey::from_ed25519_bytes(secret).map_err(|ed_error| {
@@ -67,7 +67,7 @@ pub(crate) fn sr25519_secret_from_bytes(secret: &[u8; 64]) -> Result<SecretKey, 
 /// Holds only the parsed key (schnorrkel zeroizes it on drop), never the raw
 /// secret bytes.
 #[derive(derive_more::Debug)]
-pub(crate) struct Sr25519Signer {
+pub struct Sr25519Signer {
     #[debug("\"<redacted>\"")]
     secret: SecretKey,
     #[debug("{}", hex::encode(public.to_bytes()))]
@@ -76,7 +76,7 @@ pub(crate) struct Sr25519Signer {
 
 impl Sr25519Signer {
     /// Parse a signer from 64-byte secret material.
-    pub(crate) fn from_secret_bytes(secret: &[u8; 64]) -> Result<Self, String> {
+    pub fn from_secret_bytes(secret: &[u8; 64]) -> Result<Self, String> {
         let secret = sr25519_secret_from_bytes(secret)?;
         let public = secret.to_public();
         Ok(Self { secret, public })
@@ -84,7 +84,7 @@ impl Sr25519Signer {
 
     /// Build a signer from an already-derived schnorrkel keypair (e.g. a
     /// signing-host product key), reusing the same `sign`/`account_id` path.
-    pub(crate) fn from_keypair(keypair: &schnorrkel::Keypair) -> Self {
+    pub fn from_keypair(keypair: &schnorrkel::Keypair) -> Self {
         Self {
             secret: keypair.secret.clone(),
             public: keypair.public,
@@ -144,7 +144,7 @@ fn v4_signer_payload(call_data: &[u8], extensions: &[TxPayloadExtension]) -> Vec
 /// signed payload. The chain binding (genesis, spec/tx version, mortality
 /// anchor, nonce, tip) lives inside the caller's extension bytes, so nothing
 /// here is metadata-driven.
-pub(crate) fn build_signed_extrinsic_v4(
+pub fn build_signed_extrinsic_v4(
     signer: &Sr25519Signer,
     call_data: &[u8],
     extensions: &[TxPayloadExtension],
@@ -157,7 +157,7 @@ pub(crate) fn build_signed_extrinsic_v4(
 ///
 /// This keeps `signPayload`'s returned typed signature byte-for-byte identical
 /// to the signature embedded in an optionally requested signed transaction.
-pub(crate) fn build_signed_extrinsic_v4_with_signature(
+pub fn build_signed_extrinsic_v4_with_signature(
     account_id: AccountId32,
     signature: &MultiSignature,
     call_data: &[u8],
@@ -292,7 +292,7 @@ where
 
 /// Why a locally assembled transaction could not be produced.
 #[derive(Debug, derive_more::Display)]
-pub(crate) enum LocalTransactionError {
+pub enum LocalTransactionError {
     /// A version this host does not assemble.
     #[display("unsupported tx_ext_version {version}; expected 0 for V4 or 5 for V5")]
     UnsupportedTxExtVersion {
@@ -319,7 +319,7 @@ pub(crate) enum LocalTransactionError {
 ///
 /// V5 is signed with the local key only when `extensions` omits
 /// `VerifyMultiSignature`; callers that supply it are assembled unsigned.
-pub(crate) async fn build_local_transaction(
+pub async fn build_local_transaction(
     chain: &ChainRuntime,
     keypair: &schnorrkel::Keypair,
     genesis_hash: [u8; 32],
@@ -364,7 +364,7 @@ pub(crate) async fn build_local_transaction(
 
 /// Why a V5 transaction could not be assembled.
 #[derive(Debug, derive_more::Display)]
-pub(crate) enum V5BuildError {
+pub enum V5BuildError {
     /// The caller's extension list does not fit the runtime's pipeline.
     #[display("{_0}")]
     UnsupportedExtensions(String),
@@ -423,7 +423,7 @@ fn traverse_exactly<R: TypeResolver>(
 /// caller that supplies it owns its bytes and gets no host signature, whether
 /// they say `Disabled` (authorizing with a proof in a later extension) or carry
 /// a signature the caller made itself.
-pub(crate) fn build_signed_extrinsic_v5(
+pub fn build_signed_extrinsic_v5(
     signer: &Sr25519Signer,
     genesis_hash: [u8; 32],
     call_data: &[u8],
@@ -624,7 +624,7 @@ pub(crate) fn build_signed_extrinsic_v5(
 /// Signer and transaction-assembly tests, plus offline-chain fixtures reused by other
 /// test modules.
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
     use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use parity_scale_codec::{Compact, Decode};
@@ -641,16 +641,16 @@ pub(crate) mod tests {
     /// Everything needed to build transactions offline for one chain at one
     /// runtime version, mirroring what the production path gets from the
     /// genesis-pinned online client.
-    pub(crate) struct OfflineChainState {
-        pub(crate) genesis_hash: [u8; 32],
-        pub(crate) spec_version: u32,
-        pub(crate) transaction_version: u32,
-        pub(crate) metadata: ArcMetadata,
+    pub struct OfflineChainState {
+        pub genesis_hash: [u8; 32],
+        pub spec_version: u32,
+        pub transaction_version: u32,
+        pub metadata: ArcMetadata,
     }
 
     impl OfflineChainState {
         /// Build an offline subxt client pinned at `block_number`.
-        pub(crate) fn client_at(
+        pub fn client_at(
             &self,
             block_number: u64,
         ) -> Result<OfflineClientAtBlock<SubstrateConfig>, String> {
@@ -671,20 +671,20 @@ pub(crate) mod tests {
 
     /// Raw `RuntimeMetadataPrefixed` bytes captured from the live
     /// bulletin-paseo chain (`state_getMetadata`, spec 1000020, metadata v14).
-    pub(crate) const BULLETIN_METADATA_BYTES: &[u8] = include_bytes!(concat!(
+    pub const BULLETIN_METADATA_BYTES: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/bulletin_paseo_metadata.scale"
     ));
 
     /// Decode the checked-in bulletin metadata fixture.
-    pub(crate) fn bulletin_metadata() -> Metadata {
+    pub fn bulletin_metadata() -> Metadata {
         let prefixed = RuntimeMetadataPrefixed::decode(&mut &BULLETIN_METADATA_BYTES[..]).unwrap();
         Metadata::try_from(prefixed).unwrap()
     }
 
     /// Offline chain state over the bulletin fixture with a recognizable
     /// genesis hash.
-    pub(crate) fn bulletin_chain_state() -> OfflineChainState {
+    pub fn bulletin_chain_state() -> OfflineChainState {
         OfflineChainState {
             genesis_hash: [0xbb; 32],
             spec_version: 1_000_020,
@@ -762,7 +762,7 @@ pub(crate) mod tests {
 
     /// Split a length-prefixed V4 signed extrinsic into
     /// (account, signature, trailing-bytes-after-signature).
-    pub(crate) fn split_v4(extrinsic: &[u8]) -> ([u8; 32], [u8; 64], Vec<u8>) {
+    pub fn split_v4(extrinsic: &[u8]) -> ([u8; 32], [u8; 64], Vec<u8>) {
         let mut input = extrinsic;
         let len = Compact::<u32>::decode(&mut input).unwrap().0 as usize;
         assert_eq!(input.len(), len, "compact length must cover the remainder");

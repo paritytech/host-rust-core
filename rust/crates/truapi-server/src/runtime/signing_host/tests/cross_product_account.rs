@@ -7,8 +7,8 @@
 
 use super::*;
 
-use crate::host_logic::statement_store::current_unix_secs;
 use crate::runtime::product_manifest::{CachedManifest, manifest_cache_key};
+use crate::unix_time::current_unix_secs;
 use parity_scale_codec::Encode;
 use truapi::versioned::signing::{
     HostSignPayloadError, HostSignPayloadRequest, HostSignPayloadResponse,
@@ -68,7 +68,7 @@ fn a_context_grant_signs_with_the_granting_products_account() {
     let root = derive_root_keypair_from_entropy(&ENTROPY).expect("root derives");
     let owner =
         derive_product_keypair(&root, "dim2.paseo", index_bytes(0)).expect("owner key derives");
-    let preimage = crate::host_logic::transaction::extrinsic_payload_preimage(
+    let preimage = crate::host_internal::transaction::extrinsic_payload_preimage(
         &crate::test_support::sign_payload_data(),
     )
     .expect("preimage builds");

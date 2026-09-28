@@ -453,7 +453,7 @@ impl NetworkChains {
 }
 
 #[cfg(any(feature = "networks", feature = "smoldot"))]
-pub(crate) fn hex0x(bytes: &[u8; 32]) -> String {
+fn hex0x(bytes: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 

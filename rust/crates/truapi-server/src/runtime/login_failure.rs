@@ -34,7 +34,7 @@ pub fn reports_exhausted_period(text: &str) -> bool {
 }
 
 /// Recover the failure kind from a wallet-reported reason.
-pub(crate) fn classify_login_failure(reason: &str) -> LoginFailureKind {
+pub fn classify_login_failure(reason: &str) -> LoginFailureKind {
     if reports_exhausted_period(reason) {
         return LoginFailureKind::NoFreeAllowanceSlots;
     }

@@ -8,13 +8,13 @@ use truapi_platform::{CoreStorage, CoreStorageKey};
 
 use crate::runtime::sso_remote::DEFAULT_SSO_STATEMENT_EXPIRY_SECS;
 
-pub(super) const MAX_REQUEST_LEDGER_ENTRIES: usize = 1024;
+pub const MAX_REQUEST_LEDGER_ENTRIES: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct SsoReplayScope {
-    pub(super) root_public_key: [u8; 32],
-    pub(super) peer_statement_account_id: [u8; 32],
-    pub(super) peer_encryption_public_key: [u8; 32],
+pub struct SsoReplayScope {
+    pub root_public_key: [u8; 32],
+    pub peer_statement_account_id: [u8; 32],
+    pub peer_encryption_public_key: [u8; 32],
 }
 
 impl SsoReplayScope {
@@ -28,13 +28,13 @@ impl SsoReplayScope {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum ReplayExecution<T> {
+pub enum ReplayExecution<T> {
     Duplicate,
     Executed(T),
 }
 
 #[derive(Default)]
-pub(super) struct SsoReplayLocks {
+pub struct SsoReplayLocks {
     scopes: Mutex<HashMap<SsoReplayScope, Weak<AsyncMutex<()>>>>,
 }
 
@@ -139,7 +139,7 @@ enum VersionedRequestLedger {
     V1(RequestLedger),
 }
 
-pub(super) async fn execute_once<T, F, Fut>(
+pub async fn execute_once<T, F, Fut>(
     storage: &(impl CoreStorage + ?Sized),
     locks: &SsoReplayLocks,
     scope: SsoReplayScope,
