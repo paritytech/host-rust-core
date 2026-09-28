@@ -1,6 +1,5 @@
 import Foundation
 import Products
-import TrUAPIHost
 import UIKit
 
 /// Opens the card's product, at the page the card names, on a screen the card
@@ -46,12 +45,7 @@ enum PocketCardOpening {
         navigator: ModuleNavigating,
         pocket: PocketFacade = .shared
     ) {
-        guard let screened = try? screenPocketCardId(id: link.cardId) else {
-            PocketRefusalPresenter.show(String(localized: .pocketDeeplinkMalformed))
-            return
-        }
-
-        let key = PocketCardKey(productId: link.productHost, cardId: PocketCardId(value: screened))
+        let key = PocketCardKey(productId: link.productHost, cardId: link.cardId)
 
         Task { @MainActor in
             guard

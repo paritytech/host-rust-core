@@ -2,7 +2,6 @@ import Foundation
 import Observation
 import PolkadotUI
 import Products
-import TrUAPIHost
 
 /// Drives the approval sheet: loads what is being offered, then stores exactly
 /// that when the user approves it.
@@ -21,14 +20,14 @@ final class PocketAddCardViewModel {
     var onFinish: () -> Void = {}
 
     private let productId: ProductId
-    private let cardId: String
+    private let cardId: PocketCardId
     private let interactor: PocketAddCardInteractor
     private let onAdded: () -> Void
     private let resolver: any WidgetDesignTokenResolving
 
     init(
         productId: ProductId,
-        cardId: String,
+        cardId: PocketCardId,
         interactor: PocketAddCardInteractor,
         onAdded: @escaping () -> Void,
         resolver: any WidgetDesignTokenResolving = WidgetDesignTokenResolver()
@@ -42,8 +41,7 @@ final class PocketAddCardViewModel {
 
     func load() async {
         do {
-            let screened = try PocketCardId(value: screenPocketCardId(id: cardId))
-            let offer = try await interactor.loadOffer(productId: productId, cardId: screened)
+            let offer = try await interactor.loadOffer(productId: productId, cardId: cardId)
             state = .offered(offer, face: offer.face.toWidgetNode(resolver: resolver))
         } catch {
             state = .refused(message(for: error))

@@ -1,17 +1,17 @@
 import Foundation
 import Products
-import TrUAPIHost
 import UIKit
 
 /// Routes `polkadot://<product>.<tld>/-/pocket/{add,open}?card=<id>`.
 ///
-/// Ownership is decided from the reserved target, not from whether the link
-/// parses: the `-` segment belongs to the host, so a malformed link under it is
-/// answered here rather than falling through to the product's own App handler
-/// and opening a page the user never asked for.
+/// What the link means is entirely the core's to say. `parse_navigate` answers
+/// `pocket` for an action it serves, having screened the card id exactly as
+/// `remove_card` does, and `reject` for a link under the reserved target that
+/// it cannot make sense of. Those two are the host's to answer.
 ///
-/// Classification is still the core's — `parse_navigate` screens the card id
-/// the same way `remove_card` does, so a link and a removal name the same card.
+/// Anything else it answers is not ours, including a Pocket action this core
+/// does not serve: the core sends those to the App deliberately, so a link
+/// minted for a newer host opens the product instead of failing.
 final class PocketOpenService: URLHandlingServiceProtocol {
     private let parser = PocketDeeplinkParser()
     private let present: @MainActor (PocketDeeplink) -> Void
@@ -26,25 +26,16 @@ final class PocketOpenService: URLHandlingServiceProtocol {
     }
 
     func handle(url: URL) -> Bool {
-        guard Self.isPocketTarget(url) else { return false }
-
-        guard let link = parser.parse(url.absoluteString),
-              (try? screenPocketCardId(id: link.cardId)) != nil
-        else {
+        switch parser.classify(url.absoluteString) {
+        case let .pocket(link):
+            Task { @MainActor in present(link) }
+            return true
+        case .malformed:
             Task { @MainActor in refuse(String(localized: .pocketDeeplinkMalformed)) }
             return true
+        case .notOurs:
+            return false
         }
-
-        Task { @MainActor in present(link) }
-        return true
-    }
-
-    /// The first path segment `-` is reserved for host-handled targets and
-    /// cannot be an App route.
-    private static func isPocketTarget(_ url: URL) -> Bool {
-        let segments = url.path.split(separator: "/", omittingEmptySubsequences: true)
-
-        return segments.count >= 2 && segments[0] == "-" && segments[1] == "pocket"
     }
 }
 

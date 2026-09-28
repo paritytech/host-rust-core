@@ -11,7 +11,7 @@ struct PocketOpenServiceTests {
         #expect(service.handle(url: URL(string: "polkadot://game.dot/-/pocket/add?card=loyalty")!))
 
         try await Task.sleep(for: .milliseconds(50))
-        #expect(seen.links.map(\.cardId) == ["loyalty"])
+        #expect(seen.links.map(\.cardId.value) == ["loyalty"])
     }
 
     /// An ordinary product link is not ours and must fall through to the App
@@ -37,6 +37,21 @@ struct PocketOpenServiceTests {
         try await Task.sleep(for: .milliseconds(50))
         #expect(seen.links.isEmpty)
         #expect(seen.refusals.count == 1)
+    }
+
+    /// The core sends an action it does not serve to the App on purpose, so a
+    /// link minted for a newer host degrades instead of failing. Claiming it
+    /// here would turn every future Pocket verb into a refusal on this build.
+    @Test
+    func doesNotClaimAPocketActionTheCoreDoesNotServe() async throws {
+        let seen = Recorder()
+        let service = PocketOpenService(present: { seen.record($0) }, refuse: { seen.refusals.append($0) })
+
+        #expect(!service.handle(url: URL(string: "polkadot://game.dot/-/pocket/pin?card=loyalty")!))
+
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(seen.links.isEmpty)
+        #expect(seen.refusals.isEmpty)
     }
 
     /// A link under the reserved target that names no card at all is still the
