@@ -1,5 +1,23 @@
 # @parity/truapi-host
 
+## 0.22.0
+
+### Patch Changes
+
+- d3d3312: Every native build of the core includes the localhost WebSocket bridge and the debug sink. There are no
+  `ws-bridge` or `debug-sink` Cargo features: native targets compile both with the default `runtime` feature, and wasm32
+  builds never include them.
+- 336be6e: The shared Rust core asks blessed products only for device permissions and legacy-account signing. Other
+  product operations bypass permission prompts and recorded decisions.
+- 4ef4efc: Build the core WASM without wasm-opt's one-caller inlining, which merges functions into bodies that compress
+  poorly. The `web` core is 719.5 KiB brotli and 952.5 KiB gzip, down from 775.4 KiB and 1.02 MiB; the raw size is
+  unchanged at 2.66 MiB.
+- Updated dependencies [a285523]
+- Updated dependencies [60940ff]
+- Updated dependencies [de343d4]
+- Updated dependencies [3ef2191]
+  - @parity/truapi@0.22.0
+
 ## 0.21.0
 
 ### Minor Changes

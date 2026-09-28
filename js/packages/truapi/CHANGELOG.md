@@ -1,5 +1,34 @@
 # @parity/truapi
 
+## 0.22.0
+
+### Minor Changes
+
+- a285523: A `Contacts` trait lets a product ask the host to open its contact picker. The user selects one person and
+  the product receives one opaque 32-byte handle: never the list, a name, or an account. The handle is the same value
+  for that contact in every product and on every host of this user, keyed on the user's own entropy, and the core
+  resolves it back to an account: a transaction payload declares the handles its call names, and the host replaces them
+  with those accounts before the call is shown or signed. Hosts serve it through the optional `ContactsPlatform`
+  capability, and a UniFFI host installs one with `setContactsCallbacks` on the runtime; a host that installs none
+  leaves `contacts.pick` answering `Unsupported`.
+
+  `ProductAccountTxPayload` carries `contacts` as a required field, so a call naming nobody declares an empty list. It
+  is on the wire as well as in the type: a product and the host it talks to have to agree on it.
+
+- 60940ff: `sign_payload`, `create_transaction`, `sign_raw` and the statement-store product proof accept another
+  product's account when that product's manifest grants the caller `context`, the same grant `create_account_proof` and
+  `ring_vrf_sign` already honour. Such a signature is always confirmed by the user, and the signing reviews carry the
+  calling product so a host can name it beside the account it is signing with.
+
+### Patch Changes
+
+- de343d4: The `truapi-host` CLI previewnet preset and truapi-provider's previewnet catalog carry the relay, Asset Hub,
+  Bulletin and People genesis hashes previewnet reports after its latest reset, and the bundled previewnet chain specs
+  match them.
+- 3ef2191: A visible page retries a failed host reconnect after 250 ms, 1 s and 4 s before it waits for its next call. A
+  page that returns to the foreground while the host is still rebinding its listener reconnects on its own instead of
+  staying offline until the product calls again.
+
 ## 0.21.0
 
 ### Minor Changes
