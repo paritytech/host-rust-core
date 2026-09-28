@@ -191,9 +191,10 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
             request: HostDevicePermissionRequest,
         ): TrUAPIPermissionDecision =
             // Android WebView serves motion sensors without asking, so the
-            // capability is granted without a prompt.
+            // capability is granted without a prompt. Allow once keeps the core
+            // from storing a grant that no settings screen can revoke.
             if (request == HostDevicePermissionRequest.MOTION) {
-                TrUAPIPermissionDecision.ALLOW_ALWAYS
+                TrUAPIPermissionDecision.ALLOW_ONCE
             } else {
                 hostApiInteractor
                     .requestDevicePermissionDecision(callingProductId, request.toCapability())

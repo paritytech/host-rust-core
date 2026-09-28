@@ -8,11 +8,10 @@ extension OSPermissionAsking {
     /// WebKit only consults its delegate during the product's user gesture, so
     /// the product's decision is resolved here through `execution`.
     func makeDeviceCapabilityHandler(
-        execution: TrUAPIProductExecutionProtocol? = nil
+        execution: TrUAPIProductExecutionProtocol
     ) -> JSDeviceCapabilityHandler {
         { capability in
             if case .motion = capability {
-                guard let execution else { return .denied }
                 return try await execution.authorizeDevicePermission(.motion) ? .allowed : .denied
             }
             switch await self.checkPermission(for: capability.deviceCapabilityType) {

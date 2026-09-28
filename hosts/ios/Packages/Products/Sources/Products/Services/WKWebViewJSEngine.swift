@@ -330,7 +330,8 @@ extension WKWebViewJSEngine: WKUIDelegate {
 
     /// Answers WebKit's `DeviceMotionEvent`/`DeviceOrientationEvent`
     /// `requestPermission()` with the product's Motion decision, so WebKit
-    /// never shows its own per-launch prompt.
+    /// never shows its own prompt. WebKit caches the answer per origin in the
+    /// data store for the rest of the app launch.
     public func webView(
         _: WKWebView,
         requestDeviceOrientationAndMotionPermissionFor _: WKSecurityOrigin,

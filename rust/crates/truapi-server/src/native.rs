@@ -3185,6 +3185,7 @@ mod tests {
         /// Counts prompts across the execution's separate connections.
         remote_permission_calls: std::sync::atomic::AtomicUsize,
         remote_permission_products: Mutex<Vec<(String, ProductExecutionKind)>>,
+        device_permission_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl EventCallbacks {
@@ -3231,6 +3232,7 @@ mod tests {
                 permission_confirmation_result: NativePermissionDecision::Deny,
                 remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
                 remote_permission_products: Mutex::new(Vec::new()),
+                device_permission_calls: std::sync::atomic::AtomicUsize::new(0),
             }
         }
     }
@@ -3270,6 +3272,7 @@ mod tests {
             _product: NativeProductExecutionConfig,
             _request: v01::HostDevicePermissionRequest,
         ) -> Result<NativePermissionDecision, HostRejection> {
+            self.device_permission_calls.fetch_add(1, Ordering::SeqCst);
             Ok(NativePermissionDecision::Deny)
         }
         async fn device_permission_status(
@@ -5981,6 +5984,7 @@ mod tests {
         let authorize =
             || futures::executor::block_on(execution.authorize_device_permission(motion));
         let prompted = authorize().unwrap();
+        let prompts = callbacks.device_permission_calls.load(Ordering::SeqCst);
         execution
             .set_permission_authorization_status(
                 permission.clone(),
@@ -5994,6 +5998,14 @@ mod tests {
         let denied = authorize().unwrap();
         execution.shutdown();
         assert_eq!((prompted, saved, denied), (false, true, false));
+        assert_eq!(
+            (
+                prompts,
+                callbacks.device_permission_calls.load(Ordering::SeqCst)
+            ),
+            (1, 1),
+            "only the undecided request prompts",
+        );
         assert!(matches!(authorize(), Err(HostRejection::Rejected { .. })));
     }
 
