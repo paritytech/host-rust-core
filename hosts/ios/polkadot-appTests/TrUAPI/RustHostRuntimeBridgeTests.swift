@@ -141,6 +141,7 @@ struct TrUAPIHostRuntimeProviderConfigTests {
         #expect(throws: (any Error).self) {
             _ = try TrUAPIHostRuntimeProvider.makeRuntimeConfig(
                 chainRegistry: MockChainRegistry(),
+                platformVersion: "17.0",
                 secret: Data([0x01]),
                 liteUsername: nil,
                 networkSuffix: "paseo"

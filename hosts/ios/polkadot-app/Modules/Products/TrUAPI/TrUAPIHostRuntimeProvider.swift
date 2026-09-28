@@ -85,8 +85,9 @@ private extension TrUAPIHostRuntimeProvider {
     func buildRuntime() async throws -> TrUAPIHostRuntime {
         let secret = try entropyManager.fetchRootEntropy()
         let networkSuffix = try tldProvider.currentTldOrError()
-        let runtimeConfig = try Self.makeRuntimeConfig(
+        let runtimeConfig = try await Self.makeRuntimeConfig(
             chainRegistry: chainRegistry,
+            platformVersion: UIDevice.current.systemVersion,
             secret: secret,
             liteUsername: settingsManager.string(for: .username),
             networkSuffix: networkSuffix
@@ -124,6 +125,7 @@ extension TrUAPIHostRuntimeProvider {
     /// seam.
     static func makeRuntimeConfig(
         chainRegistry: ChainRegistryProtocol,
+        platformVersion: String,
         secret: Data,
         liteUsername: String?,
         networkSuffix: String
@@ -152,7 +154,7 @@ extension TrUAPIHostRuntimeProvider {
             hostName: "Polkadot App",
             hostVersion: version,
             platformType: "ios",
-            platformVersion: UIDevice.current.systemVersion,
+            platformVersion: platformVersion,
             peopleChainGenesisHash: Data(hexString: peopleGenesisHex),
             bulletinChainGenesisHash: Data(hexString: bulletinGenesisHex),
             assetHubChainGenesisHash: Data(hexString: assetHubGenesisHex),
