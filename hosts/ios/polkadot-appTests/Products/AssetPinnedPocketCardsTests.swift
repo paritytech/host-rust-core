@@ -10,11 +10,13 @@ struct AssetPinnedPocketCardsTests {
     /// id is a function of the network the app is on.
     @Test
     func placesHumanityOnThePersonhoodProduct() async {
-        let cards = await pinned.cards()
-
-        #expect(cards.map(\.key.cardId.value) == ["humanity"])
-        #expect(cards.first?.key.productId == "peopl.paseo")
-        #expect(cards.first?.privileged == true)
+        #expect(await pinned.cards() == [
+            PocketCardEntry(
+                key: PocketCardKey(productId: "peopl.paseo", cardId: PocketCardId(value: "humanity")),
+                title: "Humanity",
+                privileged: true
+            )
+        ])
     }
 
     @Test

@@ -1,4 +1,5 @@
 import Foundation
+import Products
 import Testing
 @testable import polkadot_app
 
@@ -8,15 +9,13 @@ struct PocketDeeplinkParserTests {
     let parser = PocketDeeplinkParser()
 
     @Test
-    func readsAnAddLink() throws {
-        guard case let .pocket(link) = parser.classify("polkadot://game.dot/-/pocket/add?card=loyalty") else {
-            Issue.record("expected a pocket link")
-            return
-        }
-
-        #expect(link.productHost == "game.dot")
-        #expect(link.action == .add)
-        #expect(link.cardId.value == "loyalty")
+    func readsAnAddLink() {
+        #expect(parser.classify("polkadot://game.dot/-/pocket/add?card=loyalty") == .pocket(PocketDeeplink(
+            productHost: "game.dot",
+            action: .add,
+            cardId: PocketCardId(value: "loyalty"),
+            canonicalUrl: "polkadot://game.dot/-/pocket/add?card=loyalty"
+        )))
     }
 
     @Test

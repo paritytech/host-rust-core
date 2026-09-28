@@ -15,7 +15,7 @@ struct PocketPrewarmerTests {
     @Test
     func warmsTheArchiveAPressedCardOpens() async {
         let archives = RecordingArchives()
-        let prewarmer = PocketPrewarmer(products: StubResolver(), dotNsResolver: archives)
+        let prewarmer = PocketPrewarmer(products: resolverPublishingWidgets(), dotNsResolver: archives)
 
         await prewarmer.warm([humanity])
 
@@ -27,7 +27,7 @@ struct PocketPrewarmerTests {
     @Test
     func leavesACardTheUserAddedAlone() async {
         let archives = RecordingArchives()
-        let prewarmer = PocketPrewarmer(products: StubResolver(), dotNsResolver: archives)
+        let prewarmer = PocketPrewarmer(products: resolverPublishingWidgets(), dotNsResolver: archives)
 
         await prewarmer.warm([loyalty])
 
@@ -39,7 +39,7 @@ struct PocketPrewarmerTests {
     @Test
     func warmsAProductOnlyOnce() async {
         let archives = RecordingArchives()
-        let prewarmer = PocketPrewarmer(products: StubResolver(), dotNsResolver: archives)
+        let prewarmer = PocketPrewarmer(products: resolverPublishingWidgets(), dotNsResolver: archives)
 
         await prewarmer.warm([humanity, humanity])
         await prewarmer.warm([humanity])
@@ -52,7 +52,7 @@ struct PocketPrewarmerTests {
     @Test
     func triesAgainAfterAFailedWarm() async {
         let archives = RecordingArchives(failing: true)
-        let prewarmer = PocketPrewarmer(products: StubResolver(), dotNsResolver: archives)
+        let prewarmer = PocketPrewarmer(products: resolverPublishingWidgets(), dotNsResolver: archives)
 
         await prewarmer.warm([humanity])
         archives.failing = false
@@ -78,8 +78,10 @@ private let loyalty = PocketCardViewModel(
     face: nil
 )
 
-private struct StubResolver: ProductResolving {
-    func resolve(_ productId: ProductId) async throws -> ResolvedProduct {
+/// Every product here publishes both an app and a widget under subnames of its own, which is what
+/// makes the archive a warm reaches for something the test can name.
+private func resolverPublishingWidgets() -> StubProductResolver {
+    StubProductResolver { productId in
         ResolvedProduct(
             id: productId,
             displayName: productId,

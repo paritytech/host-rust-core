@@ -6,7 +6,7 @@ import Testing
 struct PublishedPocketCardsTests {
     @Test
     func findsACardTheWorkerPublishes() async throws {
-        let cards = PublishedPocketCards(products: StubResolver(worker: workerPublishing([loyalty])))
+        let cards = PublishedPocketCards(products: gameResolver(worker: workerPublishing([loyalty])))
 
         let found = try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
 
@@ -18,7 +18,7 @@ struct PublishedPocketCardsTests {
     /// worker's subname rather than the product's base name.
     @Test
     func namesTheWorkerArchiveTheFaceIsReadFrom() async throws {
-        let cards = PublishedPocketCards(products: StubResolver(worker: workerPublishing([loyalty])))
+        let cards = PublishedPocketCards(products: gameResolver(worker: workerPublishing([loyalty])))
 
         let found = try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
 
@@ -29,7 +29,7 @@ struct PublishedPocketCardsTests {
     /// collection is keyed by one id only — the one the resolver settled on.
     @Test
     func keysTheCardByTheResolvedProductIdRatherThanTheOneAskedFor() async throws {
-        let cards = PublishedPocketCards(products: StubResolver(worker: workerPublishing([loyalty])))
+        let cards = PublishedPocketCards(products: gameResolver(worker: workerPublishing([loyalty])))
 
         let found = try await cards.find(productId: "GAME.paseo", cardId: PocketCardId(value: "loyalty"))
 
@@ -38,7 +38,7 @@ struct PublishedPocketCardsTests {
 
     @Test
     func refusesAProductWithNoWorker() async {
-        let cards = PublishedPocketCards(products: StubResolver(worker: nil))
+        let cards = PublishedPocketCards(products: gameResolver(worker: nil))
 
         await #expect(throws: PocketPublishError.noPocket) {
             try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
@@ -57,7 +57,7 @@ struct PublishedPocketCardsTests {
             includesPocket: false,
             pocketCards: [loyalty]
         )
-        let cards = PublishedPocketCards(products: StubResolver(worker: worker))
+        let cards = PublishedPocketCards(products: gameResolver(worker: worker))
 
         await #expect(throws: PocketPublishError.noPocket) {
             try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
@@ -72,7 +72,7 @@ struct PublishedPocketCardsTests {
     @Test
     func prefersThePublishedCardOverADebugOne() async throws {
         let cards = PublishedPocketCards(
-            products: StubResolver(worker: workerPublishing([loyalty])),
+            products: gameResolver(worker: workerPublishing([loyalty])),
             debugCards: { _ in [debugLoyalty] }
         )
 
@@ -86,7 +86,7 @@ struct PublishedPocketCardsTests {
     @Test
     func fallsBackToADebugCardWhenNothingIsPublished() async throws {
         let cards = PublishedPocketCards(
-            products: StubResolver(worker: nil),
+            products: gameResolver(worker: nil),
             debugCards: { _ in [debugLoyalty] }
         )
 
@@ -102,8 +102,8 @@ struct PublishedPocketCardsTests {
     /// as long as it is on screen, and never draws.
     @Test
     func refusesAProductWhoseManifestCannotBeRead() async {
-        let cards = PublishedPocketCards(products: FailingResolver(
-            error: ProductResolutionError.malformedManifest("game.paseo")
+        let cards = PublishedPocketCards(products: StubProductResolver(
+            alwaysFailing: ProductResolutionError.malformedManifest("game.paseo")
         ))
 
         await #expect(throws: PocketPublishError.unreadableProduct) {
@@ -115,7 +115,7 @@ struct PublishedPocketCardsTests {
     /// itself and the caller asks again.
     @Test
     func raisesAReadThatDidNotLandAsItself() async {
-        let cards = PublishedPocketCards(products: FailingResolver(error: URLError(.timedOut)))
+        let cards = PublishedPocketCards(products: StubProductResolver(alwaysFailing: URLError(.timedOut)))
 
         await #expect(throws: URLError.self) {
             try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "loyalty"))
@@ -127,7 +127,7 @@ struct PublishedPocketCardsTests {
     @Test
     func stillServesAHandTypedCardWhenTheProductCannotBeRead() async throws {
         let cards = PublishedPocketCards(
-            products: FailingResolver(error: URLError(.timedOut)),
+            products: StubProductResolver(alwaysFailing: URLError(.timedOut)),
             debugCards: { _ in [debugLoyalty] }
         )
 
@@ -138,7 +138,7 @@ struct PublishedPocketCardsTests {
 
     @Test
     func refusesACardTheWorkerDoesNotPublish() async {
-        let cards = PublishedPocketCards(products: StubResolver(worker: workerPublishing([loyalty])))
+        let cards = PublishedPocketCards(products: gameResolver(worker: workerPublishing([loyalty])))
 
         await #expect(throws: PocketPublishError.unknownCard) {
             try await cards.find(productId: "game.paseo", cardId: PocketCardId(value: "trophy"))
@@ -171,25 +171,15 @@ private func workerPublishing(_ cards: [PocketCardDefinition]) -> ProductExecuta
     )
 }
 
-private struct FailingResolver: ProductResolving {
-    let error: any Error
-
-    func resolve(_: ProductId) async throws -> ResolvedProduct {
-        throw error
-    }
-}
-
-private struct StubResolver: ProductResolving {
-    let worker: ProductExecutable.Worker?
-
-    func resolve(_: ProductId) async throws -> ResolvedProduct {
-        ResolvedProduct(
-            id: "game.paseo",
-            displayName: "Game",
-            description: nil,
-            icon: nil,
-            executables: ProductExecutables(app: nil, widget: nil, worker: worker),
-            hasManifest: true
-        )
-    }
+/// Answers any id with the one product these tests ask about, including the mixed-casing id one
+/// test deliberately asks under.
+private func gameResolver(worker: ProductExecutable.Worker?) -> StubProductResolver {
+    StubProductResolver(alwaysResolvingTo: ResolvedProduct(
+        id: "game.paseo",
+        displayName: "Game",
+        description: nil,
+        icon: nil,
+        executables: ProductExecutables(app: nil, widget: nil, worker: worker),
+        hasManifest: true
+    ))
 }

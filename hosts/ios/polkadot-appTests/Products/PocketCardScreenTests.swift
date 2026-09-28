@@ -74,19 +74,3 @@ private func laidOutScreen(product: SPAViewProtocol) -> PocketCardScreenViewCont
 
     return screen
 }
-
-@MainActor
-private final class StubSPAView: SPAViewProtocol {
-    let controller = UIViewController()
-    let pageScrollView = UIScrollView()
-    var isSetup: Bool { true }
-
-    func navigate(to _: URL) {}
-    func navigate(to _: ProductPage) {}
-    func updateTitle(_: String) {}
-    func reload() {}
-    func showLoading() {}
-    func hideLoading() {}
-    func showLoadFailure(_: ErrorContent) {}
-    func updateLoadProgress(_: DotNsLoadProgress) {}
-}

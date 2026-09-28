@@ -92,19 +92,3 @@ private final class CountingFactory {
         return StubSPAView()
     }
 }
-
-@MainActor
-private final class StubSPAView: SPAViewProtocol {
-    let controller = UIViewController()
-    let pageScrollView = UIScrollView()
-    var isSetup: Bool { true }
-
-    func navigate(to _: URL) {}
-    func navigate(to _: ProductPage) {}
-    func updateTitle(_: String) {}
-    func reload() {}
-    func showLoading() {}
-    func hideLoading() {}
-    func showLoadFailure(_: ErrorContent) {}
-    func updateLoadProgress(_: DotNsLoadProgress) {}
-}

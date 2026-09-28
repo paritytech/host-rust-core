@@ -81,7 +81,10 @@ private func makeInteractor(
     let interactor = WalletMainInteractor(
         collectiblesURLProvider: StubCollectiblesURLProvider(),
         networkStatusObserver: StubNetworkStatusObserver(),
-        pocketPrewarmer: PocketPrewarmer(products: StubResolver(), dotNsResolver: SlowArchives(delay: warmDelay)),
+        pocketPrewarmer: PocketPrewarmer(
+            products: StubProductResolver(),
+            dotNsResolver: SlowArchives(delay: warmDelay)
+        ),
         pocket: PocketService(collection: collection)
     )
     interactor.presenter = presenter
@@ -106,23 +109,6 @@ private struct StubCollectiblesURLProvider: CollectiblesURLProviding {
 
 private final class StubNetworkStatusObserver: NetworkStatusObserving {
     func start(onStatus _: @escaping @MainActor (NetworkStatus) -> Void) {}
-}
-
-private struct StubResolver: ProductResolving {
-    func resolve(_ productId: ProductId) async throws -> ResolvedProduct {
-        ResolvedProduct(
-            id: productId,
-            displayName: productId,
-            description: nil,
-            icon: nil,
-            executables: ProductExecutables(
-                app: ProductExecutable.App(identifier: "app.\(productId)", appVersion: .zero),
-                widget: nil,
-                worker: nil
-            ),
-            hasManifest: true
-        )
-    }
 }
 
 /// Stands in for the archive fetch a warm performs, which is the slow part the
