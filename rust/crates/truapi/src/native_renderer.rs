@@ -51,7 +51,6 @@ impl Drop for NativeRendererSubscription {
     }
 }
 
-#[cfg_attr(not(feature = "ws-bridge"), allow(dead_code))]
 pub fn observe_renderer(
     mut stream: Subscription<ProductRendererRenderItem, CallError<truapi::latest::GenericError>>,
     observer: Arc<dyn NativeRendererObserver>,
