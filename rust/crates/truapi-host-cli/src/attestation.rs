@@ -354,7 +354,12 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
 
     submit_registration(&client, config, signed_at, &registration).await?;
 
-    let identity = wait_for_dotns_username(&mut reader, &registration.candidate_public_key).await?;
+    let identity = wait_for_dotns_username(
+        &mut reader,
+        &config.asset_hub_ws,
+        &registration.candidate_public_key,
+    )
+    .await?;
     debug!("lite username registered and confirmed on-chain");
     identity
         .lite_username
@@ -634,6 +639,7 @@ fn hex0x(bytes: &[u8]) -> String {
 
 async fn wait_for_dotns_username(
     reader: &mut AssetHubReader,
+    asset_hub_ws: &str,
     candidate: &[u8; 32],
 ) -> Result<truapi_server::host_logic::dotns_gateway::DotnsIdentity> {
     // First-time lite registration is backend-async and can lag the HTTP
@@ -662,7 +668,18 @@ async fn wait_for_dotns_username(
                 );
                 debug!("dotNS username poll {attempt}/{MAX_ATTEMPTS}: empty");
             }
-            Err(err) => warn!(%err, "dotNS username poll attempt {attempt} failed"),
+            Err(err) => {
+                warn!(%err, "dotNS username poll attempt {attempt} failed");
+                // A subxt client whose socket dropped ("The background task closed") never
+                // recovers, so every later poll on the same reader fails the same way and the
+                // whole attestation is lost to one reset. Reconnect for the next attempt, as the
+                // ring-membership wait does, and carry on; a failed reconnect keeps the old
+                // reader and simply tries again after the sleep.
+                match AssetHubReader::connect(asset_hub_ws).await {
+                    Ok(fresh) => *reader = fresh,
+                    Err(err) => warn!(%err, "dotNS username poll: reconnect failed"),
+                }
+            }
         }
         if attempt < MAX_ATTEMPTS {
             tokio::time::sleep(Duration::from_secs(4)).await;
