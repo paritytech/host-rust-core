@@ -37,14 +37,14 @@ final class ProductBotFactory {
         self.logger = logger
     }
 
-    func create(resolved: ResolvedProduct) -> ProductBot? {
+    func create(resolved: ResolvedProduct) async -> ProductBot? {
         guard let source = workerSource(for: resolved) else { return nil }
 
         let product = resolved.product
 
         if settingsManager.isTrUAPIRuntimeEnabled {
             do {
-                let runtime = try createRustRuntime(product: product, source: source)
+                let runtime = try await createRustRuntime(product: product, source: source)
                 return ProductBot(product: product, runtime: runtime, logger: logger)
             } catch {
                 logger.error(
@@ -83,8 +83,8 @@ private extension ProductBotFactory {
     /// Builds one rust chat runtime (product execution + localhost ws-bridge)
     /// off the shared runtime. The local session lives on the shared runtime;
     /// a transient provider failure only fails this create.
-    func createRustRuntime(product: Product, source: ProductWorkerSource) throws -> ChatRuntimeProtocol {
-        let runtime = try runtimeProvider.sharedRuntimeWaitingIfNeeded()
+    func createRustRuntime(product: Product, source: ProductWorkerSource) async throws -> ChatRuntimeProtocol {
+        let runtime = try await runtimeProvider.sharedRuntime()
 
         let rustEnvironment = RustRuntimeEnvironment(
             runtime: runtime,

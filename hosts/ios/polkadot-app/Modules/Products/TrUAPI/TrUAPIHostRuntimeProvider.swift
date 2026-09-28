@@ -23,10 +23,10 @@ protocol TrUAPIHostRuntimeProviding: AnyObject, Sendable {
     /// retries.
     func sharedRuntime() async throws -> TrUAPIHostRuntime
 
-    /// ``sharedRuntime()`` for synchronous callers such as view factories.
-    /// Returns at once when the runtime is built, and otherwise blocks the
-    /// calling thread until the build finishes.
-    func sharedRuntimeWaitingIfNeeded() throws -> TrUAPIHostRuntime
+    /// ``sharedRuntime()`` for the synchronous view factories on the main thread.
+    /// Returns at once when the runtime is built, and otherwise blocks the main
+    /// thread until the build finishes; the build itself never runs on it.
+    @MainActor func sharedRuntimeBlockingMain() throws -> TrUAPIHostRuntime
 
     /// Anchor the host's core confirmations (signing, permission prompts) to
     /// the given view. Until it is attached, host-level prompts deny.
@@ -90,14 +90,15 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
         }
     }
 
-    func sharedRuntimeWaitingIfNeeded() throws -> TrUAPIHostRuntime {
+    @MainActor
+    func sharedRuntimeBlockingMain() throws -> TrUAPIHostRuntime {
         if let runtime = lock.withLock({ builtRuntime }) {
             return runtime
         }
 
         let outcome = BootOutcome()
         let finished = DispatchSemaphore(value: 0)
-        Task.detached { [self] in
+        Task.detached(priority: .userInitiated) { [self] in
             do {
                 outcome.result = .success(try await sharedRuntime())
             } catch {
@@ -112,13 +113,13 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
 
 private extension TrUAPIHostRuntimeProvider {
     /// Detached so a main-thread caller blocked in
-    /// ``sharedRuntimeWaitingIfNeeded()`` never waits on work queued behind it.
+    /// ``sharedRuntimeBlockingMain()`` never waits on work queued behind it.
     func currentBoot() -> Task<TrUAPIHostRuntime, Error> {
         lock.withLock {
             if let boot {
                 return boot
             }
-            let boot = Task.detached { [self] in try await buildRuntime() }
+            let boot = Task.detached(priority: .userInitiated) { [self] in try await buildRuntime() }
             self.boot = boot
             return boot
         }
