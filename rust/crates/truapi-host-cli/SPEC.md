@@ -1610,11 +1610,11 @@ on-chain testing.
 | --- | --- |
 | Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0xf720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218` |
+| People genesis | `0x55e3e689ecfa9d2fffcf7d309b8011956671493982230bfd0420c683542249e9` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0xea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d` |
+| Bulletin genesis | `0xa081192b90c1f6a3f8e9ce7b2a8246f41af805c66456c84e05fd97c2b3502425` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0xc27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe` |
+| Asset Hub genesis | `0xbac97e23fc8f4bccae72a98f8aeb2bcab20bf755862304e4b46ad6473456e896` |
 
 Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
 signer provisioned on one preset is not visible from the other. Two presets means
