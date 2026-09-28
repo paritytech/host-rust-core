@@ -132,10 +132,11 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling {
         let now = now()
 
         guard now < slot.startsAt else {
+            drop()
+            showPill(for: nil)
             if applicationState() != .background, now.timeIntervalSince(slot.startsAt) < Self.openGrace {
                 openProduct(slot.productId)
             }
-            clear()
             return
         }
 
@@ -161,10 +162,14 @@ private extension ProductGameReminderCenter {
     }
 
     func clear() {
+        drop()
+        refresh()
+    }
+
+    func drop() {
         store(nil)
         alarm?.cancelReminder()
         notification.cancelReminder()
-        refresh()
     }
 
     func store(_ slot: Slot?) {
