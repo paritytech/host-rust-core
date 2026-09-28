@@ -58,26 +58,29 @@ struct RealPocketWorkerBuilder: PocketWorkerBuilding {
     }
 
     /// A published Pocket worker, or the script installed by hand through debug
-    /// settings — the same fallback the chat bot takes, and what makes a card
+    /// settings — the same rule the chat bot follows, and what makes a card
     /// drivable before its product publishes anything.
     private func workerSource(
         for resolved: ResolvedProduct?,
         productId: ProductId
     ) async throws -> ProductWorkerSource {
-        if let worker = resolved?.executables.worker, worker.includesPocket {
+        let resolved = resolved ?? .legacy(id: productId)
+
+        if let published = ProductWorkerSource.published(for: resolved, serving: .pocket) {
             // Fetched before the engine boots: the scheme handler reads the
             // archive off disk, and a page loaded before it is there fails as a
             // missing module rather than waiting.
-            _ = try await dotNsResolver.resolveToLocalURL(dotNsName: worker.identifier)
+            _ = try await dotNsResolver.resolveToLocalURL(dotNsName: published.contentId)
 
-            return ProductWorkerSource(contentId: worker.identifier, entryRelativePath: worker.entrypoint)
+            return published
         }
 
-        let installedId = resolved?.id ?? productId
-        guard let entry = productFileProvider.manualScriptEntryPath(productId: installedId) else {
+        guard let installed = ProductWorkerSource.installedByHand(for: resolved, entryPath: {
+            productFileProvider.manualScriptEntryPath(productId: $0)
+        }) else {
             throw PocketWorkerError.noPocketWorker(productId)
         }
 
-        return ProductWorkerSource(contentId: installedId, entryRelativePath: entry)
+        return installed
     }
 }

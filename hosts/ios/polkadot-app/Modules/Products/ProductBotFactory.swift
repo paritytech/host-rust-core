@@ -69,15 +69,10 @@ private extension ProductBotFactory {
     /// A bot is a chat surface, so a worker that declares `includes.chat: false` gets none — that
     /// is a valid background-only worker, and iOS has nothing else to run it on.
     func workerSource(for resolved: ResolvedProduct) -> ProductWorkerSource? {
-        if let worker = resolved.executables.worker {
-            guard worker.includesChat else { return nil }
-
-            return ProductWorkerSource(contentId: worker.identifier, entryRelativePath: worker.entrypoint)
-        }
-
-        return productFileProvider.manualScriptEntryPath(productId: resolved.id).map {
-            ProductWorkerSource(contentId: resolved.id, entryRelativePath: $0)
-        }
+        ProductWorkerSource.published(for: resolved, serving: .chat)
+            ?? ProductWorkerSource.installedByHand(for: resolved) {
+                productFileProvider.manualScriptEntryPath(productId: $0)
+            }
     }
 
     /// Builds one rust chat runtime (product execution + localhost ws-bridge)
