@@ -1,7 +1,4 @@
-//! The one tokio runtime every native core task runs on: subscriptions and
-//! background loops spawned through the core's [`Spawner`](crate::subscription::Spawner),
-//! the work behind every host-called entry point, and the WebSocket bridge's
-//! connections.
+//! The process-wide Tokio runtime that native core work runs on.
 
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
