@@ -107,7 +107,11 @@ public extension CoinageTxEntry {
     }
 }
 
-extension [CoinageTxEntry] {
+public extension [CoinageTxEntry] {
+    /// Every peer-sent coin these entries name as an input, whatever each entry settled on.
+    ///
+    /// Answers "which of these coins does the ledger already hold a claim for" — a coin absent from
+    /// this set has no claim recorded at all, which is work still to do rather than a settled outcome.
     func receivedPublicKeys() -> Set<PublicKey> {
         var keys: Set<PublicKey> = []
         for entry in self {

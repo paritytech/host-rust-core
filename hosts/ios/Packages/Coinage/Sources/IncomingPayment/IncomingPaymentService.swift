@@ -263,7 +263,7 @@ private extension IncomingPaymentService {
         } catch {
             logger?.error("Incoming payment \(payment.paymentId) claim stream failed: \(error)")
         }
-        await settle(payment: payment, finalStatus: last)
+        await settle(payment: payment, finalStatus: last, secretIsUsable: true)
     }
 
     func claimStream(
@@ -296,7 +296,14 @@ private extension IncomingPaymentService {
     /// Writes the verdict, wipes the secret, and prompts the user on an unhappy ending. A run that
     /// ended without a verdict (window not yet closed) is left for the next launch to resume — as is
     /// one whose verdict failed to persist, so the secret stays and the user is told exactly once.
-    func settle(payment: IncomingPayment, finalStatus: IncomingPaymentStatus) async {
+    /// - Parameter secretIsUsable: whether the source secret could actually be read. One that is gone
+    ///   or corrupt is retired whatever the verdict — keeping an entry no launch will ever read helps
+    ///   nobody. A readable one is retired only where the verdict says the funds moved.
+    func settle(
+        payment: IncomingPayment,
+        finalStatus: IncomingPaymentStatus,
+        secretIsUsable: Bool
+    ) async {
         guard let outcome = finalStatus.terminalOutcome else {
             logger?.warning("Incoming payment \(payment.paymentId) ended without a verdict: \(finalStatus)")
             return
@@ -308,7 +315,13 @@ private extension IncomingPaymentService {
             logger?.error("Incoming payment \(payment.paymentId) failed to persist verdict: \(error)")
             return
         }
-        secretStore.remove(groupId: payment.groupId)
+        // A readable secret is retired only by a verdict that says where the funds went. `notClaimed`
+        // says they were never collected — and for a `.coins` source the stored secrets *are* the
+        // money, so removing them here is what turns an uncollected top-up into an unrecoverable one.
+        // Keeping them costs a Keychain entry; a retention sweep can reclaim those once one exists.
+        if !secretIsUsable || outcome != .notClaimed {
+            secretStore.remove(groupId: payment.groupId)
+        }
 
         await acknowledge(payment: payment, outcome: outcome)
     }
@@ -341,7 +354,9 @@ private extension IncomingPaymentService {
             )
             let status = IncomingPaymentStatus(detection: detection)
             await paymentContext.report(status, for: payment.groupId)
-            await settle(payment: payment, finalStatus: status)
+            // The secret is gone or corrupt — that is why this path was taken — so it is retired with
+            // the verdict whatever that verdict is.
+            await settle(payment: payment, finalStatus: status, secretIsUsable: false)
         } catch {
             logger?.error("Incoming payment \(payment.paymentId) group unobservable; left for next launch: \(error)")
         }

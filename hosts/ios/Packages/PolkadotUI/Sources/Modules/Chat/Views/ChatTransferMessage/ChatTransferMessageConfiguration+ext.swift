@@ -8,7 +8,7 @@ public extension ChatTransferMessageConfiguration {
         assetIcon: UIImage? = nil,
         originalAmount: String? = nil,
         from username: String,
-        state: ChatTransferMessageConfiguration.State,
+        state: ChatTransferMessageConfiguration.IncomingState,
         statusConfiguration: ChatMessageStatusViewConfiguration,
         addReaction: ChatMessageContainerConfiguration.AddReactionViewModel? = nil,
         messageReaction: ChatMessageContainerConfiguration.MessageReactionViewModel? = nil
@@ -45,7 +45,7 @@ public extension ChatTransferMessageConfiguration {
         tokenSymbol: String,
         assetIcon: UIImage? = nil,
         originalAmount: String? = nil,
-        state: ChatTransferMessageConfiguration.State,
+        state: ChatTransferMessageConfiguration.OutgoingState,
         statusConfiguration: ChatMessageStatusViewConfiguration,
         addReaction: ChatMessageContainerConfiguration.AddReactionViewModel? = nil,
         messageReaction: ChatMessageContainerConfiguration.MessageReactionViewModel? = nil
@@ -78,15 +78,13 @@ public extension ChatTransferMessageConfiguration {
     }
 }
 
-private extension ChatTransferMessageConfiguration.State {
+private extension ChatTransferMessageConfiguration.IncomingState {
     func inboxTitle(username: String) -> String {
         switch self {
-        case .finished,
-             .sent,
-             .partiallyClaimed,
-             .error:
+        case .claimed,
+             .failed:
             String(localized: .chatTransferInbox(username: username))
-        case .processing,
+        case .detecting,
              .claiming:
             String(localized: .chatTransferInboxSending(username: username))
         }

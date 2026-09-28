@@ -308,13 +308,26 @@ struct IncomingPaymentServiceTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func settleWipesSourceSecret() async throws {
+    func notClaimedKeepsAReadableSourceSecret() async throws {
         let rig = makeDrivingService(detections: [.notClaimed])
 
         #expect(rig.secretStore.hasDescriptor(for: "top up:prod:p"))
 
         rig.service.setup(with: Self.denomination)
         try await waitUntil { rig.store.payment(for: "top up:prod:p")?.outcome == .notClaimed }
+        rig.service.throttle()
+
+        #expect(rig.secretStore.hasDescriptor(for: "top up:prod:p"))
+        #expect(rig.secretStore.removedGroupIds().isEmpty)
+    }
+
+    /// The other half of the same rule: a verdict that says where the funds went does retire the key.
+    @Test(.timeLimit(.minutes(1)))
+    func settleWipesSourceSecretOnceClaimed() async throws {
+        let rig = makeDrivingService(detections: [.claimed(amount: 100, finalized: true)])
+
+        rig.service.setup(with: Self.denomination)
+        try await waitUntil { rig.store.payment(for: "top up:prod:p")?.outcome == .claimed }
         rig.service.throttle()
 
         #expect(!rig.secretStore.hasDescriptor(for: "top up:prod:p"))

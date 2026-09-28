@@ -51,8 +51,7 @@ final class LocalMessageCreatingOperationFactory: LocalMessageCreatingOperationM
     ) -> Chat.LocalMessage {
         let content = Chat.LocalMessage.Content.Transfer(
             totalValue: memo.totalValue,
-            coinKeys: memo.entries,
-            status: nil
+            coinKeys: memo.entries
         )
 
         return Chat.LocalMessage.newMessage(

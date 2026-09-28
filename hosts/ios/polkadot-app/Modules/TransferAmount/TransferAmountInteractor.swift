@@ -77,7 +77,7 @@ extension TransferAmountInteractor: TransferAmountInteractorInputProtocol {
         accountId
     }
 
-    func lifecycleStream() -> AnyAsyncSequence<ClaimStatus> {
+    func lifecycleStream() -> AnyAsyncSequence<OutgoingTransferState> {
         lifecycleReporter.makeStream()
     }
 

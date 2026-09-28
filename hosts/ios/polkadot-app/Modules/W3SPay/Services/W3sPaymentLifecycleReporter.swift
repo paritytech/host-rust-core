@@ -5,7 +5,7 @@ import Foundation
 /// Streams the lifecycle of a single W3S payment by observing its persisted record.
 ///
 /// The record is the single source of truth: ``W3sPaymentTrackingService`` advances
-/// the persisted status while this reporter only projects it into ``ClaimStatus``
+/// the persisted status while this reporter only projects it into ``OutgoingTransferState``
 /// for the transfer screen. `start(with:)` is a no-op — tracking is driven by the
 /// app-level service, not by the screen.
 final class W3sPaymentLifecycleReporter: TransferLifecycleReporting {
@@ -17,15 +17,15 @@ final class W3sPaymentLifecycleReporter: TransferLifecycleReporting {
         self.paymentId = paymentId
     }
 
-    func makeStream() -> AnyAsyncSequence<ClaimStatus> {
+    func makeStream() -> AnyAsyncSequence<OutgoingTransferState> {
         let source = historyStore.observeRecord(paymentId: paymentId)
 
-        return AsyncStream<ClaimStatus> { continuation in
+        return AsyncStream<OutgoingTransferState> { continuation in
             let task = Task {
-                var lastStatus: ClaimStatus?
+                var lastStatus: OutgoingTransferState?
                 do {
                     for try await record in source {
-                        guard let status = record?.claimStatus, status != lastStatus else {
+                        guard let status = record?.transferState, status != lastStatus else {
                             continue
                         }
                         lastStatus = status
@@ -46,18 +46,18 @@ final class W3sPaymentLifecycleReporter: TransferLifecycleReporting {
 }
 
 private extension W3sPaymentRecord {
-    var claimStatus: ClaimStatus {
+    var transferState: OutgoingTransferState {
         switch status {
         case .pending,
              .submitted:
-            .detecting
+            OutgoingTransferState(status: .sending)
         case .sent:
-            .sent
+            OutgoingTransferState(status: .sent)
         case .claimed:
-            .finished(claimedAmount: memo.totalValue)
+            OutgoingTransferState(status: .claimed, actualValue: memo.totalValue)
         case .failed,
              .revoked:
-            .error
+            OutgoingTransferState(status: .failed)
         }
     }
 }

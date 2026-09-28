@@ -16,7 +16,6 @@ extension ServiceCoordinator {
         personDataStore: DetermineStatePersonDataStore,
         syncService: DetermineStateSyncServicing,
         personhoodRegistrationService: PersonhoodRegistrationServicing,
-        claimStatusStore: ClaimStatusStore,
         audioSessionManager: AudioSessionManaging,
         spaFlowState: SPAFlowState,
         productFileProvider: any ChatProductFileProviding
@@ -59,7 +58,6 @@ extension ServiceCoordinator {
                 personDataStore: personDataStore,
                 syncService: syncService,
                 personhoodRegistrationService: personhoodRegistrationService,
-                claimStatusStore: claimStatusStore,
                 productBotProvider: productBotProvider,
                 audioSessionManager: audioSessionManager
             )

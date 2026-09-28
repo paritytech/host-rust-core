@@ -318,14 +318,10 @@ private extension OffboardVouchersForPaymentService {
     func allocateSurplusVouchers(surplus: Balance) async throws -> [Voucher] {
         guard surplus > 0 else { return [] }
 
-        guard let surplusDecimal = Decimal.fromSubstrateAmount(
-            surplus,
-            precision: denominationContext.precision
-        ) else {
-            return []
-        }
-
-        let denominations = denominationContext.breakdown(amount: surplusDecimal)
+        // Broken down in planks: the surplus is already one, and the round trip through `Decimal`
+        // does not survive `toSubstrateAmount` intact — $0.07 at precision 18 comes back ten planks
+        // heavy, which the breakdown then cannot place.
+        let denominations = try denominationContext.breakdown(amountInPlanks: surplus)
         return try await voucherMinter.mintVouchers(denominations.map(\.exponent))
     }
 }

@@ -25,12 +25,16 @@ protocol CoinageRebuild: Sendable {
     /// `nil` when `params` cannot be read, which makes the transaction unbuildable.
     func terms(of params: Data) -> RebuildTerms?
 
-    /// Transactions that cannot be resolved are left out, and given up on: nothing the ledger records
-    /// will change, so waiting would be waiting for ever.
+    /// Transactions this leaves out are given up on: nothing the ledger records will change, so waiting
+    /// would be waiting for ever.
+    ///
+    /// A store that cannot be *read* is a different thing entirely and must throw. Returning nothing
+    /// there would make an unavailable store indistinguishable from an unbuildable transaction, and
+    /// terminally fail a leg whose memo the recipient already holds — a failed read is never a verdict.
     func resolve(
         _ transactions: [ScheduledDurableTx],
         assets: [CoinageTxId: CoinageTxEntry]
-    ) async -> [CoinageTxId: Transaction]
+    ) async throws -> [CoinageTxId: Transaction]
 
     func inputs(of transaction: Transaction) -> Set<InputKey>
 

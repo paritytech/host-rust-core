@@ -9,6 +9,7 @@ final class MockRemoteConfigManager: RemoteConfigManaging {
     var errorToThrow: Error?
     var collectiblesEnabled = false
     var txExtensionVersions: [ChainModel.Id: UInt8] = [:]
+    var hangs = false
     var remoteConfig = RemoteAppConfig(
         identityBackendUrl: URL(string: "https://polkadot-app-stg.parity.io/"),
         ipfsGatewayUrl: nil,
@@ -25,6 +26,9 @@ final class MockRemoteConfigManager: RemoteConfigManaging {
     func fetchRemoteConfigValues() {}
 
     func asyncWaitRemoteConfig() async throws -> RemoteAppConfig {
+        if hangs {
+            try await Task.sleep(for: .seconds(10_000))
+        }
         if let error = errorToThrow {
             throw error
         }

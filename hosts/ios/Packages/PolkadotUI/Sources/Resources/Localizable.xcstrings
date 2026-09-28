@@ -1587,17 +1587,6 @@
         }
       }
     },
-    "transfer.status.partially.claimed" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Partially claimed"
-          }
-        }
-      }
-    },
     "transfer.status.sending" : {
       "extractionState" : "manual",
       "localizations" : {

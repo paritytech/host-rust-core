@@ -3,6 +3,10 @@
 <plist version="1.0">
 <dict>
 	<key>_XCCurrentVersionName</key>
-	<string>UserDataModel51.xcdatamodel</string>
+<<<<<<< HEAD
+	<string>UserDataModel53.xcdatamodel</string>
+=======
+	<string>UserDataModel53.xcdatamodel</string>
+>>>>>>> origin/main
 </dict>
 </plist>

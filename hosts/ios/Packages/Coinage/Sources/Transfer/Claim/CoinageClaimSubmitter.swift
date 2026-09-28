@@ -23,8 +23,16 @@ struct ClaimableCoin {
 /// the durability layer under one `groupId` so the whole claim group is recorded or none of it is.
 ///
 /// The peer's key is a `Received` input — never a local asset — so the ledger holds it against exactly
-/// one non-failure claim without us ever minting it. A retry after a `FAILURE` is safe: the failed
-/// entry released its claim, so a fresh attempt mints a new destination and registers again.
+/// one non-failure claim without us ever minting it.
+///
+/// One registration per coin, for the life of the message. Retries belong to the submission policy,
+/// which rebuilds into the destination this claim recorded — a retry minting a fresh destination would
+/// strand any payment already registered against the first.
+///
+/// The store *would* permit a fresh registration once an entry reaches `FAILURE` (`filterClaimed`
+/// excludes failed entries for exactly that reason), but nothing issues one: the claim loop counts a
+/// failed entry as a coin already registered. So a coin whose policy has given up is not recoverable
+/// in-app, and its secret stays in the chat row.
 protocol CoinageClaimSubmitting: Sendable {
     /// Registers one claim per coin and returns once registration commits — not settlement. Status is
     /// observed via ``CoinageTxServicing/subscribeOperationGroupStatuses(_:)`` for `groupId`.

@@ -8,8 +8,8 @@ import io.paritytech.polkadotapp.common.data.network.TestnetEnvironment
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.HostApiInteractor
 import kotlinx.coroutines.flow.first
 import uniffi.truapi.ChainIdentifier
-import uniffi.truapi_platform.HostChainEntry
-import uniffi.truapi_platform.HostChainSet
+import uniffi.truapi.HostChainEntry
+import uniffi.truapi.HostChainSet
 import javax.inject.Inject
 
 /**
