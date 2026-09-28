@@ -36,7 +36,6 @@ struct PocketPreviewLoader {
 
     private let archive: any PocketArchiveReading
     private let fetch: @Sendable (URL, Int) async throws -> Data
-    private let decoder = RendererNodeJsonDecoder()
 
     init(archive: any PocketArchiveReading, fetch: @escaping @Sendable (URL, Int) async throws -> Data) {
         self.archive = archive
@@ -56,7 +55,7 @@ struct PocketPreviewLoader {
         guard data.count <= Self.maxBytes else { throw PocketPreviewError.tooLarge(bytes: data.count) }
         guard let json = String(data: data, encoding: .utf8) else { throw PocketPreviewError.notReadable }
 
-        return try decoder.decode(json)
+        return try parseRendererNodeJson(json: json)
     }
 
     private func fetched(_ url: String) async throws -> Data {

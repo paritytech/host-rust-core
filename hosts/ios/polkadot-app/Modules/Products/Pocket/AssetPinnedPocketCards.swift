@@ -28,7 +28,6 @@ struct AssetPinnedPocketCards: PinnedPocketCards {
     ]
 
     private let tld: String
-    private let decoder = RendererNodeJsonDecoder()
 
     init(tld: String) {
         self.tld = tld
@@ -55,6 +54,6 @@ struct AssetPinnedPocketCards: PinnedPocketCards {
             return nil
         }
 
-        return try? decoder.decode(json)
+        return try? parseRendererNodeJson(json: json)
     }
 }

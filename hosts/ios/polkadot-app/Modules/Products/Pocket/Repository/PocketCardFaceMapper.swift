@@ -2,12 +2,14 @@ import CoreData
 import Operation_iOS
 import Products
 
-/// The newest face held for a card, as the text the renderer decoder reads.
+/// The newest face held for a card, in the encoding the tree already travels
+/// in, so the host keeps exactly what the protocol defines and nothing of its
+/// own invention.
 /// Kept apart from membership so a host-placed card, which has no membership
 /// row, still keeps the face its product last drew.
 struct StoredPocketCardFace: Identifiable, Equatable {
     let key: PocketCardKey
-    let faceJson: String
+    let face: Data
 
     var identifier: String { key.storageId }
     var id: String { identifier }
@@ -32,13 +34,13 @@ extension PocketCardFaceMapper: CoreDataMapperProtocol {
             throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDPocketCardFace.cardId))
         }
 
-        guard let faceJson = entity.faceJson else {
-            throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDPocketCardFace.faceJson))
+        guard let face = entity.face else {
+            throw CoreDataMapperError.missingRequiredData(keyPath: #keyPath(CDPocketCardFace.face))
         }
 
         return StoredPocketCardFace(
             key: PocketCardKey(productId: productId, cardId: PocketCardId(value: cardId)),
-            faceJson: faceJson
+            face: face
         )
     }
 
@@ -46,6 +48,6 @@ extension PocketCardFaceMapper: CoreDataMapperProtocol {
         entity.identifier = model.identifier
         entity.productId = model.key.productId
         entity.cardId = model.key.cardId.value
-        entity.faceJson = model.faceJson
+        entity.face = model.face
     }
 }

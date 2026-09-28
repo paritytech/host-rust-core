@@ -15,11 +15,9 @@ import Testing
 /// node for node, and `candidate` is the large one. Keeping the identical three
 /// would add pages of fixture and no coverage.
 struct PocketFaceConformanceTests {
-    private let decoder = RendererNodeJsonDecoder()
-
     @Test(arguments: ["devicehood", "candidate"])
-    func decodesAndDrawsAPublishedFace(_ name: String) throws {
-        let face = try decoder.decode(faceText(name))
+    func readsAndDrawsAPublishedFace(_ name: String) throws {
+        let face = try parseRendererNodeJson(json: faceText(name))
 
         // Drawn as well as decoded: a tree the mapper drops would still decode.
         #expect(face.toWidgetNode(resolver: WidgetDesignTokenResolver()) != nil)

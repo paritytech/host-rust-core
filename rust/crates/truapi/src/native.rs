@@ -29,12 +29,13 @@ use crate::platform::{
     RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait,
 };
+use serde::Deserialize;
 use futures::channel::mpsc;
 use futures::executor::ThreadPool;
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
-use parity_scale_codec::Encode;
+use parity_scale_codec::{DecodeLimit, Encode};
 use truapi::{Bytes32, latest::HostPlatform, v01};
 
 use crate::host_internal::permissions::TemporaryPermissions;
@@ -196,6 +197,24 @@ pub enum NativeRuntimeConfigError {
     },
 }
 
+/// Rejection of a card face, read from its declared JSON or from the bytes a
+/// host kept.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, uniffi::Error)]
+pub enum NativeRendererError {
+    /// The text is not a renderer tree in the shape the protocol describes.
+    #[error("{reason}")]
+    Malformed {
+        /// Why the text could not be read.
+        reason: String,
+    },
+    /// The tree nests deeper than any host will draw.
+    #[error("renderer tree nests deeper than {limit} levels")]
+    TooDeep {
+        /// Largest accepted nesting.
+        limit: u32,
+    },
+}
+
 /// Rejection of a product-supplied chat field, value-shaped for UniFFI.
 ///
 /// [`ChatFieldError`] names its field with a `&'static str`, which has no
@@ -309,6 +328,129 @@ impl TryFrom<ProductExecutionConfig> for ProductContext {
 #[uniffi::export]
 pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
+}
+
+/// Largest nesting a face may carry, matching what the core accepts on the
+/// renderer subscription. A host with a shallower bound would draw a live face
+/// it could not read back.
+const MAX_FACE_DEPTH: u32 = 64;
+
+/// Bracket nesting a face of [`MAX_FACE_DEPTH`] renderer levels can reach. One
+/// level spends a few brackets on its object, its value and its children, so
+/// this is generous on purpose: it guards the stack, while `MAX_FACE_DEPTH` is
+/// what actually decides whether a face is drawable.
+const MAX_FACE_JSON_NESTING: u32 = MAX_FACE_DEPTH * 8;
+
+/// Read a product-declared card face: a `RendererNode` tree in the JSON shape
+/// the generated TypeScript client describes.
+///
+/// Hosts call this rather than parsing the shape themselves. It is a protocol
+/// format, so a host that reads it its own way disagrees with the other hosts
+/// about which faces are drawable, and about how deep one may nest.
+#[uniffi::export]
+pub fn parse_renderer_node_json(json: String) -> Result<v01::RendererNode, NativeRendererError> {
+    // Bounded before it is parsed, not after: serde_json recurses as it reads,
+    // so a tree built to exhaust the stack would do so before any check on the
+    // value it produced. Counting brackets needs no recursion at all.
+    if json_nesting_exceeds(&json, MAX_FACE_JSON_NESTING) {
+        return Err(NativeRendererError::TooDeep {
+            limit: MAX_FACE_DEPTH,
+        });
+    }
+
+    // With the text bounded above, the reader's own limit would only impose a
+    // second, stricter bound in JSON levels rather than in renderer levels.
+    let mut reader = serde_json::Deserializer::from_str(&json);
+    reader.disable_recursion_limit();
+    let node = v01::RendererNode::deserialize(&mut reader).map_err(|error| {
+        NativeRendererError::Malformed {
+            reason: error.to_string(),
+        }
+    })?;
+
+    match node_depth(&node, MAX_FACE_DEPTH) {
+        Some(_) => Ok(node),
+        None => Err(NativeRendererError::TooDeep {
+            limit: MAX_FACE_DEPTH,
+        }),
+    }
+}
+
+/// Whether `json` nests deeper than `limit` braces or brackets, ignoring the
+/// ones inside strings. Iterative, so measuring a hostile tree costs no stack.
+fn json_nesting_exceeds(json: &str, limit: u32) -> bool {
+    let (mut depth, mut in_string, mut escaped) = (0u32, false, false);
+
+    for byte in json.bytes() {
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > limit {
+                    return true;
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    false
+}
+
+/// Depth of `node`, or `None` once it passes `remaining`. Bounded rather than
+/// measured, so a tree built to exhaust the stack is refused before it does.
+fn node_depth(node: &v01::RendererNode, remaining: u32) -> Option<u32> {
+    if remaining == 0 {
+        return None;
+    }
+
+    let children: &[v01::RendererNode] = match node {
+        v01::RendererNode::Box { children, .. }
+        | v01::RendererNode::Column { children, .. }
+        | v01::RendererNode::Row { children, .. }
+        | v01::RendererNode::Text { children, .. }
+        | v01::RendererNode::Button { children, .. }
+        | v01::RendererNode::Effect { children, .. } => children,
+        _ => &[],
+    };
+
+    let deepest = children
+        .iter()
+        .map(|child| node_depth(child, remaining - 1))
+        .try_fold(0, |deepest: u32, depth| depth.map(|d| deepest.max(d)))?;
+
+    Some(deepest + 1)
+}
+
+/// The bytes to keep a face under, so it can be drawn again at a cold start.
+///
+/// SCALE, the encoding the tree already travels in, rather than a shape a host
+/// invents for its own store: a host that writes its own cannot read back what
+/// the protocol later adds, and two hosts disagree about what they kept.
+#[uniffi::export]
+pub fn encode_renderer_node(node: v01::RendererNode) -> Vec<u8> {
+    node.encode()
+}
+
+/// Read back a face kept as [`encode_renderer_node`] wrote it.
+#[uniffi::export]
+pub fn decode_renderer_node(bytes: Vec<u8>) -> Result<v01::RendererNode, NativeRendererError> {
+    v01::RendererNode::decode_with_depth_limit(MAX_FACE_DEPTH, &mut bytes.as_slice()).map_err(
+        |error| NativeRendererError::Malformed {
+            reason: error.to_string(),
+        },
+    )
 }
 
 /// Screen a product-supplied Pocket card id with the rules every Pocket call
@@ -2436,6 +2578,65 @@ mod tests {
     use truapi::v01::LegacyAccountTxPayload;
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
+
+    /// A face kept and read back is the same face, so a card draws at a cold
+    /// start exactly as its product last drew it.
+    #[test]
+    fn a_kept_face_reads_back_as_itself() {
+        let json = std::fs::read_to_string(format!(
+            "{}/tests/fixtures/pocket_faces/devicehood.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("fixture");
+        let face = parse_renderer_node_json(json).expect("fixture reads");
+
+        let kept = encode_renderer_node(face.clone());
+
+        assert_eq!(decode_renderer_node(kept).expect("reads back"), face);
+    }
+
+    /// A face a real product ships, kept here as well as in the iOS host so the
+    /// reader is measured against the protocol shape rather than against what
+    /// this code happens to accept. One is enough for that; the hosts keep the
+    /// rest of the conformance set.
+    #[test]
+    fn reads_the_card_faces_the_hosts_conform_to() {
+        for name in ["devicehood"] {
+            let json = std::fs::read_to_string(format!(
+                "{}/tests/fixtures/pocket_faces/{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect("fixture");
+
+            let node = parse_renderer_node_json(json).unwrap_or_else(|error| {
+                panic!("{name} must read as a renderer tree: {error}")
+            });
+            assert!(matches!(node, v01::RendererNode::Column { .. }), "{name}");
+        }
+    }
+
+    /// A face deeper than the core will carry is refused rather than half-read,
+    /// so no host draws one it could not read back.
+    #[test]
+    fn refuses_a_face_deeper_than_the_core_carries() {
+        let nest = |depth: usize| {
+            let mut json = String::new();
+            for _ in 0..depth {
+                json.push_str(r#"{"tag":"Box","value":{"modifiers":[],"props":{},"children":["#);
+            }
+            json.push_str(r#"{"tag":"Nil"}"#);
+            for _ in 0..depth {
+                json.push_str("]}}");
+            }
+            json
+        };
+
+        assert!(parse_renderer_node_json(nest(MAX_FACE_DEPTH as usize - 1)).is_ok());
+        assert!(matches!(
+            parse_renderer_node_json(nest(MAX_FACE_DEPTH as usize + 1)),
+            Err(NativeRendererError::TooDeep { .. })
+        ));
+    }
 
     /// A title is drawn and an id is addressed, so they cannot share one rule:
     /// the emoji below carries a variation selector, which an id may not.

@@ -246,7 +246,7 @@
     </entity>
     <entity name="CDPocketCardFace" representedClassName="CDPocketCardFace" syncable="YES" codeGenerationType="class">
         <attribute name="cardId" attributeType="String"/>
-        <attribute name="faceJson" attributeType="String"/>
+        <attribute name="face" attributeType="Binary"/>
         <attribute name="identifier" attributeType="String"/>
         <attribute name="productId" attributeType="String"/>
     </entity>

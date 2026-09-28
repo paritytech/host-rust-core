@@ -14,8 +14,6 @@ import TrUAPIHost
 final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Sendable {
     private let cardRepository: AnyDataProviderRepository<StoredPocketCard>
     private let faceRepository: AnyDataProviderRepository<StoredPocketCardFace>
-    private let decoder = RendererNodeJsonDecoder()
-    private let encoder = RendererNodeJsonEncoder()
     private let logger: LoggerProtocol
 
     init(
@@ -84,7 +82,7 @@ final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Senda
                 return nil
             }
 
-            return try decoder.decode(stored.faceJson)
+            return try decodeRendererNode(bytes: stored.face)
         } catch {
             logger.warning("pocket: the kept face for '\(key.storageId)' no longer reads: \(error)")
             return nil
@@ -93,7 +91,7 @@ final class CoreDataPocketCardRepository: PocketCardRepository, @unchecked Senda
 
     func saveFace(_ face: RendererNode, for key: PocketCardKey) async {
         do {
-            let stored = try StoredPocketCardFace(key: key, faceJson: encoder.encode(face))
+            let stored = StoredPocketCardFace(key: key, face: encodeRendererNode(node: face))
             try await faceRepository.saveOperation({ [stored] }, { [] }).asyncExecute()
         } catch {
             logger.warning("pocket: the newest face for '\(key.storageId)' could not be kept: \(error)")

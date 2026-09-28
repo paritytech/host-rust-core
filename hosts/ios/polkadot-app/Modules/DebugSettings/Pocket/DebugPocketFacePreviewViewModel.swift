@@ -4,6 +4,7 @@
     import Observation
     import PolkadotUI
     import Products
+    import TrUAPIHost
 
     /// Fetches one face file and draws it, with nothing else in the way.
     ///
@@ -19,7 +20,6 @@
         private(set) var isLoading = false
 
         private let fetch: @Sendable (URL, Int) async throws -> Data
-        private let decoder = RendererNodeJsonDecoder()
         private let resolver: any WidgetDesignTokenResolving
 
         init(
@@ -42,9 +42,9 @@
             do {
                 let data = try await fetch(address, PocketPreviewLoader.maxBytes)
                 guard let json = String(bytes: data, encoding: .utf8) else {
-                    throw RendererNodeJsonError.notUtf8
+                    throw DebugPocketFacePreviewError.notUtf8
                 }
-                face = try decoder.decode(json).toWidgetNode(resolver: resolver)
+                face = try parseRendererNodeJson(json: json).toWidgetNode(resolver: resolver)
                 refusal = nil
             } catch {
                 show(refusal: "\(error)")
@@ -55,6 +55,14 @@
             refusal = message
             face = nil
         }
+    }
+
+    /// The one refusal this screen owns. Everything else it shows comes from
+    /// the core reading the face.
+    enum DebugPocketFacePreviewError: Error, CustomStringConvertible {
+        case notUtf8
+
+        var description: String { "the file is not UTF-8" }
     }
 
 #endif
