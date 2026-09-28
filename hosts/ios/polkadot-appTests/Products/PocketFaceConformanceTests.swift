@@ -1,7 +1,7 @@
 import Foundation
 import PolkadotUI
-import TrUAPIHost
 import Testing
+import TrUAPIHost
 @testable import polkadot_app
 
 /// The faces a real product ships, decoded and drawn through the same path a
@@ -11,16 +11,22 @@ import Testing
 /// protocol on the product side, so a failure here is unambiguous: the defect
 /// is this host's, not the file's.
 ///
-/// Two of the five it writes: `devicehood` is the shape the other three share
-/// node for node, and `candidate` is the large one. Keeping the identical three
-/// would add pages of fixture and no coverage.
+/// Two of the nine it writes: `devicehood` is the shape most of the others
+/// share node for node, and `candidate` is the large one. Keeping the identical
+/// ones would add pages of fixture and no coverage.
+@MainActor
 struct PocketFaceConformanceTests {
     @Test(arguments: ["devicehood", "candidate"])
     func readsAndDrawsAPublishedFace(_ name: String) throws {
         let face = try parseRendererNodeJson(json: faceText(name))
+        let drawn = try #require(face.toWidgetNode(resolver: WidgetDesignTokenResolver()))
 
-        // Drawn as well as decoded: a tree the mapper drops would still decode.
-        #expect(face.toWidgetNode(resolver: WidgetDesignTokenResolver()) != nil)
+        // Drawn to pixels, not just mapped: these faces build their surface out
+        // of nodes sized only by their own modifiers, which map to a full tree
+        // and can still reach the screen as one flat fill.
+        let share = try WidgetNodeRaster.largestShare(of: drawn, in: cardSize)
+
+        #expect(share < 0.9)
     }
 
     /// The bound the approval sheet applies, checked against the largest face a
@@ -31,6 +37,10 @@ struct PocketFaceConformanceTests {
         let bytes = try faceData("candidate").count
 
         #expect(bytes < PocketPreviewLoader.maxBytes / 2)
+    }
+
+    private var cardSize: CGSize {
+        CGSize(width: 345, height: PocketCardSize.height)
     }
 
     private func faceData(_ name: String) throws -> Data {

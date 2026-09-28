@@ -12,12 +12,14 @@ extension View {
         self
             // 1. Inner padding
             .padding(modifiers.padding)
-            // 2. Background color + clip
-            .modifier(NodeBackgroundModifier(background: modifiers.background))
-            // 3. Border overlay
-            .modifier(NodeBorderModifier(border: modifiers.border))
-            // 4. Frame constraints (size / fill)
+            // 2. Frame constraints (size / fill), before anything that paints:
+            // a background sizes to what it is given, so painting first leaves
+            // a node that takes its size from here with nothing behind it.
             .modifier(NodeFrameModifier(modifiers: modifiers, alignment: alignment))
+            // 3. Background color + clip
+            .modifier(NodeBackgroundModifier(background: modifiers.background))
+            // 4. Border overlay
+            .modifier(NodeBorderModifier(border: modifiers.border))
             // 5. Compositing, over the node and its background but under the margin
             .modifier(NodeCompositingModifier(modifiers: modifiers))
             // 6. Outer margin
