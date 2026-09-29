@@ -273,7 +273,7 @@ persisted even when every dial waiting on it has given up.
 
 The browser core keeps the trait's `NotGranted` defaults, because its
 JavaScript session answers trait 111 before frames reach the core.
-`cargo test -p truapi-server --test live_jam_public_devnet -- --include-ignored`
+`cargo test -p truapi --features mock --test live_jam_public_devnet -- --include-ignored`
 dials the public JAM devnet through a product runtime.
 
 ### The two roles

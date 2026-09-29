@@ -6206,7 +6206,11 @@ dependencies = [
  "nanoid",
  "parity-scale-codec",
  "parking_lot",
+ "quinn",
  "rand 0.8.7",
+ "rcgen",
+ "ring",
+ "rustls",
  "scale-decode",
  "scale-info",
  "schnorrkel",
@@ -6239,6 +6243,7 @@ dependencies = [
  "web-sys",
  "web-time",
  "x25519-dalek",
+ "x509-parser 0.17.0",
  "zeroize",
 ]
 
