@@ -365,15 +365,15 @@ impl SigningHost {
         &self,
         product_id: &str,
     ) -> Result<Option<[u8; 32]>, AuthorityError> {
-        let Ok(entropy) = self.root_entropy() else {
-            return Ok(None);
-        };
-        let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
         let product_id = normalize_product_identifier(product_id).map_err(|err| {
             AuthorityError::Unavailable {
                 reason: err.to_string(),
             }
         })?;
+        let Ok(entropy) = self.root_entropy() else {
+            return Ok(None);
+        };
+        let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
         let subtree =
             derive_product_subtree_keypair(&root, &product_id).map_err(product_authority_error)?;
         Ok(Some(subtree.public.to_bytes()))
