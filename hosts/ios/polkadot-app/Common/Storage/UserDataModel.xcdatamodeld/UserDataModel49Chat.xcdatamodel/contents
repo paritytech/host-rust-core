@@ -67,28 +67,16 @@
         <attribute name="modifiedAt" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="originKey" optional="YES" attributeType="String"/>
         <attribute name="originType" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
-        <attribute name="order" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="status" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="timestamp" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
         <relationship name="chat" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDChat" inverseName="messages" inverseEntity="CDChat"/>
         <relationship name="chatRequest" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDChatRequest" inverseName="message" inverseEntity="CDChatRequest"/>
         <relationship name="content" optional="YES" maxCount="1" deletionRule="Cascade" destinationEntity="CDMessageContent" inverseName="message" inverseEntity="CDMessageContent"/>
-        <relationship name="incomingTransferState" optional="YES" maxCount="1" deletionRule="Cascade" destinationEntity="CDIncomingTransferState" inverseName="message" inverseEntity="CDIncomingTransferState"/>
         <relationship name="lastDisplayMessageChat" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDChat" inverseName="lastDisplayMessage" inverseEntity="CDChat"/>
-        <relationship name="outgoingTransferState" optional="YES" maxCount="1" deletionRule="Cascade" destinationEntity="CDOutgoingTransferState" inverseName="message" inverseEntity="CDOutgoingTransferState"/>
         <relationship name="reactions" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="CDChatMessageReaction" inverseName="message" inverseEntity="CDChatMessageReaction"/>
         <relationship name="relatedMessages" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="CDChatMessage" inverseName="relatedMessages" inverseEntity="CDChatMessage"/>
         <fetchIndex name="byGroupingIdIndex">
             <fetchIndexElement property="groupingId" type="Binary" order="ascending"/>
-        </fetchIndex>
-        <fetchIndex name="byChatTimestampIndex">
-            <fetchIndexElement property="chat" type="Binary" order="ascending"/>
-            <fetchIndexElement property="timestamp" type="Binary" order="ascending"/>
-        </fetchIndex>
-        <fetchIndex name="byChatOrderTimestampIndex">
-            <fetchIndexElement property="chat" type="Binary" order="ascending"/>
-            <fetchIndexElement property="order" type="Binary" order="ascending"/>
-            <fetchIndexElement property="timestamp" type="Binary" order="ascending"/>
         </fetchIndex>
         <uniquenessConstraints>
             <uniquenessConstraint>
@@ -330,8 +318,6 @@
         <attribute name="mortality" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="sequence" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="status" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
-        <attribute name="submissionPolicyId" optional="YES" attributeType="String"/>
-        <attribute name="submissionPolicyParams" optional="YES" attributeType="Binary"/>
         <attribute name="successHash" optional="YES" attributeType="String"/>
         <attribute name="successNumber" optional="YES" attributeType="Integer 64" usesScalarValueType="NO"/>
         <attribute name="txHash" optional="YES" attributeType="String"/>
@@ -375,17 +361,6 @@
         <relationship name="coin" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDCoin" inverseName="coinageTxOutput" inverseEntity="CDCoin"/>
         <relationship name="entry" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDDurableTx" inverseName="outputs" inverseEntity="CDDurableTx"/>
         <relationship name="voucher" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDVoucher" inverseName="coinageTxOutput" inverseEntity="CDVoucher"/>
-    </entity>
-    <entity name="CDIncomingTransferState" representedClassName="CDIncomingTransferState" syncable="YES" codeGenerationType="class">
-        <attribute name="actualValue" optional="YES" attributeType="String"/>
-        <attribute name="firstAttemptAt" attributeType="Date" usesScalarValueType="NO"/>
-        <attribute name="status" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
-        <relationship name="message" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDChatMessage" inverseName="incomingTransferState" inverseEntity="CDChatMessage"/>
-    </entity>
-    <entity name="CDOutgoingTransferState" representedClassName="CDOutgoingTransferState" syncable="YES" codeGenerationType="class">
-        <attribute name="actualValue" optional="YES" attributeType="String"/>
-        <attribute name="status" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
-        <relationship name="message" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CDChatMessage" inverseName="outgoingTransferState" inverseEntity="CDChatMessage"/>
     </entity>
     <entity name="CDNativeCoinageRecord" representedClassName="NSManagedObject" syncable="YES">
         <attribute name="identifier" attributeType="String"/>
