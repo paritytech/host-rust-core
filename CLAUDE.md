@@ -70,6 +70,9 @@ docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
 scripts/battery.sh         run the generated battery against both headless CLI host roles,
                            plus the Pocket phase a Worker execution serves
+scripts/bundle-size.mjs    measure the JS/WASM of the asset groups given (raw, gzip, brotli);
+                           .github/actions/bundle-size takes them as `assets`, stores
+                           main's snapshot and comments the comparison on PRs
 scripts/refresh-host-import.sh
                            refresh a vendored host tree from its source repository
 scripts/host-papp-fixtures.ts
@@ -177,7 +180,9 @@ scripts/cli-runner-package.test.ts
   with unconsumed changesets on the merge result, including in the merge queue.
   `registry-drift.yml` checks default-branch manifests against npm daily and
   maintains one issue; explicit package-version exceptions live in
-  `.github/registry-drift-exceptions.json`. See `docs/RELEASE_PROCESS.md` for
+  `.github/registry-drift-exceptions.json`. Rust jobs cache through
+  `.github/actions/rust-cache`, which saves only on main so every ref restores
+  main's entries. See `docs/RELEASE_PROCESS.md` for
   label setup and release recovery.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.

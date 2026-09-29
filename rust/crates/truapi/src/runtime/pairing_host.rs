@@ -2154,20 +2154,25 @@ impl PairingHost {
             );
             return Ok(v01::VrfSignature { pre_output, proof });
         }
-        let confirmed = super::until_cancelled(
-            cx,
-            self.platform
-                .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
-                    calling_product_id: calling_product_id.clone(),
-                    request: request.clone(),
-                })),
-        )
-        .await?
-        .map_err(|err| AuthorityError::Unknown {
-            reason: format!("VRF signing confirmation failed: {err:?}"),
-        })?;
-        if !confirmed {
-            return Err(AuthorityError::Rejected);
+        if !super::authority::is_blessed_owner(
+            &calling_product_id,
+            &request.account.dot_ns_identifier,
+        ) {
+            let confirmed = super::until_cancelled(
+                cx,
+                self.platform
+                    .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                        calling_product_id: calling_product_id.clone(),
+                        request: request.clone(),
+                    })),
+            )
+            .await?
+            .map_err(|err| AuthorityError::Unknown {
+                reason: format!("VRF signing confirmation failed: {err:?}"),
+            })?;
+            if !confirmed {
+                return Err(AuthorityError::Rejected);
+            }
         }
         self.remote_sign_vrf(cx, &session, calling_product_id, request)
             .await
@@ -2235,12 +2240,12 @@ impl PairingHost {
                 .local_product_signing_key(&session, calling_product_id, &payload.signer)
                 .await?
         {
-            // A V5 payload this host cannot assemble is an error, not a
+            // A payload this host cannot assemble is an error, not a
             // fall-through to the relay: the gate already told the caller no
             // prompt was coming, and relaying would raise one on the signing
             // host after a chain timeout.
             //
-            // A V5 payload needs runtime metadata, which a granted product
+            // Assembling needs runtime metadata, which a granted product
             // moves from the signing host to this one. A pairing host is
             // assumed to reach any genesis a product it has granted signs
             // against; where it cannot, the call fails rather than producing

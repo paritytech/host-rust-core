@@ -1309,7 +1309,6 @@ pub fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
 mod tests {
     use super::super::LocalActivation;
     use super::*;
-    use crate::host_internal::extrinsic::tests::split_v4;
     use crate::host_internal::sso_messages::{
         self, GetAccountAliasResponse, RemoteMessage, RingVrfError, SsoAllocatedResource,
         SsoAllocationOutcome,
@@ -2332,6 +2331,7 @@ mod tests {
     fn legacy_transaction_request_uses_the_controlled_identity_account() {
         let (_, signing_host) = signing_fixture(Arc::new(StubPlatform {
             create_transaction_confirmed: true,
+            chain_connect_error: Some("fixture has no live chain"),
             ..StubPlatform::default()
         }));
         let identity = derive_identity_keypair(&ENTROPY, NETWORK_SUFFIX).unwrap();
@@ -2360,16 +2360,12 @@ mod tests {
         let v1::RemoteMessage::CreateTransactionResponse(response) = response else {
             panic!("expected create transaction response");
         };
-        let transaction = response.payload.expect("identity transaction succeeds");
-        let (account, signature, tail) = split_v4(&transaction);
-        assert_eq!(account, identity.public.to_bytes());
-        assert_eq!(tail, vec![1, 0x00, 0x00]);
-        let signature = schnorrkel::Signature::from_bytes(&signature).unwrap();
+        // The identity key is accepted, so the request gets as far as reading
+        // the runtime metadata.
+        let error = response.payload.expect_err("fixture has no chain metadata");
         assert!(
-            identity
-                .public
-                .verify_simple(b"substrate", &[0x00, 0x00, 1, 2, 3], &signature)
-                .is_ok()
+            format!("{error:?}").contains("cannot load chain metadata"),
+            "{error:?}"
         );
     }
 

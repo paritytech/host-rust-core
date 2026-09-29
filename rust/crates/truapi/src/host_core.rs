@@ -735,7 +735,7 @@ impl SigningHostRuntime {
 
     /// Build one product connection with adapters scoped to one native
     /// executable while sharing this runtime's authentication and services.
-    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn product_runtime_with(
         &self,
         product: ProductContext,
@@ -2130,7 +2130,7 @@ mod tests {
     }
 
     #[test]
-    fn network_access_trusted_products_still_honor_explicit_denial() {
+    fn network_access_trusted_products_ignore_recorded_denials() {
         futures::executor::block_on(async {
             let platform = Arc::new(StubPlatform::default());
             let (config, _) = runtime_config("peopl.dot");
@@ -2153,7 +2153,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let denied = admin
+            let after_denial = admin
                 .product_runtime
                 .authorize_remote_permission(&cx, permissions::RemotePermissionRequest::V1(request))
                 .await
@@ -2161,7 +2161,7 @@ mod tests {
             assert_eq!(
                 (
                     allowed,
-                    denied,
+                    after_denial,
                     platform.remote_permission_requests.lock().unwrap().clone(),
                 ),
                 (
@@ -2169,7 +2169,7 @@ mod tests {
                         granted: true
                     }),
                     permissions::RemotePermissionResponse::V1(RemotePermissionResponse {
-                        granted: false
+                        granted: true
                     }),
                     vec![],
                 )
@@ -2680,7 +2680,7 @@ mod tests {
         );
         assert!(
             manifest.contains("[profile.codegen]") && manifest.contains("inherits = \"release\""),
-            "codegen no longer inherits release: recheck what the ws-bridge artifacts build with"
+            "codegen no longer inherits release: recheck what the native artifacts build with"
         );
     }
 

@@ -35,6 +35,9 @@ pub struct EmbeddedChainProviderBuilder {
     /// Where warm-start blobs are read from and written back to.
     #[cfg(feature = "smoldot")]
     storage: Option<std::sync::Arc<dyn crate::storage::StorageClient>>,
+    /// The peer connections the browser light client opens.
+    #[cfg(feature = "smoldot")]
+    connection_types: crate::connection_types::ConnectionTypes,
 }
 
 impl core::fmt::Debug for EmbeddedChainProviderBuilder {
@@ -45,7 +48,8 @@ impl core::fmt::Debug for EmbeddedChainProviderBuilder {
         builder
             .field("relays", &self.relays)
             .field("seeded_databases", &self.seeded_databases)
-            .field("storage", &self.storage.is_some());
+            .field("storage", &self.storage.is_some())
+            .field("connection_types", &self.connection_types);
         builder.finish()
     }
 }
@@ -103,6 +107,13 @@ impl EmbeddedChainProviderBuilder {
         self
     }
 
+    /// Limit the kinds of connection the browser light client opens to peers.
+    #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
+    pub fn connection_types(mut self, connection_types: crate::ConnectionTypes) -> Self {
+        self.connection_types = connection_types;
+        self
+    }
+
     /// Build the provider. Light-client resources start lazily on the first
     /// light-client connect.
     pub fn build(self) -> EmbeddedChainProvider {
@@ -117,7 +128,7 @@ impl EmbeddedChainProviderBuilder {
             #[cfg(feature = "smoldot")]
             stored_quality: Mutex::new(HashMap::new()),
             #[cfg(feature = "smoldot")]
-            light: crate::light::LightState::new(),
+            light: crate::light::LightState::new(self.connection_types),
         }
     }
 }
@@ -266,6 +277,33 @@ impl EmbeddedChainProvider {
     /// connection asked for it or a parachain brought it up as its relay.
     pub fn is_connected(&self, genesis_hash: [u8; 32]) -> bool {
         self.light.is_added(genesis_hash)
+    }
+
+    /// Watch what the embedded light client is doing on `genesis_hash`: the
+    /// first item is the current state, then one item per change. The stream
+    /// ends when the client stops running the chain.
+    ///
+    /// Fails when the client is not running the chain, so connect first. A
+    /// relay a parachain brought up counts as running, and is the chain whose
+    /// warp sync progress a parachain waits on; see [`relay_of`](Self::relay_of).
+    pub fn lifecycle(
+        &self,
+        genesis_hash: [u8; 32],
+    ) -> Result<futures::stream::BoxStream<'static, crate::ChainLifecycle>, ProviderError> {
+        use futures::stream::{self, StreamExt};
+
+        let subscription = self
+            .light
+            .lifecycle(genesis_hash)
+            .ok_or(ProviderError::NotRunning {
+                genesis: genesis_hash,
+            })?;
+        Ok(stream::unfold(subscription, |mut subscription| async move {
+            let state = subscription.next().await?;
+            Some((state.into(), subscription))
+        })
+        .fuse()
+        .boxed())
     }
 
     /// The relay `genesis_hash` syncs through, from the registry or the

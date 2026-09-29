@@ -85,6 +85,10 @@ The [permission model](docs/rfcs/0002-permission-model.md) separates outbound do
 Android permission prompts belong to one request and close when it finishes or is cancelled,
 including cancellation while the app is backgrounded.
 
+The shared Rust core asks blessed products (`peopl`, `dim2` and `stash`,
+on every supported network) only for device permissions and legacy-account signing.
+All other operations it handles bypass permission prompts and recorded decisions.
+
 ## Repository layout
 
 ```
@@ -125,6 +129,7 @@ scripts/refresh-host-import.sh
                            Refresh a vendored host tree from its source repository
 scripts/battery.sh         Run the generated battery against both headless CLI host roles,
                            plus the Pocket phase a Worker execution serves
+scripts/bundle-size.mjs    Measure the JS and WASM the truapi-* packages ship, against a baseline
 ```
 
 Taking a screenshot opens **Report app issue** wherever the shake-opened Debug
@@ -195,7 +200,13 @@ genesis hash, so the host ships no chain specs and never refreshes them. The lig
 client holds at most 32 connections at once and refuses a `connect` past that, so a
 consumer that leaks them fails instead of growing; closing one hands its slot back.
 Connections to a remote node, which only the WASM build compiles, are not counted
-against it. The crate
+against it. A light-client connection holds its requests until the chain first
+syncs and then forwards them in order; chain-spec queries, statement-store and
+Bitswap calls, and the `lifecycle_unstable_*` subscription that reports the sync are forwarded at
+once.
+Every artifact exposes the sync progress of a running chain (phase, peer count,
+stall verdict) as a watch.
+The crate
 compiles to one binary artifact per platform, each exposing the same
 `ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
 dependency on the crate:
@@ -337,6 +348,8 @@ On every platform the bridge also rebinds the port itself when its listening soc
 pausing between failed attempts instead of retrying in a tight loop; other accept errors keep the port.
 When WebKit loses its networking process, every MessagePort a page already holds stops
 delivering; the container detects this after a disconnect and reloads the page.
+On Android, a product whose WebView renderer dies reloads in a fresh WebView with the same
+bootstrap, and a running worker whose renderer dies boots again.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission
@@ -363,6 +376,25 @@ truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id localhost:30
 To run the playground inside a real host instead, start it with `yarn dev` and
 open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
 [`playground/README.md`](playground/README.md) for deployment.
+
+### Bundle size
+
+The `Bundle size` CI job builds the packages and runs
+[`.github/actions/bundle-size`](.github/actions/bundle-size/action.yml) on them.
+The action's `assets` input lists the groups it measures (raw, gzip and
+brotli): the wasm-pack output of the Rust crates (the `@parity/truapi-host` web
+bundle and `@parity/truapi-provider`) and the compiled TypeScript of
+`@parity/truapi` and `@parity/truapi-host`, without
+the test host behind `@parity/truapi-host/testing`. A push to `main` stores the
+measurement as the baseline, and every pull request gets one comment comparing
+with it. A size change never fails the job. To see the same report locally,
+build the assets and pass the job's `assets` list to the script:
+
+```bash
+make wasm
+npm run build --prefix js/packages/truapi-host
+node scripts/bundle-size.mjs --assets "<the job's list>" [--baseline <snapshot.json>]
+```
 
 ### Refreshing a vendored host tree
 

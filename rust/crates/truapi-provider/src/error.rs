@@ -53,6 +53,17 @@ pub enum ProviderError {
         /// The ceiling that was reached.
         limit: usize,
     },
+    /// The embedded light client is not running this chain, so there is no
+    /// lifecycle to watch until something connects to it. A chain served by a
+    /// remote node never has one.
+    #[display(
+        "the light client is not running chain 0x{}; connect to it first, since only light-client chains have a lifecycle",
+        hex::encode(genesis)
+    )]
+    NotRunning {
+        /// The queried genesis hash.
+        genesis: [u8; 32],
+    },
     /// The native WebSocket backend was called without an ambient tokio
     /// runtime to drive its transport.
     #[display("the WebSocket backend requires an ambient tokio runtime")]

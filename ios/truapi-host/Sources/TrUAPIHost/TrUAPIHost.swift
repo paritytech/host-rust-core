@@ -21,7 +21,7 @@ public enum TrUAPIHost {
 }
 
 /// Bootstrap helper for the native localhost WebSocket bridge that a product
-/// execution starts when the cdylib is built with the `ws-bridge` feature.
+/// execution starts.
 public enum LocalhostBridgeBootstrap {
     /// Publishes the WebSocket endpoint for the product's SDK.
     /// Inject at document start, before the container and product scripts.

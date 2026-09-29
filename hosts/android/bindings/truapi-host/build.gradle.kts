@@ -102,7 +102,7 @@ tasks.withType<KotlinCompile>().configureEach {
 }
 
 // Override the convention default (`module = "rust/"`) to point at the
-// external truapi crate, and build it with the localhost WS bridge.
+// external truapi crate.
 cargo {
     module = "$truapiDir/rust/crates/truapi"
     libname = "truapi"
@@ -114,9 +114,6 @@ cargo {
     // workspace target dir, not a crate-local one. Point the plugin there so it
     // can find and copy the per-ABI .so into rustJniLibs.
     targetDirectory = "$truapiDir/target"
-    features {
-        defaultAnd(arrayOf("ws-bridge"))
-    }
 }
 
 // The nightly rustdoc the core's codegen runs on, pinned by date in
@@ -182,7 +179,7 @@ val generateCoreDispatcher by tasks.registering(Exec::class) {
 val buildHostCdylib by tasks.registering(Exec::class) {
     dependsOn(generateCoreDispatcher)
     workingDir = file(truapiDir)
-    commandLine("cargo", "build", "-p", "truapi", "--profile", "codegen", "--features", "ws-bridge")
+    commandLine("cargo", "build", "-p", "truapi", "--profile", "codegen")
     inputs.files(
         fileTree("$truapiDir/rust/crates") { include("**/*.rs", "**/*.js", "**/Cargo.toml") },
         "$truapiDir/Cargo.toml",

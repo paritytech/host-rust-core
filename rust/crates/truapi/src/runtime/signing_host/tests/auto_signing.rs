@@ -1,6 +1,12 @@
-//! An AutoSigning grant waives the per-call confirmation on the signing role.
+//! An AutoSigning grant or a blessed caller waives the per-call confirmation on
+//! the signing role.
 
 use super::*;
+use crate::host_internal::sso_messages::{RemoteMessage, RemoteMessageData, v1};
+use crate::runtime::signing_host::SigningHostSsoService;
+use crate::runtime::sso_service::Dispatch;
+use truapi::versioned::account::HostAccountSignVrfRequest;
+use truapi::versioned::signing::HostSignRawWithLegacyAccountRequest;
 
 /// Allocate an AutoSigning grant for the runtime's own product.
 fn grant_auto_signing(runtime: &ProductRuntimeHost) {
@@ -133,5 +139,101 @@ fn a_grant_does_not_cover_the_unwatermarked_raw_signing_api() {
             .len(),
         1,
         "the unwatermarked API prompts whatever the grant says",
+    );
+}
+
+#[test]
+fn a_blessed_product_signs_its_own_account_without_a_grant() {
+    for (product_id, blessed) in [("dim2.paseo", true), ("app.dim2.paseo", false)] {
+        let platform = granting_platform();
+        let (services, activation) = signing_runtime_with_platform(platform.clone());
+        futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let runtime = product_runtime_for(services, activation, product_id);
+
+        let signed = futures::executor::block_on(
+            runtime.sign_raw(&CallContext::default(), raw_request(product_id)),
+        )
+        .is_ok();
+
+        assert_eq!(
+            (signed, platform.sign_raw_reviews.lock().unwrap().len()),
+            (blessed, usize::from(!blessed)),
+            "{product_id}",
+        );
+    }
+}
+
+/// Only the local runtime vouches for its caller, and only for its own account;
+/// a relayed request can claim any product id.
+#[test]
+fn a_blessed_vrf_signature_skips_the_prompt_only_locally_for_its_own_account() {
+    let platform = granting_platform();
+    let (services, activation) = signing_runtime_with_platform(platform.clone());
+    futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
+        .expect("activation succeeds");
+    let runtime = product_runtime_for(services, activation.clone(), "dim2.paseo");
+    let request = vrf_request("dim2.paseo");
+
+    let sign_locally = |request| {
+        futures::executor::block_on(
+            runtime.sign_vrf(&CallContext::default(), HostAccountSignVrfRequest::V1(request)),
+        )
+        .is_ok()
+    };
+    let own_signed = sign_locally(request.clone());
+    let foreign_signed = sign_locally(vrf_request("other.paseo"));
+    let Dispatch::Response(answer) = futures::executor::block_on(
+        SigningHostSsoService::new(activation).answer(RemoteMessage::request(
+            "relayed-vrf".to_string(),
+            ProductRequest {
+                calling_product_id: "dim2.paseo".to_string(),
+                payload: request,
+            },
+        )),
+    ) else {
+        panic!("expected a VRF response")
+    };
+    let RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(response)) = answer.message.data
+    else {
+        panic!("expected a VRF signing response")
+    };
+
+    assert_eq!(
+        (
+            own_signed,
+            foreign_signed,
+            response.payload.map(|_| ()),
+            platform.sign_vrf_reviews.lock().unwrap().len(),
+        ),
+        (true, false, Err(v01::HostAccountSignVrfError::Rejected), 2),
+    );
+}
+
+/// Legacy accounts sign with the user's own keys, not a product's.
+#[test]
+fn a_blessed_product_still_confirms_legacy_account_signing() {
+    let platform = granting_platform();
+    let (services, activation) = signing_runtime_with_platform(platform.clone());
+    futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
+        .expect("activation succeeds");
+    let runtime = product_runtime_for(services, activation, "dim2.paseo");
+    let identity = derive_identity_keypair(&ENTROPY, TEST_NETWORK_SUFFIX).unwrap();
+    let request =
+        HostSignRawWithLegacyAccountRequest::V1(v01::HostSignRawWithLegacyAccountRequest {
+            signer: subxt::utils::AccountId32(identity.public.to_bytes()).to_string(),
+            payload: v01::RawPayload::Bytes {
+                bytes: b"hello world".to_vec(),
+            },
+        });
+
+    let signed = futures::executor::block_on(
+        runtime.sign_raw_with_legacy_account(&CallContext::default(), request),
+    )
+    .is_ok();
+
+    assert_eq!(
+        (signed, platform.sign_raw_reviews.lock().unwrap().len()),
+        (false, 1),
     );
 }

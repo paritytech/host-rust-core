@@ -97,7 +97,7 @@ no `contacts` field, so a handle in one of those is signed as-is.
 | Minting and resolving | `rust/crates/truapi/src/runtime/contacts.rs` |
 | Byte substitution | `rust/crates/truapi/src/host_logic/contact_substitution.rs` |
 | Substitution call site | `rust/crates/truapi/src/runtime/capabilities/signing.rs` |
-| Native callback boundary | `rust/crates/truapi/src/native.rs` (`NativeContactsCallbacks`) |
+| Native callback boundary | `rust/crates/truapi/src/native/callbacks.rs` (`NativeContactsCallbacks`) |
 | iOS bridge + picker | `hosts/ios/polkadot-app/Modules/Products/TrUAPI/AppContactsHostBridge.swift`, `Modules/Products/APContactPick/` |
 | Android bridge + picker | `hosts/android/feature/products/impl/.../truapi/AppContactsHostBridge.kt`, `presentation/truapiContactPick/` |
 | Headless host | `rust/crates/truapi-host-cli/src/contacts.rs` |

@@ -244,8 +244,8 @@ private extension DSChatInputView {
         }
 
         placeholderLabel.snp.makeConstraints {
-            $0.leading.equalTo(textView)
-            $0.bottom.equalTo(textView.snp.bottom)
+            $0.leading.equalTo(textView).offset(2)
+            $0.centerY.equalTo(textView)
             $0.trailing.lessThanOrEqualTo(textView)
         }
 

@@ -22,6 +22,16 @@
 //! to storage the host owns and the blob for a chain is read before its first connect,
 //! then written back on a schedule the provider sets. `saveDatabase` forces a write at
 //! a moment the host chooses.
+//!
+//! Sync progress of a light-client chain is watched with `lifecycle`, once
+//! something is connected to the chain:
+//!
+//! ```js
+//! const watch = provider.lifecycle("0x3740…");
+//! for (let state; (state = await watch.next()); ) {
+//!   if (state.phase.kind === "syncing") showProgress(state.phase.at, state.phase.target);
+//! }
+//! ```
 
 use std::sync::Arc;
 
@@ -158,6 +168,23 @@ impl ChainProviderBuilder {
             .take()
             .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
         self.inner = Some(builder.storage(std::sync::Arc::new(store)));
+        Ok(())
+    }
+
+    /// Limit the kinds of connection the light client opens to peers. A field
+    /// left out stays allowed; an unknown field or a non-boolean value throws.
+    #[cfg(feature = "smoldot")]
+    #[wasm_bindgen(js_name = setConnectionTypes)]
+    pub fn set_connection_types(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "ConnectionTypes")] types: JsValue,
+    ) -> Result<(), JsError> {
+        let types = connection_types_from_js(&types)?;
+        let builder = self
+            .inner
+            .take()
+            .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
+        self.inner = Some(builder.connection_types(types));
         Ok(())
     }
 
@@ -358,6 +385,24 @@ impl ChainProviderHandle {
             .map_err(|err| JsError::new(&err.to_string()))
     }
 
+    /// Watch what the light client is doing on the chain identified by the
+    /// `0x`-prefixed genesis hash. Throws when nothing is connected to it.
+    ///
+    /// A parachain goes from `connecting` straight to `ready`; watch its relay
+    /// for warp sync progress.
+    #[cfg(feature = "smoldot")]
+    pub fn lifecycle(&self, genesis_hash: &str) -> Result<LifecycleWatch, JsError> {
+        let states = self
+            .inner
+            .lifecycle(parse_genesis(genesis_hash)?)
+            .map_err(|err| JsError::new(&err.to_string()))?;
+        let (states, stop) = futures::stream::abortable(states);
+        Ok(LifecycleWatch {
+            states: Arc::new(Mutex::new(states.boxed())),
+            stop,
+        })
+    }
+
     /// Snapshot the finalized state of the chain and write it to storage.
     /// Resolves with whether a blob was stored.
     ///
@@ -411,6 +456,122 @@ impl Connection {
     pub fn close(&self) {
         self.inner.close();
     }
+}
+
+#[cfg(feature = "smoldot")]
+#[wasm_bindgen(typescript_custom_section)]
+const CONNECTION_TYPES_TS: &str = r#"
+/** Which kinds of connection the light client opens to peers; each defaults to `true`. */
+export interface ConnectionTypes {
+  /** Secure `wss://` WebSocket. */
+  secure?: boolean;
+  /** Plain `ws://` WebSocket to a localhost peer. */
+  localhost?: boolean;
+  /** Plain `ws://` WebSocket to any other peer. */
+  unsecure?: boolean;
+}
+"#;
+
+/// Read the object [`CONNECTION_TYPES_TS`] declares.
+#[cfg(feature = "smoldot")]
+fn connection_types_from_js(value: &JsValue) -> Result<crate::ConnectionTypes, JsError> {
+    let object = value
+        .dyn_ref::<js_sys::Object>()
+        .ok_or_else(|| JsError::new("connection types must be an object"))?;
+    let mut types = crate::ConnectionTypes::default();
+    for entry in js_sys::Object::entries(object).iter() {
+        let entry = js_sys::Array::from(&entry);
+        let key = entry.get(0).as_string().unwrap_or_default();
+        let field = match key.as_str() {
+            "secure" => &mut types.secure,
+            "localhost" => &mut types.localhost,
+            "unsecure" => &mut types.unsecure,
+            _ => return Err(JsError::new(&format!("unknown connection type `{key}`"))),
+        };
+        *field = entry
+            .get(1)
+            .as_bool()
+            .ok_or_else(|| JsError::new(&format!("connection type `{key}` must be a boolean")))?;
+    }
+    Ok(types)
+}
+
+#[cfg(feature = "smoldot")]
+#[wasm_bindgen(typescript_custom_section)]
+const CHAIN_LIFECYCLE_TS: &str = r#"
+/** What the light client is doing on one chain. */
+export interface ChainLifecycle {
+  phase:
+    | { kind: "connecting" }
+    | { kind: "syncing"; at: number; target: number }
+    | { kind: "ready" };
+  peers: number;
+  health: { kind: "ok" } | { kind: "stalled"; reason: "noPeers" | "noProgress" };
+}
+"#;
+
+/// A live watch on one chain's lifecycle, from
+/// [`ChainProviderHandle::lifecycle`].
+#[cfg(feature = "smoldot")]
+#[wasm_bindgen]
+pub struct LifecycleWatch {
+    states: Arc<Mutex<BoxStream<'static, crate::ChainLifecycle>>>,
+    stop: futures::stream::AbortHandle,
+}
+
+#[cfg(feature = "smoldot")]
+#[wasm_bindgen]
+impl LifecycleWatch {
+    /// Resolve with the current state on the first call and with the next
+    /// change after that, or with `undefined` once the watch is closed or the
+    /// chain stops running.
+    #[wasm_bindgen(unchecked_return_type = "ChainLifecycle | undefined")]
+    pub async fn next(&self) -> JsValue {
+        let states = Arc::clone(&self.states);
+        let mut states = states.lock().await;
+        states
+            .next()
+            .await
+            .map_or(JsValue::UNDEFINED, lifecycle_to_js)
+    }
+
+    /// Stop the watch; pending `next()` calls resolve to `undefined`.
+    pub fn close(&self) {
+        self.stop.abort();
+    }
+}
+
+#[cfg(feature = "smoldot")]
+impl Drop for LifecycleWatch {
+    fn drop(&mut self) {
+        self.stop.abort();
+    }
+}
+
+/// The `ChainLifecycle` object the TypeScript declaration above describes.
+#[cfg(feature = "smoldot")]
+fn lifecycle_to_js(state: crate::ChainLifecycle) -> JsValue {
+    use crate::{ChainHealth, ChainPhase, StallReason};
+
+    let phase = match state.phase {
+        ChainPhase::Connecting => serde_json::json!({ "kind": "connecting" }),
+        ChainPhase::Syncing { at, target } => {
+            serde_json::json!({ "kind": "syncing", "at": at, "target": target })
+        }
+        ChainPhase::Ready => serde_json::json!({ "kind": "ready" }),
+    };
+    let health = match state.health {
+        ChainHealth::Ok => serde_json::json!({ "kind": "ok" }),
+        ChainHealth::Stalled { reason } => serde_json::json!({
+            "kind": "stalled",
+            "reason": match reason {
+                StallReason::NoPeers => "noPeers",
+                StallReason::NoProgress => "noProgress",
+            },
+        }),
+    };
+    let object = serde_json::json!({ "phase": phase, "peers": state.peers, "health": health });
+    js_sys::JSON::parse(&object.to_string()).expect("serde_json emits valid JSON")
 }
 
 /// The genesis hashes of a network registered via
@@ -613,6 +774,24 @@ mod tests {
         client.into()
     }
 
+    #[wasm_bindgen_test]
+    fn connection_types_read_the_fields_a_host_names() {
+        let parse = |source: &str| {
+            connection_types_from_js(&js_sys::JSON::parse(source).expect("valid JSON"))
+        };
+        assert_eq!(
+            parse(r#"{"unsecure":false}"#).ok(),
+            Some(crate::ConnectionTypes {
+                unsecure: false,
+                ..crate::ConnectionTypes::default()
+            })
+        );
+        assert_eq!(parse("{}").ok(), Some(crate::ConnectionTypes::default()));
+        assert!(parse(r#"{"unsecured":false}"#).is_err());
+        assert!(parse(r#"{"secure":"no"}"#).is_err());
+        assert!(parse("true").is_err());
+    }
+
     /// The names JS actually sees. A missing `js_name` exports the Rust name
     /// instead, which the tests below would not notice because they call the
     /// Rust method rather than the export.
@@ -620,14 +799,19 @@ mod tests {
     fn the_exported_names_match_the_documented_ones() {
         let mut builder = ChainProviderBuilder::new();
         let handle = JsValue::from(builder.build().expect("an empty builder builds"));
-        for name in ["connect", "loadDatabase", "saveDatabase"] {
+        for name in ["connect", "lifecycle", "loadDatabase", "saveDatabase"] {
             let found = js_sys::Reflect::get(&handle, &JsValue::from_str(name))
                 .expect("the handle is an object");
             assert!(found.is_function(), "the provider does not export `{name}`");
         }
 
         let builder = JsValue::from(ChainProviderBuilder::new());
-        let mut expected = vec!["setStorage", "setDatabaseContent", "addRpcChain"];
+        let mut expected = vec![
+            "setStorage",
+            "setDatabaseContent",
+            "setConnectionTypes",
+            "addRpcChain",
+        ];
         if cfg!(feature = "networks") {
             expected.push("addNetwork");
         }
@@ -636,6 +820,31 @@ mod tests {
                 .expect("the builder is an object");
             assert!(found.is_function(), "the builder does not export `{name}`");
         }
+    }
+
+    /// A host reads these fields by name, so the shape the TypeScript
+    /// declaration promises is the one that crosses the boundary.
+    #[wasm_bindgen_test]
+    fn a_lifecycle_crosses_as_the_declared_object() {
+        let state = crate::ChainLifecycle {
+            phase: crate::ChainPhase::Syncing { at: 7, target: 9 },
+            peers: 3,
+            health: crate::ChainHealth::Stalled {
+                reason: crate::StallReason::NoProgress,
+            },
+        };
+        let json = js_sys::JSON::stringify(&super::lifecycle_to_js(state))
+            .expect("a plain object stringifies");
+        let crossed: serde_json::Value =
+            serde_json::from_str(&String::from(json)).expect("valid JSON");
+        assert_eq!(
+            crossed,
+            serde_json::json!({
+                "phase": { "kind": "syncing", "at": 7, "target": 9 },
+                "peers": 3,
+                "health": { "kind": "stalled", "reason": "noProgress" },
+            })
+        );
     }
 
     /// The crate stores nothing, so a provider nobody gave storage to must say

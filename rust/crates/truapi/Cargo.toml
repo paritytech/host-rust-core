@@ -1,6 +1,6 @@
 [package]
 name = "truapi"
-version = "0.21.0"
+version = "0.23.0"
 edition.workspace = true
 license.workspace = true
 description = "TrUAPI trait and type definitions, and the runtime hosts embed"
@@ -70,13 +70,16 @@ runtime = [
     "dep:send_wrapper",
     "dep:web-time",
     "dep:web-sys",
+    "dep:tokio",
+    "dep:tokio-tungstenite",
+    "dep:base64",
+    "dep:rand",
+    "dep:libc",
 ]
 wasm-signing-host = ["runtime"]
 # Test-host-only shortcuts a shipping host must not carry, such as answering
 # resource allocation as granted without allocating anything.
 test-host = ["runtime"]
-debug-sink = ["runtime", "dep:tokio", "dep:tokio-tungstenite", "dep:base64"]
-ws-bridge = ["debug-sink", "dep:rand", "dep:libc"]
 # In-memory `MockPlatform` for tests and host simulators.
 mock = ["runtime"]
 
@@ -122,7 +125,6 @@ tracing-subscriber = { workspace = true, features = ["registry", "std"], optiona
 # The browser core loads `truapi-verifiable` as a separate WASM module instead.
 verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff", optional = true }
 truapi-verifiable = { path = "../truapi-verifiable", optional = true }
-futures = { workspace = true, features = ["thread-pool"] }
 rand = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"], optional = true }

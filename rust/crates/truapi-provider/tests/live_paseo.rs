@@ -59,12 +59,64 @@ async fn ws_follow_initializes() {
     follow_initializes(ChainSource::rpc_node(url)).await;
 }
 
+/// The Paseo relay chain spec named by `PASEO_CHAIN_SPEC`.
+#[cfg(feature = "smoldot")]
+fn paseo_spec() -> String {
+    let path = std::env::var("PASEO_CHAIN_SPEC")
+        .expect("set PASEO_CHAIN_SPEC to a Paseo relay chain-spec path");
+    std::fs::read_to_string(path).expect("the chain spec is readable")
+}
+
 #[cfg(feature = "smoldot")]
 #[tokio::test]
 #[ignore = "requires network access to Paseo and PASEO_CHAIN_SPEC"]
 async fn light_follow_initializes() {
-    let path = std::env::var("PASEO_CHAIN_SPEC")
-        .expect("set PASEO_CHAIN_SPEC to a Paseo relay chain-spec path");
-    let spec = std::fs::read_to_string(path).expect("the chain spec is readable");
-    follow_initializes(ChainSource::light_client(spec).build()).await;
+    follow_initializes(ChainSource::light_client(paseo_spec()).build()).await;
+}
+
+/// Offline, smoldot settles on `Ready` from the checkpoint after its
+/// sync-mode deadline, so reaching `Ready` alone proves nothing. A cold start
+/// against the network has to reach it with peers.
+#[cfg(feature = "smoldot")]
+#[tokio::test]
+#[ignore = "requires network access to Paseo and PASEO_CHAIN_SPEC"]
+async fn light_lifecycle_reaches_ready() {
+    use truapi_provider::ChainPhase;
+
+    let provider = EmbeddedChainProvider::builder()
+        .chain(
+            PASEO_GENESIS,
+            ChainSource::light_client(paseo_spec()).build(),
+        )
+        .build();
+    let connection = provider
+        .connect(PASEO_GENESIS)
+        .await
+        .expect("connecting to Paseo succeeds");
+    let mut lifecycle = provider
+        .lifecycle(PASEO_GENESIS)
+        .expect("a connected chain has a lifecycle");
+
+    // A checkpoint close to the finalized head has nothing to warp through,
+    // so `Syncing` may be skipped.
+    let ready = tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            let state = lifecycle.next().await.expect("the chain stays running");
+            match state.phase {
+                ChainPhase::Syncing { at, target } => {
+                    assert!(
+                        at <= target,
+                        "sync progress {at} passed its target {target}"
+                    );
+                }
+                ChainPhase::Ready => return state,
+                ChainPhase::Connecting => {}
+            }
+        }
+    })
+    .await
+    .expect("the chain reaches ready in time");
+
+    assert!(ready.peers > 0, "ready with peers, not stranded offline");
+    connection.close();
 }
