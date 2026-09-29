@@ -620,6 +620,12 @@ pub trait ProductAuthority: Send + Sync {
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
 
+    /// Whether the user allowed Chat for `product_id` for the rest of this
+    /// session. Authorities that do not keep session grants answer `false`.
+    fn chat_session_granted(&self, _session: &AuthoritySession, _product_id: &str) -> bool {
+        false
+    }
+
     /// Execute an authorized operation on the Host-owned native Chat device.
     async fn product_device_chat(
         &self,
