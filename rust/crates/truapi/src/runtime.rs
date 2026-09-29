@@ -142,7 +142,7 @@ pub const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_s
 /// not watch the cancel token, would otherwise outlive its deadline, so this
 /// caps the wait. A normal unwind completes in well under this. A disposed
 /// product runtime gives its withdrawn calls the same grace before aborting.
-pub(crate) const AUTHORITY_CANCEL_UNWIND_GRACE: Duration = Duration::from_secs(2);
+pub const AUTHORITY_CANCEL_UNWIND_GRACE: Duration = Duration::from_secs(2);
 /// Resource allocation may include a People -> Bulletin cross-chain
 /// propagation before the signing host can truthfully report `Allocated`.
 /// Keep this above the signing host's 240-second propagation ceiling while
@@ -1199,7 +1199,7 @@ impl ProductRuntimeHost {
     }
 
     /// Whether this connection has been disposed.
-    pub(crate) fn is_closed(&self) -> bool {
+    fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
 

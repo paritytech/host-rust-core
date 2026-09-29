@@ -1693,6 +1693,9 @@ impl ProductRuntime {
                 .map(|(_, handle)| handle)
                 .collect::<Vec<_>>()
         };
+        // Closed before any withdrawn call wakes, so a broadcast answered
+        // during teardown is left running rather than stopped.
+        self.admin.product_runtime.release_open_operations();
         self.core.withdraw_requests();
         (self.admin.product_runtime.services().spawner)(Box::pin(async move {
             futures_timer::Delay::new(crate::runtime::AUTHORITY_CANCEL_UNWIND_GRACE).await;
@@ -1702,7 +1705,6 @@ impl ProductRuntime {
         }));
         self.admin.product_runtime.detach_chat();
         self.admin.product_runtime.detach_renderer();
-        self.admin.product_runtime.release_open_operations();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
@@ -3390,6 +3392,107 @@ mod tests {
         wait_until(|| !withdrawn().is_empty(), "disposing sent no Cancel");
         assert_eq!(withdrawn(), vec![request]);
         dispatching.join().expect("dispatch thread panicked");
+    }
+
+    /// A broadcast answered while dispose is still tearing down must see the
+    /// product as closed. Withdrawing marks it `Cancelled`, and a withdrawn
+    /// broadcast of a product that is still open gets stopped.
+    #[test]
+    fn a_broadcast_answered_during_dispose_keeps_running() {
+        let (release, gate) = futures::channel::oneshot::channel();
+        let platform = Arc::new(StubPlatform {
+            rpc_method_responses: vec![
+                ("transaction_v1_broadcast", r#""REMOTE-OP""#.to_string()),
+                ("transaction_v1_stop", "null".to_string()),
+            ],
+            rpc_method_responses_gate: Arc::new(Mutex::new(Some(gate))),
+            ..Default::default()
+        });
+        let sent_methods = {
+            let platform = platform.clone();
+            move || {
+                platform
+                    .sent_rpc
+                    .lock()
+                    .expect("rpc list mutex poisoned")
+                    .iter()
+                    .map(|request| {
+                        serde_json::from_str::<serde_json::Value>(request).unwrap()["method"]
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        let dispatched = Arc::new(AtomicBool::new(false));
+        // Dispose spawns its abort timer after withdrawing and before it
+        // closes the host, so the broadcast is answered inside that window.
+        let armed = Arc::new(AtomicBool::new(false));
+        let spawner: crate::subscription::Spawner = {
+            let inner = test_spawner();
+            let armed = armed.clone();
+            let release = Mutex::new(Some(release));
+            let dispatched = dispatched.clone();
+            let sent_methods = sent_methods.clone();
+            Arc::new(move |task| {
+                if armed.swap(false, Ordering::AcqRel) {
+                    let release = release.lock().expect("release mutex poisoned").take();
+                    release.expect("gate released once").send(()).unwrap();
+                    wait_until(
+                        || {
+                            dispatched.load(Ordering::Acquire)
+                                || sent_methods().iter().any(|m| m == "transaction_v1_stop")
+                        },
+                        "the broadcast did not finish",
+                    );
+                }
+                inner(task);
+            })
+        };
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = Arc::new(ProductRuntime::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            spawner,
+            Arc::new(RecordingSink::default()),
+        ));
+        let ids = request_ids("chain_broadcast_transaction").expect("known request method");
+        let frame = ProtocolMessage {
+            request_id: "broadcast:1".to_string(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::chain::RemoteChainTransactionBroadcastRequest::V1(
+                    v01::RemoteChainTransactionBroadcastRequest {
+                        genesis_hash: vec![0; 32],
+                        transaction: vec![1, 2, 3],
+                    },
+                )
+                .encode(),
+            },
+        }
+        .encode();
+        let dispatching = {
+            let runtime = runtime.clone();
+            let dispatched = dispatched.clone();
+            std::thread::spawn(move || {
+                futures::executor::block_on(runtime.receive_frame(frame)).expect("receive frame");
+                dispatched.store(true, Ordering::Release);
+            })
+        };
+        wait_until(
+            || sent_methods().iter().any(|m| m == "transaction_v1_broadcast"),
+            "the broadcast was not sent",
+        );
+
+        armed.store(true, Ordering::Release);
+        runtime.dispose();
+        dispatching.join().expect("dispatch thread panicked");
+
+        assert_eq!(sent_methods(), vec!["transaction_v1_broadcast"]);
     }
 
     #[test]
