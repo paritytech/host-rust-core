@@ -30,11 +30,10 @@ pub trait Signing: Send + Sync {
     /// returns an unsigned transaction.
     ///
     /// `txExtVersion` is the version of the transaction extensions in
-    /// `extensions`, as the runtime numbers them; current runtimes only define
-    /// version 0. The host picks the extrinsic format from it. V4 always uses
-    /// version 0, so a non-zero version builds a V5 general transaction.
-    /// Version 0 builds V5 when it includes `VerifyMultiSignature`, and a
-    /// signed V4 transaction otherwise.
+    /// `extensions`, as the runtime numbers them. The host picks the extrinsic
+    /// format from it. V4 always uses version 0, so a non-zero version builds a
+    /// V5 general transaction. Version 0 builds V5 when it includes
+    /// `VerifyMultiSignature`, and a signed V4 transaction otherwise.
     ///
     /// `contacts` lists the contact handles `callData` names, and the host
     /// replaces each with the account it resolves to before the call is shown
