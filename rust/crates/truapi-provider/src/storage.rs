@@ -20,7 +20,7 @@
 ///
 /// An enum with one variant rather than a struct because the native bindings
 /// export this type, and uniffi errors must be enums.
-#[derive(Debug, Clone, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
 #[cfg_attr(
     all(feature = "uniffi", not(target_arch = "wasm32")),
     derive(uniffi::Error)
@@ -51,14 +51,6 @@ impl StorageClientError {
 
 impl std::error::Error for StorageClientError {}
 
-impl From<StorageClientError> for truapi::latest::GenericError {
-    fn from(error: StorageClientError) -> Self {
-        Self {
-            reason: error.to_string(),
-        }
-    }
-}
-
 /// Where warm-start blobs are kept between runs.
 ///
 /// A client that cannot answer must return `Err`, never `Ok(None)`: an empty
@@ -73,7 +65,7 @@ impl From<StorageClientError> for truapi::latest::GenericError {
     all(feature = "uniffi", not(target_arch = "wasm32")),
     uniffi::export(with_foreign)
 )]
-#[truapi_platform::async_trait]
+#[async_trait::async_trait]
 pub trait StorageClient: Send + Sync {
     /// Read the blob stored for `genesis_hash`, if any.
     async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, StorageClientError>;
@@ -133,20 +125,6 @@ pub fn carries_chain_information(blob: &str) -> bool {
     // carry no key at all.
     blob.contains("\"chain\":{")
 }
-
-/// Genesis hash of the chain a blob belongs to.
-pub type GenesisHash = [u8; 32];
-
-// Bridged for the native bindings the way `truapi` bridges its own 32-byte
-// values: uniffi has no fixed-size array type, so the hash crosses as bytes and
-// converts back here. Lowering only, since the provider validates the length
-// before a store ever sees one.
-#[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
-uniffi::custom_type!(GenesisHash, Vec<u8>, {
-    remote,
-    lower: |hash| hash.to_vec(),
-    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
-});
 
 #[cfg(test)]
 mod tests {

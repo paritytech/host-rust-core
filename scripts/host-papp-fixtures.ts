@@ -1,6 +1,6 @@
 /**
  * Print the host-papp encoding of every SSO message the core pins in
- * `rust/crates/truapi-server/src/host_logic/sso/messages.rs`
+ * `rust/crates/truapi/src/host_internal/sso_messages.rs`
  * (`assert_host_papp_fixture`).
  *
  * Runs host-papp's own codec from a triangle-js-sdks checkout, so a fixture is

@@ -24,6 +24,9 @@ interface ProductsRouter : ReturnableRouter, SigningRouter {
 
     /** Confirmation prompt for an action the TrUAPI Rust core is about to take. */
     suspend fun openTrUAPIConfirmation()
+
+    /** Picker for the one contact a product asked the user to name. */
+    suspend fun openTrUAPIContactPick()
     fun openProductSettings(productId: ProductId)
     fun openProductPermissions(productId: ProductId)
 

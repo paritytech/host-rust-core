@@ -1,5 +1,5 @@
 // Wire format between the main thread (`createWebWorkerPairingHostRuntime`) and the
-// Web Worker that hosts the truapi-server WASM runtime.
+// Web Worker that hosts the truapi WASM runtime.
 //
 //   Main window / host JS
 //   ┌─────────────────────────────────────────────────────────────────┐
@@ -12,7 +12,7 @@
 //                   v
 //   Dedicated Worker
 //   ┌─────────────────────────────────────────────────────────────────┐
-//   │ shared truapi-server WASM PairingHostRuntime + product runtimes │
+//   │ shared truapi WASM PairingHostRuntime + product runtimes        │
 //   │ generated raw-callback proxy                                    │
 //   └───────────────┬─────────────────────────────────────────────────┘
 //                   │ WorkerToMain: coreReady, frame, callbackRequest,

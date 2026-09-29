@@ -3,9 +3,8 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.EncryptedPreferences
-import uniffi.truapi.HostLocalStorageReadError
-import uniffi.truapi_server.HostRejection
-import uniffi.truapi_server.HostStorageException
+import uniffi.truapi.HostRejection
+import uniffi.truapi.HostLocalStorageReadException
 
 /**
  * Product-scoped storage for the Rust core, encrypted at rest.
@@ -18,14 +17,14 @@ class EncryptedHostStorage(
     private val preferences: EncryptedPreferences,
     private val namespace: String,
 ) : HostStorage {
-    override fun read(key: String): ByteArray? = readValue(preferences, qualify(key))
+    override suspend fun read(key: String): ByteArray? = readValue(preferences, qualify(key))
 
-    override fun write(key: String, value: ByteArray) {
+    override suspend fun write(key: String, value: ByteArray) {
         writeValue(preferences, qualify(key), value)
             ?.let { throw storageFailure("product storage: $it") }
     }
 
-    override fun clear(key: String) {
+    override suspend fun clear(key: String) {
         runCatching { preferences.removeKey(qualify(key)) }
             .getOrElse { throw storageFailure("failed to clear product storage key: ${it.message}") }
     }
@@ -45,14 +44,14 @@ class EncryptedHostStorage(
 class EncryptedHostCoreStorage(
     private val preferences: EncryptedPreferences,
 ) : HostCoreStorage {
-    override fun read(key: ByteArray): ByteArray? = readValue(preferences, qualify(key))
+    override suspend fun read(key: ByteArray): ByteArray? = readValue(preferences, qualify(key))
 
-    override fun write(key: ByteArray, value: ByteArray) {
+    override suspend fun write(key: ByteArray, value: ByteArray) {
         writeValue(preferences, qualify(key), value)
             ?.let { throw HostRejection.Rejected("core storage: $it") }
     }
 
-    override fun clear(key: ByteArray) {
+    override suspend fun clear(key: ByteArray) {
         runCatching { preferences.removeKey(qualify(key)) }
             .getOrElse { throw HostRejection.Rejected("failed to clear core storage key: ${it.message}") }
     }
@@ -94,8 +93,8 @@ private fun writeValue(preferences: EncryptedPreferences, key: String, value: By
     return if (preferences.getDecryptedString(key) == tagged) null else "failed to persist $key"
 }
 
-private fun storageFailure(reason: String): HostStorageException =
-    HostStorageException.Storage(HostLocalStorageReadError.Unknown(reason))
+private fun storageFailure(reason: String): HostLocalStorageReadException =
+    HostLocalStorageReadException.Unknown(reason)
 
 @OptIn(ExperimentalStdlibApi::class)
 private fun ByteArray.toHex(): String = toHexString()

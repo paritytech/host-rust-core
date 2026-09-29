@@ -18,7 +18,7 @@
 //! registered for that `requestId` and threads it into its `CallContext`, so a
 //! `Cancel` frame reaches the trait method.
 //!
-//! The generated file expects to live inside a `truapi-server` crate
+//! The generated file expects to live inside a `truapi` crate
 //! and references `crate::dispatcher::Dispatcher`. The codegen itself
 //! does not compile the output; string-diff golden tests guard it.
 
@@ -683,7 +683,7 @@ fn write_imports(out: &mut String, traits: &[&TraitDef]) {
         r#"
         }};
         use truapi::versioned::{{self, Versioned}};
-        use truapi_platform::ProductExecutionKind;
+        use crate::platform::ProductExecutionKind;
 
         use crate::dispatcher::Dispatcher;
         use crate::frame::downgrade_call_error;

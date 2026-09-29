@@ -1,6 +1,6 @@
 // Browser half of the test host: the page a Playwright fixture drives.
 //
-// It embeds the product in an iframe, runs a real truapi-server core against
+// It embeds the product in an iframe, runs a real truapi core against
 // `createMockHost`'s callbacks, and publishes the mock's control surface on
 // `window.__TRUAPI_TEST_HOST__` so the fixture can reach it through
 // `page.evaluate`.
@@ -12,7 +12,7 @@
 //   +------------------+                 +----------------------------------+
 //                                             ^ callbacks
 //                                        +----------------------------------+
-//                                        | truapi-server WASM core          |
+//                                        | truapi WASM core                 |
 //                                        +----------------------------------+
 //                                             ^ SCALE frames over MessagePort
 //                                        +----------------------------------+

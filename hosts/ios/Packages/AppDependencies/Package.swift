@@ -14,7 +14,7 @@ let coreIsInTree: Bool = {
     var root = URL(fileURLWithPath: #filePath)
     for _ in 0 ..< 5 { root.deleteLastPathComponent() }
     return FileManager.default.fileExists(
-        atPath: root.appendingPathComponent("rust/crates/truapi-server").path
+        atPath: root.appendingPathComponent("rust/crates/truapi").path
     )
 }()
 

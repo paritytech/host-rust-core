@@ -92,12 +92,12 @@ no `contacts` field, so a handle in one of those is signed as-is.
 | Wire trait | `rust/crates/truapi/src/api/contacts.rs` |
 | `ContactHandle`, `ContactPickOutcome` | `rust/crates/truapi/src/v01/contacts.rs` |
 | `contacts` on the tx payload | `rust/crates/truapi/src/v01/transaction.rs` |
-| Host syscall trait | `rust/crates/truapi-platform/src/lib.rs` (`ContactsPlatform`) |
-| `pick` handler, resolution | `rust/crates/truapi-server/src/runtime.rs` |
-| Minting and resolving | `rust/crates/truapi-server/src/runtime/contacts.rs` |
-| Byte substitution | `rust/crates/truapi-server/src/host_logic/contact_substitution.rs` |
-| Substitution call site | `rust/crates/truapi-server/src/runtime/capabilities/signing.rs` |
-| Native callback boundary | `rust/crates/truapi-server/src/native.rs` (`NativeContactsCallbacks`) |
+| Host syscall trait | `rust/crates/truapi/src/platform.rs` (`ContactsPlatform`) |
+| `pick` handler, resolution | `rust/crates/truapi/src/runtime.rs` |
+| Minting and resolving | `rust/crates/truapi/src/runtime/contacts.rs` |
+| Byte substitution | `rust/crates/truapi/src/host_logic/contact_substitution.rs` |
+| Substitution call site | `rust/crates/truapi/src/runtime/capabilities/signing.rs` |
+| Native callback boundary | `rust/crates/truapi/src/native/callbacks.rs` (`NativeContactsCallbacks`) |
 | iOS bridge + picker | `hosts/ios/polkadot-app/Modules/Products/TrUAPI/AppContactsHostBridge.swift`, `Modules/Products/APContactPick/` |
 | Android bridge + picker | `hosts/android/feature/products/impl/.../truapi/AppContactsHostBridge.kt`, `presentation/truapiContactPick/` |
 | Headless host | `rust/crates/truapi-host-cli/src/contacts.rs` |

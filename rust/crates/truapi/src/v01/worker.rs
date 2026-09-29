@@ -24,7 +24,10 @@ pub struct HostWorkerEndOperationRequest {
 
 /// Pending-operation error.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum HostWorkerOperationError {
     /// The product is already at the host's per-product limit of open
     /// operations.

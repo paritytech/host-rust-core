@@ -63,6 +63,26 @@ syncs from the checkpoint in the chain spec on every run.
 anything the client would load for it. `saveDatabase(genesisHash)` forces a write
 at a moment the host chooses.
 
+A light-client connection holds its requests until the chain first syncs, then
+sends them in order. Chain-spec queries, statement-store and Bitswap calls are
+answered at once. To show sync
+progress, watch the chain once something is connected to it:
+
+```js
+const watch = provider.lifecycle(chains.relay);
+for (let state; (state = await watch.next()); ) {
+  // state.phase: { kind: "connecting" } | { kind: "syncing", at, target } | { kind: "ready" }
+  // state.peers: connected peer count
+  // state.health: { kind: "ok" } | { kind: "stalled", reason: "noPeers" | "noProgress" }
+}
+```
+
+The first `next()` resolves with the current state, and each later one with the
+next change. It resolves `undefined` after `watch.close()` or once nothing holds
+the chain. A parachain goes from `connecting` straight to `ready`, so watch its
+relay for warp sync progress. `lifecycle` throws for a chain nothing is
+connected to.
+
 ## Native hosts
 
 Android and iOS do not consume this package. The same `truapi-provider` crate is
