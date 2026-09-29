@@ -823,6 +823,10 @@ to prompt. Main-purse payments are always excluded and are denied in this mode. 
 - **Chain methods** route to real `wss://` nodes from the selected `--network`. Every role the preset serves is routed
   unconditionally; `E2E_LIVE_CHAIN=1` only widens routing to endpoints it carries without serving. A rustls crypto
   provider is installed at startup for the TLS connections.
+- **`TRUAPI_LIGHT_CLIENT=1`** sends the host's own chain traffic (statement store, allowance renewal, preimages, PGAS
+  claims) through the embedded smoldot light client instead of the public nodes, for CI runners those nodes rate-limit.
+  Account setup and dotNS username reads still use RPC, and HOP stays on its WSS relays. The first connection to a chain
+  waits for it to sync.
 - **Ring-VRF product-account aliases and proofs** are implemented by the signing host via the `verifiable` crate
   (`get_account_alias` and `create_account_proof`).
 - **`get_user_id`** resolves the signing account's username from the dotNS contracts on Asset Hub. Auto-managed signing
