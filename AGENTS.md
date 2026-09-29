@@ -38,6 +38,14 @@ Two ways to lose work that involve no pushing at all:
   and what the reader needs to do.
 - Link to the document that owns a procedure instead of copying it.
 
+## Pull request titles
+
+- Title every pull request as a conventional commit, with `!` for a breaking
+  change. Load `.claude/skills/semver-pr-title/SKILL.md` before opening or
+  retitling one; it defines what breaking means here. CI blocks a title that
+  does not parse, and the nightly announcements read `!` to list breaking
+  changes first.
+
 ## Scope of a change
 
 - Do not improve adjacent code, comments, or formatting unless asked. Do not
