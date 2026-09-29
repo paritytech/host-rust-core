@@ -2,14 +2,34 @@
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
 )]
-
-//! TrUAPI trait and type definitions for the host product SDK.
+// The pairing-flow future nests the chain, SSO and identity futures deeply
+// enough that proving the tree's auto traits exceeds the default limit.
+#![recursion_limit = "256"]
+#![doc = include_str!("../README.md")]
+//! TrUAPI trait and type definitions for the host product SDK, and the runtime
+//! hosts embed (feature `runtime`, on by default).
 //!
 //! Concrete wire types live in per-version modules. Versioned envelopes are in
 //! [`versioned`].
 //! Async API traits use the `async_trait` macro so their concise `async fn` methods
 //! still guarantee `Send` futures. Implementations must annotate their impl
 //! blocks with `#[truapi::async_trait]`.
+//!
+//! The runtime: hosts instantiate a role runtime around a `platform::Platform`
+//! implementation, then create product-scoped `ProductRuntime` endpoints that
+//! expose the stable byte-frame API used from WASM, native mobile, or desktop
+//! shells. Host-facing bridges:
+//! - `ws_bridge`: localhost WebSocket bridge for
+//!   native WebView hosts (Android/iOS).
+//! - `bootstrap`: the JavaScript those hosts inject to reach that bridge.
+//! - `native`: UniFFI surface exposing the native host runtime + callbacks.
+//! - `wasm` (wasm32 only): wasm-bindgen surface exposing `WasmProductRuntime`.
+//! - `native_debug` (non-wasm32 only): a loopback WebSocket `DebugSink` that
+//!   streams tapped frames to the `@parity/truapi-debugger` app.
+
+// Runtime code, the generated dispatcher and the macros all name this crate
+// `truapi`, the way code outside it does.
+extern crate self as truapi;
 
 use core::convert::Infallible;
 use core::fmt;
@@ -28,6 +48,7 @@ pub use async_trait::async_trait;
 
 pub mod api;
 pub mod v01;
+pub mod v02;
 pub mod versioned;
 
 /// A 32-byte value, passed as plain bytes on FFI surfaces. Version-neutral:
@@ -35,10 +56,10 @@ pub mod versioned;
 /// version.
 pub type Bytes32 = [u8; 32];
 
-#[cfg(feature = "uniffi")]
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 uniffi::setup_scaffolding!();
 
-#[cfg(feature = "uniffi")]
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 uniffi::custom_type!(Bytes32, Vec<u8>, {
     remote,
     lower: |bytes| bytes.to_vec(),
@@ -51,17 +72,26 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
-        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
-        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
-        ContextualAlias, DerivationIndex, GenericError, HostPlatform, HostSignPayloadData,
-        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
+        AllocatableResource, AllocationOutcome, Arrangement, Background, BlendingMode, BorderStyle,
+        BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction, ChatActionLayout,
+        ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile, ChatMedia,
+        ChatMessageContent, ChatReaction, ChatRichText, ChatRoom, ChatRoomParticipation,
+        ChatRoomRegistrationStatus, ColorToken, ColumnProps, ContactHandle, ContactPickOutcome,
+        ContentAlignment, ContextualAlias, DerivationIndex, Dimensions, Effect, EffectProps,
+        GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
+        HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
+        HostAccountRegisterRingVrfKeyRequest, HostAccountRingVrfSignRequest,
+        HostAccountSignVrfError, HostAccountSignVrfRequest, HostPlatform, HostSignPayloadData,
+        HostWorkerOperationError, ImageFit, ImageProps, ImageSource, Modifier,
+        OperationStartedResult, PocketCard, ProductAccountId, ProductProofContext, RawPayload,
         RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
         RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
-        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
-        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
+        RendererNode, RingLocation, RingLocationJunction, RingVrfKeyDisclosure, RowProps,
+        RuntimeApi, RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement,
+        StatementProof, StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps,
+        TextProps, ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
+        VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -92,12 +122,20 @@ pub mod latest {
     pub type HostChatPostMessageResponse = LatestOf<versioned::chat::HostChatPostMessageResponse>;
     /// Native chat message posting failure.
     pub type HostChatPostMessageError = LatestOf<versioned::chat::HostChatPostMessageError>;
-    /// Host-to-product custom render work request.
-    pub type ProductChatCustomMessageRenderRequest =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderRequest>;
-    /// Product-to-host custom renderer tree.
-    pub type ProductChatCustomMessageRenderItem =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderItem>;
+    /// Action triggered inside a product-rendered body, delivered to the worker.
+    pub type HostRendererActionSubscribeItem =
+        LatestOf<versioned::renderer::HostRendererActionSubscribeItem>;
+    /// Host-to-product render request for one body.
+    pub type ProductRendererRenderRequest =
+        LatestOf<versioned::renderer::ProductRendererRenderRequest>;
+    /// Product-to-host renderer tree.
+    pub type ProductRendererRenderItem = LatestOf<versioned::renderer::ProductRendererRenderItem>;
+    /// Contact picker request.
+    pub type HostContactsPickRequest = LatestOf<versioned::contacts::HostContactsPickRequest>;
+    /// Contact picker outcome.
+    pub type HostContactsPickResponse = LatestOf<versioned::contacts::HostContactsPickResponse>;
+    /// Contact picker failure.
+    pub type HostContactsPickError = LatestOf<versioned::contacts::HostContactsPickError>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;
@@ -130,6 +168,9 @@ pub mod latest {
     /// Product context bound to the current host runtime.
     pub type HostGetProductContextResponse =
         LatestOf<versioned::system::HostGetProductContextResponse>;
+    /// Storage key change pushed to a subscriber.
+    pub type HostLocalStorageChangeItem =
+        LatestOf<versioned::local_storage::HostLocalStorageChangeItem>;
     /// Local storage operation error.
     pub type HostLocalStorageReadError =
         LatestOf<versioned::local_storage::HostLocalStorageReadError>;
@@ -137,6 +178,12 @@ pub mod latest {
     pub type HostLocaleSubscribeItem = LatestOf<versioned::locale::HostLocaleSubscribeItem>;
     /// Navigation request error.
     pub type HostNavigateToError = LatestOf<versioned::system::HostNavigateToError>;
+    /// The calling product's Pocket cards.
+    pub type HostPocketListSubscribeItem = LatestOf<versioned::pocket::HostPocketListSubscribeItem>;
+    /// Pocket card removal request.
+    pub type HostPocketRemoveCardRequest = LatestOf<versioned::pocket::HostPocketRemoveCardRequest>;
+    /// Pocket card removal failure.
+    pub type HostPocketRemoveCardError = LatestOf<versioned::pocket::HostPocketRemoveCardError>;
     /// Push notification scheduling request.
     pub type HostPushNotificationRequest =
         LatestOf<versioned::notifications::HostPushNotificationRequest>;
@@ -167,6 +214,9 @@ pub mod latest {
         LatestOf<versioned::signing::HostSignRawWithLegacyAccountRequest>;
     /// Current host theme pushed to subscribers.
     pub type HostThemeSubscribeItem = LatestOf<versioned::theme::HostThemeSubscribeItem>;
+    /// Result of beginning a worker pending operation.
+    pub type HostWorkerBeginOperationResponse =
+        LatestOf<versioned::worker::HostWorkerBeginOperationResponse>;
     /// Transaction creation payload for a legacy account.
     pub type LegacyAccountTxPayload =
         LatestOf<versioned::signing::HostCreateTransactionWithLegacyAccountRequest>;
@@ -199,10 +249,13 @@ pub mod latest {
     pub type RemotePermissionResponse = LatestOf<versioned::permissions::RemotePermissionResponse>;
 }
 
-pub use truapi_macros::{service, wire};
+pub use truapi_macros::{service, wire, wire_trait};
 
-/// Per-message id carried from the transport frame.
-pub type RequestId = String;
+/// Wire codec version this crate defines. Frames address a method with a
+/// `(trait, method)` byte pair. The handshake accepts only this version, and
+/// codegen stamps it into the generated clients, so every peer derives it
+/// from here.
+pub const WIRE_CODEC_VERSION: u8 = 3;
 
 /// Framework-level outcomes shared by API methods.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -223,6 +276,10 @@ pub enum CallError<D> {
         /// Diagnostic reason for the failure.
         reason: String,
     },
+    /// The caller withdrew the request before it produced a result.
+    ///
+    /// Appended last so the preceding variants keep their SCALE indices.
+    Cancelled,
 }
 
 impl<D> CallError<D> {
@@ -239,8 +296,8 @@ pub type FrameworkOnlyError = CallError<Infallible>;
 
 /// Cooperative cancellation token exposed to handlers.
 ///
-/// Current one-shot request frames have no cancel control message, so request
-/// tokens fire when a runtime explicitly cancels them or attaches a timeout.
+/// A request token fires when the peer sends a `Cancel` frame for the call,
+/// when a runtime explicitly cancels it, or when an attached timeout elapses.
 /// Subscription runtimes can cancel this token when the peer sends `_stop` or
 /// disconnects.
 #[derive(Clone, Default)]
@@ -389,14 +446,14 @@ impl Drop for CancellationFuture {
 /// Ambient context passed to every trait method.
 #[derive(Clone, Default)]
 pub struct CallContext {
-    request_id: RequestId,
+    request_id: String,
     cancel: CancellationToken,
     timeout: Option<Duration>,
 }
 
 impl CallContext {
     /// Construct a context bound to the given `request_id` with a fresh cancellation token.
-    pub fn with_request_id(request_id: RequestId) -> Self {
+    pub fn with_request_id(request_id: String) -> Self {
         Self {
             request_id,
             cancel: CancellationToken::default(),
@@ -405,7 +462,7 @@ impl CallContext {
     }
 
     /// Construct a context from explicit `request_id` and `cancel` parts.
-    pub fn with_parts(request_id: RequestId, cancel: CancellationToken) -> Self {
+    pub fn with_parts(request_id: String, cancel: CancellationToken) -> Self {
         Self {
             request_id,
             cancel,
@@ -436,33 +493,131 @@ impl CallContext {
 
 /// Handle to an active subscription. Implements [`Stream`] to yield values
 /// pushed by the host. Drop to unsubscribe.
-pub struct Subscription<T> {
-    inner: Pin<Box<dyn Stream<Item = T> + Send>>,
+///
+/// The stream yields `Ok(item)` for each value and at most one `Err`, which
+/// ends it: the runtime encodes that value as the `_interrupt` payload and
+/// polls no further. A stream that ends without an `Err` interrupts with
+/// `Ok(())`, which the peer reads as a normal completion.
+pub struct Subscription<Item, Interrupt> {
+    inner: Pin<Box<dyn Stream<Item = Result<Item, Interrupt>> + Send>>,
 }
 
-impl<T> Stream for Subscription<T> {
-    type Item = T;
+impl<Item, Interrupt> Stream for Subscription<Item, Interrupt> {
+    type Item = Result<Item, Interrupt>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
     }
 }
 
-impl<T> Subscription<T> {
-    /// Creates a new subscription from a boxed stream.
-    pub fn new(stream: Pin<Box<dyn Stream<Item = T> + Send>>) -> Self {
-        Self { inner: stream }
+impl<Item, Interrupt> Subscription<Item, Interrupt> {
+    /// Creates a subscription from a stream of items and at most one
+    /// terminating interrupt.
+    pub fn new<S>(stream: S) -> Self
+    where
+        S: Stream<Item = Result<Item, Interrupt>> + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+        }
     }
 
-    /// Creates a subscription that yields no items. Useful as a placeholder for
-    /// default "unavailable" trait bodies where the dispatcher will discard the
-    /// stream and emit an Interrupt frame.
-    pub fn empty() -> Self
+    /// Creates a subscription that yields no items and ends with `interrupt`.
+    /// The default trait bodies of unimplemented methods interrupt with
+    /// [`CallError::unavailable`], so a caller sees a failure rather than a
+    /// stream that finished.
+    pub fn interrupted(interrupt: Interrupt) -> Self
     where
-        T: Send + 'static,
+        Item: Send + 'static,
+        Interrupt: Send + 'static,
     {
-        Self::new(Box::pin(futures::stream::empty()))
+        Self::new(futures::stream::once(core::future::ready(Err(interrupt))))
     }
+}
+
+/// Applies `#[cfg(feature = "runtime")]` to every item it wraps.
+macro_rules! runtime_items {
+    ($($item:item)*) => { $( #[cfg(feature = "runtime")] $item )* };
+}
+
+runtime_items! {
+    pub mod bootstrap;
+    mod chain_runtime;
+    mod truapi_core;
+    mod dispatcher;
+    mod dotns_views;
+    mod dynamic_vrf;
+    pub mod frame;
+    mod host_core;
+    mod host_internal;
+    pub mod host_logic;
+    mod host_rpc_client;
+    mod interrupt;
+    pub mod logging;
+    pub mod platform;
+    mod protocol_error;
+    mod runtime;
+    mod session_usernames;
+    pub mod subscription;
+    pub mod transport;
+
+    #[cfg(test)]
+    mod test_support;
+    mod unix_time;
+
+    // Dispatch must keep serving deprecated APIs while clients migrate.
+    #[allow(deprecated)]
+    pub mod generated;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod native;
+
+    #[cfg(target_arch = "wasm32")]
+    pub mod wasm;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod native_debug;
+
+    pub use truapi_core::TrUApiCore;
+    pub use host_core::{
+        ChannelId, DebugEvent, DebugSink, FrameDirection, FrameSink, HostAdmin, PairingHostRuntime,
+        ProductRuntime, ProductRuntimeControl, ProductRuntimeError, SigningHostRuntime,
+    };
+    pub use host_logic::session::{
+        ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
+    };
+    pub use host_logic::worker::{WorkerLedger, WorkerTransition};
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use native_debug::{DebugSinkError, WsDebugSink};
+    pub use platform::{
+        CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostIdentity, PairingHostConfig,
+        PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform, ProductContext,
+        SigningHostConfig, describe_core_storage_key,
+    };
+    pub use runtime::StatementRenewalTarget;
+    pub use runtime::contacts::contact_handle;
+    pub use runtime::login_failure::reports_exhausted_period;
+    pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
+    pub use runtime::statement_allowance;
+    pub use runtime::{
+        AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
+        PairingProposal, PairingProposalMetadata, ResponderExit,
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use native::{
+        NativeRendererObserver, NativeRendererSubscription, WsBridgeEndpoint, WsBridgeStartError,
+    };
+
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-signing-host"))]
+    pub use wasm::WasmSigningHostRuntime;
+    #[cfg(target_arch = "wasm32")]
+    pub use wasm::{
+        WasmPairingHostRuntime, WasmProductRuntime, WasmRendererSubscription,
+        derive_product_account_public_key, describe_core_storage_key_for_wasm,
+        has_trusted_remote_permissions_for_wasm, product_account_address, set_log_level,
+        wire_schema_hash,
+    };
 }
 
 #[cfg(test)]

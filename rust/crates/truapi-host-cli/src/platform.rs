@@ -21,24 +21,27 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
-use truapi_platform::{
-    AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
-    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionStatusHost, Permissions,
-    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+use truapi::platform::{
+    AuthState, ChainProvider, CoreStorage, CoreStorageKey, CreateTransactionReview,
+    DevicePermissionStatus, Features, JsonRpcConnection, LocaleHost, Navigation, Notifications,
+    PermissionDecision, PermissionStatusHost, Permissions, PreimageHost, ProductContext,
+    ProductOperations, ProductStorage, ProductStorageKey, ProviderError, SessionUiInfo,
+    SignPayloadReview, SignRawReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
+use truapi::v01;
 
 use crate::chain::WsChainProvider;
-use crate::terminal_ui::{SystemEvent, UiHandle};
+use crate::terminal_ui::{ApprovalKind, SystemEvent, UiHandle};
 
 static NEXT_STORAGE_TEMP_ID: AtomicU32 = AtomicU32::new(0);
+static NEXT_OPERATION_ID: AtomicU32 = AtomicU32::new(1);
 
 /// How the host answers confirmation prompts (the web/iOS "sign?" modals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalPolicy {
     /// Approve every sensitive action without prompting (`--auto-accept`).
     AutoAccept,
-    /// Prompt on the CLI (y/n) for every sensitive action.
+    /// Prompt on the CLI for sensitive actions and permission decisions.
     Prompt,
 }
 
@@ -73,15 +76,8 @@ impl CliStoragePaths {
             .map(|user_id| network_dir.join(format!("{user_id}_pairing_host")))
             .filter(|path| path.is_dir())
             .unwrap_or_else(|| bootstrap_dir.clone());
-        let product_storage_dir = if state_dir == bootstrap_dir
-            && bootstrap_dir.join("storage").join("default").is_dir()
-        {
-            bootstrap_dir.join("storage").join("default")
-        } else {
-            state_dir.join("storage")
-        };
         Self {
-            product_storage_dir,
+            product_storage_dir: state_dir.join("storage"),
             state_dir,
             pairing_scope: Some(PairingStorageScope {
                 network_dir,
@@ -95,7 +91,7 @@ impl CliStoragePaths {
 pub struct CliPlatform {
     chain: WsChainProvider,
     /// Chain roles this host serves, answered by `Features::supported_chains`.
-    chains: truapi_platform::HostChainSet,
+    chains: truapi::platform::HostChainSet,
     product_storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
     core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     /// Device-scoped core slots, kept outside the per-user namespaces that
@@ -109,8 +105,7 @@ pub struct CliPlatform {
     pairing_scope: Option<PairingStorageScope>,
     preimages: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     next_notification_id: AtomicU32,
-    scheduled_notifications:
-        Arc<Mutex<HashMap<api::NotificationId, api::HostPushNotificationRequest>>>,
+    scheduled_notifications: Arc<Mutex<HashMap<u32, api::HostPushNotificationRequest>>>,
     approval: Mutex<ApprovalPolicy>,
     /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
     /// `<approved|denied> <action>` line per decided confirmation.
@@ -122,6 +117,13 @@ pub struct CliPlatform {
 }
 
 impl CliPlatform {
+    /// The URL a genesis routes to, so a test can assert a routing override
+    /// rather than assume it.
+    #[cfg(test)]
+    pub fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
+        self.chain.routed_url(genesis_hash)
+    }
+
     /// Build a platform whose chain provider connects to the network's People
     /// chain and whose optional state directory backs product/core storage.
     pub fn new(
@@ -130,7 +132,7 @@ impl CliPlatform {
         approval: ApprovalPolicy,
         ui: Option<UiHandle>,
     ) -> Arc<Self> {
-        let (product_storage_dir, legacy_product_storage_path, core_storage_path) = storage
+        let (product_storage_dir, core_storage_path) = storage
             .as_ref()
             .map(|paths| {
                 if let Err(err) = fs::create_dir_all(&paths.state_dir) {
@@ -142,15 +144,13 @@ impl CliPlatform {
                 }
                 (
                     Some(paths.product_storage_dir.clone()),
-                    Some(paths.state_dir.join("product-storage.json")),
                     Some(paths.state_dir.join("core-storage.json")),
                 )
             })
-            .unwrap_or((None, None, None));
+            .unwrap_or((None, None));
         let product_storage = product_storage_dir
             .as_deref()
-            .zip(legacy_product_storage_path.as_deref())
-            .map(|(directory, legacy)| load_product_storage(directory, legacy))
+            .map(load_product_storage)
             .unwrap_or_default();
         let core_storage = core_storage_path
             .as_deref()
@@ -336,10 +336,7 @@ impl CliPlatform {
 
         let mut target_core = load_hex_key_map(&target_core_path);
         target_core.extend(carried);
-        let mut target_products = load_product_storage(
-            &target_product_dir,
-            &target_state.join("product-storage.json"),
-        );
+        let mut target_products = load_product_storage(&target_product_dir);
         if migrating_bootstrap {
             target_products.extend(
                 self.product_storage
@@ -376,9 +373,17 @@ impl CliPlatform {
         persist_current_pairing_user(&scope.bootstrap_dir, user_id)
     }
 
-    /// Resolve a confirmation: auto-accept, or prompt y/n on the CLI.
-    async fn decide(&self, action: &str, detail: String) -> bool {
-        let approved = match self.approval_policy() {
+    pub async fn decide(&self, action: &str, detail: String) -> bool {
+        self.decide_with(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
+    }
+
+    async fn decide_with(
+        &self,
+        action: &str,
+        detail: String,
+        kind: ApprovalKind,
+    ) -> PermissionDecision {
+        let decision = match self.approval_policy() {
             ApprovalPolicy::AutoAccept => {
                 if let Some(ui) = &self.ui {
                     ui.success(format!("Approved {action} automatically"), Some(detail));
@@ -388,21 +393,21 @@ impl CliPlatform {
                         Some(detail),
                     );
                 }
-                true
+                PermissionDecision::AllowAlways
             }
             ApprovalPolicy::Prompt => {
                 let _guard = self.prompt_lock.lock().await;
                 if let Some(ui) = &self.ui {
-                    ui.confirm(action, detail).await
+                    ui.decide(action, detail, kind).await
                 } else {
-                    prompt_yes_no(action, &detail).await
+                    prompt_decision(action, &detail, kind).await
                 }
             }
         };
         if let Some(path) = &self.approvals_log {
-            record_approval(path, approved, action);
+            record_approval(path, decision != PermissionDecision::Deny, action);
         }
-        approved
+        decision
     }
 }
 
@@ -423,17 +428,18 @@ fn record_approval(path: &Path, approved: bool, action: &str) {
     }
 }
 
-/// Print a confirmation and read a y/n answer from the CLI (default: no).
-async fn prompt_yes_no(action: &str, detail: &str) -> bool {
+async fn prompt_decision(action: &str, detail: &str, kind: ApprovalKind) -> PermissionDecision {
     if !std::io::stdin().is_terminal() {
         eprintln!("approval required for {action}, but stdin is not a terminal; rejecting");
-        return false;
+        return PermissionDecision::Deny;
     }
+    let action = crate::terminal_ui::sanitize_terminal_text(action);
+    let detail = crate::terminal_ui::sanitize_terminal_text(detail);
     let mut stdout = tokio::io::stdout();
     let _ = stdout
         .write_all(
             format!(
-                "\n\u{2500}\u{2500} confirm: {action} \u{2500}\u{2500}\n{detail}\nApprove? [y/N] "
+                "\n\u{2500}\u{2500} confirm: {action} \u{2500}\u{2500}\n{detail}\n{} (default: deny) ", kind.choices()
             )
             .as_bytes(),
         )
@@ -442,16 +448,16 @@ async fn prompt_yes_no(action: &str, detail: &str) -> bool {
     let mut line = String::new();
     let mut reader = BufReader::new(tokio::io::stdin());
     if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
-        return false;
+        return PermissionDecision::Deny;
     }
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    kind.parse(&line).unwrap_or(PermissionDecision::Deny)
 }
 
 #[async_trait]
 impl ProductStorage for CliPlatform {
-    async fn read(&self, key: String) -> Result<Option<Vec<u8>>, api::HostLocalStorageReadError> {
+    async fn read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         Ok(self
             .product_storage
             .lock()
@@ -465,9 +471,9 @@ impl ProductStorage for CliPlatform {
         &self,
         key: String,
         value: Vec<u8>,
-    ) -> Result<(), api::HostLocalStorageReadError> {
+    ) -> Result<(), v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         let mut storage = self
             .product_storage
             .lock()
@@ -475,12 +481,12 @@ impl ProductStorage for CliPlatform {
         let values = storage.entry(scoped.product_id().to_string()).or_default();
         values.insert(scoped.key().to_string(), value);
         self.persist_product_storage(scoped.product_id(), values)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
     }
 
-    async fn clear(&self, key: String) -> Result<(), api::HostLocalStorageReadError> {
+    async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         let mut storage = self
             .product_storage
             .lock()
@@ -488,7 +494,49 @@ impl ProductStorage for CliPlatform {
         let values = storage.entry(scoped.product_id().to_string()).or_default();
         values.remove(scoped.key());
         self.persist_product_storage(scoped.product_id(), values)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
+    }
+
+    fn subscribe_storage(
+        &self,
+        key: String,
+    ) -> BoxStream<'static, Result<api::HostLocalStorageChangeItem, api::GenericError>> {
+        // TODO: current value only; the CLI never pushes later changes. Needs a
+        // per-key broadcast off write/clear for cross-context storage sync.
+        let value = ProductStorageKey::decode(&key).ok().and_then(|scoped| {
+            self.product_storage
+                .lock()
+                .expect("product storage mutex poisoned")
+                .get(scoped.product_id())
+                .and_then(|values| values.get(scoped.key()))
+                .cloned()
+        });
+        Box::pin(stream::once(async move {
+            Ok(api::HostLocalStorageChangeItem { value })
+        }))
+    }
+}
+
+#[async_trait]
+impl ProductOperations for CliPlatform {
+    async fn begin_operation(
+        &self,
+        _product: &ProductContext,
+        _label: String,
+    ) -> Result<api::HostWorkerBeginOperationResponse, api::HostWorkerOperationError> {
+        // The headless CLI has no worker to keep alive, so the id exists only so
+        // a product can pair begin/end.
+        Ok(api::HostWorkerBeginOperationResponse {
+            id: NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed),
+        })
+    }
+
+    async fn end_operation(
+        &self,
+        _product: &ProductContext,
+        _id: u32,
+    ) -> Result<(), api::HostWorkerOperationError> {
+        Ok(())
     }
 }
 
@@ -562,7 +610,7 @@ impl ChainProvider for CliPlatform {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, api::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         self.chain.connect(genesis_hash).await
     }
 }
@@ -640,7 +688,7 @@ impl Notifications for CliPlatform {
         Ok(api::HostPushNotificationResponse { id })
     }
 
-    async fn cancel_notification(&self, id: api::NotificationId) -> Result<(), api::GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), api::GenericError> {
         if self
             .scheduled_notifications
             .lock()
@@ -679,28 +727,34 @@ impl PermissionStatusHost for CliPlatform {
 impl Permissions for CliPlatform {
     async fn device_permission(
         &self,
-        _request: api::HostDevicePermissionRequest,
-    ) -> Result<api::HostDevicePermissionResponse, api::GenericError> {
-        let granted = self
-            .decide(
+        product: &ProductContext,
+        request: api::HostDevicePermissionRequest,
+    ) -> Result<PermissionDecision, api::GenericError> {
+        let product_id = &product.product_id;
+        Ok(self
+            .decide_with(
                 "device permission",
-                "A product requested access to a device capability.".to_string(),
+                format!("{product_id} requested access to {request}."),
+                ApprovalKind::Permission,
             )
-            .await;
-        Ok(api::HostDevicePermissionResponse { granted })
+            .await)
     }
 
     async fn remote_permission(
         &self,
-        _request: api::RemotePermissionRequest,
-    ) -> Result<api::RemotePermissionResponse, api::GenericError> {
-        let granted = self
-            .decide(
-                "remote permission",
-                "A paired product requested a remote capability.".to_string(),
-            )
-            .await;
-        Ok(api::RemotePermissionResponse { granted })
+        product: &ProductContext,
+        request: api::RemotePermissionRequest,
+    ) -> Result<PermissionDecision, api::GenericError> {
+        let product_id = &product.product_id;
+        let detail = match &request.permission {
+            api::RemotePermission::Remote { .. } => format!(
+                "{product_id} requested {request}. This covers all ports on each host, including local services."
+            ),
+            _ => format!("{product_id} requested {request}."),
+        };
+        Ok(self
+            .decide_with("remote permission", detail, ApprovalKind::Permission)
+            .await)
     }
 }
 
@@ -719,12 +773,12 @@ impl Features for CliPlatform {
         Ok(api::HostFeatureSupportedResponse { supported })
     }
 
-    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, api::GenericError> {
+    async fn supported_chains(&self) -> Result<truapi::platform::HostChainSet, api::GenericError> {
         Ok(self.chains.clone())
     }
 }
 
-impl truapi_platform::AuthPresenter for CliPlatform {
+impl truapi::platform::AuthPresenter for CliPlatform {
     fn auth_state_changed(&self, state: AuthState) {
         if let AuthState::Connected(info) = &state
             && let Some(user_id) = storage_user_id(info)
@@ -792,6 +846,16 @@ fn storage_user_id(info: &SessionUiInfo) -> Option<&str> {
 
 #[async_trait]
 impl UserConfirmation for CliPlatform {
+    async fn confirm_permission(
+        &self,
+        review: UserConfirmationReview,
+    ) -> Result<PermissionDecision, api::GenericError> {
+        let (action, detail) = approval_summary(&review);
+        Ok(self
+            .decide_with(action, detail, ApprovalKind::Permission)
+            .await)
+    }
+
     async fn confirm_user_action(
         &self,
         review: UserConfirmationReview,
@@ -801,11 +865,50 @@ impl UserConfirmation for CliPlatform {
     }
 }
 
+/// Names the product that asked, for the reviews that carry one. A relayed
+/// request carries no caller, and saying so is more use than naming nobody.
+fn asking(calling_product_id: Option<&str>) -> String {
+    match calling_product_id {
+        Some(product_id) => format!("Product {product_id}"),
+        None => "A paired host".to_string(),
+    }
+}
+
 fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
     match review {
+        UserConfirmationReview::SignPayload(SignPayloadReview::Product {
+            calling_product_id,
+            request,
+        }) => (
+            "sign payload",
+            format!(
+                "{} requested a SCALE payload signature for the {} account.",
+                asking(calling_product_id.as_deref()),
+                request.account.dot_ns_identifier,
+            ),
+        ),
         UserConfirmationReview::SignPayload(_) => (
             "sign payload",
             "A product requested a SCALE payload signature.".to_string(),
+        ),
+        UserConfirmationReview::SignRaw(SignRawReview::Product {
+            calling_product_id,
+            request,
+            watermarked: true,
+        }) => (
+            "sign raw data",
+            format!(
+                "{} requested a raw-data signature for the {} account. The payload is hidden here.",
+                asking(calling_product_id.as_deref()),
+                request.account.dot_ns_identifier,
+            ),
+        ),
+        UserConfirmationReview::SignRaw(
+            SignRawReview::Product { watermarked: false, .. }
+            | SignRawReview::LegacyAccount { watermarked: false, .. },
+        ) => (
+            "sign unprotected data",
+            "Warning: this signature has no transaction-payload protection and may authorize transactions. The payload is hidden here.".to_string(),
         ),
         UserConfirmationReview::SignRaw(_) => (
             "sign raw data",
@@ -823,9 +926,21 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
         UserConfirmationReview::StatementStoreProductSign(review) => (
             "sign statement proof",
             format!(
-                "Product {} requested a Statement Store proof signature over a {}-byte payload.",
+                "{} requested a Statement Store proof signature for the {} account over a {}-byte payload.",
+                asking(review.calling_product_id.as_deref()),
                 review.account.dot_ns_identifier,
                 review.payload.len()
+            ),
+        ),
+        UserConfirmationReview::CreateTransaction(CreateTransactionReview::Product {
+            calling_product_id,
+            payload,
+        }) => (
+            "create transaction",
+            format!(
+                "{} requested a transaction from the {} account.",
+                asking(calling_product_id.as_deref()),
+                payload.signer.dot_ns_identifier,
             ),
         ),
         UserConfirmationReview::CreateTransaction(_) => (
@@ -935,46 +1050,8 @@ struct ProductStorageDocument {
     values: HashMap<String, String>,
 }
 
-fn load_product_storage(
-    directory: &Path,
-    legacy_path: &Path,
-) -> HashMap<String, HashMap<String, Vec<u8>>> {
-    let legacy_exists = legacy_path.is_file();
-    let mut migration_safe = true;
+fn load_product_storage(directory: &Path) -> HashMap<String, HashMap<String, Vec<u8>>> {
     let mut products = HashMap::<String, HashMap<String, Vec<u8>>>::new();
-
-    if legacy_exists {
-        match read_string_map(legacy_path) {
-            Ok(values) => {
-                for (key, value) in values {
-                    match ProductStorageKey::decode(&key) {
-                        Ok(scoped) => {
-                            products
-                                .entry(scoped.product_id().to_string())
-                                .or_default()
-                                .insert(scoped.key().to_string(), value);
-                        }
-                        Err(error) => {
-                            migration_safe = false;
-                            tracing::warn!(
-                                path = %legacy_path.display(),
-                                %error,
-                                "could not migrate an unrecognized product storage key"
-                            );
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                migration_safe = false;
-                tracing::warn!(
-                    path = %legacy_path.display(),
-                    %error,
-                    "could not decode legacy product storage"
-                );
-            }
-        }
-    }
 
     let entries = match fs::read_dir(directory) {
         Ok(entries) => Some(entries),
@@ -1007,36 +1084,6 @@ fn load_product_storage(
                 continue;
             }
             products.entry(product_id).or_default().extend(values);
-        }
-    }
-
-    if legacy_exists && migration_safe {
-        let migrated = products.iter().try_for_each(|(product_id, values)| {
-            save_product_storage(directory, product_id, values)
-        });
-        match migrated {
-            Ok(()) => {
-                let backup = legacy_path.with_file_name("product-storage.v1.json.migrated");
-                if backup.exists() {
-                    tracing::warn!(
-                        path = %legacy_path.display(),
-                        backup = %backup.display(),
-                        "legacy product storage was migrated but its backup path already exists"
-                    );
-                } else if let Err(error) = fs::rename(legacy_path, &backup) {
-                    tracing::warn!(
-                        path = %legacy_path.display(),
-                        backup = %backup.display(),
-                        %error,
-                        "could not retain migrated product storage backup"
-                    );
-                }
-            }
-            Err(error) => tracing::warn!(
-                path = %legacy_path.display(),
-                %error,
-                "could not migrate legacy product storage"
-            ),
         }
     }
 
@@ -1207,7 +1254,7 @@ fn save_string_map(path: &Path, values: &HashMap<String, Vec<u8>>) -> Result<(),
     atomic_write(path, text.as_bytes())
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("storage path has no parent: {}", path.display()))?;
@@ -1307,14 +1354,12 @@ mod tests {
     }
 
     /// Battery examples that preflight `getChainInfo` resolve the genesis they
-    /// ask for through this set, so an error here fails every one of them. The
-    /// ring-VRF examples are chain-dependent but not among them: they use the
-    /// hardcoded `PASEO_NEXT_V2_INDIVIDUALITY.genesis` and passed even while
-    /// this returned an error.
+    /// ask for through this set, so an error here fails every one of them.
     ///
     /// Serving the preset's three roles unblocks the preflight in every example
-    /// that asks for one: `People` for account-alias, account-proof and both
-    /// create-transaction variants, and `AssetHub` for the other seventeen.
+    /// that asks for one: `People` for account-alias, account-proof, ring-VRF
+    /// registration and both create-transaction variants, and `AssetHub` for the
+    /// other seventeen.
     ///
     /// `feature_supported` answers from the same set `supported_chains` serves, so
     /// the two cannot disagree. The negatives are the malformed inputs, a well-formed
@@ -1494,7 +1539,7 @@ mod tests {
     /// identity.
     #[tokio::test]
     async fn auth_state_changed_does_not_inherit_storage_on_a_rejected_username() {
-        use truapi_platform::AuthPresenter;
+        use truapi::platform::AuthPresenter;
 
         let dir = tempdir().expect("tempdir");
         let network_dir = dir.path().join("paseo");
@@ -1560,7 +1605,7 @@ mod tests {
     /// `AuthSession` is `00` and `PairingDeviceIdentity` is `01`.
     #[tokio::test]
     async fn cli_platform_preserves_unreadable_core_storage() {
-        use truapi_platform::CoreStorage;
+        use truapi::platform::CoreStorage;
 
         let dir = tempdir().expect("tempdir");
         let state_dir = dir.path().join("state");
@@ -1797,19 +1842,21 @@ mod tests {
         );
     }
 
+    /// A pairing login writes product KV before its username is known, so the
+    /// bootstrap directory's products must follow the first resolved user
+    /// instead of being stranded outside every identity namespace.
     #[test]
-    fn legacy_pairing_storage_moves_to_the_first_resolved_user() {
+    fn product_storage_written_before_the_username_carries_into_the_resolved_user() {
         let temporary = tempdir().expect("create pairing storage root");
         let network_dir = temporary.path().join("testnet");
-        let legacy_product_dir = network_dir.join("pairing-host/storage/default");
         let product_key =
             ProductStorageKey::new("product.dot", "theme").expect("product storage key");
         save_product_storage(
-            &legacy_product_dir,
+            &network_dir.join("pairing-host/storage"),
             "product.dot",
             &HashMap::from([("theme".to_string(), b"dark".to_vec())]),
         )
-        .expect("write legacy pairing product storage");
+        .expect("write bootstrap pairing product storage");
         let platform = CliPlatform::new(
             test_network(),
             Some(CliStoragePaths::pairing(network_dir.clone())),
@@ -1819,20 +1866,27 @@ mod tests {
 
         platform
             .switch_pairing_user_storage("alice.dot")
-            .expect("resolve legacy storage owner");
+            .expect("resolve the bootstrap storage owner");
 
         assert_eq!(
             futures::executor::block_on(platform.read(product_key.encode()))
-                .expect("read migrated product value"),
+                .expect("read carried product value"),
             Some(b"dark".to_vec())
         );
-        assert!(network_dir.join("alice.dot_pairing_host/storage").is_dir());
+        // Persisted, not merely carried in memory: a restart must find it too.
+        assert_eq!(
+            load_product_storage(&network_dir.join("alice.dot_pairing_host/storage")),
+            HashMap::from([(
+                "product.dot".to_string(),
+                HashMap::from([("theme".to_string(), b"dark".to_vec())]),
+            )])
+        );
     }
 
     #[test]
     fn approval_summaries_are_concise_and_do_not_dump_payloads() {
         let review =
-            UserConfirmationReview::PreimageSubmit(truapi_platform::PreimageSubmitReview {
+            UserConfirmationReview::PreimageSubmit(truapi::platform::PreimageSubmitReview {
                 size: 4_096,
             });
 
@@ -1846,12 +1900,15 @@ mod tests {
         assert!(!detail.contains("["));
     }
 
+    /// Both products by name, because a signature made with an account the
+    /// caller does not own is the thing the user has to be able to see.
     #[test]
-    fn statement_proof_approval_names_product_without_dumping_payload() {
+    fn statement_proof_approval_names_both_products_without_dumping_payload() {
         let review = UserConfirmationReview::StatementStoreProductSign(
-            truapi_platform::StatementStoreProductSignReview {
+            truapi::platform::StatementStoreProductSignReview {
+                calling_product_id: Some("dim2next.paseo".to_string()),
                 account: api::ProductAccountId {
-                    dot_ns_identifier: "myapp.dot".to_string(),
+                    dot_ns_identifier: "dim2.paseo".to_string(),
                     derivation_index: api::DerivationIndex::Index(0),
                 },
                 payload: vec![0x42; 128],
@@ -1863,14 +1920,15 @@ mod tests {
         assert_eq!(action, "sign statement proof");
         assert_eq!(
             detail,
-            "Product myapp.dot requested a Statement Store proof signature over a 128-byte payload."
+            "Product dim2next.paseo requested a Statement Store proof signature for the \
+             dim2.paseo account over a 128-byte payload."
         );
         assert!(!detail.contains("[66"));
     }
 
     #[test]
     fn vrf_approval_names_both_products_without_dumping_transcript_values() {
-        let review = UserConfirmationReview::SignVrf(truapi_platform::SignVrfReview {
+        let review = UserConfirmationReview::SignVrf(truapi::platform::SignVrfReview {
             calling_product_id: "caller.dot".to_string(),
             request: truapi::v01::HostAccountSignVrfRequest {
                 account: truapi::v01::ProductAccountId {
@@ -2019,72 +2077,6 @@ mod tests {
         assert_ne!(
             fs::read_to_string(first_path).expect("read first session file"),
             fs::read_to_string(second_path).expect("read second session file")
-        );
-    }
-
-    #[test]
-    fn legacy_product_storage_migrates_and_keeps_a_backup() {
-        let temporary = tempdir().expect("create migration root");
-        let first = ProductStorageKey::new("first.dot", "alpha").expect("first product key");
-        let second = ProductStorageKey::new("second.dot", "beta").expect("second product key");
-        let legacy_path = temporary.path().join("product-storage.json");
-        save_string_map(
-            &legacy_path,
-            &HashMap::from([
-                (first.encode(), b"one".to_vec()),
-                (second.encode(), b"two".to_vec()),
-            ]),
-        )
-        .expect("write legacy product storage");
-
-        let platform = CliPlatform::new(
-            test_network(),
-            Some(test_storage_paths(temporary.path(), "test")),
-            ApprovalPolicy::AutoAccept,
-            None,
-        );
-
-        assert!(!legacy_path.exists());
-        assert!(
-            temporary
-                .path()
-                .join("product-storage.v1.json.migrated")
-                .is_file()
-        );
-        assert_eq!(
-            fs::read_dir(temporary.path().join("storage").join("test"))
-                .expect("list migrated product files")
-                .count(),
-            2
-        );
-        let values = futures::executor::block_on(async {
-            (
-                platform.read(first.encode()).await.expect("read first"),
-                platform.read(second.encode()).await.expect("read second"),
-            )
-        });
-        assert_eq!(values, (Some(b"one".to_vec()), Some(b"two".to_vec())));
-    }
-
-    #[test]
-    fn corrupt_legacy_product_storage_is_not_marked_as_migrated() {
-        let temporary = tempdir().expect("create corrupt migration root");
-        let legacy_path = temporary.path().join("product-storage.json");
-        fs::write(&legacy_path, "{not-json").expect("write corrupt legacy storage");
-
-        let _platform = CliPlatform::new(
-            test_network(),
-            Some(test_storage_paths(temporary.path(), "test")),
-            ApprovalPolicy::AutoAccept,
-            None,
-        );
-
-        assert!(legacy_path.is_file());
-        assert!(
-            !temporary
-                .path()
-                .join("product-storage.v1.json.migrated")
-                .exists()
         );
     }
 }

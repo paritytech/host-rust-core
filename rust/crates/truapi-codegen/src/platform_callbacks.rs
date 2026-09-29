@@ -3,11 +3,11 @@
 use std::collections::BTreeSet;
 
 use crate::platform::{PlatformDefinition, PlatformInner, PlatformMethod, PlatformTrait};
-use crate::rustdoc::TypeRef;
+use crate::rustdoc::{TypeDef, TypeDefKind, TypeRef, VariantFields};
 
 /// Traits the platform surface actually composes: the super trait's
 /// constituents when one exists, otherwise every collected trait.
-pub(crate) fn composed_traits(definition: &PlatformDefinition) -> Vec<&PlatformTrait> {
+pub fn composed_traits(definition: &PlatformDefinition) -> Vec<&PlatformTrait> {
     let mut composed: BTreeSet<String> = match &definition.super_trait {
         Some(s) => s.composes.iter().cloned().collect(),
         None => definition.traits.iter().map(|t| t.name.clone()).collect(),
@@ -23,7 +23,7 @@ pub(crate) fn composed_traits(definition: &PlatformDefinition) -> Vec<&PlatformT
 /// Capability trait names a host may omit, taken from the `OptionalPlatform`
 /// super-trait. A host that supplies none of a trait's callbacks is not
 /// broken: the core answers the matching product calls with `Unsupported`.
-pub(crate) fn optional_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
+pub fn optional_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
     definition
         .optional_super_trait
         .as_ref()
@@ -32,17 +32,17 @@ pub(crate) fn optional_trait_names(definition: &PlatformDefinition) -> BTreeSet<
 }
 
 /// JS-side callback name for a platform method (camelCase of the Rust name).
-pub(crate) fn raw_callback_name(method: &PlatformMethod) -> String {
+pub fn raw_callback_name(method: &PlatformMethod) -> String {
     to_camel_case(&method.name)
 }
 
 /// Set of all platform trait names, used to recognize trait-object returns.
-pub(crate) fn platform_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
+pub fn platform_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
     definition.traits.iter().map(|t| t.name.clone()).collect()
 }
 
 /// Name of the platform trait a method returns as a handle, if any.
-pub(crate) fn trait_object_return_name<'a>(
+pub fn trait_object_return_name<'a>(
     method: &'a PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
 ) -> Option<&'a str> {
@@ -58,7 +58,7 @@ pub(crate) fn trait_object_return_name<'a>(
 /// Wire name of a raw callback. Handle-returning methods get a trait
 /// namespace prefix so equally named methods on different traits stay
 /// distinct.
-pub(crate) fn raw_callback_wire_name(
+pub fn raw_callback_wire_name(
     trait_def: &PlatformTrait,
     method: &PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
@@ -75,7 +75,7 @@ pub(crate) fn raw_callback_wire_name(
 }
 
 /// Field name holding the callback in the generated Rust bridge struct.
-pub(crate) fn raw_callback_field_name(
+pub fn raw_callback_field_name(
     trait_def: &PlatformTrait,
     method: &PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
@@ -88,7 +88,7 @@ pub(crate) fn raw_callback_field_name(
 }
 
 /// TS type name for the raw callback in the generated host-callback bridge.
-pub(crate) fn raw_callback_type_name(
+pub fn raw_callback_type_name(
     trait_def: &PlatformTrait,
     method: &PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
@@ -101,7 +101,7 @@ pub(crate) fn raw_callback_type_name(
 }
 
 /// Name of the TS adapter that wraps a typed host callback into its raw form.
-pub(crate) fn raw_callback_adapter_name(
+pub fn raw_callback_adapter_name(
     trait_def: &PlatformTrait,
     method: &PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
@@ -114,7 +114,7 @@ pub(crate) fn raw_callback_adapter_name(
 
 /// Callback-object namespace for a trait: its name with the role suffix
 /// (`Provider`, `Presenter`, `Host`) stripped, lower-cased first letter.
-pub(crate) fn callback_namespace(trait_name: &str) -> String {
+pub fn callback_namespace(trait_name: &str) -> String {
     let stem = ["Provider", "Presenter", "Host", "Platform"]
         .into_iter()
         .find_map(|suffix| trait_name.strip_suffix(suffix))
@@ -138,7 +138,7 @@ fn named_platform_trait<'a>(
 /// Unwrap a `Result<T, E>` stream item to its `T`; other item types pass
 /// through. Streams carry `Result`s on the Rust side but the JS raw bridge
 /// already unwraps them before handing each item to the WASM callback sink.
-pub(crate) fn stream_item(item: &TypeRef) -> &TypeRef {
+pub fn stream_item(item: &TypeRef) -> &TypeRef {
     if let TypeRef::Named { name, args } = item
         && name == "Result"
         && let Some(ok) = args.first()
@@ -149,7 +149,7 @@ pub(crate) fn stream_item(item: &TypeRef) -> &TypeRef {
 }
 
 /// Convert a snake_case identifier to camelCase.
-pub(crate) fn to_camel_case(name: &str) -> String {
+pub fn to_camel_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut upper_next = false;
     for (idx, ch) in name.chars().enumerate() {
@@ -192,7 +192,7 @@ fn upper_first(name: &str) -> String {
 }
 
 /// Convert a camelCase identifier to snake_case.
-pub(crate) fn snake_case(name: &str) -> String {
+pub fn snake_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     for (idx, ch) in name.chars().enumerate() {
         if ch.is_ascii_uppercase() {
@@ -205,4 +205,105 @@ pub(crate) fn snake_case(name: &str) -> String {
         }
     }
     out
+}
+
+/// Collect local types reachable from callback payloads, including transitive
+/// field references, for the Rust WASM and TypeScript host bridges.
+pub fn collect_local_bridge_payload_types(definition: &PlatformDefinition) -> BTreeSet<&str> {
+    let local: BTreeSet<&str> = definition.types.iter().map(|ty| ty.name.as_str()).collect();
+    let mut out = BTreeSet::new();
+    for trait_def in &definition.traits {
+        for method in &trait_def.methods {
+            for param in &method.params {
+                collect_local_from_type(&param.type_ref, &local, &mut out);
+            }
+            match &method.return_shape.inner {
+                PlatformInner::Result { ok, .. } | PlatformInner::Plain(ok) => {
+                    collect_local_from_type(ok, &local, &mut out);
+                }
+                PlatformInner::Stream(item) => {
+                    collect_local_from_type(stream_item(item), &local, &mut out)
+                }
+                PlatformInner::Unit | PlatformInner::TraitObject(_) => {}
+            }
+        }
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let referenced = definition
+            .types
+            .iter()
+            .filter(|ty| out.contains(ty.name.as_str()))
+            .collect::<Vec<_>>();
+        for type_def in referenced {
+            let before = out.len();
+            collect_local_from_type_def(type_def, &local, &mut out);
+            changed |= out.len() != before;
+        }
+    }
+    out
+}
+
+fn collect_local_from_type_def<'a>(
+    type_def: &'a TypeDef,
+    local: &BTreeSet<&'a str>,
+    out: &mut BTreeSet<&'a str>,
+) {
+    match &type_def.kind {
+        TypeDefKind::Alias(type_ref) => collect_local_from_type(type_ref, local, out),
+        TypeDefKind::Struct(fields) => {
+            for field in fields {
+                collect_local_from_type(&field.type_ref, local, out);
+            }
+        }
+        TypeDefKind::TupleStruct(fields) => {
+            for field in fields {
+                collect_local_from_type(field, local, out);
+            }
+        }
+        TypeDefKind::Enum(variants) => {
+            for variant in variants {
+                match &variant.fields {
+                    VariantFields::Unit => {}
+                    VariantFields::Unnamed(types) => {
+                        for ty in types {
+                            collect_local_from_type(ty, local, out);
+                        }
+                    }
+                    VariantFields::Named(fields) => {
+                        for field in fields {
+                            collect_local_from_type(&field.type_ref, local, out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_local_from_type<'a>(
+    ty: &'a TypeRef,
+    local: &BTreeSet<&'a str>,
+    out: &mut BTreeSet<&'a str>,
+) {
+    match ty {
+        TypeRef::Named { name, args } => {
+            if local.contains(name.as_str()) {
+                out.insert(name);
+            }
+            for arg in args {
+                collect_local_from_type(arg, local, out);
+            }
+        }
+        TypeRef::Vec(inner) | TypeRef::Option(inner) | TypeRef::Array(inner, _) => {
+            collect_local_from_type(inner, local, out);
+        }
+        TypeRef::Tuple(items) => {
+            for item in items {
+                collect_local_from_type(item, local, out);
+            }
+        }
+        TypeRef::Primitive(_) | TypeRef::Generic(_) | TypeRef::Unit => {}
+    }
 }

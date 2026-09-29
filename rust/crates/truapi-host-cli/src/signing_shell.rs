@@ -4,7 +4,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use truapi_platform::normalize_product_identifier;
+use truapi::platform::normalize_product_identifier;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::LogLevel;
@@ -24,8 +24,11 @@ pub enum ProductCommand {
 pub enum DeviceCommand {
     /// List paired devices for the active managed session.
     List,
-    /// Remove the device with this statement account ID.
-    Remove([u8; 32]),
+    /// Notify and remove one device; `force` permits cleanup if notification fails.
+    Remove {
+        statement_account_id: [u8; 32],
+        force: bool,
+    },
 }
 
 /// Operation selected through `/approval`.
@@ -67,7 +70,8 @@ pub enum PairCommand {
 
 /// A mnemonic accepted by the command parser without exposing it through
 /// derived debug output or retaining it after the command is dropped.
-#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop, derive_more::Debug)]
+#[debug("<redacted>")]
 pub struct SecretMnemonic(String);
 
 impl SecretMnemonic {
@@ -78,12 +82,6 @@ impl SecretMnemonic {
     /// Borrow the phrase only at the account-import boundary.
     pub fn expose_secret(&self) -> &str {
         &self.0
-    }
-}
-
-impl fmt::Debug for SecretMnemonic {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
     }
 }
 
@@ -127,6 +125,31 @@ pub fn mask_mnemonic(command: &str) -> Option<String> {
     Some(masked)
 }
 
+/// Select, edit, or run a product script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScriptCommand {
+    /// Edit the remembered script, creating a project if needed, then run it.
+    Edit,
+    /// Edit without running the script.
+    EditOnly,
+    /// Run an explicit path or the remembered script without opening an editor.
+    Run(Option<PathBuf>),
+    /// Create a project in a new directory, then edit and run its script.
+    New(Option<PathBuf>),
+}
+
+impl ScriptCommand {
+    /// Whether this action needs an interactive editor.
+    pub fn edits(&self) -> bool {
+        !matches!(self, Self::Run(_))
+    }
+
+    /// Whether this action runs the selected script.
+    pub fn runs(&self) -> bool {
+        !matches!(self, Self::EditOnly)
+    }
+}
+
 /// A command accepted by the signing-host command bar or `exec` mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellCommand {
@@ -138,7 +161,7 @@ pub enum ShellCommand {
     Approval(ApprovalCommand),
     /// Edit the remembered product script, or run an explicit one, through the
     /// public frame endpoint.
-    Script(Option<PathBuf>),
+    Script(ScriptCommand),
     /// Show command and keyboard help.
     Help,
     /// Clear the visible transcript.
@@ -200,14 +223,23 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             let arguments =
                 shlex::split(argument).ok_or_else(|| "invalid /devices quoting".to_string())?;
             if arguments.first().is_some_and(|value| value == "--remove") {
-                if arguments.len() != 2 {
-                    return Err("usage: /devices --remove <statement-account-id>".to_string());
-                }
-                return Ok(ShellCommand::Devices(DeviceCommand::Remove(
-                    parse_statement_account_id(&arguments[1])?,
-                )));
+                let (statement_account_id, force) = match arguments.as_slice() {
+                    [_, statement_account_id] => (statement_account_id, false),
+                    [_, statement_account_id, force] if force == "--force" => {
+                        (statement_account_id, true)
+                    }
+                    _ => {
+                        return Err(
+                            "usage: /devices --remove <statement-account-id> [--force]".to_string()
+                        );
+                    }
+                };
+                return Ok(ShellCommand::Devices(DeviceCommand::Remove {
+                    statement_account_id: parse_statement_account_id(statement_account_id)?,
+                    force,
+                }));
             }
-            Err("usage: /devices [--list | --remove <statement-account-id>]".to_string())
+            Err("usage: /devices [--list | --remove <statement-account-id> [--force]]".to_string())
         }
         "/approval" => match argument {
             "" => Ok(ShellCommand::Approval(ApprovalCommand::Current)),
@@ -216,10 +248,21 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             _ => Err("usage: /approval [manual|automatic]".to_string()),
         },
         "/script" => {
-            if argument.is_empty() {
-                return Ok(ShellCommand::Script(None));
-            }
-            Ok(ShellCommand::Script(Some(PathBuf::from(argument))))
+            let command = match argument {
+                "" => ScriptCommand::Edit,
+                "--run" => ScriptCommand::Run(None),
+                "--edit" => ScriptCommand::EditOnly,
+                "--new" => ScriptCommand::New(None),
+                "--" => return Err("usage: /script -- <path>".to_string()),
+                _ => match argument.split_once(char::is_whitespace) {
+                    Some(("--new", directory)) => {
+                        ScriptCommand::New(Some(PathBuf::from(directory.trim())))
+                    }
+                    Some(("--", path)) => ScriptCommand::Run(Some(PathBuf::from(path.trim()))),
+                    _ => ScriptCommand::Run(Some(PathBuf::from(argument))),
+                },
+            };
+            Ok(ShellCommand::Script(command))
         }
         "/help" => no_argument(name, argument, ShellCommand::Help),
         "/clear" => no_argument(name, argument, ShellCommand::Clear),
@@ -381,7 +424,23 @@ fn completions_for_scope(
     scope: CommandScope,
 ) -> Vec<Completion> {
     if let Some(path) = input.strip_prefix("/script ") {
-        return path_completions(path);
+        if let Some(path) = path.strip_prefix("--new ") {
+            return path_completions(path, "/script --new");
+        }
+        if let Some(path) = path.strip_prefix("-- ") {
+            return path_completions(path, "/script --");
+        }
+        let mut completions = fixed_argument_completions(
+            "/script",
+            path,
+            &[
+                ("--run", "rerun the remembered script"),
+                ("--edit", "edit without running"),
+                ("--new", "create a new project"),
+            ],
+        );
+        completions.extend(path_completions(path, "/script"));
+        return completions;
     }
     if let Some(prefix) = input.strip_prefix("/log ") {
         return fixed_argument_completions("/log", prefix, LOG_ARGUMENTS);
@@ -394,6 +453,16 @@ fn completions_for_scope(
     if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/devices ")
     {
+        if let Some((statement_account_id, force_prefix)) = prefix
+            .strip_prefix("--remove ")
+            .and_then(|value| value.split_once(char::is_whitespace))
+        {
+            return fixed_argument_completions(
+                &format!("/devices --remove {statement_account_id}"),
+                force_prefix.trim_start(),
+                &[("--force", "remove locally if notification fails")],
+            );
+        }
         return fixed_argument_completions(
             "/devices",
             prefix,
@@ -490,7 +559,7 @@ fn fixed_argument_completions(
         .collect()
 }
 
-fn path_completions(input: &str) -> Vec<Completion> {
+fn path_completions(input: &str, command: &str) -> Vec<Completion> {
     let path = Path::new(input);
     let ends_with_separator = input.ends_with(std::path::MAIN_SEPARATOR);
     let (directory, prefix) = if ends_with_separator {
@@ -524,7 +593,7 @@ fn path_completions(input: &str) -> Vec<Completion> {
                 ""
             };
             Some(Completion {
-                value: format!("/script {displayed_parent}{name}{suffix}"),
+                value: format!("{command} {displayed_parent}{name}{suffix}"),
                 description: "filesystem path",
             })
         })
@@ -535,6 +604,7 @@ fn path_completions(input: &str) -> Vec<Completion> {
 }
 
 /// Editable command input with completion selection and in-memory history.
+#[derive(Default)]
 pub struct CommandEditor {
     chars: Vec<char>,
     cursor: usize,
@@ -567,26 +637,8 @@ impl fmt::Debug for CommandEditor {
 impl Drop for CommandEditor {
     fn drop(&mut self) {
         self.chars.zeroize();
-        for entry in &mut self.history {
-            entry.zeroize();
-        }
+        self.history.zeroize();
         self.history_draft.zeroize();
-    }
-}
-
-impl Default for CommandEditor {
-    fn default() -> Self {
-        Self {
-            chars: Vec::new(),
-            cursor: 0,
-            history: Vec::new(),
-            history_index: None,
-            history_draft: String::new(),
-            completion_index: 0,
-            completions_dismissed: false,
-            session_names: Vec::new(),
-            scope: CommandScope::SigningHost,
-        }
     }
 }
 
@@ -805,12 +857,16 @@ pub const HELP_TEXT: &str = "\
 /pair <image-path>      read a pairing QR image file
 /pair <url>             answer a Polkadot Mobile pairing URL
 /devices                list paired devices for the active session
-/devices --remove <id>  remove one paired device by statement account ID
+/devices --remove <id>  disconnect and remove one paired device by statement account ID
+/devices --remove <id> --force  remove locally even if notification fails
 /approval               show the current confirmation approval mode
 /approval manual        prompt for every future confirmation
 /approval automatic     approve every future confirmation automatically
 /script                 edit and run the session's last Bun TypeScript script
 /script <path>          run an existing JS/TS product script with Bun
+/script --run           rerun the remembered script
+/script --edit          edit without running
+/script --new [dir]     create and edit a new project
 /log <level>            set error, warn, info, debug, or trace
 /product                show the current product
 /product <id>           switch product and reconnect product clients
@@ -833,6 +889,9 @@ Esc close completion or reject approval, Ctrl-C clear/cancel/quit";
 pub const PAIRING_HELP_TEXT: &str = "\
 /script                 edit and run the last Bun TypeScript product script
 /script <path>          run an existing JS/TS product script with Bun
+/script --run           rerun the remembered script
+/script --edit          edit without running
+/script --new [dir]     create and edit a new project
 /login                  pair with a signing host for the current product
 /logout                 disconnect and reset pairing keys
 /log <level>            set error, warn, info, debug, or trace
@@ -854,6 +913,37 @@ mod tests {
     const DEVICE_ID: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
     #[test]
+    fn script_actions_preserve_paths_with_spaces_and_option_like_filenames() {
+        let inputs = [
+            "/script",
+            "/script --edit",
+            "/script --run",
+            "/script --new",
+            "/script --new projects/my example",
+            "/script projects/my example/script.ts",
+            "/script -- --run",
+            "/script --other",
+            "/script --new-example.ts",
+        ];
+
+        assert_eq!(
+            inputs.map(parse_command),
+            [
+                ScriptCommand::Edit,
+                ScriptCommand::EditOnly,
+                ScriptCommand::Run(None),
+                ScriptCommand::New(None),
+                ScriptCommand::New(Some(PathBuf::from("projects/my example"))),
+                ScriptCommand::Run(Some(PathBuf::from("projects/my example/script.ts"))),
+                ScriptCommand::Run(Some(PathBuf::from("--run"))),
+                ScriptCommand::Run(Some(PathBuf::from("--other"))),
+                ScriptCommand::Run(Some(PathBuf::from("--new-example.ts"))),
+            ]
+            .map(|command| Ok(ShellCommand::Script(command)))
+        );
+    }
+
+    #[test]
     fn parses_all_operational_commands() {
         assert_eq!(
             parse_command("/pair"),
@@ -873,11 +963,14 @@ mod tests {
         );
         assert_eq!(
             parse_command("/script scripts/my smoke.ts"),
-            Ok(ShellCommand::Script(Some(PathBuf::from(
-                "scripts/my smoke.ts"
+            Ok(ShellCommand::Script(ScriptCommand::Run(Some(
+                PathBuf::from("scripts/my smoke.ts")
             ))))
         );
-        assert_eq!(parse_command("/script"), Ok(ShellCommand::Script(None)));
+        assert_eq!(
+            parse_command("/script"),
+            Ok(ShellCommand::Script(ScriptCommand::Edit))
+        );
         assert_eq!(parse_command("/login"), Ok(ShellCommand::Login));
         assert_eq!(parse_command("/logout"), Ok(ShellCommand::Logout));
         assert_eq!(
@@ -902,11 +995,24 @@ mod tests {
         );
         assert_eq!(
             parse_command(&format!("/devices --remove 0x{DEVICE_ID}")),
-            Ok(ShellCommand::Devices(DeviceCommand::Remove([1; 32])))
+            Ok(ShellCommand::Devices(DeviceCommand::Remove {
+                statement_account_id: [1; 32],
+                force: false,
+            }))
         );
         assert_eq!(
             parse_command(&format!("/devices --remove 0X{DEVICE_ID}")),
-            Ok(ShellCommand::Devices(DeviceCommand::Remove([1; 32])))
+            Ok(ShellCommand::Devices(DeviceCommand::Remove {
+                statement_account_id: [1; 32],
+                force: false,
+            }))
+        );
+        assert_eq!(
+            parse_command(&format!("/devices --remove 0x{DEVICE_ID} --force")),
+            Ok(ShellCommand::Devices(DeviceCommand::Remove {
+                statement_account_id: [1; 32],
+                force: true,
+            }))
         );
         assert_eq!(
             parse_command("/session"),
@@ -975,6 +1081,9 @@ mod tests {
         assert!(parse_command("/devices --remove").is_err());
         assert!(parse_command("/devices --remove not-an-account").is_err());
         assert!(parse_command(&format!("/devices --remove {DEVICE_ID} extra")).is_err());
+        assert!(parse_command(&format!("/devices --remove --force {DEVICE_ID}")).is_err());
+        assert!(parse_command(&format!("/devices --remove {DEVICE_ID} --force --force")).is_err());
+        assert!(parse_command("/devices --force").is_err());
         assert!(parse_command("/devices --unknown").is_err());
         assert!(parse_command("/log noisy").is_err());
         assert!(parse_command("/product example.com").is_err());
@@ -1124,6 +1233,17 @@ mod tests {
                     description: "remove one paired device",
                 },
             ]
+        );
+        assert_eq!(
+            completions_for_scope(
+                &format!("/devices --remove {DEVICE_ID} --f"),
+                &[],
+                CommandScope::SigningHost
+            ),
+            vec![Completion {
+                value: format!("/devices --remove {DEVICE_ID} --force"),
+                description: "remove locally if notification fails",
+            }]
         );
         assert!(completions_for_scope("/devices", &[], CommandScope::PairingHost).is_empty());
     }

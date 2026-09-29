@@ -1,0 +1,40 @@
+name: Register device
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_name:
+        description: "Device name (e.g. John's iPhone)"
+        required: true
+        type: string
+      device_udid:
+        description: "Device UDID (40-char hex or 24-char with dash for newer devices)"
+        required: true
+        type: string
+
+jobs:
+  register_device:
+    runs-on: macos-26
+    # Registering a device mutates signing state at Apple, so this is limited
+    # to named people. fromJSON, not a bare string: contains() on a string is a
+    # substring test, which any login appearing inside another would pass.
+    if: contains(fromJSON('["sergkononenko","ERussel","stepanLav","kogeler","TarikGul","pgherveou","filvecchiato","valentinfernandez1"]'), github.actor)
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup iOS Environment
+        uses: ./hosts/ios/.github/actions/install
+
+      - name: Register device
+        working-directory: hosts/ios
+        run: bundle exec fastlane register name:"$DEVICE_NAME" udid:"$DEVICE_UDID"
+        env:
+          DEVICE_NAME: ${{ inputs.device_name }}
+          DEVICE_UDID: ${{ inputs.device_udid }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}

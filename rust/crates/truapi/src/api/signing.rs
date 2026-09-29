@@ -12,18 +12,35 @@ use crate::versioned::signing::{
     HostSignRawResponse, HostSignRawWithLegacyAccountError, HostSignRawWithLegacyAccountRequest,
     HostSignRawWithLegacyAccountResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// Signing operations.
+#[wire_trait(id = 13)]
 #[crate::async_trait]
 pub trait Signing: Send + Sync {
     /// Construct a transaction for a product account.
+    ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
     ///
     /// Under Extrinsic V5, omitting `VerifyMultiSignature` from `extensions`
     /// lets the host sign with the signer's key. Listing it — as `Disabled`,
     /// with a proof in a later extension — encodes the given bytes verbatim and
     /// returns an unsigned transaction.
+    ///
+    /// `txExtVersion` is the version of the transaction extensions in
+    /// `extensions`, as the runtime numbers them. The host picks the extrinsic
+    /// format from it. V4 always uses version 0, so a non-zero version builds a
+    /// V5 general transaction. Version 0 builds V5 when it includes
+    /// `VerifyMultiSignature`, and a signed V4 transaction otherwise.
+    ///
+    /// `contacts` lists the contact handles `callData` names, and the host
+    /// replaces each with the account it resolves to before the call is shown
+    /// or signed. A declared handle the call does not contain, or one no
+    /// contact matches, refuses the whole call as `UnknownContact` rather than
+    /// signing something that names somebody else. A call paying nobody from
+    /// the picker leaves it empty.
     ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
@@ -42,26 +59,11 @@ pub trait Signing: Send + Sync {
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
     ///
-    /// for (const txExtVersion of [0, 5]) {
-    ///   const version = txExtVersion === 0 ? "V4" : "V5";
-    ///   // V5 leaves VerifyMultiSignature to the host, which signs. V4 keeps
-    ///   // it: that body is a plain concatenation, so dropping one shifts the rest.
-    ///   const extensions =
-    ///     txExtVersion === 5
-    ///       ? payload.value.extensions.filter(
-    ///           (ext) => ext.id !== "VerifyMultiSignature",
-    ///         )
-    ///       : payload.value.extensions;
-    ///   const result = await truapi.signing.createTransaction({
-    ///     ...payload.value,
-    ///     extensions,
-    ///     txExtVersion,
-    ///   });
-    ///   assert(result.isOk(), `${version} createTransaction failed:`, result);
-    ///   console.log(`${version} transaction created:`, result.value);
-    /// }
+    /// const result = await truapi.signing.createTransaction(payload.value);
+    /// assert(result.isOk(), "createTransaction failed:", result);
+    /// console.log("transaction created:", result.value);
     /// ```
-    #[wire(request_id = 30, sensitive)]
+    #[wire(id = 0)]
     async fn create_transaction(
         &self,
         _cx: &CallContext,
@@ -101,24 +103,14 @@ pub trait Signing: Send + Sync {
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
     ///
-    /// // Host-owned under V5 only: a V4 body is a plain concatenation, so
-    /// // dropping a declared extension there shifts every one after it.
-    /// const extensions =
-    ///   payload.value.txExtVersion === 5
-    ///     ? payload.value.extensions.filter(
-    ///         (ext) => ext.id !== "VerifyMultiSignature",
-    ///       )
-    ///     : payload.value.extensions;
-    ///
     /// const result = await truapi.signing.createTransactionWithLegacyAccount({
     ///   ...payload.value,
-    ///   extensions,
     ///   signer: accountResult.value.account.publicKey,
     /// });
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
     /// console.log("transaction created:", result.value);
     /// ```
-    #[wire(request_id = 32, sensitive)]
+    #[wire(id = 1)]
     async fn create_transaction_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -150,7 +142,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRawWithLegacyAccount failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 34, sensitive)]
+    #[wire(id = 2)]
     async fn sign_raw_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -196,7 +188,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayloadWithLegacyAccount failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 36, sensitive)]
+    #[wire(id = 3)]
     async fn sign_payload_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -209,6 +201,9 @@ pub trait Signing: Send + Sync {
     }
 
     /// Sign raw bytes or a message.
+    ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
     ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
@@ -226,7 +221,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRaw failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 114, sensitive)]
+    #[wire(id = 4)]
     async fn sign_raw(
         &self,
         _cx: &CallContext,
@@ -236,6 +231,9 @@ pub trait Signing: Send + Sync {
     }
 
     /// Sign an extrinsic payload.
+    ///
+    /// Served locally without a user confirmation when an RFC-0010 `AutoSigning`
+    /// grant covers the account; otherwise each call is confirmed by the user.
     ///
     /// ```ts
     /// const productContext = await truapi.system.getProductContext();
@@ -263,12 +261,91 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayload failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 116, sensitive)]
+    #[wire(id = 5)]
     async fn sign_payload(
         &self,
         _cx: &CallContext,
         _request: HostSignPayloadRequest,
     ) -> Result<HostSignPayloadResponse, CallError<HostSignPayloadError>> {
+        Err(CallError::unavailable())
+    }
+
+    /// Sign the supplied data without adding or removing a watermark.
+    ///
+    /// Temporary compatibility API for runtime ownership proofs, including the
+    /// 32-byte Resources alias used by Humanity. Payload decoding matches
+    /// watermarked signing, but the decoded bytes are signed exactly as supplied.
+    /// This permits transaction-shaped data and requires signing authorization
+    /// and explicit user confirmation.
+    ///
+    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See <https://github.com/paritytech/host-rust-core/issues/612>
+    ///
+    /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
+    /// const result = await truapi.signing.signRawUnwatermarkedDeprecated({
+    ///   account: { dotNsIdentifier: productContext.value.productId, derivationIndex: { tag: "Index", value: 0 } },
+    ///   payload: {
+    ///     tag: "Bytes",
+    ///     value: {
+    ///       bytes: "0x1111111111111111111111111111111111111111111111111111111111111111",
+    ///     },
+    ///   },
+    /// });
+    /// assert(result.isOk(), "signRawUnwatermarkedDeprecated failed:", result);
+    /// console.log("raw bytes signed:", result.value);
+    /// ```
+    #[deprecated(
+        note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
+    )]
+    #[wire(id = 6)]
+    async fn sign_raw_unwatermarked_deprecated(
+        &self,
+        _cx: &CallContext,
+        _request: HostSignRawRequest,
+    ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
+        Err(CallError::unavailable())
+    }
+
+    /// Sign the supplied data without adding or removing a watermark.
+    ///
+    /// Temporary compatibility API for runtime ownership proofs, including the
+    /// 32-byte Resources alias used by Humanity. Payload decoding matches
+    /// watermarked signing, but the decoded bytes are signed exactly as supplied.
+    /// This permits transaction-shaped data and requires signing authorization
+    /// and explicit user confirmation.
+    ///
+    /// @deprecated Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See <https://github.com/paritytech/host-rust-core/issues/612>
+    ///
+    /// ```ts
+    /// const accountsResult = await truapi.account.getLegacyAccounts();
+    /// assert(accountsResult.isOk(), "getLegacyAccounts failed:", accountsResult);
+    /// const identityAccount =
+    ///   accountsResult.value.accounts.find((account) => account.name === "Identity") ??
+    ///   accountsResult.value.accounts[0];
+    /// assert(identityAccount, "no legacy accounts available");
+    ///
+    /// const result = await truapi.signing.signRawUnwatermarkedDeprecatedWithLegacyAccount({
+    ///   signer: identityAccount.publicKey,
+    ///   payload: {
+    ///     tag: "Bytes",
+    ///     value: { bytes: "0x1111111111111111111111111111111111111111111111111111111111111111" },
+    ///   },
+    /// });
+    /// assert(result.isOk(), "signRawUnwatermarkedDeprecatedWithLegacyAccount failed:", result);
+    /// console.log("raw bytes signed:", result.value);
+    /// ```
+    #[deprecated(
+        note = "Temporary unwatermarked signing; migrate to watermarked signing when the runtime supports it. This API will be removed. See https://github.com/paritytech/host-rust-core/issues/612"
+    )]
+    #[wire(id = 7)]
+    async fn sign_raw_unwatermarked_deprecated_with_legacy_account(
+        &self,
+        _cx: &CallContext,
+        _request: HostSignRawWithLegacyAccountRequest,
+    ) -> Result<HostSignRawWithLegacyAccountResponse, CallError<HostSignRawWithLegacyAccountError>>
+    {
         Err(CallError::unavailable())
     }
 }

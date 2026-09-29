@@ -1,7 +1,8 @@
 //! Unified [`Account`] trait.
 
 use crate::versioned::account::{
-    HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
+    HostAccountConnectionStatusSubscribeError, HostAccountConnectionStatusSubscribeItem,
+    HostAccountConnectionStatusSubscribeRequest, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
     HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountGetError,
     HostAccountGetRequest, HostAccountGetResponse, HostAccountListRingVrfKeysError,
@@ -14,10 +15,11 @@ use crate::versioned::account::{
     HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError, HostRequestLoginRequest,
     HostRequestLoginResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Account lookup, aliasing, and proof generation.
+#[wire_trait(id = 2)]
 #[crate::async_trait]
 pub trait Account: Send + Sync {
     /// Subscribe to account connection status changes.
@@ -30,12 +32,16 @@ pub trait Account: Send + Sync {
     /// );
     /// console.log("connection status:", status);
     /// ```
-    #[wire(start_id = 18)]
+    #[wire(id = 0)]
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostAccountConnectionStatusSubscribeItem> {
-        Subscription::empty()
+        _request: HostAccountConnectionStatusSubscribeRequest,
+    ) -> Subscription<
+        HostAccountConnectionStatusSubscribeItem,
+        CallError<HostAccountConnectionStatusSubscribeError>,
+    > {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Retrieve a product-scoped account.
@@ -62,7 +68,7 @@ pub trait Account: Send + Sync {
     /// assert(otherProduct.isOk(), "cross-product getAccount was denied or failed:", otherProduct);
     /// console.log("other product account retrieved after approval:", otherProduct.value);
     /// ```
-    #[wire(request_id = 22)]
+    #[wire(id = 1)]
     async fn get_account(
         &self,
         _cx: &CallContext,
@@ -106,7 +112,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "getAccountAlias failed:", result);
     /// console.log("account alias:", result.value);
     /// ```
-    #[wire(request_id = 24)]
+    #[wire(id = 2)]
     async fn get_account_alias(
         &self,
         _cx: &CallContext,
@@ -142,16 +148,24 @@ pub trait Account: Send + Sync {
     ///   message: "0x48656c6c6f",
     /// });
     /// assert(result.isErr(), "foreign createAccountProof unexpectedly succeeded:", result);
+    /// // RFC-0024 forbids a prompt fallback for a bearer proof made with a
+    /// // foreign key, so the only correct outcome is a refusal. Which refusal
+    /// // depends on how far the call gets: the session is consulted before the
+    /// // grant, so a signed-out host answers `Rejected` and a signed-in one
+    /// // without a `context` grant answers `NotAllowlisted`. Both are refusals
+    /// // and neither asks the user anything, which is what this demonstrates.
+    /// const refusal =
+    ///   result.error.tag === "Domain" && result.error.value.tag === "V1"
+    ///     ? result.error.value.value.tag
+    ///     : result.error.tag;
     /// assert(
-    ///   result.error.tag === "Domain" &&
-    ///     result.error.value.tag === "V1" &&
-    ///     result.error.value.value.tag === "NotAllowlisted",
-    ///   "foreign createAccountProof did not return NotAllowlisted:",
+    ///   refusal === "NotAllowlisted" || refusal === "Rejected",
+    ///   "foreign createAccountProof was not refused:",
     ///   result,
     /// );
-    /// console.log("foreign account proof refused without prompting");
+    /// console.log(`foreign account proof refused without prompting: ${refusal}`);
     /// ```
-    #[wire(request_id = 26, sensitive)]
+    #[wire(id = 3)]
     async fn create_account_proof(
         &self,
         _cx: &CallContext,
@@ -185,7 +199,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "signVrf failed:", result);
     /// console.log("vrf signature:", result.value);
     /// ```
-    #[wire(request_id = 164, sensitive)]
+    #[wire(id = 7)]
     async fn sign_vrf(
         &self,
         _cx: &CallContext,
@@ -197,7 +211,8 @@ pub trait Account: Send + Sync {
     /// Register a ring-VRF key owned by the calling product.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const PEOPLE_COLLECTION_ID =
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
@@ -205,7 +220,7 @@ pub trait Account: Send + Sync {
     /// const result = await truapi.account.registerRingVrfKey({
     ///   index: { tag: "Index", value: 0 },
     ///   ring: {
-    ///     chainId: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+    ///     chainId: people.value.genesisHash,
     ///     junctions: [
     ///       { tag: "CollectionId", value: PEOPLE_COLLECTION_ID },
     ///     ],
@@ -214,7 +229,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "registerRingVrfKey failed:", result);
     /// console.log("ring VRF public key:", result.value);
     /// ```
-    #[wire(request_id = 168)]
+    #[wire(id = 8)]
     async fn register_ring_vrf_key(
         &self,
         _cx: &CallContext,
@@ -227,17 +242,23 @@ pub trait Account: Send + Sync {
     /// List registered ring-VRF keys owned by a product.
     ///
     /// ```ts
-    /// const productContext = await truapi.system.getProductContext();
-    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
-    ///
     /// const result = await truapi.account.listRingVrfKeys({
-    ///   owner: productContext.value.productId,
-    ///   disclosure: "PublicKey",
+    ///   owner: "peopl.paseo",
+    ///   disclosure: "Anonymized",
     /// });
     /// assert(result.isOk(), "listRingVrfKeys failed:", result);
+    /// assert(
+    ///   [0, 1].every((index) => result.value.some(({ handle }) =>
+    ///     handle.dotNsIdentifier === "peopl.paseo"
+    ///     && handle.derivationIndex.tag === "Index"
+    ///     && handle.derivationIndex.value === index,
+    ///   )),
+    ///   "Expected built-in full and lite personhood keys:",
+    ///   result.value,
+    /// );
     /// console.log("registered ring VRF keys:", result.value);
     /// ```
-    #[wire(request_id = 170)]
+    #[wire(id = 9)]
     async fn list_ring_vrf_keys(
         &self,
         _cx: &CallContext,
@@ -263,7 +284,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "ringVrfSign failed:", result);
     /// console.log("ring VRF signature:", result.value);
     /// ```
-    #[wire(request_id = 172)]
+    #[wire(id = 10)]
     async fn ring_vrf_sign(
         &self,
         _cx: &CallContext,
@@ -282,7 +303,7 @@ pub trait Account: Send + Sync {
     /// assert(result.value.accounts.length === 0, "unexpected legacy accounts:", result.value);
     /// console.log("legacy accounts:", result.value.accounts);
     /// ```
-    #[wire(request_id = 28)]
+    #[wire(id = 4)]
     async fn get_legacy_accounts(
         &self,
         _cx: &CallContext,
@@ -298,7 +319,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "getUserId failed:", result);
     /// console.log("user id:", result.value);
     /// ```
-    #[wire(request_id = 110, sensitive)]
+    #[wire(id = 5)]
     async fn get_user_id(
         &self,
         _cx: &CallContext,
@@ -319,7 +340,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "requestLogin failed:", result);
     /// console.log("login completed:", result.value);
     /// ```
-    #[wire(request_id = 112, sensitive)]
+    #[wire(id = 6)]
     async fn request_login(
         &self,
         _cx: &CallContext,

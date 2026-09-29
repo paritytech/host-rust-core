@@ -12,7 +12,10 @@ pub struct HostLocalStorageWriteRequest {
 
 /// Local storage operation error.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Error)
+)]
 pub enum HostLocalStorageReadError {
     /// Storage quota exceeded.
     #[display("storage quota exhausted")]
@@ -44,4 +47,22 @@ pub struct HostLocalStorageReadResponse {
 pub struct HostLocalStorageClearRequest {
     /// Storage key to clear.
     pub key: String,
+}
+
+/// Request to subscribe to changes of one local storage key.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostLocalStorageSubscribeRequest {
+    /// Storage key to observe.
+    pub key: String,
+}
+
+/// A change to a subscribed storage key, pushed to the subscriber.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
+pub struct HostLocalStorageChangeItem {
+    /// Value after the change. `Some` on write, `None` after clear.
+    pub value: Option<Vec<u8>>,
 }

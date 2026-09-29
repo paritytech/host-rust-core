@@ -40,6 +40,12 @@ function setupFakeDom() {
     // Spy on both MessageChannel ports so dispose() teardown is observable.
     const port1 = { postMessage: mock(() => {}), close: mock(() => {}) };
     const port2 = { postMessage: mock(() => {}), close: mock(() => {}) };
+    // Remember what was there. The runtime provides a real `MessageChannel`,
+    // and deleting it on teardown instead of restoring it breaks every later
+    // suite in the same process -- these tests share one.
+    saved.MessageChannel = globalThis.MessageChannel;
+    saved.document = (globalThis as { document?: unknown }).document;
+    saved.window = (globalThis as { window?: unknown }).window;
     globalThis.MessageChannel = class {
         port1 = port1;
         port2 = port2;
@@ -72,10 +78,27 @@ function setupFakeDom() {
     };
 }
 
+/** What the globals held before the fake DOM replaced them. */
+const saved: {
+    MessageChannel?: unknown;
+    document?: unknown;
+    window?: unknown;
+} = {};
+
+/** Put back exactly what was there, rather than deleting it. */
+function restoreGlobal(name: "MessageChannel" | "document" | "window") {
+    const previous = saved[name];
+    if (previous === undefined) {
+        delete (globalThis as Record<string, unknown>)[name];
+    } else {
+        (globalThis as Record<string, unknown>)[name] = previous;
+    }
+}
+
 function teardownFakeDom() {
-    delete (globalThis as { document?: unknown }).document;
-    delete (globalThis as { window?: unknown }).window;
-    delete (globalThis as { MessageChannel?: unknown }).MessageChannel;
+    restoreGlobal("document");
+    restoreGlobal("window");
+    restoreGlobal("MessageChannel");
 }
 
 describe("createIframeHost", () => {

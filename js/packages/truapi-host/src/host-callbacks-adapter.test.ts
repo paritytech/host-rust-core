@@ -5,14 +5,12 @@ import {
   HostChatCreateRoomRequest,
   HostChatCreateRoomResponse,
   HostDevicePermissionRequest,
-  HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
   RemotePermissionRequest,
-  RemotePermissionResponse,
 } from "@parity/truapi";
 import type {
   GenericError,
@@ -25,6 +23,7 @@ import { createWasmRawCallbacks } from "./generated/host-callbacks-adapter.js";
 import {
   AuthState,
   CoreStorageKey,
+  PermissionDecision,
   ProductContext,
   ProductExecutionKind,
   UserConfirmationReview,
@@ -37,6 +36,29 @@ import { makeHostCallbacks, settle } from "./test-support.js";
 // `Uint8Array`. Primitives, strings and byte blobs pass through unchanged.
 
 const GENESIS = `0x${"11".repeat(32)}` as `0x${string}`;
+
+it("preserves one-use permission decisions across the WASM callback", async () => {
+  const review = {
+    tag: "IdentityDisclosure" as const,
+    value: { productId: "playground.dot" },
+  };
+  for (const decision of ["AllowOnce", "AllowAlways", "Deny"] as const) {
+    const reviews: UserConfirmationReview[] = [];
+    const raw = createWasmRawCallbacks(makeHostCallbacks({
+      userConfirmation: {
+        confirmPermission: async (request) => {
+          reviews.push(request);
+          return decision;
+        },
+      },
+    }));
+    const encoded = await raw.confirmPermission(UserConfirmationReview.enc(review));
+    expect({ decision: PermissionDecision.dec(encoded), reviews }).toEqual({
+      decision,
+      reviews: [review],
+    });
+  }
+});
 
 const defaultTheme = (variant: ThemeVariant): HostThemeSubscribeItemValue => ({
   name: { tag: "Default" },
@@ -84,6 +106,11 @@ describe("createWasmRawCallbacks", () => {
     const writes: [string, number[]][] = [];
     const clears: string[] = [];
     const cancelled: number[] = [];
+    const askedBy: ProductContext[] = [];
+    const worker: ProductContext = {
+      productId: "camera.dot",
+      executionKind: "Worker",
+    };
     const raw = createWasmRawCallbacks(
       makeHostCallbacks({
         notifications: {
@@ -95,12 +122,16 @@ describe("createWasmRawCallbacks", () => {
           },
         },
         permissions: {
-          devicePermission: async (request) => ({
-            granted: request === "Camera",
-          }),
-          remotePermission: async (request) => ({
-            granted: request.permission.tag === "ChainSubmit",
-          }),
+          devicePermission: async (product, request) => {
+            askedBy.push(product);
+            return request === "Camera" ? "AllowAlways" : "Deny";
+          },
+          remotePermission: async (product, request) => {
+            askedBy.push(product);
+            return request.permission.tag === "ChainSubmit"
+              ? "AllowOnce"
+              : "Deny";
+          },
         },
         features: {
           featureSupported: async (request) => ({
@@ -132,19 +163,24 @@ describe("createWasmRawCallbacks", () => {
       ).id,
     ).toBe(5);
     expect(
-      HostDevicePermissionResponse.dec(
-        await raw.devicePermission!(HostDevicePermissionRequest.enc("Camera")),
-      ).granted,
-    ).toBe(true);
+      PermissionDecision.dec(
+        await raw.devicePermission!(
+          ProductContext.enc(worker),
+          HostDevicePermissionRequest.enc("Camera"),
+        ),
+      ),
+    ).toBe("AllowAlways");
     expect(
-      RemotePermissionResponse.dec(
+      PermissionDecision.dec(
         await raw.remotePermission!(
+          ProductContext.enc(worker),
           RemotePermissionRequest.enc({
             permission: { tag: "ChainSubmit" },
           }),
         ),
-      ).granted,
-    ).toBe(true);
+      ),
+    ).toBe("AllowOnce");
+    expect(askedBy).toEqual([worker, worker]);
     expect(
       HostFeatureSupportedResponse.dec(
         await raw.featureSupported!(
@@ -198,21 +234,26 @@ describe("createWasmRawCallbacks", () => {
               case "SignPayload":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.account.dotNsIdentifier ===
+                  review.value.value.callingProductId === "playground.dot" &&
+                  review.value.value.request.account.dotNsIdentifier ===
                     "playground.dot" &&
-                  review.value.value.payload.method === "0x0102"
+                  review.value.value.request.payload.method === "0x0102"
                 );
               case "SignRaw":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.payload.tag === "Bytes" &&
-                  review.value.value.payload.value.bytes === "0x0304"
+                  review.value.value.callingProductId === "playground.dot" &&
+                  review.value.value.watermarked === false &&
+                  review.value.value.request.payload.tag === "Bytes" &&
+                  review.value.value.request.payload.value.bytes === "0x0304"
                 );
               case "CreateTransaction":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.signer.derivationIndex.tag === "Index" &&
-                  review.value.value.callData === "0x0506"
+                  review.value.value.callingProductId === "playground.dot" &&
+                  review.value.value.payload.signer.derivationIndex.tag ===
+                    "Index" &&
+                  review.value.value.payload.callData === "0x0506"
                 );
               case "AccountAlias":
                 return (
@@ -283,8 +324,11 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
-              account: PRODUCT_ACCOUNT,
-              payload: SIGN_PAYLOAD,
+              callingProductId: "playground.dot",
+              request: {
+                account: PRODUCT_ACCOUNT,
+                payload: SIGN_PAYLOAD,
+              },
             },
           },
         }),
@@ -297,11 +341,15 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
-              account: PRODUCT_ACCOUNT,
-              payload: {
-                tag: "Bytes",
-                value: { bytes: "0x0304" },
+              callingProductId: "playground.dot",
+              request: {
+                account: PRODUCT_ACCOUNT,
+                payload: {
+                  tag: "Bytes",
+                  value: { bytes: "0x0304" },
+                },
               },
+              watermarked: false,
             },
           },
         }),
@@ -314,11 +362,15 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
-              signer: PRODUCT_ACCOUNT,
-              genesisHash: GENESIS,
-              callData: "0x0506",
-              extensions: [],
-              txExtVersion: 0,
+              callingProductId: "playground.dot",
+              payload: {
+                signer: PRODUCT_ACCOUNT,
+                genesisHash: GENESIS,
+                callData: "0x0506",
+                extensions: [],
+                txExtVersion: 0,
+                contacts: [],
+              },
             },
           },
         }),
@@ -566,7 +618,7 @@ describe("createWasmRawCallbacks", () => {
 describe("ProductContext codec", () => {
   // Mirror of the Rust test
   // `product_context_encoding_matches_the_generated_host_codec` in
-  // `rust/crates/truapi-platform/src/lib.rs`, which pins these same bytes
+  // `rust/crates/truapi/src/platform.rs`, which pins these same bytes
   // through `parity-scale-codec`. Both halves must be edited together: a
   // ProductContext travels the wasm callback boundary encoded in Rust and
   // decoded here.

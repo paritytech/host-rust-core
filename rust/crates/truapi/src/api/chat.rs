@@ -1,16 +1,17 @@
 //! Unified [`Chat`] trait.
 
 use crate::versioned::chat::{
-    HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
-    HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
-    HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
-    HostChatRegisterBotRequest, HostChatRegisterBotResponse, ProductChatCustomMessageRenderItem,
-    ProductChatCustomMessageRenderRequest,
+    HostChatActionSubscribeError, HostChatActionSubscribeItem, HostChatActionSubscribeRequest,
+    HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
+    HostChatListSubscribeError, HostChatListSubscribeItem, HostChatListSubscribeRequest,
+    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Chat room, bot, and message APIs.
+#[wire_trait(id = 4)]
 #[crate::service(required_execution = Worker)]
 #[crate::async_trait]
 pub trait Chat: Send + Sync {
@@ -25,7 +26,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "createRoom failed:", result);
     /// console.log("room created:", result.value);
     /// ```
-    #[wire(request_id = 38)]
+    #[wire(id = 0)]
     async fn create_room(
         &self,
         _cx: &CallContext,
@@ -45,7 +46,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "registerBot failed:", result);
     /// console.log("bot registered:", result.value);
     /// ```
-    #[wire(request_id = 40)]
+    #[wire(id = 1)]
     async fn register_bot(
         &self,
         _cx: &CallContext,
@@ -64,9 +65,13 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("room list received:", item);
     /// ```
-    #[wire(start_id = 42)]
-    async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
-        Subscription::empty()
+    #[wire(id = 2)]
+    async fn list_subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostChatListSubscribeRequest,
+    ) -> Subscription<HostChatListSubscribeItem, CallError<HostChatListSubscribeError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Post a message to a chat room.
@@ -91,7 +96,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "postMessage failed:", result);
     /// console.log("message posted:", result.value);
     /// ```
-    #[wire(request_id = 46)]
+    #[wire(id = 3)]
     async fn post_message(
         &self,
         _cx: &CallContext,
@@ -110,28 +115,14 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("action received:", item);
     /// ```
-    #[wire(start_id = 48)]
+    #[wire(id = 4)]
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
-    ) -> Subscription<HostChatActionSubscribeItem> {
-        Subscription::empty()
+        _request: HostChatActionSubscribeRequest,
+    ) -> Subscription<HostChatActionSubscribeItem, CallError<HostChatActionSubscribeError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 
-    /// Streams renderer trees for one stored custom message.
-    ///
-    /// ```ts
-    /// import { of } from "rxjs";
-    /// truapi.chat.onCustomMessageRender(({ messageType, payload }) => {
-    ///   return of({ tag: "String", value: { text: `${messageType}: ${payload}` } });
-    /// });
-    /// ```
-    #[wire(host_initiated, start_id = 52)]
-    fn custom_message_render(
-        &self,
-        _cx: &CallContext,
-        _request: ProductChatCustomMessageRenderRequest,
-    ) -> Subscription<ProductChatCustomMessageRenderItem> {
-        Subscription::empty()
-    }
+    // Id 5 is spent and must never be reassigned; the next method takes 6.
 }

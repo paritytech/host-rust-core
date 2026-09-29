@@ -14,22 +14,28 @@ import {
   HostChatRegisterBotRequest,
   HostChatRegisterBotResponse,
   HostDevicePermissionRequest,
-  HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostLocalStorageChangeItem,
   HostLocaleSubscribeItem,
+  HostPocketListSubscribeItem,
+  HostPocketRemoveCardRequest,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   HostThemeSubscribeItem,
+  HostWorkerBeginOperationResponse,
   RemotePermissionRequest,
-  RemotePermissionResponse,
 } from "@parity/truapi";
-import type { GenericError, NotificationId } from "@parity/truapi";
+import type { GenericError } from "@parity/truapi";
 import {
   AuthState,
   CoreStorageKey,
   DevicePermissionStatus,
   HostChainSet,
+  HostContactLookup,
+  HostContactMatches,
+  HostContactPick,
+  PermissionDecision,
   ProductContext,
   UserConfirmationReview,
 } from "./host-callbacks.js";
@@ -63,6 +69,8 @@ export interface RawCallbacks {
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  contacts?(lookup: Uint8Array): Promise<Uint8Array>;
+  pickContact?(product: Uint8Array): Promise<Uint8Array>;
   readCoreStorage(key: Uint8Array): Promise<Uint8Array | null | undefined>;
   writeCoreStorage(key: Uint8Array, value: Uint8Array): Promise<void>;
   clearCoreStorage(key: Uint8Array): Promise<void>;
@@ -74,22 +82,42 @@ export interface RawCallbacks {
   ): (() => void) | void;
   navigateTo(url: string): Promise<void>;
   pushNotification(notification: Uint8Array): Promise<Uint8Array>;
-  cancelNotification(id: NotificationId): Promise<void>;
+  cancelNotification(id: number): Promise<void>;
   devicePermissionStatus?(request: Uint8Array): Promise<Uint8Array>;
-  devicePermission(request: Uint8Array): Promise<Uint8Array>;
-  remotePermission(request: Uint8Array): Promise<Uint8Array>;
+  devicePermission(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  remotePermission(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  subscribePocketCards?(
+    product: Uint8Array,
+    sendItem: (item?: Uint8Array) => void,
+    sendError: (error: GenericError) => void,
+  ): (() => void) | void;
+  removePocketCard?(product: Uint8Array, request: Uint8Array): Promise<void>;
   lookupPreimage(
     key: Uint8Array,
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  beginOperation(product: Uint8Array, label: string): Promise<Uint8Array>;
+  endOperation(product: Uint8Array, id: number): Promise<void>;
   read(key: string): Promise<Uint8Array | null | undefined>;
   write(key: string, value: Uint8Array): Promise<void>;
   clear(key: string): Promise<void>;
+  subscribeStorage(
+    key: string,
+    sendItem: (item?: Uint8Array) => void,
+    sendError: (error: GenericError) => void,
+  ): (() => void) | void;
   subscribeTheme(
     sendItem: (item?: Uint8Array) => void,
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
+  confirmPermission(review: Uint8Array): Promise<Uint8Array>;
   confirmUserAction(review: Uint8Array): Promise<boolean>;
 }
 /** Adapt typed host callbacks into the raw SCALE callback surface the
@@ -98,7 +126,9 @@ export function createWasmRawCallbacks(
   callbacks: RequiredHostCallbacks,
 ): RawCallbacks {
   const chat = callbacks.chat;
+  const contacts = callbacks.contacts;
   const permissionStatus = callbacks.permissionStatus;
+  const pocket = callbacks.pocket;
   return {
     authStateChanged: async (state) =>
       await callbacks.auth.authStateChanged(AuthState.dec(state)),
@@ -131,6 +161,18 @@ export function createWasmRawCallbacks(
               chat.subscribeChatRooms(ProductContext.dec(product)),
               (item) => sendItem(HostChatListSubscribeItem.enc(item)),
               sendError,
+            ),
+        }
+      : {}),
+    ...(contacts
+      ? {
+          contacts: async (lookup) =>
+            HostContactMatches.enc(
+              await contacts.contacts(HostContactLookup.dec(lookup)),
+            ),
+          pickContact: async (product) =>
+            HostContactPick.enc(
+              await contacts.pickContact(ProductContext.dec(product)),
             ),
         }
       : {}),
@@ -176,33 +218,74 @@ export function createWasmRawCallbacks(
             ),
         }
       : {}),
-    devicePermission: async (request) =>
-      HostDevicePermissionResponse.enc(
+    devicePermission: async (product, request) =>
+      PermissionDecision.enc(
         await callbacks.permissions.devicePermission(
+          ProductContext.dec(product),
           HostDevicePermissionRequest.dec(request),
         ),
       ),
-    remotePermission: async (request) =>
-      RemotePermissionResponse.enc(
+    remotePermission: async (product, request) =>
+      PermissionDecision.enc(
         await callbacks.permissions.remotePermission(
+          ProductContext.dec(product),
           RemotePermissionRequest.dec(request),
         ),
       ),
+    ...(pocket
+      ? {
+          subscribePocketCards: (product, sendItem, sendError) =>
+            driveResultStream(
+              pocket.subscribePocketCards(ProductContext.dec(product)),
+              (item) => sendItem(HostPocketListSubscribeItem.enc(item)),
+              sendError,
+            ),
+          removePocketCard: async (product, request) =>
+            await pocket.removePocketCard(
+              ProductContext.dec(product),
+              HostPocketRemoveCardRequest.dec(request),
+            ),
+        }
+      : {}),
     lookupPreimage: (key, sendItem, sendError) =>
       driveResultStream(
         callbacks.preimage.lookupPreimage(key),
         sendItem,
         sendError,
       ),
+    beginOperation: async (product, label) =>
+      HostWorkerBeginOperationResponse.enc(
+        await callbacks.productOperations.beginOperation(
+          ProductContext.dec(product),
+          label,
+        ),
+      ),
+    endOperation: async (product, id) =>
+      await callbacks.productOperations.endOperation(
+        ProductContext.dec(product),
+        id,
+      ),
     read: async (key) => await callbacks.productStorage.read(key),
     write: async (key, value) =>
       await callbacks.productStorage.write(key, value),
     clear: async (key) => await callbacks.productStorage.clear(key),
+    subscribeStorage: (key, sendItem, sendError) =>
+      driveResultStream(
+        callbacks.productStorage.subscribeStorage(key),
+        (item) => sendItem(HostLocalStorageChangeItem.enc(item)),
+        sendError,
+      ),
     subscribeTheme: (sendItem, sendError) =>
       driveResultStream(
         callbacks.theme.subscribeTheme(),
         (item) => sendItem(HostThemeSubscribeItem.enc(item)),
         sendError,
+      ),
+    confirmPermission: async (review) =>
+      PermissionDecision.enc(
+        await callbacks.userConfirmation.confirmPermission(
+          UserConfirmationReview.dec(review),
+        ),
       ),
     confirmUserAction: async (review) =>
       await callbacks.userConfirmation.confirmUserAction(

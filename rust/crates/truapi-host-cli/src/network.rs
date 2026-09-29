@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 use truapi::latest::ChainIdentifier;
-use truapi_platform::{HostChainEntry, HostChainSet};
+use truapi::platform::{HostChainEntry, HostChainSet};
 
 /// Supported live network presets for the headless hosts.
 ///
@@ -36,6 +36,7 @@ impl Network {
         match self {
             Self::PaseoNextV2 => NetworkConfig {
                 id: "paseo-next-v2",
+                network_suffix: "paseo",
                 identity_backend_base: "https://identity.dotspark.app/api/v1",
                 people_ws: PASEO_PEOPLE.ws,
                 bulletin_ws: PASEO_BULLETIN.ws,
@@ -47,6 +48,7 @@ impl Network {
             },
             Self::Previewnet => NetworkConfig {
                 id: "previewnet",
+                network_suffix: "testnet",
                 identity_backend_base: "https://identity-previewnet.dotspark.app/api/v1",
                 people_ws: PREVIEWNET_PEOPLE.ws,
                 bulletin_ws: PREVIEWNET_BULLETIN.ws,
@@ -79,7 +81,7 @@ fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> Ne
 // usernames) resolves through Asset Hub, SSO through People, preimages through
 // Bulletin.
 
-const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
+pub const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
         "4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
     ),
@@ -105,7 +107,7 @@ const PASEO_BULLETIN: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "c27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe",
+        "bac97e23fc8f4bccae72a98f8aeb2bcab20bf755862304e4b46ad6473456e896",
     ),
     ws: "wss://previewnet.substrate.dev/asset-hub",
     required_for_host: true,
@@ -113,7 +115,7 @@ const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "f720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218",
+        "55e3e689ecfa9d2fffcf7d309b8011956671493982230bfd0420c683542249e9",
     ),
     ws: "wss://previewnet.substrate.dev/people",
     required_for_host: true,
@@ -121,7 +123,7 @@ const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_BULLETIN: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "ea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d",
+        "a081192b90c1f6a3f8e9ce7b2a8246f41af805c66456c84e05fd97c2b3502425",
     ),
     ws: "wss://previewnet.substrate.dev/bulletin",
     required_for_host: true,
@@ -137,8 +139,16 @@ const PREVIEWNET_CHAIN_ENDPOINTS: &[ChainEndpoint] =
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkConfig {
     pub id: &'static str,
+    /// The network's dotNS TLD without the dot, as its runtimes report it in
+    /// `NetworkSuffix.NetworkSuffix`. Every reserved RFC-0022 identity the CLI
+    /// derives ends in it (`uid.<suffix>`, `peopl.<suffix>`), so a person the
+    /// CLI creates here is the same person a phone derives from that seed on
+    /// this network. `live_people_chain::network_suffix_matches_the_preset`
+    /// holds it against the chain.
+    pub network_suffix: &'static str,
     pub identity_backend_base: &'static str,
     pub people_ws: &'static str,
+    // Read only by tests; production routing goes through `live_chain_endpoints`.
     #[allow(dead_code)]
     pub bulletin_ws: &'static str,
     /// Asset Hub RPC, where PGAS allowances are claimed.
@@ -204,7 +214,7 @@ impl NetworkConfig {
     /// should stop this compiling rather than reach a `None` that only a test
     /// run notices, and one of those tests is `#[ignore]`d.
     #[cfg(test)]
-    pub(crate) fn url_for_role(&self, role: ChainIdentifier) -> Option<&'static str> {
+    pub fn url_for_role(&self, role: ChainIdentifier) -> Option<&'static str> {
         match role {
             ChainIdentifier::People => Some(self.people_ws),
             ChainIdentifier::Bulletin => Some(self.bulletin_ws),
@@ -314,13 +324,11 @@ mod tests {
         }
     }
 
-    /// SPEC.md §14.1 is the fourth hand-maintained copy of these hashes, and the
-    /// only one that covers Bulletin: `well-known-chains.ts` exports People and
-    /// Asset Hub but no Bulletin constant, so without this row nothing outside
-    /// `network.rs` pins it at build time.
+    /// SPEC.md §14.1 is the second hand-maintained copy of these hashes, and the
+    /// only one outside this module that pins them at build time.
     ///
-    /// Compiled in with `include_str!` for the same reason as the TypeScript
-    /// guard: a moved table breaks the build rather than drifting quietly.
+    /// Compiled in with `include_str!` so a moved table breaks the build rather
+    /// than drifting quietly.
     #[test]
     fn the_spec_genesis_table_matches_the_preset() {
         const SPEC: &str = include_str!("../SPEC.md");
@@ -343,56 +351,6 @@ mod tests {
         }
     }
 
-    /// The TypeScript constants products import must agree with the preset the
-    /// host advertises.
-    ///
-    /// This is the drift that actually reaches products: a product signs
-    /// `CheckGenesis` over what `@parity/truapi` exports, not over anything in
-    /// this crate, and the live test only covers the Rust side. The two are
-    /// maintained by hand in different languages, so nothing else would notice
-    /// them parting company.
-    ///
-    /// Compiled in with `include_str!`, so a moved or renamed constant breaks the
-    /// build here rather than drifting silently.
-    #[test]
-    fn the_typescript_chain_constants_match_the_preset() {
-        const WELL_KNOWN_CHAINS: &str =
-            include_str!("../../../../js/packages/truapi/src/well-known-chains.ts");
-
-        // Every preset needs its pair here: a product on previewnet signs
-        // `CheckGenesis` over the TypeScript constant just as one on nextv2 does.
-        let exports: Vec<(String, [u8; 32])> = Network::value_variants()
-            .iter()
-            .flat_map(|network| {
-                let config = network.config();
-                let prefix = match network {
-                    Network::PaseoNextV2 => "PASEO_NEXT_V2",
-                    Network::Previewnet => "PREVIEWNET",
-                };
-                [
-                    (format!("{prefix}_INDIVIDUALITY"), config.people_genesis),
-                    (format!("{prefix}_ASSET_HUB"), config.asset_hub_genesis),
-                ]
-            })
-            .collect();
-
-        for (export, expected) in &exports {
-            let declaration = WELL_KNOWN_CHAINS
-                .split_once(&format!("export const {export} ="))
-                .unwrap_or_else(|| panic!("{export} is no longer exported"))
-                .1;
-            let hex = format!("0x{}", hex::encode(expected));
-            assert!(
-                declaration
-                    .split_once("} as const")
-                    .map(|(body, _)| body.contains(&hex))
-                    .unwrap_or(false),
-                "{export} does not carry {hex}; the TS constant and the preset \
-                 have drifted, and products sign over the TS one"
-            );
-        }
-    }
-
     /// Guards the invariant documented on [`Network`]: the plaintext mnemonic
     /// store is only safe for disposable identities, so no preset may point at a
     /// production network. If this fails because a real network was added,
@@ -412,6 +370,20 @@ mod tests {
         "identity.dotspark.app",
         "identity-previewnet.dotspark.app",
     ];
+
+    #[test]
+    fn every_preset_names_a_known_dotns_tld() {
+        for network in Network::value_variants() {
+            let config = network.preset();
+            assert!(
+                truapi::platform::DOTNS_TLDS.contains(&config.network_suffix),
+                "preset `{}` derives reserved identities under `.{}`, a TLD navigation does not \
+                 accept",
+                config.id,
+                config.network_suffix,
+            );
+        }
+    }
 
     #[test]
     fn every_preset_is_a_test_network() {
@@ -474,7 +446,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs network access to the preset's chains"]
     async fn the_advertised_genesis_matches_what_each_chain_reports() {
-        use truapi_server::statement_allowance as alloc;
+        use truapi::statement_allowance as alloc;
 
         let mut checked = 0usize;
         let mut drifted = Vec::new();
@@ -511,9 +483,8 @@ mod tests {
                 // The chain's own name has to name the role, or a role pointed at
                 // the wrong preset chain passes every other assertion here.
                 // Both spellings the People role answers to: Paseo's chain calls
-                // itself "People", previewnet's calls itself "Individuality
-                // Local", and `PASEO_NEXT_V2_INDIVIDUALITY` shows the two names
-                // are one role.
+                // itself "People" and previewnet's calls itself "Individuality
+                // Local", so either name satisfies the role.
                 let expected_in_name: &[&str] = match entry.identifier {
                     ChainIdentifier::People => &["People", "Individuality"],
                     ChainIdentifier::Bulletin => &["Bulletin"],
@@ -554,8 +525,7 @@ mod tests {
         let mut failures = Vec::new();
         if !drifted.is_empty() {
             failures.push(format!(
-                "drifted, so refresh the preset, `well-known-chains.ts` and SPEC.md \
-                 together:\n{}",
+                "drifted, so refresh the preset and SPEC.md together:\n{}",
                 drifted.join("\n")
             ));
         }

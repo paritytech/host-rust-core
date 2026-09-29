@@ -63,7 +63,7 @@ pub struct LightClientBuilder {
 
 #[cfg(feature = "smoldot")]
 impl LightClientBuilder {
-    /// Attach a warm-start database blob previously returned by the
+    /// Attach a database blob previously returned by the
     /// `chainHead_unstable_finalizedDatabase` JSON-RPC function. Invalid blobs
     /// are silently ignored by smoldot.
     pub fn database(mut self, database: impl Into<String>) -> Self {

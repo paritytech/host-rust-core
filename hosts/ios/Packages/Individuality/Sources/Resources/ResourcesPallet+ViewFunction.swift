@@ -1,0 +1,28 @@
+import Foundation
+import SubstrateSdkExt
+
+public extension ResourcesPallet {
+    enum ViewFunction {
+        case stmtStoreSlotsPerPeriod
+        case liteStmtStoreSlotsPerPeriod
+        case stmtStoreReplacementCooldown
+        case longTermStorageClaimsPerPeriod
+    }
+}
+
+extension ResourcesPallet.ViewFunction: ViewFunctionCallConvertible {
+    public var name: String {
+        switch self {
+        case .stmtStoreSlotsPerPeriod:
+            "get_stmt_store_slots_per_period"
+        case .liteStmtStoreSlotsPerPeriod:
+            "get_lite_stmt_store_slots_per_period"
+        case .stmtStoreReplacementCooldown:
+            "get_stmt_store_replacement_cooldown"
+        case .longTermStorageClaimsPerPeriod:
+            "get_long_term_storage_claims_per_period"
+        }
+    }
+
+    public var moduleName: String { ResourcesPallet.name }
+}

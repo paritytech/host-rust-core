@@ -79,6 +79,9 @@ pub struct TraitDef {
     /// Module path leading to the trait, excluding the trait name itself
     /// (e.g. `["truapi", "api", "account"]`).
     pub module_path: Vec<String>,
+    /// Wire-protocol trait discriminant from the `#[wire_trait(id = N)]`
+    /// attribute: the first byte of the `(trait, method)` pair on the wire.
+    pub wire_trait_id: Option<u8>,
     /// Methods declared on the trait, in declaration order.
     pub methods: Vec<MethodDef>,
     /// Rustdoc comment on the trait. Service markers are retained for codegen.
@@ -115,28 +118,18 @@ pub struct MethodDef {
     pub docs: Option<String>,
 }
 
-/// Raw wire ids extracted from `#[wire(...)]`.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// Raw wire id extracted from `#[wire(...)]`. One id addresses the method
+/// regardless of shape; which leg of the exchange a frame carries
+/// (request/response, or a subscription's start/stop/interrupt/receive) is
+/// the outer wire's own `message_type` byte, not a separate id.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WireAttrs {
     /// This subscription is started by the host and served by the product.
     pub host_initiated: bool,
-    /// Request frame discriminant.
-    pub request_id: Option<u8>,
-    /// Response frame discriminant.
-    pub response_id: Option<u8>,
-    /// Subscription start frame discriminant.
-    pub start_id: Option<u8>,
-    /// Subscription stop frame discriminant.
-    pub stop_id: Option<u8>,
-    /// Subscription interrupt frame discriminant.
-    pub interrupt_id: Option<u8>,
-    /// Subscription item frame discriminant.
-    pub receive_id: Option<u8>,
-    /// Whether the method's payloads carry key material or bearer secrets.
-    /// Marked by `#[wire(..., sensitive)]`; folded into the wire schema-hash
-    /// fingerprint so a change in a frame's sensitivity classification is caught
-    /// as contract drift.
-    pub sensitive: bool,
+    /// Excluded from the public SDK; available to container and host bindings.
+    pub internal: bool,
+    /// Method frame discriminant.
+    pub id: Option<u8>,
 }
 
 /// Wire-shape classification of a trait method.
@@ -146,8 +139,6 @@ pub enum MethodKind {
     Request,
     /// One request, a stream of items terminated by interrupt.
     Subscription,
-    /// One request, a stream of `Result<item, err>` items.
-    ResultSubscription,
 }
 
 /// Trait method parameter (name + type).
@@ -165,10 +156,8 @@ pub struct ParamDef {
 pub enum ReturnType {
     /// `Result<ok, err>`-shaped return.
     Result { ok: TypeRef, err: TypeRef },
-    /// Subscription that yields `TypeRef` items.
-    Subscription(TypeRef),
-    /// Subscription that yields `Result<item, err>` items.
-    ResultSubscription { item: TypeRef, err: TypeRef },
+    /// Subscription that yields `item`s and ends with an `interrupt`.
+    Subscription { item: TypeRef, interrupt: TypeRef },
 }
 
 /// Type reference parsed from rustdoc into a structural form codegen can emit.
@@ -277,7 +266,7 @@ struct ItemCandidate {
 /// Maps rustdoc item ids and full paths to the output type names used in
 /// generated code, disambiguated when several types share a simple name.
 #[derive(Debug, Default)]
-pub(crate) struct NameContext {
+pub struct NameContext {
     by_item_id: HashMap<String, String>,
     by_path: HashMap<String, String>,
 }
@@ -491,6 +480,7 @@ fn should_skip_type_name(name: &str) -> bool {
     matches!(
         name,
         "Subscription"
+            | "Request"
             | "CallContext"
             | "CallError"
             | "CancellationFuture"
@@ -693,9 +683,15 @@ fn extract_trait(
         }
     }
 
+    let wire_trait_id = match item.docs.as_deref() {
+        Some(docs) => extract_wire_trait_id(&name, docs)?,
+        None => None,
+    };
+
     Ok(TraitDef {
         name,
         module_path,
+        wire_trait_id,
         methods,
         docs: item.docs.clone(),
     })
@@ -726,29 +722,33 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
         raw_output
     } else {
         unwrap_future_output(raw_output)
-            .with_context(|| format!("Method `{name}` has an invalid Future return type"))?
     };
 
     let (kind, return_type) = if is_result_subscription_return(output) {
-        (
-            MethodKind::ResultSubscription,
-            ReturnType::ResultSubscription {
-                item: extract_result_subscription_inner(output, names).with_context(|| {
-                    format!("Method `{name}` has invalid Result<Subscription<..>, E> return type")
-                })?,
-                err: extract_generic_arg(output, 1, names).with_context(|| {
-                    format!(
-                        "Method `{name}` is missing the error type in Result<Subscription<..>, E>"
-                    )
-                })?,
-            },
+        bail!(
+            "Method `{name}` returns Result<Subscription<..>, E>. A subscription declares its \
+             failure as its own interrupt type: Subscription<Item, CallError<E>>"
         )
     } else if is_subscription_return(output) {
+        let item = extract_generic_arg(output, 0, names).with_context(|| {
+            format!("Method `{name}` is missing the Subscription<Item, Interrupt> item type")
+        })?;
+        let interrupt = extract_generic_arg(output, 1, names).with_context(|| {
+            format!("Method `{name}` is missing the Subscription<Item, Interrupt> interrupt type")
+        })?;
+        // The framework puts `MalformedFrame`, `Denied` and `Unsupported` on
+        // the interrupt leg of every method, so it has to be able to construct
+        // one in whatever the method declared.
+        if !matches!(&interrupt, TypeRef::Named { name, args } if name == "CallError" && args.len() == 1)
+        {
+            bail!(
+                "Method `{name}` declares an interrupt type that is not `CallError<E>`, which the \
+                 framework cannot put its own failures in"
+            )
+        }
         (
             MethodKind::Subscription,
-            ReturnType::Subscription(extract_generic_arg(output, 0, names).with_context(|| {
-                format!("Method `{name}` is missing Subscription<T> item type")
-            })?),
+            ReturnType::Subscription { item, interrupt },
         )
     } else if is_result_return(output) {
         (
@@ -816,7 +816,7 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
     }
 
     if wire.host_initiated && !matches!(kind, MethodKind::Subscription) {
-        bail!("Host-initiated method `{name}` must return Subscription<T>");
+        bail!("Host-initiated method `{name}` must return Subscription<Item, Interrupt>");
     }
 
     Ok(Some(MethodDef {
@@ -861,9 +861,43 @@ fn extract_marker_value<'a>(docs: &'a str, marker: &str) -> Option<&'a str> {
     })
 }
 
-/// Extracts `@wire_<name>_id=N` markers from a doc comment block. Annotated
-/// methods carry these markers via the `#[wire(...)]` proc-macro, which appends
-/// hidden doc strings so they propagate through rustdoc JSON.
+/// Extracts the `@wire_trait_id=N` marker from a trait's doc comment block.
+/// Annotated traits carry the marker via the `#[wire_trait(id = N)]`
+/// proc-macro, which appends a hidden doc string so it propagates through
+/// rustdoc JSON.
+///
+/// The marker owns its whole line and its value must parse as a `u8`: a
+/// malformed value is an error rather than a silent truncation, and a trait
+/// carrying more than one marker is rejected outright. Without that a
+/// hand-written doc line could quietly outrank the attribute and move a
+/// trait's whole method block to a different address on the wire.
+fn extract_wire_trait_id(trait_name: &str, docs: &str) -> Result<Option<u8>> {
+    let mut found = None;
+    for line in docs.lines() {
+        let Some(value) = line.trim().strip_prefix("@wire_trait_id=") else {
+            continue;
+        };
+        let id: u8 = value.trim().parse().with_context(|| {
+            format!(
+                "Trait `{trait_name}` has a malformed `@wire_trait_id={value}` marker; \
+                 expected a value in 0..=255"
+            )
+        })?;
+        if found.is_some() {
+            bail!(
+                "Trait `{trait_name}` carries more than one `@wire_trait_id` marker; \
+                 exactly one `#[wire_trait(id = N)]` attribute must own the trait id"
+            );
+        }
+        found = Some(id);
+    }
+    Ok(found)
+}
+
+/// Extracts the wire id and flags from a doc comment block.
+/// Annotated methods carry these markers via the `#[wire(...)]`
+/// proc-macro, which appends hidden doc strings so they propagate through
+/// rustdoc JSON.
 fn extract_wire_attrs(docs: &str) -> WireAttrs {
     let mut attrs = WireAttrs::default();
     for line in docs.lines() {
@@ -871,34 +905,18 @@ fn extract_wire_attrs(docs: &str) -> WireAttrs {
         if line.starts_with("@wire_host_initiated") {
             attrs.host_initiated = true;
         }
-        if line.starts_with("@wire_sensitive=") {
-            // Fail CLOSED, and never downgrade. The previous
-            // `.parse::<bool>().ok().unwrap_or(false)` turned every unexpected
-            // value - `1`, `yes`, a typo - into "not sensitive", which is the wrong
-            // default for a flag that classifies secret-bearing methods. Only an
-            // explicit `false` leaves it clear, and `|=` means a later marker
-            // cannot undo an earlier `true`.
-            let value = line.trim_end().trim_start_matches("@wire_sensitive=");
-            attrs.sensitive |= value != "false";
-            continue;
+        if line.trim_end() == "@wire_internal" {
+            attrs.internal = true;
         }
-        for (needle, target) in [
-            ("@wire_request_id=", &mut attrs.request_id),
-            ("@wire_response_id=", &mut attrs.response_id),
-            ("@wire_start_id=", &mut attrs.start_id),
-            ("@wire_stop_id=", &mut attrs.stop_id),
-            ("@wire_interrupt_id=", &mut attrs.interrupt_id),
-            ("@wire_receive_id=", &mut attrs.receive_id),
-        ] {
-            let Some(start) = line.find(needle).map(|index| index + needle.len()) else {
-                continue;
-            };
-            let end = line[start..]
-                .find(|c: char| !c.is_ascii_digit())
-                .map_or(line.len(), |offset| start + offset);
-            if let Ok(id) = line[start..end].parse::<u8>() {
-                *target = Some(id);
-            }
+        const NEEDLE: &str = "@wire_id=";
+        let Some(start) = line.find(NEEDLE).map(|index| index + NEEDLE.len()) else {
+            continue;
+        };
+        let end = line[start..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(line.len(), |offset| start + offset);
+        if let Ok(id) = line[start..end].parse::<u8>() {
+            attrs.id = Some(id);
         }
     }
     attrs
@@ -929,48 +947,13 @@ fn is_subscription_return(output: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Resolve the `Output = T` binding from a Send future method return.
+/// Resolve the `Output = T` binding from a Send future method return, or the
+/// return itself when it is not one.
 ///
 /// `async_trait` represents `async fn` as
 /// `Pin<Box<dyn Future<Output = T> + Send + 'async_trait>>` in rustdoc JSON.
-/// Explicit `impl Future<Output = T> + Send` returns are also accepted so the
-/// parser remains compatible with older TrUAPI trait snapshots.
-fn unwrap_future_output(output: &serde_json::Value) -> Result<&serde_json::Value> {
-    if let Some(future_output) = extract_async_trait_future_output(output) {
-        return Ok(future_output);
-    }
-    let Some(bounds) = output
-        .get("impl_trait")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return Ok(output);
-    };
-    let future = bounds
-        .iter()
-        .filter_map(|bound| bound.get("trait_bound"))
-        .filter_map(|bound| bound.get("trait"))
-        .find(|bound| {
-            bound
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|path| path_suffix(path) == "Future")
-        })
-        .context("impl Trait return is missing its Future bound")?;
-    let constraints = future
-        .get("args")
-        .and_then(|args| args.get("angle_bracketed"))
-        .and_then(|args| args.get("constraints"))
-        .and_then(serde_json::Value::as_array)
-        .context("Future bound is missing its associated-type constraints")?;
-    constraints
-        .iter()
-        .find(|constraint| {
-            constraint.get("name").and_then(serde_json::Value::as_str) == Some("Output")
-        })
-        .and_then(|constraint| constraint.get("binding"))
-        .and_then(|binding| binding.get("equality"))
-        .and_then(|equality| equality.get("type"))
-        .context("Future bound is missing its Output equality")
+fn unwrap_future_output(output: &serde_json::Value) -> &serde_json::Value {
+    extract_async_trait_future_output(output).unwrap_or(output)
 }
 
 fn extract_async_trait_future_output(output: &serde_json::Value) -> Option<&serde_json::Value> {
@@ -1032,23 +1015,6 @@ fn is_result_return(output: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-fn extract_result_subscription_inner(
-    output: &serde_json::Value,
-    names: &NameContext,
-) -> Result<TypeRef> {
-    let ok_type = get_generic_arg_value(output, 0)
-        .context("Result<Subscription<T>, E> return type is missing its ok type")?;
-
-    if get_resolved_name(&ok_type).as_deref() != Some("Subscription") {
-        bail!(
-            "Expected Result<Subscription<T>, E> return type, got {}",
-            summarize_json(&ok_type)
-        );
-    }
-
-    extract_generic_arg(&ok_type, 0, names)
-}
-
 fn get_resolved_name(ty: &serde_json::Value) -> Option<String> {
     ty.get("resolved_path")?
         .get("path")?
@@ -1082,7 +1048,7 @@ fn extract_generic_arg(
 }
 
 /// Resolve a rustdoc JSON type node into the internal type reference model.
-pub(crate) fn resolve_type(ty: &serde_json::Value, names: &NameContext) -> Result<TypeRef> {
+pub fn resolve_type(ty: &serde_json::Value, names: &NameContext) -> Result<TypeRef> {
     if let Some(name) = ty.get("generic").and_then(|value| value.as_str()) {
         return Ok(TypeRef::Generic(name.to_string()));
     }
@@ -1234,7 +1200,7 @@ fn expect_single_arg(type_name: &str, mut args: Vec<TypeRef>) -> Result<TypeRef>
 }
 
 /// Extract a struct item, including field docs and generic parameters.
-pub(crate) fn extract_struct(
+pub fn extract_struct(
     item_id: &str,
     item: &Item,
     krate: &Crate,
@@ -1336,7 +1302,7 @@ pub(crate) fn extract_struct(
 }
 
 /// Extract an enum item, including variant docs and field payloads.
-pub(crate) fn extract_enum(
+pub fn extract_enum(
     item_id: &str,
     item: &Item,
     krate: &Crate,
@@ -1567,7 +1533,7 @@ fn value_id(value: &serde_json::Value) -> Result<String> {
 }
 
 /// Render a bounded JSON snippet for diagnostics.
-pub(crate) fn summarize_json(value: &serde_json::Value) -> String {
+pub fn summarize_json(value: &serde_json::Value) -> String {
     const LIMIT: usize = 200;
 
     let mut text =
@@ -1585,9 +1551,36 @@ mod tests {
 
     #[test]
     fn clean_docs_strips_wire_markers() {
-        let docs = "Trait summary.\n\n@wire_request_id=7\n@wire_sensitive=true\n@service_required_execution=Chat\n";
+        let docs = "Trait summary.\n\n@wire_id=7\n@wire_trait_id=3\n\
+                    @wire_host_initiated\n@wire_internal\n\
+                    @service_required_execution=Chat\n";
 
         assert_eq!(clean_docs(Some(docs)).as_deref(), Some("Trait summary."));
+    }
+
+    #[test]
+    fn internal_wire_metadata_preserves_method_address_and_direction() {
+        assert_eq!(
+            extract_wire_attrs(
+                "Method summary.\n@wire_id=2\n@wire_host_initiated\n@wire_internal\n"
+            ),
+            WireAttrs {
+                host_initiated: true,
+                internal: true,
+                id: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn public_methods_require_no_visibility_marker() {
+        assert_eq!(
+            extract_wire_attrs("Method summary.\n@wire_id=1\n"),
+            WireAttrs {
+                id: Some(1),
+                ..WireAttrs::default()
+            }
+        );
     }
 
     #[test]
@@ -1595,6 +1588,7 @@ mod tests {
         let trait_def = TraitDef {
             name: "Chat".into(),
             module_path: Vec::new(),
+            wire_trait_id: None,
             methods: Vec::new(),
             docs: Some("Chat operations.\n\n@service_required_execution=Chat".into()),
         };
@@ -1604,15 +1598,48 @@ mod tests {
     }
 
     #[test]
-    fn extract_wire_attrs_reads_sensitive_flag() {
-        let sensitive = extract_wire_attrs("@wire_request_id=114\n@wire_sensitive=true");
-        assert_eq!(sensitive.request_id, Some(114));
-        assert!(sensitive.sensitive);
+    fn extract_wire_trait_id_reads_marker() {
+        assert_eq!(
+            extract_wire_trait_id("Theme", "Trait summary.\n\n@wire_trait_id=14\n").unwrap(),
+            Some(14)
+        );
+        assert_eq!(
+            extract_wire_trait_id("Theme", "Trait summary.").unwrap(),
+            None
+        );
+    }
 
-        // Absent marker ⇒ not sensitive (the default for every unmarked method).
-        let plain = extract_wire_attrs("@wire_request_id=22");
-        assert_eq!(plain.request_id, Some(22));
-        assert!(!plain.sensitive);
+    /// A value the attribute could never emit must fail loudly instead of
+    /// truncating to a valid id or degrading into "missing annotation".
+    #[test]
+    fn extract_wire_trait_id_rejects_malformed_markers() {
+        for docs in [
+            "@wire_trait_id=300",
+            "@wire_trait_id=",
+            "@wire_trait_id=12abc",
+            "@wire_trait_id=-1",
+            "@wire_trait_id=1 2",
+        ] {
+            let err = extract_wire_trait_id("Theme", docs)
+                .expect_err("malformed marker must be rejected");
+            assert!(
+                format!("{err:#}").contains("malformed"),
+                "unexpected error for {docs:?}: {err:#}"
+            );
+        }
+    }
+
+    /// A hand-written doc line must not be able to outrank the attribute: the
+    /// proc-macro appends its marker last, so a silent first-wins or last-wins
+    /// rule would let prose move the trait's whole method block on the wire.
+    #[test]
+    fn extract_wire_trait_id_rejects_a_second_marker() {
+        let err = extract_wire_trait_id("Theme", "@wire_trait_id=99\n@wire_trait_id=14\n")
+            .expect_err("a forged second marker must be rejected");
+        assert!(
+            format!("{err:#}").contains("more than one"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]
@@ -1644,55 +1671,6 @@ mod tests {
             format!("{err}").contains("older than the tested minimum"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn unwraps_send_future_output() {
-        let output = serde_json::json!({
-            "impl_trait": [
-                {
-                    "trait_bound": {
-                        "trait": {
-                            "path": "core::future::Future",
-                            "args": {
-                                "angle_bracketed": {
-                                    "args": [],
-                                    "constraints": [
-                                        {
-                                            "name": "Output",
-                                            "binding": {
-                                                "equality": {
-                                                    "type": {
-                                                        "resolved_path": {
-                                                            "path": "Result",
-                                                            "id": 1,
-                                                            "args": null
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                },
-                {
-                    "trait_bound": {
-                        "trait": {
-                            "path": "Send",
-                            "id": 2,
-                            "args": null
-                        }
-                    }
-                }
-            ]
-        });
-
-        let unwrapped = unwrap_future_output(&output).expect("future output");
-
-        assert_eq!(get_resolved_name(unwrapped).as_deref(), Some("Result"));
     }
 
     #[test]
@@ -1759,8 +1737,20 @@ mod tests {
             }
         });
 
-        let unwrapped = unwrap_future_output(&output).expect("async-trait future output");
+        let unwrapped = unwrap_future_output(&output);
 
         assert_eq!(get_resolved_name(unwrapped).as_deref(), Some("Result"));
+    }
+
+    /// A return that is not an `async_trait` future is the method's own type, so
+    /// it has to pass through untouched. Rejecting it here would turn every
+    /// non-async method into a parse failure instead of a plain return type.
+    #[test]
+    fn a_return_that_is_not_a_future_passes_through() {
+        let output = serde_json::json!({
+            "resolved_path": { "path": "Result", "id": 1, "args": null }
+        });
+
+        assert_eq!(unwrap_future_output(&output), &output);
     }
 }

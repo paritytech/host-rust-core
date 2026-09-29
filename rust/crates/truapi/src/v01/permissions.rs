@@ -3,9 +3,8 @@ use parity_scale_codec::{Decode, Encode};
 
 /// Device-capability permission requested from the host (RFC 0002).
 ///
-/// The user's decision is persisted indefinitely after the first prompt and
-/// survives app restarts, whether the decision was grant or deny; the host
-/// does not re-prompt on subsequent requests for the same capability.
+/// Lasting grants and denials survive app restarts. A host may also offer a
+/// one-use grant, held in memory until a permission-gated operation consumes it.
 ///
 /// That decision is about this product. The OS grant behind it belongs to the
 /// host application and can move independently, so a host that can read OS
@@ -15,7 +14,10 @@ use parity_scale_codec::{Decode, Encode};
 /// resolves its own gate when the capability is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Display)]
 #[allow(clippy::upper_case_acronyms)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum HostDevicePermissionRequest {
     /// Showing system notifications.
     #[display("notifications")]
@@ -38,10 +40,8 @@ pub enum HostDevicePermissionRequest {
     /// Clipboard access.
     #[display("clipboard")]
     Clipboard,
-    /// Handing a URL to the operating system, leaving the host application
-    /// entirely. Requestable and persistable, but the core enforces nothing with
-    /// it: *which* hosts a product may send the user to is
-    /// `RemotePermission::Remote`, wherever the destination ends up opening.
+    /// Opening an external URL through `navigate_to`. A one-use grant allows
+    /// one handoff to the browser or another system application.
     #[display("open URL")]
     OpenUrl,
     /// Biometric authentication.
@@ -54,29 +54,26 @@ pub enum HostDevicePermissionRequest {
 /// `ChainSubmit`, `PreimageSubmit`, and `StatementSubmit` are also triggered
 /// implicitly by the corresponding business calls when not yet granted.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum RemotePermission {
-    /// Reaching a set of domains: outbound HTTP/WebSocket access, and sending
-    /// the user out to one of them with `navigate_to`.
-    ///
-    /// One grant per host covers both, because both hand the same third party
-    /// the same thing: that the user is here, and whatever the product puts in
-    /// the URL. Splitting them would put the same question to the user twice.
+    /// Outbound HTTP/WebSocket access to a set of domains. External navigation
+    /// uses [`HostDevicePermissionRequest::OpenUrl`] instead.
     #[display("access to {}", domains.join(", "))]
     Remote {
         /// Domain patterns requested by the product. Each is an exact host, a
-        /// single-level wildcard (`*.example.com`), or `*` for any host.
+        /// wildcard covering every descendant (`*.example.com`), or `*` for any host.
+        /// Wildcard suffixes must be domain names with at least two labels.
         domains: Vec<String>,
     },
     /// WebRTC access.
     ///
-    /// Enforced inside the product's own realm rather than at a network layer:
-    /// ICE reaches an arbitrary host over UDP, so no content rule list, request
-    /// interceptor, or CSP directive observes it. A host peeks this decision
-    /// before the product realm exists and the lockdown container removes
-    /// `RTCPeerConnection` — and its vendor-prefixed aliases — unless the answer
-    /// was an explicit grant. Resolving it up front is what makes the gate
-    /// unforgeable, and it means a fresh grant applies from the next load.
+    /// The container authorizes each peer connection through Rust before its
+    /// first network method. Later methods on that connection share the same
+    /// decision, so a one-use grant permits one connection. New connections
+    /// check current permissions without requiring a page reload.
     ///
     /// Camera and microphone capture is gated by the OS permission prompts and
     /// [`HostDevicePermissionRequest`], not by this permission.
@@ -96,7 +93,10 @@ pub enum RemotePermission {
 /// remote-permission request (RFC 0002).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
 #[display("{permission}")]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct RemotePermissionRequest {
     /// Permission requested by the product.
     pub permission: RemotePermission,

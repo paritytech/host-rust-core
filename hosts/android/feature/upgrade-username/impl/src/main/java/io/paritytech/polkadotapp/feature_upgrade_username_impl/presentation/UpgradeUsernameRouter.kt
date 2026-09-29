@@ -1,0 +1,5 @@
+package io.paritytech.polkadotapp.feature_upgrade_username_impl.presentation
+
+import io.paritytech.polkadotapp.common.presentation.navigation.ReturnableRouter
+
+interface UpgradeUsernameRouter : ReturnableRouter

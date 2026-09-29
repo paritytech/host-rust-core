@@ -1,10 +1,13 @@
 //! Unified [`Theme`] trait.
 
-use crate::versioned::theme::HostThemeSubscribeItem;
-use crate::wire;
-use crate::{CallContext, Subscription};
+use crate::versioned::theme::{
+    HostThemeSubscribeError, HostThemeSubscribeItem, HostThemeSubscribeRequest,
+};
+use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Host theme subscription.
+#[wire_trait(id = 15)]
 #[crate::async_trait]
 pub trait Theme: Send + Sync {
     /// Subscribe to host theme changes.
@@ -17,8 +20,12 @@ pub trait Theme: Send + Sync {
     /// );
     /// console.log("theme received:", theme);
     /// ```
-    #[wire(start_id = 104)]
-    async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostThemeSubscribeItem> {
-        Subscription::empty()
+    #[wire(id = 0)]
+    async fn subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostThemeSubscribeRequest,
+    ) -> Subscription<HostThemeSubscribeItem, CallError<HostThemeSubscribeError>> {
+        Subscription::interrupted(CallError::unavailable())
     }
 }

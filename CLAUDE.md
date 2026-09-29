@@ -8,20 +8,46 @@ This repo is the single source of truth for the TrUAPI protocol. It vendors `dot
 
 ```
 rust/crates/
-  truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2 (canonical)
+  truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2
+                         (canonical), plus the runtime hosts implement (default `runtime`
+                         feature); ships as WASM (browser/node); its `platform` module
+                         holds the host syscall traits (storage, navigation, consent, ...)
   truapi-codegen/        rustdoc JSON → TypeScript client + Rust dispatcher
-  truapi-macros/         #[wire(id = N)] proc-macro
-  truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
-  truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
-  truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
+  truapi-macros/         #[wire_trait(id = N)] and #[wire(id = N)] proc-macros;
+                         #[sso_service] for truapi's inter-host SSO protocol
+                         One implementation module per macro; lib.rs holds entry points
+  truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client);
+                         its `platform` module holds the chain-access traits
+  truapi-verifiable/     ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
+  truapi-host-cli/       CLI pairing/signing hosts; Bun scripts share the container web API gates
 js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
   truapi-host/            @parity/truapi-host: WASM-backed host runtime. Subpath entries:
                           `.` (shared host types), `/web` (iframe + Web
-                          Worker), `/worker-runtime` (Worker entry).
-                          WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
-js/container/              TS lockdown container for the iOS host web view; `npm run build`
-                           bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
+                          Worker), `/worker-runtime` (Worker entry), and the
+                          test host `/testing` (createMockHost),
+                          `/testing/playwright` (fixture), `/testing/server`
+                          (node server), `/testing/client` (no-iframe client),
+                          `/testing/dev-accounts`, `/testing/host-page`.
+                          Two WASM bundles (gitignored) under dist/wasm/, built
+                          via `make wasm`: `web/` is the production browser host
+                          and `testing/` adds the `wasm-signing-host` and
+                          `test-host` Cargo features the test host needs
+  truapi-debugger/        @parity/truapi-debugger (published to npm): the debugger.
+                          Owns all decoding of the wire frames the Rust host tap
+                          (truapi's DebugSink) streams out, and decodes
+                          every frame by default (no denylist, no reveal toggle).
+                          Holds the trace, envelope-decode, and value-decode
+                          engines, the shared view model + renderers, and two
+                          mounts over them: server.ts (standalone WS+HTTP app on
+                          127.0.0.1:9231 that hosts dial into, `npm run serve`;
+                          endpoints /, /op-list, /op, /view, /channels, /stats,
+                          /traces, /frame) and in-app.ts (createInAppDebugger:
+                          same-page host, no server, no dial). @parity/truapi has
+                          no debug seam. Where the app ultimately lives is still
+                          an open decision.
+js/container/              Shared TS lockdown container for native web views and CLI dev; scripts reuse its web API gates
+                           `npm run build` bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
 ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over UniFFI);
                            second product of the root Package.swift, released on its
                            own tag (@parity/ios-provider@<v>) via its scripts/
@@ -31,33 +57,64 @@ android/truapi-host/       truapi-host-android AAR (bindings + Kotlin shell + pe
                            PR title
 android/truapi-provider/   truapi-provider-android AAR; bundles the cdylib the same way,
                            so consumers need no Rust toolchain
-ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
+ios/truapi-host/           TrUAPIHost Swift package over the truapi UniFFI core;
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
+hosts/ios/                 iOS host app; resolves the core from this tree
+hosts/android/             Android host app
+hosts/imports.json         source repository and imported revision per host,
+                           read and updated by scripts/refresh-host-import.sh
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
-scripts/battery.sh         run the generated battery against both headless CLI host roles
+scripts/battery.sh         run the generated battery against both headless CLI host roles,
+                           plus the Pocket phase a Worker execution serves
+scripts/bundle-size.mjs    measure the JS/WASM of the asset groups given (raw, gzip, brotli);
+                           .github/actions/bundle-size takes them as `assets`, stores
+                           main's snapshot and comments the comparison on PRs
+scripts/refresh-host-import.sh
+                           refresh a vendored host tree from its source repository
+scripts/host-papp-fixtures.ts
+                           print host-papp's encoding of the SSO messages the core
+                           pins, from a triangle-js-sdks checkout
 scripts/truapi-host-installer.sh
                            one-liner installer for the prebuilt truapi-host CLI
+scripts/build-cli-runner.ts
+                           bundles the CLI runner and development container
+scripts/cli-runner-package.test.ts
+                           verifies the installed runner and development container
 .github/consumers.json     maps each released package to the repos notified by a bump issue
+.github/registry-drift-exceptions.json
+                           documents intentionally unpublished npm package versions
 ```
 
 ### Crate + binding invariants
 
-- `truapi` is canonical; runtime crates re-export rather than redefine. New
-  syscall traits and host-side runtime types live in `truapi-platform` and
-  `truapi-server`, not in `truapi`. Any additions to `truapi` itself are limited
-  to additive `Display` impls.
+- `truapi` holds the canonical protocol definitions and, behind its default
+  `runtime` feature, the host runtime. The protocol half builds without the
+  runtime (`--no-default-features`), which is what codegen links and reads, so
+  protocol modules never depend on runtime modules. Syscall traits live in the
+  `platform` module, host-side runtime types in the runtime modules. The whole
+  crate is one UniFFI namespace, `truapi`, so native bindings use protocol types
+  directly. The published binaries keep their `truapi_server` names
+  (`truapi_server.xcframework`, `dist/wasm/*/truapi_server*`).
 - Treat concrete modules such as `truapi::v01` as implementation details of
   the canonical `truapi` crate and its version-conversion impls. Everywhere
   else, import concrete protocol payload and error types from `truapi::latest`.
   This includes structs reused by host-internal APIs that are not exposed to
   products; if such a type is missing, re-export it through `truapi::latest`
-  rather than importing a concrete protocol version. Runtime crates may use
+  rather than importing a concrete protocol version. Runtime code may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
+- Inter-host SSO uses `#[sso_service]` as described
+  in the [macro guide](rust/crates/truapi-macros/README.md). Keep per-variant pairing,
+  dispatch, and correlation in that macro; do not add manual per-variant catalogs.
+  Requests with a caller share `ProductRequest<P>` around canonical payloads;
+  handler method names select request variants. Responses share `Response<P>`;
+  handler signatures name their result payload
+  and response variant. Transcript classification belongs in shared reply handling
+  or the handler; request context carries only the call and signing session.
 - Native bindings expose canonical Rust domain and protocol types directly.
   Add feature-gated UniFFI derives to those types and custom conversions for
   unsupported leaf values instead of defining parallel `Native*` mirrors.
@@ -68,49 +125,90 @@ scripts/truapi-host-installer.sh
   `release: @parity/truapi <version>` therefore also publishes prebuilt
   `truapi-host` binaries through `.github/workflows/release-cli.yml`: one
   archive per target (`aarch64-apple-darwin`, `x86_64-unknown-linux-musl`,
-  `aarch64-unknown-linux-musl`) plus a `.sha256`, uploaded to the
+  `aarch64-unknown-linux-musl`) plus a `.sha256`. Each archive includes the
+  native binary, self-contained Bun runner and development container.
+  Archives are uploaded to the
   `@parity/truapi@<version>` release, followed by the `truapi-host-cli-stable`
   pointer that `scripts/truapi-host-installer.sh` and the CLI's own updater
   read. Release asset URLs must percent-encode the tag
   (`%40parity%2Ftruapi%40<version>`). `make cli-dist CLI_TARGET=<triple>`
   reproduces one archive locally, and `make e2e-cli-update` installs and
   self-updates it against a loopback release server.
-- `truapi-server` WASM artifacts live under
+- The browser core does not link `verifiable`, whose ring prover compiles in
+  4.5 MiB of powers of tau. `truapi-verifiable` holds the four ring-VRF
+  operations truapi uses (member, sign, alias, prove). Native builds link
+  it; the browser core loads it as a separate WASM module,
+  `truapi_verifiable.js` and `truapi_verifiable_bg.wasm` beside the core's own
+  files in each bundle (`dist/wasm/web/` or `dist/wasm/testing/`), in the
+  background once a pairing session connects or when one of them first runs,
+  through `truapi/src/runtime/vrf.rs`. Its loader names both files as
+  literal `new URL(…, import.meta.url)` specifiers, so bundlers such as Vite
+  emit them. `make wasm` builds the module first and compiles its SHA-256 into
+  both cores, which load no other.
+- The runtime's WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever
-  `rust/crates/truapi-server/` changes). CI compiles the crate for
+  `rust/crates/truapi/` changes). CI compiles the crate for
   `wasm32-unknown-unknown` to guard the wasm bridge and its offline subxt
-  surface, but does not build or publish the packaged bundle; run `make wasm`
-  locally before relying on the browser host.
-- After changing UniFFI-exposed types or native bindings, run
-  `./ios/truapi-host/scripts/rebuild.sh` and commit the generated bindings and
-  container output. When only the bindings changed, `make uniffi &&
-  ./ios/truapi-host/scripts/sync-bindings.sh` does that part without Xcode. CI
-  enforces it: the `ios-bindings` job regenerates and diffs the committed
-  bindings, and the `ios-swift` job compiles the package and its test target on
-  pull requests touching `ios/`, `Package.swift`, the `Makefile` or `native*`,
-  which is what catches a hand-written conformer that missed a new protocol
-  requirement. On the Kotlin side the `ci-android` job compiles
-  `TrUAPIHost.kt` against freshly generated bindings on pull requests touching
-  `android/` or the native crates, which catches the same class of drift;
-  `make android-check` does it locally. The embedding apps are compiled by
-  neither.
+  surface, and the `@parity/truapi-host (wasm bridge)` job builds both bundles
+  and runs the package's bun tests against them with `REQUIRE_WASM=1`, so a
+  suite needing a bundle fails instead of skipping. `release.yml` rebuilds the
+  bundles for a `@parity/truapi-host` release and publishes them in the package.
+- The UniFFI bindings and the container bundle are gitignored build outputs.
+  After changing UniFFI-exposed types or native bindings, run
+  `./ios/truapi-host/scripts/rebuild.sh` to refresh them locally; when only the
+  bindings changed, `make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh`
+  does that part without Xcode. Because nothing is committed, CI regenerates
+  rather than diffs: the `ios-bindings` job proves every UniFFI-exposed type
+  still has a binding representation, and the `ios-swift` job generates the
+  package's Swift sources and container resource and then compiles the package
+  and its test target, which is what catches a hand-written conformer that
+  missed a new protocol requirement. On the Kotlin side the `android-bindings`
+  job compiles `TrUAPIHost.kt` against freshly generated bindings, which catches
+  the same class of drift; `make android-check` does it locally. The embedding
+  apps are compiled by neither.
+- Both compile gates are path-filtered from one place. The `changes` job in
+  `ci.yml` computes `sdk_swift`, `sdk_kotlin`, `needs_changeset`, and
+  `adds_changeset`, and each gated job reads the output. Because neither
+  binding set is committed, a filter has to name every
+  crate its bindings are generated from, since a protocol change leaves no
+  `ios/` or `android/` diff to key on. Every job in `ci.yml` is aggregated by
+  `ci-status`, which is the check worth requiring: a job skipped by its filter
+  counts as a pass, so a gate cannot stall a PR it does not apply to.
+  `Changeset guard` reads live PR titles and labels, so re-running failed jobs
+  picks up a `no-changeset` opt-out. `Release guard` rejects npm version changes
+  with unconsumed changesets on the merge result, including in the merge queue.
+  `registry-drift.yml` checks default-branch manifests against npm daily and
+  maintains one issue; explicit package-version exceptions live in
+  `.github/registry-drift-exceptions.json`. Rust jobs cache through
+  `.github/actions/rust-cache`, which saves only on main so every ref restores
+  main's entries. See `docs/RELEASE_PROCESS.md` for
+  label setup and release recovery.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
-  To publish the binary, include `@parity/ios-host <version>`
-  in the `release:` PR title. The release workflow rebuilds and simulator-tests
-  the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
-  only after the asset is live. When the title also names an npm package, the
-  iOS job waits on that publish being confirmed on npm.
-  `publish.sh <version>` is the manual fallback.
-  Keep `useLocalBinary = false` in committed manifests; `true` is for local
-  testing against the rebuilt XCFramework only.
+  To publish, include `@parity/ios-host <version>` in the `release:` PR title.
+  `release-ios.yml` rebuilds and simulator-tests the XCFramework, uploads it,
+  then cuts the plain semver tag `<version>` whose commit carries the generated
+  sources and a manifest pointing at that asset. That tag is the SwiftPM
+  contract: consumers pin `exact("<version>")`, and a branch cannot be consumed
+  directly because the generated sources are ignored there. The job clones and
+  compiles the tag before pushing it, then opens a pull request against the
+  release branch that points `Package.swift` at the new asset. Dispatching
+  `release-ios` manually with a pre-release version cuts a tag for app-side
+  testing of an unmerged change without touching any branch. When the title
+  also names an npm package, the iOS job waits on that publish being confirmed
+  on npm. `publish.sh <version>` is the manual fallback.
+  `Package.swift` reads `TRUAPI_USE_LOCAL_BINARY` from the environment to build
+  against the rebuilt XCFramework; the tag script refuses a manifest that pins
+  the local binary.
 
 ## Code style
 
 - Every `pub` Rust item (functions, methods, types, traits, modules, constants) carries a doc comment (`///` or `//!`).
   Keep it short and focused on intent or invariants, not on what the signature already says.
 - Do not add code comments or doc comments that narrate migrations, compatibility shims, or historical changes. Comments should describe only the current code.
+- Everything else about comments, including when an inline comment earns its place, is in [`AGENTS.md`](AGENTS.md). That file also covers shared-branch
+  hygiene, the scope of a change, tests, and editing existing Rust.
 - Remove legacy compatibility code by default. Keep or add it only when explicitly requested.
 - In Rust format strings, prefer inlined variables: `"log value: {value:?}"` over `"log value: {:?}", value`.
 - For Rust modules, prefer `foo.rs` plus an optional `foo/` directory for
@@ -157,7 +255,7 @@ When the Rust trait surface changes, rerun:
 ```
 
 That will repopulate the ignored generated TS under `js/packages/truapi/src/generated/`,
-`js/packages/truapi/src/playground/codegen/`, and `js/packages/truapi/test/generated/examples/`.
+`js/packages/truapi/src/playground/codegen/`, and `playground/test/generated/examples/`.
 After regenerating, rebuild the client and refresh the playground's link copy:
 
 ```bash
@@ -211,12 +309,13 @@ yarn lint
 ```
 
 The fastest way to exercise the playground is `truapi-host dev -- yarn dev`
-from `playground/`, which starts a signing host on `127.0.0.1:9955`, serves the
-browser bridge at `/bootstrap.js`, and runs the dev server with the host live.
-The playground's root layout carries the development-only `<script>` tag that
-loads it. TCP frame peers and browser origins are limited to loopback. On Unix,
-the CLI owns the wrapped command's process group and applies a five-second
-SIGTERM grace period before killing remaining descendants.
+from `playground/`. Open `http://localhost:3000` in any existing browser. The
+layout's first blocking script loads the CLI bridge and shared container from
+`http://127.0.0.1:9955/bootstrap.js`. Dev keeps the app server's assets and hot
+reload and automatically approves confirmations. A source build needs the
+container bundle generated by `make headless` or `make cli-runner`. On Unix, the
+CLI owns the wrapped command's process group and cleans it up with a five-second
+SIGTERM grace period.
 
 The playground must otherwise be opened from inside a TrUAPI host. The fastest
 local setup is to run dotli's preview server alongside the playground and open
@@ -306,7 +405,7 @@ __truapi.setLogLevel("debug");
 sessionStorage.setItem("dotli:truapi-debug", "1");
 ```
 
-Reload after setting the debug-panel flag. Watch for `Unknown wire discriminant`, missing
+Reload after setting the debug-panel flag. Watch for `unknown wire discriminant pair`, missing
 `@parity/truapi-host` imports, worker WASM instantiation failures, and
 debug-panel traffic disappearing when the login popup opens.
 

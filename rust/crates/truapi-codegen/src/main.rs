@@ -12,7 +12,11 @@ mod rust;
 mod rustdoc;
 mod ts;
 
-const RESERVED_PROTOCOL_ERROR_ID: u8 = u8::MAX;
+/// Trait discriminant reserved for method-independent protocol errors. Codec 2
+/// addresses frames by `(trait, method)`, so the reservation moved from a single
+/// id to a whole trait: that is the only level at which it can be enforced,
+/// since a method reaches the protocol-error address only through its trait.
+const RESERVED_PROTOCOL_ERROR_TRAIT_ID: u8 = u8::MAX;
 
 #[derive(Parser)]
 #[command(
@@ -41,7 +45,7 @@ struct Cli {
     client_version: Option<ProtocolVersionArg>,
 
     /// Wire codec version for generated handshake calls.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = truapi::WIRE_CODEC_VERSION)]
     codec_version: u8,
 
     /// Output directory for generated playground metadata (optional).
@@ -55,17 +59,18 @@ struct Cli {
     /// Output directory for the generated Rust dispatcher / wire-table (optional).
     ///
     /// When set, emits `dispatcher.rs` and `wire_table.rs` for the
-    /// `truapi-server` crate to include.
+    /// `truapi` crate to include.
     #[arg(long)]
     rust_output: Option<PathBuf>,
 
-    /// Path to rustdoc JSON for the `truapi-platform` crate (optional).
+    /// Path to rustdoc JSON for a crate with a `platform` module; repeat for
+    /// each such crate (`truapi`, `truapi-provider`).
     ///
     /// When provided together with `--platform-ts-output`, walks the
-    /// platform crate's capability traits and emits the typed TS
+    /// `platform` modules' capability traits and emits the typed TS
     /// `HostCallbacks` surface plus the WASM raw callback adapter.
     #[arg(long)]
-    platform_input: Option<String>,
+    platform_input: Vec<String>,
 
     /// Output directory for the generated typed `HostCallbacks` TypeScript
     /// surface (optional). Only honored when `--platform-input` is also set.
@@ -155,8 +160,8 @@ fn main() -> Result<()> {
         // The Rust routing table (wire_table.rs) is version-*unfiltered* - the
         // native host can route any method the crate defines - so its stamp hashes
         // the full/latest table, not the client-pinned subset. Otherwise a
-        // `--client-version`-pinned build would route a newer #[wire(sensitive)]
-        // frame under an older hash that a same-pinned debugger would accept and
+        // `--client-version`-pinned build would route a newer method's frame
+        // under an older hash that a same-pinned debugger would accept and
         // decode. At the default (latest) client version this equals the TS hash.
         let schema_hash =
             ts::wire_schema_hash(&api, ts::latest_wire_version(&api), cli.codec_version)
@@ -165,16 +170,21 @@ fn main() -> Result<()> {
             .with_context(|| format!("writing Rust dispatcher to {}", path.display()))?;
         println!("Wrote Rust dispatcher to {}", path.display());
     }
-    if let Some(input) = &cli.platform_input {
+    if !cli.platform_input.is_empty() {
         if cli.platform_wasm_adapter_output.is_some() && cli.platform_ts_output.is_none() {
             anyhow::bail!("--platform-wasm-adapter-output requires --platform-ts-output");
         }
-        let json = std::fs::read_to_string(input)
-            .with_context(|| format!("reading platform rustdoc JSON from {input}"))?;
-        let krate =
-            rustdoc::parse(&json).with_context(|| format!("parsing platform rustdoc {input}"))?;
-        let definition = platform::extract(&krate)
-            .with_context(|| format!("extracting platform definition from {input}"))?;
+        let krates = cli
+            .platform_input
+            .iter()
+            .map(|input| {
+                let json = std::fs::read_to_string(input)
+                    .with_context(|| format!("reading platform rustdoc JSON from {input}"))?;
+                rustdoc::parse(&json).with_context(|| format!("parsing platform rustdoc {input}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let definition =
+            platform::extract_all(&krates).context("extracting platform definition")?;
         if let Some(output) = &cli.platform_ts_output {
             let codec_types = api
                 .types

@@ -13,5 +13,6 @@ truapi_macros::versioned_type! {
     pub enum RemoteStatementStoreCreateProofAuthorizedResponse { V1 => v01::RemoteStatementStoreCreateProofResponse }
     pub enum RemoteStatementStoreCreateProofAuthorizedError { V1 => v01::RemoteStatementStoreCreateProofError }
     pub enum RemoteStatementStoreSubmitRequest { V1 => v01::SignedStatement }
+    pub enum RemoteStatementStoreSubmitResponse { V1 }
     pub enum RemoteStatementStoreSubmitError { V1 => v01::GenericError }
 }

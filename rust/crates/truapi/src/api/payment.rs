@@ -7,10 +7,11 @@ use crate::versioned::payment::{
     HostPaymentStatusSubscribeRequest, HostPaymentTopUpError, HostPaymentTopUpRequest,
     HostPaymentTopUpResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Payment request and balance/status subscription methods.
+#[wire_trait(id = 9)]
 #[crate::async_trait]
 pub trait Payment: Send + Sync {
     /// Subscribe to payment balance updates.
@@ -23,16 +24,14 @@ pub trait Payment: Send + Sync {
     /// );
     /// console.log("balance received:", balance);
     /// ```
-    #[wire(start_id = 118)]
+    #[wire(id = 0)]
     async fn balance_subscribe(
         &self,
         _cx: &CallContext,
         _request: HostPaymentBalanceSubscribeRequest,
-    ) -> Result<
-        Subscription<HostPaymentBalanceSubscribeItem>,
-        CallError<HostPaymentBalanceSubscribeError>,
-    > {
-        Err(CallError::unavailable())
+    ) -> Subscription<HostPaymentBalanceSubscribeItem, CallError<HostPaymentBalanceSubscribeError>>
+    {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Request a payment from the user.
@@ -53,7 +52,7 @@ pub trait Payment: Send + Sync {
     /// assert(result.isOk(), "request failed:", result);
     /// console.log("payment requested:", result.value);
     /// ```
-    #[wire(request_id = 124)]
+    #[wire(id = 2)]
     async fn request(
         &self,
         _cx: &CallContext,
@@ -90,16 +89,14 @@ pub trait Payment: Send + Sync {
     /// );
     /// console.log("payment status received:", status);
     /// ```
-    #[wire(start_id = 126)]
+    #[wire(id = 3)]
     async fn status_subscribe(
         &self,
         _cx: &CallContext,
         _request: HostPaymentStatusSubscribeRequest,
-    ) -> Result<
-        Subscription<HostPaymentStatusSubscribeItem>,
-        CallError<HostPaymentStatusSubscribeError>,
-    > {
-        Err(CallError::unavailable())
+    ) -> Subscription<HostPaymentStatusSubscribeItem, CallError<HostPaymentStatusSubscribeError>>
+    {
+        Subscription::interrupted(CallError::unavailable())
     }
 
     /// Top up the user's payment balance.
@@ -112,7 +109,7 @@ pub trait Payment: Send + Sync {
     /// assert(result.isOk(), "topUp failed:", result);
     /// console.log("balance topped up");
     /// ```
-    #[wire(request_id = 122, sensitive)]
+    #[wire(id = 1)]
     async fn top_up(
         &self,
         _cx: &CallContext,

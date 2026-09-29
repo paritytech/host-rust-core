@@ -7,11 +7,12 @@ use crate::versioned::system::{
     HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
     HostNavigateToResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// General-purpose TrUAPI methods for handshake, feature detection,
 /// navigation, and runtime information.
+#[wire_trait(id = 1)]
 #[crate::async_trait]
 pub trait System: Send + Sync {
     /// Negotiate the wire codec version with the product.
@@ -21,14 +22,14 @@ pub trait System: Send + Sync {
     /// assert(result.isOk(), "handshake failed:", result);
     /// console.log("handshake succeeded");
     /// ```
-    #[wire(request_id = 0)]
+    #[wire(id = 0)]
     async fn handshake(
         &self,
         _cx: &CallContext,
         request: HostHandshakeRequest,
     ) -> Result<HostHandshakeResponse, CallError<HostHandshakeError>> {
         let HostHandshakeRequest::V1(version) = request;
-        if version.codec_version == 1 {
+        if version.codec_version == crate::WIRE_CODEC_VERSION {
             Ok(HostHandshakeResponse::V1)
         } else {
             Err(CallError::Domain(HostHandshakeError::V1(
@@ -52,7 +53,7 @@ pub trait System: Send + Sync {
     /// assert(result.isOk(), "featureSupported failed:", result);
     /// console.log("feature supported:", result.value.supported);
     /// ```
-    #[wire(request_id = 2)]
+    #[wire(id = 1)]
     async fn feature_supported(
         &self,
         cx: &CallContext,
@@ -75,7 +76,7 @@ pub trait System: Send + Sync {
     /// assert(result.isOk(), "navigateTo failed:", result);
     /// console.log("navigation succeeded");
     /// ```
-    #[wire(request_id = 6)]
+    #[wire(id = 2)]
     async fn navigate_to(
         &self,
         cx: &CallContext,
@@ -95,7 +96,7 @@ pub trait System: Send + Sync {
     /// const info = result.value;
     /// console.log(`${info.name} ${info.version} on ${info.platform}`);
     /// ```
-    #[wire(request_id = 192)]
+    #[wire(id = 3)]
     async fn host_info(
         &self,
         cx: &CallContext,
@@ -109,7 +110,7 @@ pub trait System: Send + Sync {
     /// assert(context.isOk(), "getProductContext failed:", context);
     /// console.log("product id:", context.value.productId);
     /// ```
-    #[wire(request_id = 190)]
+    #[wire(id = 4)]
     async fn get_product_context(
         &self,
         _cx: &CallContext,
