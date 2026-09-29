@@ -2,11 +2,12 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.webView
 
 import android.view.ViewGroup
 import android.webkit.WebView
+import io.mockk.every
+import io.mockk.mockk
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.FixedProductId
 import io.paritytech.polkadotapp.test_shared.testDispatchers
-import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
@@ -16,14 +17,11 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import org.mockito.ArgumentMatchers.anyString
-import org.mockito.Mockito.doAnswer
-import org.mockito.Mockito.mock
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WebViewProviderTest {
     private val events = mutableListOf<String>()
-    private val host = mock(ViewGroup::class.java)
+    private val host = mockk<ViewGroup>()
     private val names = mutableMapOf<WebView, String>()
     private val WebView.name get() = names.getValue(this)
 
@@ -53,12 +51,13 @@ class WebViewProviderTest {
         )
     }
 
-    private fun webView(name: String): WebView = mock(WebView::class.java).also { view ->
-        whenever(view.parent).thenReturn(host)
-        whenever(view.url).thenReturn(ROUTE)
-        doAnswer { events += "destroy $name" }.`when`(view).destroy()
-        doAnswer { events += "load $name ${it.getArgument<String>(0)}" }.`when`(view).loadUrl(anyString())
-        doAnswer { events += "detach $name" }.`when`(host).removeView(view)
+    private fun webView(name: String): WebView = mockk<WebView> {
+        every { parent } returns host
+        every { url } returns ROUTE
+        every { destroy() } answers { events += "destroy $name" }
+        every { loadUrl(any<String>()) } answers { events += "load $name ${firstArg<String>()}" }
+    }.also { view ->
+        every { host.removeView(view) } answers { events += "detach $name" }
         names[view] = name
     }
 
