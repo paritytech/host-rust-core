@@ -173,6 +173,8 @@ interface RuntimeState {
     }
   >;
   subscriptionDisposers: Map<number, () => void>;
+  /** Signals of the prompt callbacks still open, by callback request id. */
+  callbackWithdrawals: Map<number, AbortController>;
   /**
    * Open `worker.beginOperation` holds. A non-empty set defers `dispose()`.
    * Worker-wide rather than per-core, since a `callbackRequest` carries no core
@@ -522,8 +524,11 @@ function handleCallbackRequest(
     requestId: number;
     name: CallbackName;
     args: readonly unknown[];
+    withdrawable?: true;
   },
 ): void {
+  // Teardown withdrew every prompt; one arriving now could never be dismissed.
+  if (state.disposed && msg.withdrawable) return;
   const fn = Object.hasOwn(state.rawCallbacks, msg.name)
     ? (
         state.rawCallbacks as unknown as Record<
@@ -541,8 +546,15 @@ function handleCallbackRequest(
     } satisfies MainToWorker);
     return;
   }
+  let args: readonly unknown[] = msg.args;
+  if (msg.withdrawable) {
+    const withdrawal = new AbortController();
+    state.callbackWithdrawals.set(msg.requestId, withdrawal);
+    args = [...msg.args, { signal: withdrawal.signal }];
+  }
   Promise.resolve()
-    .then(() => fn(...msg.args))
+    .then(() => fn(...args))
+    .finally(() => state.callbackWithdrawals.delete(msg.requestId))
     .then(
       (value) => {
         // Tracked in the success arm only: a rejected begin must not leave a
@@ -951,6 +963,11 @@ function teardown(state: RuntimeState, error: Error, fault: boolean): void {
     }
   }
   state.subscriptionDisposers.clear();
+  // Every open prompt belongs to a core that is gone, so none can be answered.
+  for (const withdrawal of state.callbackWithdrawals.values()) {
+    withdrawal.abort();
+  }
+  state.callbackWithdrawals.clear();
   for (const conn of state.chainConnections.values()) {
     try {
       conn.close();
@@ -1028,6 +1045,7 @@ export function createWebWorkerPairingHostRuntime(
       cores: new Map(),
       pendingCores: new Map(),
       subscriptionDisposers: new Map(),
+      callbackWithdrawals: new Map(),
       openOperations: new Set(),
       disposePending: false,
       disposeGraceTimer: undefined,
@@ -1169,6 +1187,10 @@ export function createWebWorkerPairingHostRuntime(
             console.debug("[truapi worker] callbackRequest", msg.name);
           }
           handleCallbackRequest(state, msg);
+          break;
+        case "callbackAbort":
+          state.callbackWithdrawals.get(msg.requestId)?.abort();
+          state.callbackWithdrawals.delete(msg.requestId);
           break;
         case "subscriptionStart":
           handleSubscriptionStart(state, msg);

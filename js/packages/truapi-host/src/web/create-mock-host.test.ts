@@ -5,6 +5,8 @@ import type { ChatRoom } from "@parity/truapi";
 import type {
   CoreStorageKey,
   ProductContext,
+  RequestRoute,
+  UserConfirmationReview,
 } from "../generated/host-callbacks.js";
 import {
   createMockHost,
@@ -14,6 +16,9 @@ import {
 import { createWebWorkerPairingHostRuntime } from "./index.js";
 
 const PRODUCT: ProductContext = { productId: "mock.dot", executionKind: "App" };
+const LOCAL: RequestRoute = { tag: "Local" };
+// The mock answers at once, so no prompt it raises is ever withdrawn.
+const OPEN = { signal: new AbortController().signal };
 
 /** Lowercase hex without `0x`. */
 function hex(bytes: Uint8Array): string {
@@ -85,13 +90,13 @@ describe("createMockHost callbacks", () => {
       devicePermissions: "allow-all",
       remotePermissions: "deny-all",
     });
-    expect(await callbacks.permissions.devicePermission(PRODUCT, "Notifications")).toBe(
+    expect(await callbacks.permissions.devicePermission(PRODUCT, "Notifications", OPEN)).toBe(
       "AllowAlways",
     );
     expect(
       await callbacks.permissions.remotePermission(PRODUCT, {
         permission: { tag: "WebRtc" },
-      }),
+      }, OPEN),
     ).toBe("Deny");
   });
 
@@ -136,10 +141,10 @@ describe("createMockHost callbacks", () => {
   it("confirms per config and records chain sends", async () => {
     const denied = createMockHost({ confirmUserActions: false });
     expect(
-      await denied.callbacks.userConfirmation.confirmUserAction({
+      await denied.callbacks.userConfirmation.confirmUserAction(PRODUCT, LOCAL, {
         tag: "ResourceAllocation",
-        value: { callingProductId: "mock.dot", resources: [] },
-      }),
+        value: { resources: [] },
+      }, OPEN),
     ).toBe(false);
 
     const host = createMockHost();
@@ -160,10 +165,10 @@ describe("createMockHost callbacks", () => {
 
   it("records confirmations and cancelled notifications", async () => {
     const host = createMockHost();
-    await host.callbacks.userConfirmation.confirmUserAction({
+    await host.callbacks.userConfirmation.confirmUserAction(PRODUCT, LOCAL, {
       tag: "ResourceAllocation",
-      value: { callingProductId: "mock.dot", resources: [] },
-    });
+      value: { resources: [] },
+    }, OPEN);
     expect(host.confirmations()).toEqual(["ResourceAllocation"]);
 
     const { id } = await host.callbacks.notifications.pushNotification({
@@ -216,13 +221,13 @@ describe("createMockHost callbacks", () => {
       devicePermissions: "deny-all",
       remotePermissions: "allow-all",
     });
-    expect(await callbacks.permissions.devicePermission(PRODUCT, "Notifications")).toBe(
+    expect(await callbacks.permissions.devicePermission(PRODUCT, "Notifications", OPEN)).toBe(
       "Deny",
     );
     expect(
       await callbacks.permissions.remotePermission(PRODUCT, {
         permission: { tag: "WebRtc" },
-      }),
+      }, OPEN),
     ).toBe("AllowAlways");
   });
 
@@ -321,21 +326,28 @@ describe("createMockHost with createWebWorkerPairingHostRuntime", () => {
 });
 
 describe("createMockHost control surface", () => {
-  const review = (callingProductId: string) =>
-    ({
-      tag: "ResourceAllocation",
-      value: { callingProductId, resources: [] },
-    }) as const;
+  const review = (
+    resource: "StatementStoreAllowance" | "BulletinAllowance",
+  ): UserConfirmationReview => ({
+    tag: "ResourceAllocation",
+    value: { resources: [{ tag: resource }] },
+  });
 
   it("records review payloads, not just kinds", async () => {
     // Two reviews of the same kind with different payloads: a kind-only
     // recording cannot tell these apart.
     const host = createMockHost();
     await host.callbacks.userConfirmation.confirmUserAction(
-      review("first.dot"),
+      PRODUCT,
+      LOCAL,
+      review("StatementStoreAllowance"),
+      OPEN,
     );
     await host.callbacks.userConfirmation.confirmUserAction(
-      review("second.dot"),
+      PRODUCT,
+      LOCAL,
+      review("BulletinAllowance"),
+      OPEN,
     );
 
     expect(host.confirmations()).toEqual([
@@ -347,22 +359,46 @@ describe("createMockHost control surface", () => {
         .reviews()
         .map(
           (r) =>
-            (r as { value: { callingProductId: string } }).value
-              .callingProductId,
+            (r as { value: { resources: { tag: string }[] } }).value
+              .resources[0]?.tag,
         ),
-    ).toEqual(["first.dot", "second.dot"]);
+    ).toEqual(["StatementStoreAllowance", "BulletinAllowance"]);
+  });
+
+  it("records the product each confirmation names, until reset", async () => {
+    const host = createMockHost();
+    const widget: ProductContext = {
+      productId: "other.dot",
+      executionKind: "Widget",
+    };
+    await host.callbacks.userConfirmation.confirmUserAction(
+      PRODUCT,
+      LOCAL,
+      review("StatementStoreAllowance"),
+      OPEN,
+    );
+    await host.callbacks.userConfirmation.confirmPermission(
+      widget,
+      LOCAL,
+      review("BulletinAllowance"),
+      OPEN,
+    );
+
+    expect(host.confirmationProducts()).toEqual([PRODUCT, widget]);
+    host.reset();
+    expect(host.confirmationProducts()).toEqual([]);
   });
 
   it("answers permissions per capability, overriding the policy", async () => {
     const host = createMockHost({ devicePermissions: "deny-all" });
-    const ask = () => host.callbacks.permissions.devicePermission(PRODUCT, "Camera");
+    const ask = () => host.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN);
 
     expect(await ask()).toBe("Deny");
     host.grantPermission("Camera");
     expect(await ask()).toBe("AllowAlways");
     // Per permission, not a policy flip.
     expect(
-      await host.callbacks.permissions.devicePermission(PRODUCT, "Microphone"),
+      await host.callbacks.permissions.devicePermission(PRODUCT, "Microphone", OPEN),
     ).toBe("Deny");
     expect(host.getGrantedPermissions()).toEqual(["Camera"]);
 
@@ -373,11 +409,11 @@ describe("createMockHost control surface", () => {
   it("denies whatever was not explicitly granted when enforcing", async () => {
     const host = createMockHost();
     host.setEnforcePermissions(true);
-    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera")).toBe(
+    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN)).toBe(
       "Deny",
     );
     host.grantPermission("Camera");
-    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera")).toBe(
+    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN)).toBe(
       "AllowAlways",
     );
   });
@@ -385,7 +421,7 @@ describe("createMockHost control surface", () => {
   it("records the surface, key and answer of every permission prompt", async () => {
     const host = createMockHost();
     host.revokePermission("Camera");
-    await host.callbacks.permissions.devicePermission(PRODUCT, "Camera");
+    await host.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN);
     expect(host.getPermissionLog()).toEqual([
       { tag: "Camera", value: "Camera", approved: false, kind: "device" },
     ]);
@@ -411,7 +447,7 @@ describe("createMockHost control surface", () => {
   it("reset returns the mock to its constructed state", async () => {
     const host = createMockHost();
     await host.callbacks.navigation.navigateTo("https://a");
-    await host.callbacks.userConfirmation.confirmUserAction(review("mock.dot"));
+    await host.callbacks.userConfirmation.confirmUserAction(PRODUCT, LOCAL, review("StatementStoreAllowance"), OPEN);
     host.seedPreimage(new Uint8Array([1]));
     host.setTheme("Light");
     host.setEnforcePermissions(true);
@@ -425,7 +461,7 @@ describe("createMockHost control surface", () => {
     expect(host.getGrantedPermissions()).toEqual([]);
     expect(host.getPreimages()).toEqual([]);
     expect(host.getTheme()).toBe("Dark");
-    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera")).toBe(
+    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN)).toBe(
       "AllowAlways",
     );
   });
@@ -436,16 +472,16 @@ describe("createMockHost TestHostAPI parity", () => {
     tag: "SignRaw",
     value: { Product: { request: { account: "a", payload: { Bytes: [1] } } } },
   } as const;
-  const allocation = {
+  const allocation: UserConfirmationReview = {
     tag: "ResourceAllocation",
-    value: { callingProductId: "mock.dot", resources: [] },
-  } as const;
+    value: { resources: [] },
+  };
 
   it("getSigningLog reports only the reviews that gate a signature", async () => {
     const host = createMockHost();
     // A non-signing review must not appear in a signing log.
-    await host.callbacks.userConfirmation.confirmUserAction(allocation);
-    await host.callbacks.userConfirmation.confirmUserAction(signRaw);
+    await host.callbacks.userConfirmation.confirmUserAction(PRODUCT, LOCAL, allocation, OPEN);
+    await host.callbacks.userConfirmation.confirmUserAction(PRODUCT, LOCAL, signRaw, OPEN);
 
     expect(host.reviews()).toHaveLength(2);
     const log = host.getSigningLog();
@@ -469,17 +505,17 @@ describe("createMockHost TestHostAPI parity", () => {
   it("setPermissionBehavior switches the fallback for both prompts", async () => {
     const host = createMockHost();
     host.setPermissionBehavior("deny-all");
-    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera")).toBe(
+    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN)).toBe(
       "Deny",
     );
     expect(
       await host.callbacks.permissions.remotePermission(PRODUCT, {
         permission: { tag: "ChainSubmit" },
-      }),
+      }, OPEN),
     ).toBe("Deny");
     // An explicit grant still wins over the policy.
     host.grantPermission("Camera");
-    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera")).toBe(
+    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN)).toBe(
       "AllowAlways",
     );
   });
@@ -548,7 +584,7 @@ describe("createMockHost TestHostAPI parity", () => {
     const ask = (domains: string[]) =>
       host.callbacks.permissions.remotePermission(PRODUCT, {
         permission: { tag: "Remote", value: { domains } },
-      });
+      }, OPEN);
 
     host.revokePermission("Remote");
     expect(await ask(["a.example"])).toBe("Deny");
@@ -715,7 +751,7 @@ describe("createMockHost TestHostAPI parity", () => {
     host.reset();
 
     expect(host.getOpenOperations()).toEqual([]);
-    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera")).toBe(
+    expect(await host.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN)).toBe(
       "AllowAlways",
     );
   });
@@ -787,12 +823,12 @@ describe("createMockHost TestHostAPI parity", () => {
       faults: { permissionError: "no prompt" },
     });
     await expect(
-      permission.callbacks.permissions.devicePermission(PRODUCT, "Camera"),
+      permission.callbacks.permissions.devicePermission(PRODUCT, "Camera", OPEN),
     ).rejects.toThrow("no prompt");
     await expect(
       permission.callbacks.permissions.remotePermission(PRODUCT, {
         permission: { tag: "ChainSubmit" },
-      }),
+      }, OPEN),
     ).rejects.toThrow("no prompt");
     // A refused prompt was never answered, so it is not a recorded decision.
     expect(permission.getPermissionLog()).toEqual([]);
@@ -811,16 +847,16 @@ describe("createMockHost TestHostAPI parity", () => {
     const confirmation = createMockHost({
       faults: { confirmationError: "no ui" },
     });
-    const review = {
+    const review: UserConfirmationReview = {
       tag: "ResourceAllocation",
-      value: { callingProductId: "mock.dot", resources: [] },
-    } as const;
+      value: { resources: [] },
+    };
     await expect(
-      confirmation.callbacks.userConfirmation.confirmUserAction(review),
+      confirmation.callbacks.userConfirmation.confirmUserAction(PRODUCT, LOCAL, review, OPEN),
     ).rejects.toThrow("no ui");
     // One knob answers both entry points, as on Rust.
     await expect(
-      confirmation.callbacks.userConfirmation.confirmPermission(review),
+      confirmation.callbacks.userConfirmation.confirmPermission(PRODUCT, LOCAL, review, OPEN),
     ).rejects.toThrow("no ui");
     // Unlike a refused permission prompt, the review is recorded before the
     // throw. Both mocks do this, so a suite reading the log sees the question

@@ -335,7 +335,7 @@ struct RustRuntimeBridgeTests {
                 watermarked: true
             )
         )
-        let result = try await bridge.confirmUserAction(review: review)
+        let result = try await bridge.confirmUserAction(product: testProduct, route: .local, review: review)
 
         #expect(result)
         #expect(presenter.receivedReview == review)
@@ -350,7 +350,7 @@ struct RustRuntimeBridgeTests {
         let review = UserConfirmationReview.accountAccess(
             AccountAccessReview(requestingProductId: "a.dot", targetProductId: "b.dot")
         )
-        let result = try await bridge.confirmUserAction(review: review)
+        let result = try await bridge.confirmUserAction(product: testProduct, route: .local, review: review)
 
         #expect(!result)
         #expect(presenter.receivedReview == review)
@@ -363,7 +363,6 @@ struct RustRuntimeBridgeTests {
 
         let review = UserConfirmationReview.signVrf(
             SignVrfReview(
-                callingProductId: "vrf.dot",
                 request: HostAccountSignVrfRequest(
                     account: ProductAccountId(
                         dotNsIdentifier: "vrf.dot",
@@ -374,7 +373,7 @@ struct RustRuntimeBridgeTests {
                 )
             )
         )
-        let result = try await bridge.confirmUserAction(review: review)
+        let result = try await bridge.confirmUserAction(product: testProduct, route: .local, review: review)
 
         #expect(result)
         #expect(presenter.receivedReview == review)
@@ -389,7 +388,7 @@ struct RustRuntimeBridgeTests {
             AccountAccessReview(requestingProductId: "caller.dot", targetProductId: "target.dot")
         )
 
-        let result = try await bridge.confirmPermission(review: review)
+        let result = try await bridge.confirmPermission(product: testProduct, route: .local, review: review)
 
         #expect(result == decision)
         #expect(presenter.receivedReview == review)
@@ -477,7 +476,7 @@ struct RustRuntimeBridgeTests {
             )
         )
         let task = Task {
-            await presenter.confirm(review: review, from: "test.product")
+            await presenter.confirm(review: review, from: "test.product", route: .local)
         }
         task.cancel()
         let verdict = await task.value
@@ -493,7 +492,7 @@ struct RustRuntimeBridgeTests {
             UserConfirmationReview.preimageSubmit(PreimageSubmitReview(size: 1_024)),
             .productSubtree(ProductSubtreeReview(productId: "test.product"))
         ] {
-            #expect(await presenter.confirm(review: review, from: "test.product") == false)
+            #expect(await presenter.confirm(review: review, from: "test.product", route: .local) == false)
         }
     }
 

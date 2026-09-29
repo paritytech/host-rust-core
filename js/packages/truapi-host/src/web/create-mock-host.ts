@@ -44,6 +44,7 @@ import type {
   HostChainSet,
   JsonRpcConnection,
   PermissionDecision,
+  ProductContext,
   RequiredHostCallbacks,
   UserConfirmationReview,
 } from "../generated/host-callbacks.js";
@@ -398,6 +399,8 @@ export interface MockHost {
    * was put to the user rather than only that something was.
    */
   reviews(): UserConfirmationReview[];
+  /** Product each confirmation named, in the order of {@link MockHost.reviews}. */
+  confirmationProducts(): ProductContext[];
   /** Confirmation kinds the core requested (review `tag`s), in order. */
   confirmations(): string[];
   /**
@@ -749,6 +752,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
   const sentRpc: string[] = [];
   const authStates: AuthState[] = [];
   const reviews: UserConfirmationReview[] = [];
+  const confirmationProducts: ProductContext[] = [];
   const cancelledNotifications: number[] = [];
   const permissionLog: PermissionLogEntry[] = [];
   const openOperations: OpenOperation[] = [];
@@ -1085,15 +1089,17 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     },
 
     userConfirmation: {
-      async confirmUserAction(review) {
+      async confirmUserAction(product, _route, review) {
         reviews.push(review);
+        confirmationProducts.push(product);
         if (faults.confirmationError) throw new Error(faults.confirmationError);
         return confirmUserActions;
       },
       // The Rust trait answers this from `confirm_user_action` by default, so
       // a review is recorded here too and one knob still answers both.
-      async confirmPermission(review) {
+      async confirmPermission(product, _route, review) {
         reviews.push(review);
+        confirmationProducts.push(product);
         if (faults.confirmationError) throw new Error(faults.confirmationError);
         return decision(confirmUserActions);
       },
@@ -1261,6 +1267,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     sentRpc: () => [...sentRpc],
     authStates: () => [...authStates],
     reviews: () => [...reviews],
+    confirmationProducts: () => [...confirmationProducts],
     confirmations: () => reviews.map((review) => review.tag),
     getSigningLog: () =>
       reviews.flatMap((review) => {
@@ -1358,6 +1365,7 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     },
     clearSigningLog: () => {
       reviews.length = 0;
+      confirmationProducts.length = 0;
     },
     clearPermissionLog: () => {
       permissionLog.length = 0;
