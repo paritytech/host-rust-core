@@ -11,16 +11,17 @@
 
 import type { Page, FrameLocator } from "@playwright/test";
 
-import type {
-  ChainStatus,
-  ChatMessageRecord,
-  MockHostConfig,
-  NotificationLogEntry,
-  PermissionLogEntry,
-  PermissionPolicy,
-  PermissionPolicyAlias,
-  SigningLogEntry,
-  StatementEntry,
+import {
+  coreProductStorageKey,
+  type ChainStatus,
+  type ChatMessageRecord,
+  type MockHostConfig,
+  type NotificationLogEntry,
+  type PermissionLogEntry,
+  type PermissionPolicy,
+  type PermissionPolicyAlias,
+  type SigningLogEntry,
+  type StatementEntry,
 } from "../web/create-mock-host.js";
 import type { StatementInput } from "../web/loopback-statements.js";
 
@@ -219,8 +220,9 @@ export interface TestHost {
    * Find the value the product stored under `key`.
    *
    * The core namespaces product storage keys before the host ever sees them,
-   * so a test matching on the product's own key wants a suffix match rather
-   * than the full namespaced string, which is an internal shape.
+   * so this reads the product's own key back out of that shape rather than
+   * matching the internal string. Answers the bytes, where
+   * {@link TestHost.getProductStorageValue} answers them decoded as UTF-8.
    */
   findProductStorage(key: string): Promise<Uint8Array | undefined>;
   /**
@@ -419,6 +421,25 @@ function splitChainId(id: string): {
   // No suffix: the id names the network and the chain is its relay. The
   // runtime config has no relay slot, so there is no key to declare it under.
   return { network: id, identifier: "Relay" };
+}
+
+/**
+ * The product-storage entry `key` names, or `undefined` when nothing holds it.
+ *
+ * Reads the product's own key out of each stored one with the parse
+ * `getProductStorageValue` uses, so the byte reader and the string reader
+ * cannot disagree about which entry a key names. Falls back to the whole key
+ * for a value written straight through the host seam, which never passed
+ * through the core's namespacing.
+ */
+export function productStorageEntry(
+  stored: Record<string, Uint8Array>,
+  key: string,
+): Uint8Array | undefined {
+  const match = Object.entries(stored).find(
+    ([entry]) => (coreProductStorageKey(entry) ?? entry) === key,
+  );
+  return match?.[1];
 }
 
 /**
@@ -658,13 +679,8 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
             ]),
           );
         },
-        async findProductStorage(key: string) {
-          const stored = await testHost.getProductStorage();
-          const match = Object.entries(stored).find(([stored]) =>
-            stored.endsWith(`:${key}`),
-          );
-          return match?.[1];
-        },
+        findProductStorage: async (key: string) =>
+          productStorageEntry(await testHost.getProductStorage(), key),
         getProductStorageValue: async (key: string) =>
           page.evaluate((storageKey) => {
             const host = window.__TRUAPI_TEST_HOST__;

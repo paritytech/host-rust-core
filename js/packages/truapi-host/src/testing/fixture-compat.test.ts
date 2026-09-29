@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { createTestHostFixture, fromNetworks } from "./playwright.js";
+import {
+  createTestHostFixture,
+  fromNetworks,
+  productStorageEntry,
+} from "./playwright.js";
 import { createMockClient } from "./create-mock-client.js";
 import { wasmIsBuilt } from "./require-wasm.js";
 import { PASEO_ASSET_HUB, LIVE_CHAINS } from "./dev-accounts.js";
@@ -251,6 +255,28 @@ describe("reading a stored value back the way the old package spelled it", () =>
       try {
         await client.localStorage.write({ key: "demo:only", value: "0x6869" });
         expect(host.getProductStorageValue("only")).toBeUndefined();
+      } finally {
+        dispose();
+      }
+    });
+
+    it("keeps the two stores apart for the byte reader as well", async () => {
+      // `findProductStorage` reads the same entries by the same key. Matching
+      // on a `:mykey` suffix instead answers the bare key with the prefixed
+      // store's value, so a suite reading bytes and a suite reading text
+      // disagree about which value a key holds.
+      const { client, host, dispose } = await createMockClient();
+      try {
+        await client.localStorage.write({ key: "demo:mykey", value: "0x6869" });
+        await client.localStorage.write({ key: "mykey", value: "0x6a6a" });
+
+        const stored = host.getProductStorage();
+        expect(productStorageEntry(stored, "demo:mykey")).toEqual(
+          Uint8Array.from([0x68, 0x69]),
+        );
+        expect(productStorageEntry(stored, "mykey")).toEqual(
+          Uint8Array.from([0x6a, 0x6a]),
+        );
       } finally {
         dispose();
       }

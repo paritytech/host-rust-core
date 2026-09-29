@@ -91,7 +91,7 @@ const CORE_PRODUCT_STORAGE_PREFIX = /^truapi:product-storage:v\d+:/;
  * colons -- `localhost:3000` is an ordinary one -- so the length is what says
  * where the id ends, not the next separator.
  */
-function coreProductStorageKey(stored: string): string | undefined {
+export function coreProductStorageKey(stored: string): string | undefined {
   const prefix = CORE_PRODUCT_STORAGE_PREFIX.exec(stored);
   if (!prefix) return undefined;
   const rest = stored.slice(prefix[0].length);
