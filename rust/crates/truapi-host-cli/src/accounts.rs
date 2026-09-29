@@ -9,15 +9,15 @@ use bip39::Mnemonic;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
-use truapi_server::host_logic::product_account::{
+use truapi::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_identity_keypair,
     derive_lite_person_ring_vrf_entropy, product_public_key_to_address,
 };
 
 use crate::attestation;
 use crate::network::NetworkConfig;
-use truapi_server::statement_allowance as alloc;
-use truapi_server::statement_allowance::collection::PersonhoodCollection;
+use truapi::statement_allowance as alloc;
+use truapi::statement_allowance::collection::PersonhoodCollection;
 use zeroize::ZeroizeOnDrop;
 
 const ACCOUNT_STORE_FILE: &str = "accounts.json";
@@ -28,7 +28,7 @@ const DEFAULT_USERNAME_PREFIX: &str = "headless";
 ///
 /// This is the judgement "a signer was provisioned here"; the store's filename
 /// stays private to this module.
-pub(crate) fn has_account_store(base_path: &std::path::Path) -> bool {
+pub fn has_account_store(base_path: &std::path::Path) -> bool {
     base_path.join(ACCOUNT_STORE_FILE).is_file()
 }
 
@@ -643,7 +643,7 @@ fn resolved_lite_username(username: &str) -> bool {
 /// dotNS TLD is `network_suffix`, widest slot budget first.
 ///
 /// Both are always offered; membership is settled on chain, not from local state.
-pub(crate) fn collection_candidates(
+pub fn collection_candidates(
     entropy: &[u8],
     network_suffix: &str,
 ) -> Vec<alloc::CollectionCandidate> {
