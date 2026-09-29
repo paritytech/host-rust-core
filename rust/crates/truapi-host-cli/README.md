@@ -1,8 +1,10 @@
 # truapi-host-cli
 
-Headless TrUAPI hosts for local end-to-end testing, built on `truapi-server`. They replace the external signing-bot
-service: two CLI processes take the two host-spec §B roles and pair over the **real People-chain statement store** (the
-same node an iOS/web client uses), so tests run against a real signer with no Novasama-operated dependency.
+Headless TrUAPI hosts for local end-to-end testing, built on `truapi`.
+They replace the external signing-bot service: two CLI processes take the two
+host-spec §B roles and pair over the **real People-chain statement store** (the
+same node an iOS/web client uses), so tests run against a real signer with no
+Novasama-operated dependency.
 
 See [SPEC.md](SPEC.md) for the complete as-built v0.1 behavior and engineering contract.
 
@@ -593,10 +595,19 @@ Scripts under `js/scripts/` include:
   and one privileged, and records every removal the host is asked for in `TRUAPI_POCKET_LOG`. The cases read that
   transcript, so a pass means the host and the product agree rather than resting on the product's word.
 
-  The paired phase gives its pairing host a throwaway `--base-path` under `target/battery/pairing-host-state`, so it
-  performs a real handshake on every run. A pairing host that restores an earlier session reports `AlreadyConnected` and
-  then fails every remote example, because the signing host that session was paired with is no longer running. The
-  signing host keeps the default base path and reuses its attested account.
+  Contacts are served on every phase, from `TRUAPI_CONTACTS`
+  (`alice=0x<32-byte account>;bob=0x…`) or, unset, from a two-name development
+  list so `contacts.pick` has someone to return. An empty spec is an empty list,
+  which is what answers `NoContacts`. `TRUAPI_CONTACT_PICK` names which contact
+  the picker offers; the approval surface asks about it like any other action,
+  so a headless run approves it and an interactive one does not.
+
+  The paired phase gives its pairing host a throwaway `--base-path` under
+  `target/battery/pairing-host-state`, so it performs a real handshake on every
+  run. A pairing host that restores an earlier session reports
+  `AlreadyConnected` and then fails every remote example, because the signing
+  host that session was paired with is no longer running. The signing host keeps
+  the default base path and reuses its attested account.
 
   To drive the paired topology by hand instead, start the pairing host and answer its emitted link from a second
   terminal:
@@ -707,14 +718,17 @@ socket. Point it at a debugger you are running yourself.
 
 ## Statement-store allowance
 
-The real statement store enforces per-account allowance. Before pairing, the signing host grants it on-chain exactly as
-a real client does: it proves its personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
-General (v5) `Resources.set_statement_store_account` extrinsic for each account that submits statements — its RFC-0022
-`uid.<tld>` identity account and the pairing host's per-pairing device key. The shared native implementation lives in
-`truapi-server/src/runtime/statement_allowance/` (metadata-driven signed-extension encoding, ring fetch, slot scan,
-ring-VRF proof, extrinsic assembly, submit). The signing account must be an attested member of at least one personhood
-collection, and may sit in an old ring, so the signing host scans back from the current ring index (slow, one-time per
-pairing).
+The real statement store enforces per-account allowance. Before pairing, the
+signing host grants it on-chain exactly as a real client does: it proves its
+personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
+General (v5) `Resources.set_statement_store_account` extrinsic for each account
+that submits statements — its RFC-0022 `uid.<tld>` identity account and the
+pairing host's per-pairing device key. The shared native implementation lives in
+`truapi/src/runtime/statement_allowance/` (metadata-driven
+signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
+assembly, submit). The signing account must be an attested member of at least
+one personhood collection, and may sit in an old ring, so the signing host scans
+back from the current ring index (slow, one-time per pairing).
 
 Each collection is a separate alias space with its own budget, so a signer with full personhood has the slots returned
 by `Resources.get_stmt_store_slots_per_period` in `People` on top of `Resources.get_lite_stmt_store_slots_per_period` in

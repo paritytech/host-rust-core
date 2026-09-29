@@ -45,6 +45,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
 
     private let lock = NSLock()
     private var cachedRuntime: TrUAPIHostRuntime?
+    private var contactsChangeNotifier: ContactsChangeNotifier?
 
     init(
         chainRegistry: ChainRegistryProtocol,
@@ -136,6 +137,24 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
         // Temporary unavailability must never opt this host into Rust purse storage.
         let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig, nativeWallet: coinageAdapter)
         bridge.attach(runtime)
+        // Before any product execution opens, so a product never sees the
+        // window where the host lists no contacts.
+        let contactsBridge = AppContactsHostBridge(
+            repositoryFactory: ChatContactRepositoryFactory(),
+            operationQueue: OperationManagerFacade.sharedDefaultQueue,
+            routerFacade: confirmationRouterFacade
+        )
+        runtime.setContacts(contactsBridge)
+        contactsChangeNotifier = ContactsChangeNotifier(
+            dataProviderFactory: ChatContactDataProviderFactory(),
+            logger: logger,
+            onSnapshot: { [weak contactsBridge] contacts in
+                contactsBridge?.update(contacts: contacts)
+            },
+            onRemoval: { [weak runtime] in
+                runtime?.notifyContactsChanged()
+            }
+        )
         try runtime.activateLocalSession(secret: secret, liteUsername: settingsManager.string(for: .username))
 
         cachedRuntime = runtime

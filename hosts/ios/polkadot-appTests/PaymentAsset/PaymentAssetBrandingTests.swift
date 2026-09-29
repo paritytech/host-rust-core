@@ -100,7 +100,8 @@ private extension PaymentAssetBrandingTests {
             accountDataStoreContract: nil,
             paymentAsset: published
                 ? PaymentAssetConfig(symbol: symbol, squareIconURL: square, wideIconURL: wide)
-                : nil
+                : nil,
+            appSharingUrl: nil
         )
     }
 }

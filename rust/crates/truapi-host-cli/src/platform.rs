@@ -21,16 +21,16 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
-use truapi::v01;
-use truapi_platform::{
+use truapi::platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, CreateTransactionReview,
     DevicePermissionStatus, Features, HopProvider, JsonRpcConnection, LocaleHost,
     NativeChatFileExportRequest, NativeChatFilePickRequest, NativeChatFilesHost,
     NativeChatPickedFile, Navigation, Notifications, PermissionDecision, PermissionStatusHost,
     Permissions, PreimageHost, ProductContext, ProductOperations, ProductStorage,
-    ProductStorageKey, SessionUiInfo, SignPayloadReview, SignRawReview, ThemeHost,
+    ProductStorageKey, ProviderError, SessionUiInfo, SignPayloadReview, SignRawReview, ThemeHost,
     UserConfirmation, UserConfirmationReview,
 };
+use truapi::v01;
 
 use crate::chain::CliChainProvider;
 use crate::chat_files::{self, ChatFiles};
@@ -94,7 +94,7 @@ impl CliStoragePaths {
 pub struct CliPlatform {
     chain: CliChainProvider,
     /// Chain roles this host serves, answered by `Features::supported_chains`.
-    chains: truapi_platform::HostChainSet,
+    chains: truapi::platform::HostChainSet,
     product_storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
     core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     /// Device-scoped core slots, kept outside the per-user namespaces that
@@ -109,8 +109,7 @@ pub struct CliPlatform {
     preimages: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     chat_files: ChatFiles,
     next_notification_id: AtomicU32,
-    scheduled_notifications:
-        Arc<Mutex<HashMap<api::NotificationId, api::HostPushNotificationRequest>>>,
+    scheduled_notifications: Arc<Mutex<HashMap<u32, api::HostPushNotificationRequest>>>,
     approval: Mutex<ApprovalPolicy>,
     /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
     /// `<approved|denied> <action>` line per decided confirmation.
@@ -125,7 +124,7 @@ impl CliPlatform {
     /// The URL a genesis routes to, so a test can assert a routing override
     /// rather than assume it.
     #[cfg(test)]
-    pub(crate) fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
+    pub fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
         let CliChainProvider::Rpc(rpc) = &self.chain else {
             panic!("routing is only asserted on the RPC provider");
         };
@@ -394,6 +393,10 @@ impl CliPlatform {
         *self.state_dir.lock().expect("state path mutex poisoned") = Some(target_state);
         self.persist_core_storage()?;
         persist_current_pairing_user(&scope.bootstrap_dir, user_id)
+    }
+
+    pub async fn decide(&self, action: &str, detail: String) -> bool {
+        self.decide_with(action, detail, ApprovalKind::Action).await != PermissionDecision::Deny
     }
 
     async fn decide_with(
@@ -748,7 +751,7 @@ impl ChainProvider for CliPlatform {
     async fn connect(
         &self,
         genesis_hash: [u8; 32],
-    ) -> Result<Box<dyn JsonRpcConnection>, api::GenericError> {
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         self.chain.connect(genesis_hash).await
     }
 }
@@ -848,7 +851,7 @@ impl Notifications for CliPlatform {
         Ok(api::HostPushNotificationResponse { id })
     }
 
-    async fn cancel_notification(&self, id: api::NotificationId) -> Result<(), api::GenericError> {
+    async fn cancel_notification(&self, id: u32) -> Result<(), api::GenericError> {
         if self
             .scheduled_notifications
             .lock()
@@ -933,12 +936,12 @@ impl Features for CliPlatform {
         Ok(api::HostFeatureSupportedResponse { supported })
     }
 
-    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, api::GenericError> {
+    async fn supported_chains(&self) -> Result<truapi::platform::HostChainSet, api::GenericError> {
         Ok(self.chains.clone())
     }
 }
 
-impl truapi_platform::AuthPresenter for CliPlatform {
+impl truapi::platform::AuthPresenter for CliPlatform {
     fn auth_state_changed(&self, state: AuthState) {
         if let AuthState::Connected(info) = &state
             && let Some(user_id) = storage_user_id(info)
@@ -1445,7 +1448,7 @@ fn save_string_map(path: &Path, values: &HashMap<String, Vec<u8>>) -> Result<(),
     atomic_write(path, text.as_bytes())
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("storage path has no parent: {}", path.display()))?;
@@ -1735,7 +1738,7 @@ mod tests {
     /// identity.
     #[tokio::test]
     async fn auth_state_changed_does_not_inherit_storage_on_a_rejected_username() {
-        use truapi_platform::AuthPresenter;
+        use truapi::platform::AuthPresenter;
 
         let dir = tempdir().expect("tempdir");
         let network_dir = dir.path().join("paseo");
@@ -1801,7 +1804,7 @@ mod tests {
     /// `AuthSession` is `00` and `PairingDeviceIdentity` is `01`.
     #[tokio::test]
     async fn cli_platform_preserves_unreadable_core_storage() {
-        use truapi_platform::CoreStorage;
+        use truapi::platform::CoreStorage;
 
         let dir = tempdir().expect("tempdir");
         let state_dir = dir.path().join("state");
@@ -2082,7 +2085,7 @@ mod tests {
     #[test]
     fn approval_summaries_are_concise_and_do_not_dump_payloads() {
         let review =
-            UserConfirmationReview::PreimageSubmit(truapi_platform::PreimageSubmitReview {
+            UserConfirmationReview::PreimageSubmit(truapi::platform::PreimageSubmitReview {
                 size: 4_096,
             });
 
@@ -2101,7 +2104,7 @@ mod tests {
     #[test]
     fn statement_proof_approval_names_both_products_without_dumping_payload() {
         let review = UserConfirmationReview::StatementStoreProductSign(
-            truapi_platform::StatementStoreProductSignReview {
+            truapi::platform::StatementStoreProductSignReview {
                 calling_product_id: Some("dim2next.paseo".to_string()),
                 account: api::ProductAccountId {
                     dot_ns_identifier: "dim2.paseo".to_string(),
@@ -2124,7 +2127,7 @@ mod tests {
 
     #[test]
     fn vrf_approval_names_both_products_without_dumping_transcript_values() {
-        let review = UserConfirmationReview::SignVrf(truapi_platform::SignVrfReview {
+        let review = UserConfirmationReview::SignVrf(truapi::platform::SignVrfReview {
             calling_product_id: "caller.dot".to_string(),
             request: truapi::v01::HostAccountSignVrfRequest {
                 account: truapi::v01::ProductAccountId {

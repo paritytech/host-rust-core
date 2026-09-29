@@ -8,29 +8,31 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import io.paritytech.polkadotapp.common.utils.CurrencyConfig
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
 import io.paritytech.polkadotapp.design.theme.lightCounterpart
 
 @Composable
 fun String.withCurrencyTickerStyle(style: TextStyle): AnnotatedString {
+    val ticker = LocalPaymentAssetBrand.current.symbol
     val spanStyle = rememberTickerSpanStyle(style)
 
-    return remember(this, spanStyle) {
+    return remember(this, ticker, spanStyle) {
         buildAnnotatedString {
             append(this@withCurrencyTickerStyle)
-            styleTickerOccurrences(this@withCurrencyTickerStyle, spanStyle)
+            styleTickerOccurrences(this@withCurrencyTickerStyle, ticker, spanStyle)
         }
     }
 }
 
 @Composable
 fun AnnotatedString.withCurrencyTickerStyle(style: TextStyle): AnnotatedString {
+    val ticker = LocalPaymentAssetBrand.current.symbol
     val spanStyle = rememberTickerSpanStyle(style)
 
-    return remember(this, spanStyle) {
+    return remember(this, ticker, spanStyle) {
         buildAnnotatedString {
             append(this@withCurrencyTickerStyle)
-            styleTickerOccurrences(this@withCurrencyTickerStyle.text, spanStyle)
+            styleTickerOccurrences(this@withCurrencyTickerStyle.text, ticker, spanStyle)
         }
     }
 }
@@ -60,8 +62,8 @@ private fun rememberTickerSpanStyle(style: TextStyle): SpanStyle {
     }
 }
 
-private fun AnnotatedString.Builder.styleTickerOccurrences(source: String, spanStyle: SpanStyle) {
-    tickerRanges(source, CurrencyConfig.symbol).forEach { range ->
+private fun AnnotatedString.Builder.styleTickerOccurrences(source: String, ticker: String, spanStyle: SpanStyle) {
+    tickerRanges(source, ticker).forEach { range ->
         addStyle(style = spanStyle, start = range.start, end = range.end)
     }
 }
