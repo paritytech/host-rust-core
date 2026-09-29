@@ -8,6 +8,12 @@
 //! [`ChainId`], request queue, and response stream, which yields natural
 //! per-connection isolation.
 //!
+//! Readiness: a connection holds back the requests it is sent until smoldot
+//! first reports the chain as synced, then forwards them in the order they
+//! arrived, except those in [`ANSWERED_BEFORE_SYNC`]. Held requests count against
+//! [`MAX_UNDELIVERED_FRAMES`], so a chain that never syncs refuses work
+//! instead of growing the queue.
+//!
 //! Warm-start snapshots: take one with
 //! [`EmbeddedChainProvider::snapshot`](crate::EmbeddedChainProvider::snapshot),
 //! persist the returned string, and feed it back on a later run through
@@ -22,14 +28,16 @@
 //! `log`->`tracing` bridge (e.g. `tracing_log::LogTracer`).
 
 use core::num::{NonZero, NonZeroUsize};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use crate::platform::JsonRpcConnection;
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
+use futures::future;
 use futures::stream::{self, BoxStream, StreamExt};
+use smoldot_light::lifecycle_service::{Phase, Subscription};
 use smoldot_light::{
     AddChainConfig, AddChainConfigJsonRpc, ChainId, Client, HandleRpcError, JsonRpcResponses,
     StatementProtocolConfig,
@@ -130,6 +138,17 @@ const MAX_SUBSCRIPTIONS: u32 = 1024;
 /// bounds the case this exists for, where nothing is drained at all.
 const MAX_UNDELIVERED_FRAMES: usize = 1024;
 
+/// Method prefixes smoldot answers before the chain is synced: the chain spec
+/// is local, the lifecycle subscription is how a consumer watches the sync, and
+/// statements and Bitswap blocks are exchanged with peers without consulting
+/// the chain.
+const ANSWERED_BEFORE_SYNC: [&str; 4] = [
+    "chainSpec_v1_",
+    "lifecycle_unstable_",
+    "statement_",
+    "bitswap_",
+];
+
 /// How many connections the shared client may hold at once.
 ///
 /// Every one of them costs an `add_chain` with its own request queue and
@@ -164,6 +183,9 @@ struct AddedChain {
     /// only ever had connections leaves this `None`: each connection removes the
     /// chain it added itself.
     implicit_id: Option<ChainId>,
+    /// The ids smoldot gave each live connection to this chain. Any of them,
+    /// like `implicit_id`, reports the lifecycle of the chain.
+    connection_ids: Vec<ChainId>,
     refcount: usize,
 }
 
@@ -209,6 +231,20 @@ impl LightState {
         self.inner
             .get()
             .is_some_and(|inner| lock(inner).added.contains_key(&genesis_hash))
+    }
+
+    /// Subscribe to the lifecycle of the chain with this genesis hash, or
+    /// `None` when the client is not running it.
+    ///
+    /// The subscription outlives the id it was taken through: it ends only
+    /// when smoldot stops running the chain.
+    pub fn lifecycle(&self, genesis_hash: [u8; 32]) -> Option<Subscription> {
+        let guard = lock(self.inner.get()?);
+        let chain = guard.added.get(&genesis_hash)?;
+        let chain_id = chain
+            .implicit_id
+            .or_else(|| chain.connection_ids.first().copied())?;
+        Some(guard.client.lifecycle_state(chain_id))
     }
 
     /// Add `source` to the shared client as a [`JsonRpcConnection`]. For a
@@ -290,19 +326,19 @@ impl LightState {
 
         // Counted only once the add succeeded, so a failed connect leaves no
         // chain behind that `is_added` would report as running.
-        guard
-            .added
-            .entry(genesis_hash)
-            .or_insert(AddedChain {
-                implicit_id: None,
-                refcount: 0,
-            })
-            .refcount += 1;
+        let entry = guard.added.entry(genesis_hash).or_insert(AddedChain {
+            implicit_id: None,
+            connection_ids: Vec::new(),
+            refcount: 0,
+        });
+        entry.connection_ids.push(success.chain_id);
+        entry.refcount += 1;
         guard.connections += 1;
 
         let responses = success
             .json_rpc_responses
             .expect("JSON-RPC was enabled for this chain");
+        let lifecycle = guard.client.lifecycle_state(success.chain_id);
         drop(guard);
 
         // `send` synthesizes an error onto this channel when a request is refused,
@@ -310,16 +346,25 @@ impl LightState {
         // same budget as the responses it stands in for: an unbounded one would
         // just move the growth it exists to prevent into the refusal path.
         let (errors_tx, errors_rx) = mpsc::channel(MAX_UNDELIVERED_FRAMES);
+        let (closing_tx, closing_rx) = oneshot::channel();
 
         Ok(Box::new(LightConnection {
-            inner,
-            chain_id: success.chain_id,
+            pipe: Arc::new(Pipe {
+                inner,
+                chain_id: success.chain_id,
+                errors_tx: Mutex::new(errors_tx),
+                undelivered: AtomicUsize::new(0),
+                held: Mutex::new(Some(Vec::new())),
+                closing: Mutex::new(Some(closing_tx)),
+            }),
             genesis_hash,
             relay: relay_genesis,
-            errors_tx: Mutex::new(errors_tx),
-            responses: Mutex::new(Some((responses, errors_rx))),
-            undelivered: Arc::new(AtomicUsize::new(0)),
-            closed: AtomicBool::new(false),
+            responses: Mutex::new(Some(ResponseSources {
+                responses,
+                errors: errors_rx,
+                lifecycle,
+                closing: closing_rx,
+            })),
         }))
     }
 }
@@ -377,6 +422,7 @@ fn add_relay(
 
     let entry = guard.added.entry(relay_genesis).or_insert(AddedChain {
         implicit_id: None,
+        connection_ids: Vec::new(),
         refcount: 0,
     });
     entry.implicit_id = Some(success.chain_id);
@@ -431,23 +477,44 @@ fn statement_seed() -> u128 {
 
 /// One added smoldot chain exposed as a raw JSON-RPC pipe.
 struct LightConnection {
-    inner: Arc<Mutex<LightInner>>,
-    chain_id: ChainId,
+    pipe: Arc<Pipe>,
     /// Genesis of the chain this connection is for. Its reference is released
     /// on close, which is what stops reporting the chain as running.
     genesis_hash: [u8; 32],
     /// Genesis of the implicit relay this connection holds a reference on, if
     /// it is a parachain; released on close.
     relay: Option<[u8; 32]>,
+    /// Taken once by `responses()`.
+    responses: Mutex<Option<ResponseSources>>,
+}
+
+/// What `responses()` merges into the stream it hands out.
+struct ResponseSources {
+    responses: JsonRpcResponses<Platform>,
+    /// Receiver for [`Pipe::errors_tx`].
+    errors: mpsc::Receiver<String>,
+    /// Watched until the chain first syncs, which releases the held requests.
+    lifecycle: Subscription,
+    /// Resolves when the connection closes.
+    closing: oneshot::Receiver<()>,
+}
+
+/// The request side of a connection, shared with the stream that releases
+/// held requests once the chain syncs.
+struct Pipe {
+    inner: Arc<Mutex<LightInner>>,
+    chain_id: ChainId,
     /// Synthetic JSON-RPC error frames for requests smoldot rejected, merged
-    /// into [`responses`](Self::responses) so the caller fails fast.
+    /// into the response stream so the caller fails fast.
     errors_tx: Mutex<mpsc::Sender<String>>,
-    /// Taken once by `responses()`: smoldot's response stream paired with the
-    /// receiver for `errors_tx`.
-    responses: Mutex<Option<(JsonRpcResponses<Platform>, mpsc::Receiver<String>)>>,
     /// Frames owed to the consumer, bounded by [`MAX_UNDELIVERED_FRAMES`].
-    undelivered: Arc<AtomicUsize>,
-    closed: AtomicBool,
+    undelivered: AtomicUsize,
+    /// Requests sent before the chain first synced, in send order. `None`
+    /// once they are released, after which requests go straight to smoldot.
+    held: Mutex<Option<Vec<String>>>,
+    /// Taken by `close`, which ends the wait for the chain to sync. `None`
+    /// means the connection is closed.
+    closing: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 /// Decrement `counter` unless it is already zero.
@@ -471,7 +538,102 @@ fn decrement_saturating(counter: &AtomicUsize) {
     }
 }
 
-impl LightConnection {
+/// Whether smoldot can only answer `request` once the chain has synced.
+///
+/// A request without a readable method is forwarded, since smoldot rejects it
+/// without consulting the chain.
+fn waits_for_sync(request: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(request) else {
+        return false;
+    };
+    value
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|method| {
+            !ANSWERED_BEFORE_SYNC
+                .iter()
+                .any(|prefix| method.starts_with(prefix))
+        })
+}
+
+/// Resolve once the chain first reports [`Phase::Ready`], or once it is
+/// removed, which only follows this connection closing.
+async fn first_ready(mut lifecycle: Subscription) {
+    while let Some(state) = lifecycle.next().await {
+        if state.phase == Phase::Ready {
+            return;
+        }
+    }
+}
+
+impl Pipe {
+    fn is_closed(&self) -> bool {
+        lock(&self.closing).is_none()
+    }
+
+    fn send(&self, request: String) {
+        // Parsed before taking the client lock, which every connection shares.
+        let holding = lock(&self.held).is_some();
+        let needs_sync = holding && waits_for_sync(&request);
+
+        // The chain-removal check and the request must happen under the same
+        // lock: json_rpc_request panics on a removed ChainId.
+        let mut guard = lock(&self.inner);
+        if self.is_closed() {
+            return;
+        }
+
+        // smoldot would queue this without limit, so the backpressure is ours to
+        // apply: a consumer that stops reading stops being sent work.
+        if self.undelivered.load(Ordering::Acquire) >= MAX_UNDELIVERED_FRAMES {
+            drop(guard);
+            self.refuse(&request, "light client response queue full");
+            return;
+        }
+
+        self.undelivered.fetch_add(1, Ordering::AcqRel);
+        if needs_sync && let Some(held) = lock(&self.held).as_mut() {
+            held.push(request);
+            return;
+        }
+        if let Err(rejected) = self.forward(&mut guard, request) {
+            drop(guard);
+            self.reject(&rejected);
+        }
+    }
+
+    /// Hand `request`, already counted in `undelivered`, to smoldot, returning
+    /// it if smoldot refuses it.
+    fn forward(&self, guard: &mut LightInner, request: String) -> Result<(), String> {
+        guard
+            .client
+            .json_rpc_request(request, self.chain_id)
+            .map_err(|HandleRpcError::TooManyPendingRequests { json_rpc_request }| json_rpc_request)
+    }
+
+    /// Forward the requests held while the chain was syncing, in send order.
+    fn release_held(&self) {
+        let mut guard = lock(&self.inner);
+        if self.is_closed() {
+            return;
+        }
+        let Some(held) = lock(&self.held).take() else {
+            return;
+        };
+        for request in held {
+            if let Err(rejected) = self.forward(&mut guard, request) {
+                self.reject(&rejected);
+            }
+        }
+    }
+
+    /// Answer a request smoldot refused. Not reachable while the chain is live
+    /// (smoldot's queue is unbounded), but it owes the caller a frame either way.
+    fn reject(&self, request: &str) {
+        self.undelivered.fetch_sub(1, Ordering::AcqRel);
+        self.refuse(request, "light client request queue full");
+    }
+
     /// Refuse `request` with a synthetic error frame, keeping the connection
     /// alive. The consumer correlates by id, so a dropped request without a
     /// frame for its id would leave it waiting forever.
@@ -490,58 +652,44 @@ impl LightConnection {
 
 impl JsonRpcConnection for LightConnection {
     fn send(&self, request: String) {
-        // The chain-removal check and the request must happen under the same
-        // lock: json_rpc_request panics on a removed ChainId.
-        let mut guard = lock(&self.inner);
-        if self.closed.load(Ordering::SeqCst) {
-            return;
-        }
-
-        // smoldot would queue this without limit, so the backpressure is ours to
-        // apply: a consumer that stops reading stops being sent work.
-        if self.undelivered.load(Ordering::Acquire) >= MAX_UNDELIVERED_FRAMES {
-            drop(guard);
-            self.refuse(&request, "light client response queue full");
-            return;
-        }
-
-        self.undelivered.fetch_add(1, Ordering::AcqRel);
-        if let Err(HandleRpcError::TooManyPendingRequests { json_rpc_request }) =
-            guard.client.json_rpc_request(request, self.chain_id)
-        {
-            // Not reachable while the chain is live (smoldot's queue is
-            // unbounded), but it owes the caller a frame either way.
-            drop(guard);
-            self.undelivered.fetch_sub(1, Ordering::AcqRel);
-            self.refuse(&json_rpc_request, "light client request queue full");
-        }
+        self.pipe.send(request);
     }
 
     fn responses(&self) -> BoxStream<'static, String> {
-        match lock(&self.responses).take() {
-            Some((responses, errors)) => {
-                let responses = stream::unfold(responses, |mut responses| async move {
-                    responses.next().await.map(|item| (item, responses))
-                });
-                let undelivered = Arc::clone(&self.undelivered);
-                stream::select(responses, errors)
-                    .inspect(move |_| decrement_saturating(&undelivered))
-                    .boxed()
-            }
-            None => stream::empty().boxed(),
-        }
+        let Some(sources) = lock(&self.responses).take() else {
+            return stream::empty().boxed();
+        };
+        let responses = stream::unfold(sources.responses, |mut responses| async move {
+            responses.next().await.map(|item| (item, responses))
+        });
+        let pipe = Arc::clone(&self.pipe);
+        // Yields nothing: it ends once the chain syncs, releasing what was
+        // held, or once the connection closes.
+        let release = stream::once(async move {
+            let ready = core::pin::pin!(first_ready(sources.lifecycle));
+            future::select(ready, sources.closing).await;
+            pipe.release_held();
+        })
+        .filter_map(|()| future::ready(None));
+        let pipe = Arc::clone(&self.pipe);
+        stream::select(stream::select(responses, sources.errors), release)
+            .inspect(move |_| decrement_saturating(&pipe.undelivered))
+            .boxed()
     }
 
     fn close(&self) {
-        let mut guard = lock(&self.inner);
-        if self.closed.swap(true, Ordering::SeqCst) {
+        let mut guard = lock(&self.pipe.inner);
+        if lock(&self.pipe.closing).take().is_none() {
             return;
         }
         guard.connections -= 1;
-        // Removal makes JsonRpcResponses::next() return None; closing the error
-        // channel ends its half of the merged stream, so `responses()`
-        // terminates cleanly.
-        let _: () = guard.client.remove_chain(self.chain_id);
+        // Removal makes JsonRpcResponses::next() return None; dropping `closing`
+        // above and closing the error channel end the other two parts of the
+        // merged stream, so `responses()` terminates cleanly.
+        let _: () = guard.client.remove_chain(self.pipe.chain_id);
+        if let Some(chain) = guard.added.get_mut(&self.genesis_hash) {
+            chain.connection_ids.retain(|id| *id != self.pipe.chain_id);
+        }
         release_chain(&mut guard, self.genesis_hash);
 
         // This connection's own chain is already removed above, so no live chain
@@ -550,7 +698,10 @@ impl JsonRpcConnection for LightConnection {
             release_chain(&mut guard, relay_genesis);
         }
 
-        lock(&self.errors_tx).close_channel();
+        lock(&self.pipe.errors_tx).close_channel();
+        // An untaken response stream keeps smoldot's JSON-RPC service for the
+        // chain alive, and with it the chain's lifecycle.
+        lock(&self.responses).take();
     }
 }
 
@@ -562,12 +713,15 @@ impl Drop for LightConnection {
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
     use std::sync::Arc;
 
-    use crate::platform::ChainProvider;
+    use futures::FutureExt;
     use futures::executor::block_on;
+    use futures::future::{self, Either};
     use futures::stream::StreamExt;
 
+    use crate::platform::ChainProvider;
     use crate::{ChainSource, EmbeddedChainProvider};
 
     /// Real relay-chain spec (checkpoint included) vendored from smoldot's
@@ -580,6 +734,11 @@ mod tests {
 
     const RELAY_GENESIS: [u8; 32] = [1; 32];
     const PARACHAIN_GENESIS: [u8; 32] = [2; 32];
+
+    fn frame_id(frame: &str) -> serde_json::Value {
+        let frame: serde_json::Value = serde_json::from_str(frame).expect("valid JSON");
+        frame["id"].clone()
+    }
 
     fn offline_provider() -> EmbeddedChainProvider {
         EmbeddedChainProvider::builder()
@@ -895,6 +1054,187 @@ mod tests {
         assert_eq!(
             refusals, overshoot,
             "every request past the budget must come back as an error frame"
+        );
+    }
+
+    /// `rpc_methods` stands in for a request that needs the synced chain.
+    /// smoldot answers it at once, so only the hold explains it coming back
+    /// after the chain-spec query sent behind it. Offline, the test platform
+    /// lets the chain settle as synced within a fraction of a second, which is
+    /// what releases the hold.
+    #[test]
+    fn requests_wait_for_the_chain_to_sync_and_keep_their_order() {
+        let provider = offline_provider();
+        let connection =
+            block_on(provider.connect(RELAY_GENESIS)).expect("offline add_chain succeeds");
+        let mut responses = connection.responses();
+        for id in 1..=2 {
+            connection.send(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"rpc_methods","params":[]}}"#
+            ));
+        }
+        connection.send(
+            r#"{"jsonrpc":"2.0","id":3,"method":"chainSpec_v1_chainName","params":[]}"#.to_owned(),
+        );
+
+        let mut next_id =
+            || frame_id(&block_on(responses.next()).expect("the connection stays alive"));
+        assert_eq!(next_id(), 3, "the chain-spec query is not held");
+        assert_eq!(
+            [next_id(), next_id()],
+            [1, 2],
+            "held requests go out in send order once the chain syncs"
+        );
+    }
+
+    /// Statements are gossiped with peers and never consult the chain, so a
+    /// statement subscription opened during a warp sync must not wait it out.
+    /// It is answered while the `rpc_methods` sent ahead of it is still held.
+    #[test]
+    fn statement_requests_are_not_held() {
+        let provider = offline_provider();
+        let connection =
+            block_on(provider.connect(RELAY_GENESIS)).expect("offline add_chain succeeds");
+        let mut responses = connection.responses();
+        connection
+            .send(r#"{"jsonrpc":"2.0","id":1,"method":"rpc_methods","params":[]}"#.to_owned());
+        connection.send(
+            r#"{"jsonrpc":"2.0","id":2,"method":"statement_subscribeStatement","params":["any"]}"#
+                .to_owned(),
+        );
+
+        let frame = block_on(responses.next()).expect("the connection stays alive");
+        assert_eq!(
+            frame_id(&frame),
+            2,
+            "the statement subscription is not held"
+        );
+    }
+
+    /// A chain that has not synced must not hold requests without limit: the
+    /// ones past the budget are refused, and the ones within it are answered
+    /// once the chain syncs.
+    #[test]
+    fn held_requests_count_against_the_budget() {
+        let provider = offline_provider();
+        let connection =
+            block_on(provider.connect(RELAY_GENESIS)).expect("offline add_chain succeeds");
+        let mut responses = connection.responses();
+
+        let overshoot = 64;
+        let sent = super::MAX_UNDELIVERED_FRAMES + overshoot;
+        for id in 0..sent {
+            connection.send(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"rpc_methods","params":[]}}"#
+            ));
+        }
+
+        let refusals = (0..sent)
+            .map(|_| block_on(responses.next()).expect("every request is answered"))
+            .filter(|frame| frame.contains("response queue full"))
+            .count();
+        assert_eq!(refusals, overshoot);
+    }
+
+    /// The hold ends on the first `Ready` and on nothing before it: a chain
+    /// that is connecting or warp syncing still answers from a state that has
+    /// not caught up.
+    #[test]
+    fn the_hold_ends_on_the_first_ready_and_no_earlier() {
+        use smoldot_light::lifecycle_service::{LifecycleService, Phase};
+
+        let service = LifecycleService::new();
+        let mut ready = Box::pin(super::first_ready(service.subscribe()));
+        assert!(ready.as_mut().now_or_never().is_none(), "connecting holds");
+
+        block_on(service.update(|state| state.phase = Phase::Syncing { at: 1, target: 9 }));
+        assert!(ready.as_mut().now_or_never().is_none(), "syncing holds");
+
+        block_on(service.update(|state| state.phase = Phase::Ready));
+        assert!(ready.now_or_never().is_some(), "ready releases");
+    }
+
+    /// A host that polls a finished watch again, or twice at once, must get
+    /// the end again rather than a panic from polling an ended stream.
+    #[test]
+    fn a_lifecycle_keeps_reporting_its_end() {
+        let provider = offline_provider();
+        let connection =
+            block_on(provider.connect(RELAY_GENESIS)).expect("offline add_chain succeeds");
+        let mut lifecycle = provider
+            .lifecycle(RELAY_GENESIS)
+            .expect("a connected chain has a lifecycle");
+        connection.close();
+        while block_on(lifecycle.next()).is_some() {}
+        assert_eq!(block_on(lifecycle.next()), None);
+    }
+
+    /// A host shows sync progress through this stream, so it must start with
+    /// where the chain is now and end once nothing runs the chain, rather than
+    /// leave the host waiting on a chain that is gone.
+    #[test]
+    fn a_lifecycle_starts_with_the_current_state_and_ends_with_the_chain() {
+        let provider = offline_provider();
+        let connection =
+            block_on(provider.connect(RELAY_GENESIS)).expect("offline add_chain succeeds");
+        let mut lifecycle = provider
+            .lifecycle(RELAY_GENESIS)
+            .expect("a connected chain has a lifecycle");
+        block_on(lifecycle.next()).expect("the current state comes first");
+
+        connection.close();
+        let deadline = futures_timer::Delay::new(Duration::from_secs(10));
+        let ended = block_on(future::select(lifecycle.count(), deadline));
+        assert!(
+            matches!(ended, Either::Left(_)),
+            "the stream ends once the chain stops running"
+        );
+    }
+
+    /// The relay behind a parachain has no connection of its own, and is the
+    /// only chain in the pair that reports warp sync progress.
+    #[test]
+    fn the_relay_behind_a_parachain_has_a_lifecycle() {
+        let provider = EmbeddedChainProvider::builder()
+            .chain(RELAY_GENESIS, ChainSource::light_client(RELAY_SPEC).build())
+            .parachain(
+                PARACHAIN_GENESIS,
+                ChainSource::light_client(PARACHAIN_SPEC).build(),
+                RELAY_GENESIS,
+            )
+            .build();
+        let _connection =
+            block_on(provider.connect(PARACHAIN_GENESIS)).expect("parachain connects");
+        let mut lifecycle = provider
+            .lifecycle(RELAY_GENESIS)
+            .expect("the implicit relay is running");
+        block_on(lifecycle.next()).expect("the relay reports its state");
+    }
+
+    /// A second connection keeps the chain running after the first closes, so
+    /// the lifecycle must still be reachable through the one that is left.
+    #[test]
+    fn a_lifecycle_is_reachable_while_any_connection_holds_the_chain() {
+        let provider = offline_provider();
+        let first = block_on(provider.connect(RELAY_GENESIS)).expect("first connect");
+        let _second = block_on(provider.connect(RELAY_GENESIS)).expect("second connect");
+        first.close();
+        let mut lifecycle = provider
+            .lifecycle(RELAY_GENESIS)
+            .expect("the chain is still running");
+        block_on(lifecycle.next()).expect("the remaining connection reports its state");
+    }
+
+    #[test]
+    fn an_unconnected_chain_has_no_lifecycle() {
+        let provider = offline_provider();
+        let error = provider
+            .lifecycle(RELAY_GENESIS)
+            .err()
+            .expect("nothing runs the chain");
+        assert!(
+            error.to_string().contains("connect to it first"),
+            "unexpected: {error}"
         );
     }
 

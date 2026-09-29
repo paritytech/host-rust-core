@@ -79,6 +79,12 @@ pub enum NativeRuntimeConfigError {
         /// Which field was refused, and why.
         reason: String,
     },
+    /// The core runtime's worker threads could not be started.
+    #[error("core runtime unavailable: {reason}")]
+    RuntimeUnavailable {
+        /// Why the runtime failed to start.
+        reason: String,
+    },
     /// Local signing-host session activation failed.
     #[error("failed to activate local signing session: {reason}")]
     LocalSessionActivation {

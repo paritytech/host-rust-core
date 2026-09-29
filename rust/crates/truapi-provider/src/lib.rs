@@ -19,6 +19,7 @@
 //!   through the loopback TLS tunnels in `wss_tunnel`; on `wasm32` it runs on a
 //!   vendored browser platform (JS event loop, browser `WebSocket`, which
 //!   speaks TLS itself).
+//!   `EmbeddedChainProvider::lifecycle` reports its sync progress per chain.
 //! - `networks` feature — a bundled catalog so `connect(genesis_hash)`
 //!   resolves the whole network (relay wiring + statement placement included)
 //!   from the genesis hash alone, with no prior registration.
@@ -42,6 +43,8 @@ mod error;
 mod ffi;
 #[cfg(all(feature = "js", target_arch = "wasm32"))]
 pub mod js;
+#[cfg(feature = "smoldot")]
+mod lifecycle;
 #[cfg(feature = "smoldot")]
 mod light;
 #[cfg(all(test, feature = "smoldot", not(target_arch = "wasm32")))]
@@ -72,6 +75,8 @@ pub use config::ChainSource;
 #[cfg(feature = "smoldot")]
 pub use config::LightClientBuilder;
 pub use error::ProviderError;
+#[cfg(feature = "smoldot")]
+pub use lifecycle::{ChainHealth, ChainLifecycle, ChainPhase, StallReason};
 #[cfg(feature = "networks")]
 pub use networks::{NetworkChains, known_networks};
 #[cfg(any(feature = "ws", feature = "smoldot"))]
