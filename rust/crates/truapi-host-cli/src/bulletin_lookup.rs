@@ -10,32 +10,51 @@
 //! [`POLL_INTERVAL`] until the blob appears, since a submission from another host lands within
 //! a block or two, and it ends once it has delivered a value. A node that cannot be reached is
 //! reported as a miss as well, never as the end of the subscription, so a product waiting on a
-//! blob survives a transport failure. Every value is checked against the key before it is
-//! emitted.
+//! blob survives a transport failure. A request the node can never answer, such as an invalid
+//! CID or a node without `bitswap_v1_get`, ends the subscription with an error after the miss.
+//! Every value is checked against the key before it is emitted.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::future::{self, FutureExt};
 use futures::stream::{self, BoxStream, StreamExt};
 use serde_json::Value;
-use sp_crypto_hashing::blake2_256;
+use subxt_rpcs::UserError;
 use subxt_rpcs::client::{RpcClient, rpc_params};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, info, warn};
 use truapi::latest as api;
+use truapi::{preimage_cid, preimage_key};
 
 /// How long a miss waits before asking the node again: about one Bulletin block.
 const POLL_INTERVAL: Duration = Duration::from_secs(6);
 /// Bound on one round trip to the node.
-const RPC_TIMEOUT: Duration = Duration::from_secs(20);
+const RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
+// `bitswap_v1_get` errors by code, the only part of the error the bitswap JSON-RPC spec
+// (`bitswap_unstable_get`) makes stable.
+/// The data is not held. It can still arrive, so a lookup keeps asking.
+const FAIL: i32 = -32810;
+/// The CID is invalid or unsupported, and must not be sent again.
+const INVALID_PARAMS: i32 = -32602;
+/// The node has no `bitswap_v1_get`.
+const METHOD_NOT_FOUND: i32 = -32601;
+
+/// Why a source could not answer.
+pub enum SourceError {
+    /// Worth asking again: the node was unreachable, busy, or dropped the connection.
+    Transient(String),
+    /// The node can never answer this request, so the lookup stops.
+    Permanent(String),
+}
 
 /// Where blobs are fetched from, by CID. The seam the subscription logic is tested through.
 #[async_trait]
 pub trait BlobSource: Send + Sync {
     /// The blob stored under `cid`, or `None` when the source does not hold it.
-    async fn get(&self, cid: &str) -> Result<Option<Vec<u8>>, String>;
+    async fn get(&self, cid: &str) -> Result<Option<Vec<u8>>, SourceError>;
 }
 
 /// `bitswap_v1_get` on a Bulletin node's JSON-RPC. The connection is opened on first use and
@@ -46,6 +65,7 @@ pub struct BitswapRpc {
 }
 
 impl BitswapRpc {
+    /// A source for the Bulletin node at `url`. Nothing connects before the first lookup.
     pub fn new(url: &'static str) -> Self {
         Self {
             url,
@@ -53,15 +73,15 @@ impl BitswapRpc {
         }
     }
 
-    async fn client(&self) -> Result<RpcClient, String> {
+    async fn client(&self) -> Result<RpcClient, SourceError> {
         let mut slot = self.client.lock().await;
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
         let client = tokio::time::timeout(RPC_TIMEOUT, RpcClient::from_insecure_url(self.url))
             .await
-            .map_err(|_| format!("connecting to {} timed out", self.url))?
-            .map_err(|err| format!("connecting to {}: {err}", self.url))?;
+            .map_err(|_| SourceError::Transient(format!("connecting to {} timed out", self.url)))?
+            .map_err(|err| SourceError::Transient(format!("connecting to {}: {err}", self.url)))?;
         *slot = Some(client.clone());
         Ok(client)
     }
@@ -73,51 +93,59 @@ impl BitswapRpc {
 
 #[async_trait]
 impl BlobSource for BitswapRpc {
-    async fn get(&self, cid: &str) -> Result<Option<Vec<u8>>, String> {
+    async fn get(&self, cid: &str) -> Result<Option<Vec<u8>>, SourceError> {
         let client = self.client().await?;
         let request = client.request::<Value>("bitswap_v1_get", rpc_params![cid]);
         let value = match tokio::time::timeout(RPC_TIMEOUT, request).await {
             Ok(Ok(value)) => value,
-            // A CID the node does not hold is answered with a call error, not with null. Any
-            // other call error (the method missing on this node, say) is reported, or every
-            // lookup would look like a miss for ever.
             Ok(Err(subxt_rpcs::Error::User(error))) => {
-                if error.message.to_ascii_lowercase().contains("not found") {
-                    debug!(cid, message = %error.message, "bitswap_v1_get: not held");
-                    return Ok(None);
+                // A load-balanced endpoint may put the next connection on a node that has it.
+                if error.code == METHOD_NOT_FOUND {
+                    self.disconnect().await;
                 }
-                return Err(format!("bitswap_v1_get: {}", error.message));
+                return call_error(&error);
             }
             Ok(Err(error)) => {
                 self.disconnect().await;
-                return Err(format!("bitswap_v1_get: {error}"));
+                return Err(SourceError::Transient(format!("bitswap_v1_get: {error}")));
             }
             Err(_) => {
                 self.disconnect().await;
-                return Err("bitswap_v1_get timed out".to_string());
+                return Err(SourceError::Transient(
+                    "bitswap_v1_get timed out".to_string(),
+                ));
             }
         };
-        match value {
-            Value::String(hex) => hex::decode(hex.trim_start_matches("0x"))
-                .map(Some)
-                .map_err(|err| format!("bitswap_v1_get: response is not hex: {err}")),
-            Value::Null => Ok(None),
-            other => Err(format!("bitswap_v1_get: unexpected response {other}")),
+        let hex = value.as_str().and_then(|value| value.strip_prefix("0x"));
+        match hex.map(hex::decode) {
+            Some(Ok(bytes)) => Ok(Some(bytes)),
+            _ => Err(SourceError::Transient(format!(
+                "bitswap_v1_get: expected 0x-prefixed hex, got {value}"
+            ))),
         }
     }
 }
 
-/// Lookups over one blob source: the CID for each key, the check that what comes back hashes to
-/// it, and a cache of what has been read, so a repeated lookup answers from memory. The cache
-/// is not bounded: a blob is at most a few kilobytes and a host session reads a handful, so a
-/// bound would only add a policy to explain.
+/// A `bitswap_v1_get` call error, by code. A CID the node does not hold is answered with an
+/// error, not with null.
+fn call_error(error: &UserError) -> Result<Option<Vec<u8>>, SourceError> {
+    let reason = format!("bitswap_v1_get: {} ({})", error.message, error.code);
+    match error.code {
+        FAIL => Ok(None),
+        INVALID_PARAMS | METHOD_NOT_FOUND => Err(SourceError::Permanent(reason)),
+        _ => Err(SourceError::Transient(reason)),
+    }
+}
+
+/// Lookups over one blob source: the CID for each key, and the check that what comes back
+/// hashes to it.
 pub struct BulletinLookup<S> {
     source: S,
-    cache: Mutex<HashMap<[u8; 32], Vec<u8>>>,
     poll_interval: Duration,
 }
 
 impl<S: BlobSource + 'static> BulletinLookup<S> {
+    /// Lookups over `source` that ask again every [`POLL_INTERVAL`] after a miss.
     pub fn new(source: S) -> Self {
         Self::with_poll_interval(source, POLL_INTERVAL)
     }
@@ -125,7 +153,6 @@ impl<S: BlobSource + 'static> BulletinLookup<S> {
     fn with_poll_interval(source: S, poll_interval: Duration) -> Self {
         Self {
             source,
-            cache: Mutex::new(HashMap::new()),
             poll_interval,
         }
     }
@@ -138,119 +165,87 @@ impl<S: BlobSource + 'static> BulletinLookup<S> {
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, api::GenericError>> {
         let Ok(key) = <[u8; 32]>::try_from(key.as_slice()) else {
             // Not a blake2b-256 digest, so nothing can ever hash to it.
-            return stream::once(async { Ok(None) }).boxed();
+            return stream::once(future::ready(Ok(None))).boxed();
         };
-        if let Some(value) = self.cached(&key) {
-            return stream::once(async move { Ok(Some(value)) }).boxed();
-        }
         let lookup = Arc::clone(self);
-        let cid = cid_for(&key);
-        stream::unfold(Some(0u32), move |attempt| {
-            let lookup = Arc::clone(&lookup);
-            let cid = cid.clone();
-            async move {
-                let mut attempt = attempt?;
-                loop {
-                    if attempt > 0 {
-                        tokio::time::sleep(lookup.poll_interval).await;
-                    }
-                    if let Some(value) = lookup.read(&cid, &key, attempt).await {
-                        return Some((Ok(Some(value)), None));
-                    }
-                    if attempt == 0 {
-                        return Some((Ok(None), Some(1)));
-                    }
-                    attempt += 1;
+        async move {
+            let cid = preimage_cid(&key);
+            match lookup.read(&cid, &key).await {
+                Ok(Some(value)) => return stream::once(future::ready(Ok(Some(value)))).boxed(),
+                Ok(None) => {}
+                Err(SourceError::Transient(reason)) => warn!(
+                    key = %hex::encode(key),
+                    %reason,
+                    "preimage lookup failed, still trying"
+                ),
+                Err(SourceError::Permanent(reason)) => {
+                    return stream::iter([Ok(None), Err(api::GenericError { reason })]).boxed();
                 }
             }
-        })
+            let held = lookup.until_held(cid, key).map(|held| held.map(Some));
+            stream::once(future::ready(Ok(None)))
+                .chain(stream::once(held))
+                .boxed()
+        }
+        .flatten_stream()
         .boxed()
     }
 
-    fn cached(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
-        self.cache
-            .lock()
-            .expect("preimage cache poisoned")
-            .get(key)
-            .cloned()
-    }
-
-    /// One attempt: the blob if the source holds it and it hashes to `key`.
-    async fn read(&self, cid: &str, key: &[u8; 32], attempt: u32) -> Option<Vec<u8>> {
-        match self.source.get(cid).await {
-            Ok(Some(value)) if blake2_256(&value) == *key => {
-                info!(key = %hex::encode(key), size = value.len(), "preimage read from Bulletin");
-                self.cache
-                    .lock()
-                    .expect("preimage cache poisoned")
-                    .insert(*key, value.clone());
-                Some(value)
-            }
-            Ok(Some(_)) => {
-                warn!(key = %hex::encode(key), "preimage source returned bytes that do not hash to the key");
-                None
-            }
-            Ok(None) => None,
-            Err(reason) => {
-                // Reported once per subscription; the poll keeps going and reconnects.
-                if attempt == 0 {
-                    warn!(key = %hex::encode(key), %reason, "preimage lookup failed, still trying");
-                } else {
-                    debug!(key = %hex::encode(key), %reason, "preimage lookup failed, still trying");
-                }
-                None
+    /// Asks again every poll interval until the source holds the blob, or fails once it never
+    /// can.
+    async fn until_held(
+        self: Arc<Self>,
+        cid: String,
+        key: [u8; 32],
+    ) -> Result<Vec<u8>, api::GenericError> {
+        loop {
+            tokio::time::sleep(self.poll_interval).await;
+            match self.read(&cid, &key).await {
+                Ok(Some(value)) => return Ok(value),
+                Ok(None) => {}
+                Err(SourceError::Transient(reason)) => debug!(
+                    key = %hex::encode(key),
+                    %reason,
+                    "preimage lookup failed, still trying"
+                ),
+                Err(SourceError::Permanent(reason)) => return Err(api::GenericError { reason }),
             }
         }
     }
-}
 
-/// The CID transaction storage serves a blob under: CIDv1 (0x01), the `raw` codec (0x55), a
-/// blake2b-256 multihash (code 0xb220 as a varint, then the 32-byte length) of the key itself;
-/// base32 lower with the multibase `b` prefix, as `bitswap_v1_get` takes it.
-fn cid_for(key: &[u8; 32]) -> String {
-    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
-    let mut bytes = vec![0x01, 0x55, 0xa0, 0xe4, 0x02, 0x20];
-    bytes.extend_from_slice(key);
-    let mut cid = String::from("b");
-    let (mut buffer, mut bits) = (0u32, 0u32);
-    for byte in bytes {
-        buffer = (buffer << 8) | u32::from(byte);
-        bits += 8;
-        while bits >= 5 {
-            cid.push(ALPHABET[((buffer >> (bits - 5)) & 31) as usize] as char);
-            bits -= 5;
+    /// One read: the blob if the source holds it and it hashes to `key`.
+    async fn read(&self, cid: &str, key: &[u8; 32]) -> Result<Option<Vec<u8>>, SourceError> {
+        let Some(value) = self.source.get(cid).await? else {
+            return Ok(None);
+        };
+        if preimage_key(&value) != *key {
+            warn!(
+                key = %hex::encode(key),
+                "preimage source returned bytes that do not hash to the key"
+            );
+            return Ok(None);
         }
+        info!(key = %hex::encode(key), size = value.len(), "preimage read from Bulletin");
+        Ok(Some(value))
     }
-    if bits > 0 {
-        cid.push(ALPHABET[((buffer << (5 - bits)) & 31) as usize] as char);
-    }
-    cid
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     use super::*;
 
     /// A source that answers from a script, one entry per call, and counts the calls.
     struct Scripted {
-        answers: Mutex<VecDeque<Result<Option<Vec<u8>>, String>>>,
+        answers: Mutex<VecDeque<Result<Option<Vec<u8>>, SourceError>>>,
         calls: Mutex<u32>,
-    }
-
-    impl Scripted {
-        fn new(answers: Vec<Result<Option<Vec<u8>>, String>>) -> Self {
-            Self {
-                answers: Mutex::new(answers.into()),
-                calls: Mutex::new(0),
-            }
-        }
     }
 
     #[async_trait]
     impl BlobSource for Scripted {
-        async fn get(&self, _cid: &str) -> Result<Option<Vec<u8>>, String> {
+        async fn get(&self, _cid: &str) -> Result<Option<Vec<u8>>, SourceError> {
             *self.calls.lock().unwrap() += 1;
             self.answers
                 .lock()
@@ -261,30 +256,48 @@ mod tests {
     }
 
     fn blob() -> Vec<u8> {
-        b"coffer bulletin probe".to_vec()
+        b"bulletin lookup test blob".to_vec()
     }
 
-    fn lookup(answers: Vec<Result<Option<Vec<u8>>, String>>) -> Arc<BulletinLookup<Scripted>> {
+    fn scripted(
+        answers: Vec<Result<Option<Vec<u8>>, SourceError>>,
+    ) -> Arc<BulletinLookup<Scripted>> {
+        let source = Scripted {
+            answers: Mutex::new(answers.into()),
+            calls: Mutex::new(0),
+        };
         Arc::new(BulletinLookup::with_poll_interval(
-            Scripted::new(answers),
+            source,
             Duration::from_millis(1),
         ))
     }
 
-    async fn events(lookup: &Arc<BulletinLookup<Scripted>>, key: &[u8]) -> Vec<Option<Vec<u8>>> {
+    /// Every item of the subscription, errors by their reason.
+    async fn events(
+        lookup: &Arc<BulletinLookup<Scripted>>,
+        key: &[u8],
+    ) -> Vec<Result<Option<Vec<u8>>, String>> {
         lookup
             .subscribe(key.to_vec())
-            .map(|item| item.expect("lookups report failures as misses"))
+            .map(|item| item.map_err(|error| error.reason))
             .collect()
             .await
     }
 
+    fn calls(lookup: &Arc<BulletinLookup<Scripted>>) -> u32 {
+        *lookup.source.calls.lock().unwrap()
+    }
+
+    fn never() -> Result<Option<Vec<u8>>, SourceError> {
+        Err(SourceError::Permanent("invalid CID".to_string()))
+    }
+
     #[tokio::test]
     async fn a_held_blob_is_emitted_at_once_and_the_subscription_ends() {
-        let lookup = lookup(vec![Ok(Some(blob()))]);
+        let lookup = scripted(vec![Ok(Some(blob()))]);
         assert_eq!(
-            events(&lookup, &blake2_256(&blob())).await,
-            vec![Some(blob())]
+            events(&lookup, &preimage_key(&blob())).await,
+            vec![Ok(Some(blob()))]
         );
     }
 
@@ -293,59 +306,79 @@ mod tests {
         // The product hears the miss immediately, so it can show "waiting", and is not asked
         // to resubscribe: the same subscription delivers the blob once another host's
         // submission has landed.
-        let lookup = lookup(vec![Ok(None), Ok(None), Ok(Some(blob()))]);
+        let lookup = scripted(vec![Ok(None), Ok(None), Ok(Some(blob()))]);
         assert_eq!(
-            events(&lookup, &blake2_256(&blob())).await,
-            vec![None, Some(blob())]
+            events(&lookup, &preimage_key(&blob())).await,
+            vec![Ok(None), Ok(Some(blob()))]
         );
-        assert_eq!(*lookup.source.calls.lock().unwrap(), 3);
+        assert_eq!(calls(&lookup), 3);
     }
 
     #[tokio::test]
     async fn bytes_that_do_not_hash_to_the_key_are_never_emitted() {
-        let lookup = lookup(vec![Ok(Some(b"forged".to_vec())), Ok(Some(blob()))]);
+        let lookup = scripted(vec![Ok(Some(b"forged".to_vec())), Ok(Some(blob()))]);
         assert_eq!(
-            events(&lookup, &blake2_256(&blob())).await,
-            vec![None, Some(blob())]
+            events(&lookup, &preimage_key(&blob())).await,
+            vec![Ok(None), Ok(Some(blob()))]
         );
     }
 
     #[tokio::test]
     async fn a_failing_source_is_a_miss_not_the_end_of_the_subscription() {
-        let lookup = lookup(vec![Err("node down".to_string()), Ok(Some(blob()))]);
+        let transient = Err(SourceError::Transient("node down".to_string()));
+        let lookup = scripted(vec![transient, Ok(Some(blob()))]);
         assert_eq!(
-            events(&lookup, &blake2_256(&blob())).await,
-            vec![None, Some(blob())]
+            events(&lookup, &preimage_key(&blob())).await,
+            vec![Ok(None), Ok(Some(blob()))]
+        );
+    }
+
+    /// The product must learn that the host can never look this up, not see an ordinary end.
+    #[tokio::test]
+    async fn a_request_the_node_can_never_answer_ends_the_subscription_with_an_error() {
+        let lookup = scripted(vec![never()]);
+        assert_eq!(
+            events(&lookup, &preimage_key(&blob())).await,
+            vec![Ok(None), Err("invalid CID".to_string())]
         );
     }
 
     #[tokio::test]
-    async fn a_repeated_lookup_answers_from_memory() {
-        let lookup = lookup(vec![Ok(Some(blob()))]);
-        let key = blake2_256(&blob());
-        events(&lookup, &key).await;
-        assert_eq!(events(&lookup, &key).await, vec![Some(blob())]);
-        assert_eq!(*lookup.source.calls.lock().unwrap(), 1);
+    async fn a_request_that_turns_permanent_while_polling_stops_the_poll() {
+        let lookup = scripted(vec![Ok(None), never()]);
+        assert_eq!(
+            events(&lookup, &preimage_key(&blob())).await,
+            vec![Ok(None), Err("invalid CID".to_string())]
+        );
+        assert_eq!(calls(&lookup), 2);
     }
 
     #[tokio::test]
     async fn a_key_that_is_not_a_digest_is_a_miss_and_the_end() {
-        let lookup = lookup(vec![]);
-        assert_eq!(events(&lookup, &[9]).await, vec![None]);
+        let lookup = scripted(vec![]);
+        assert_eq!(events(&lookup, &[9]).await, vec![Ok(None)]);
     }
 
+    /// The bitswap spec makes only the code stable, and `Fail` covers data that is not held yet,
+    /// so every `Fail` is a miss to poll on, whatever its message or data.
     #[test]
-    fn cid_is_cidv1_raw_blake2b_256_in_base32() {
-        // Checked against Paseo Bulletin: bitswap_v1_get with this CID returns the blob whose
-        // blake2b-256 is the key.
-        let mut key = [0u8; 32];
-        key.copy_from_slice(
-            &hex::decode("0bd1bb57e3f9ea801956a770fe1068f950383547aca45e1d3d354d57d014cb0c")
-                .unwrap(),
-        );
+    fn call_errors_are_classified_by_code() {
+        let kind = |code| {
+            let error = UserError {
+                code,
+                message: "from the node".to_string(),
+                data: None,
+            };
+            match call_error(&error) {
+                Ok(None) => "miss",
+                Ok(Some(_)) => "value",
+                Err(SourceError::Transient(_)) => "retry",
+                Err(SourceError::Permanent(_)) => "stop",
+            }
+        };
         assert_eq!(
-            cid_for(&key),
-            "bafk2bzaceaf5do2x4p46vaazk2txb7qqnd4vaobvi6wkixq5hu2u2v6qctfqy"
+            [FAIL, INVALID_PARAMS, METHOD_NOT_FOUND, -32811, -32812].map(kind),
+            ["miss", "stop", "stop", "retry", "retry"]
         );
     }
 }

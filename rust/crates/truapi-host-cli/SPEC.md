@@ -1800,9 +1800,12 @@ treated as Unix milliseconds and delivered by a Tokio timer. At most 64
 notifications may be pending. Cancelling an unknown/already-delivered id is a
 successful no-op.
 
-The platform-level preimage lookup map is in memory. The core also owns the
-real Bulletin client and a separate 16 MiB insertion-ordered preimage bridge
-for read-after-write behavior.
+A preimage lookup the core cannot answer from its own cache goes to the
+network's Bulletin node, by CID over `bitswap_v1_get`. A miss is asked again
+every 6 s until the blob lands; a request the node can never answer ends the
+lookup with an error. The core also owns the real Bulletin client and a
+separate 16 MiB insertion-ordered preimage bridge for read-after-write
+behavior.
 
 Statement Store keeps up to 64 accepted statements in an insertion-ordered
 read-after-write bridge until the remote subscription reports them.
