@@ -1224,6 +1224,7 @@ impl WasmSigningHostRuntime {
         let WasmPlatformAdapters {
             platform,
             chat_platform,
+            contacts_platform,
             status_host,
             pocket_platform,
         } = wasm_platform(bridge);
@@ -1231,8 +1232,13 @@ impl WasmSigningHostRuntime {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = signing_host_config_from_js(&host_config)?;
-        let runtime =
-            SigningHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        let runtime = SigningHostRuntime::with_platforms(
+            platform,
+            host_config,
+            spawner,
+            chat_platform,
+            contacts_platform,
+        );
         if let Some(status_host) = status_host {
             runtime.set_permission_status_host(status_host);
         }
