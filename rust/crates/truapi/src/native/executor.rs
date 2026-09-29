@@ -3,9 +3,9 @@
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use futures::FutureExt;
 use futures::future::BoxFuture;
 use tokio::runtime::{Handle, Runtime};
-use tokio::task::JoinHandle;
 
 use crate::subscription::Spawner;
 
@@ -53,22 +53,15 @@ impl SharedNativeExecutor {
 
     /// Start `work` on this runtime and return a future for its output that
     /// any executor can poll, so a host thread only waits and never runs core
-    /// code. Dropping the returned future aborts the task, as dropping the work
-    /// itself would. A panic in `work` resumes in the caller.
+    /// code. Dropping the returned future stops the work, as dropping the work
+    /// itself would.
     pub fn run<T: Send + 'static>(
         &self,
         work: impl Future<Output = T> + Send + 'static,
     ) -> impl Future<Output = T> + Send + 'static {
-        let mut task = AbortOnDrop(self.runtime.spawn(work));
-        async move {
-            match (&mut task.0).await {
-                Ok(output) => output,
-                Err(error) => match error.try_into_panic() {
-                    Ok(panic) => std::panic::resume_unwind(panic),
-                    Err(error) => panic!("core task ended without an answer: {error}"),
-                },
-            }
-        }
+        let (task, output) = work.remote_handle();
+        self.runtime.spawn(task);
+        output
     }
 }
 
@@ -92,14 +85,6 @@ pub fn shared_native_executor() -> io::Result<&'static SharedNativeExecutor> {
 
     let executor = SharedNativeExecutor::new()?;
     Ok(SHARED_NATIVE_EXECUTOR.get_or_init(|| executor))
-}
-
-struct AbortOnDrop<T>(JoinHandle<T>);
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 #[cfg(test)]
@@ -215,16 +200,6 @@ mod tests {
         dropped_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("core task kept running after its caller went away");
-    }
-
-    #[test]
-    fn a_panic_in_the_core_task_resumes_in_the_caller() {
-        let outcome = std::panic::catch_unwind(|| {
-            futures::executor::block_on(core().run(async { panic!("core failure") }))
-        });
-
-        let panic = outcome.expect_err("the caller must see the panic");
-        assert_eq!(panic.downcast_ref::<&str>(), Some(&"core failure"));
     }
 
     #[test]
