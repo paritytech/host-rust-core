@@ -2,8 +2,8 @@
 //! encrypted request statement to the paired signing host and waits for the
 //! matching response, honoring timeouts and local/peer disconnect signals.
 
-use core::fmt::{self, Display};
 use core::mem;
+use std::fmt::{self, Display};
 use std::sync::Mutex;
 
 use super::statement_store_rpc;
@@ -360,7 +360,8 @@ async fn wait_for_sso_remote_response_inner<T>(
     loop {
         if own_done && peer_done {
             return Err(SsoRemoteResponseError::Failure(format!(
-                "SSO response stream ended before response for {remote_message_id}"
+                "SSO response stream ended before response for {}",
+                remote_message_id
             )));
         }
         futures::select! {
@@ -704,7 +705,13 @@ mod tests {
     #[test]
     fn a_matching_reply_earlier_in_a_batch_wins_over_a_later_disconnect() {
         let (host, responder) = sso_host_and_responder_sessions();
-        let ack = accepted(&responder);
+        let ack = build_signed_session_response_statement(
+            &responder,
+            "request-1".to_string(),
+            0,
+            fresh_statement_expiry(),
+        )
+        .unwrap();
         let disconnect = RemoteMessage {
             message_id: "bye".to_string(),
             data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),

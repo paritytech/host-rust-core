@@ -796,8 +796,7 @@ pub fn sign_response_message(
 }
 
 /// An AutoSigning allocation reply laid out without `ring_vrf_domain_entropy`,
-/// the field that ends the encoding, as some signing hosts still send it. Its
-/// header decodes; its payload does not.
+/// the field that ends the encoding. Its header decodes; its payload does not.
 pub fn auto_signing_reply_without_domain_entropy(responding_to: &str) -> Vec<u8> {
     use crate::host_internal::sso_messages::{
         Response, SsoAllocatedResource, SsoAllocationOutcome,
