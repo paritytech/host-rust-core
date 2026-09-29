@@ -228,6 +228,12 @@ either launches the declared runtime or reports the App as unsupported.
 A Host is not required to implement PolkaVM or every graphics profile.
 Implementing PolkaVM must not reduce or replace its support for web Apps.
 
+Support for an optional runtime may depend on build configuration, deployment
+policy, or a user-controlled experimental setting. An App cannot enable a
+runtime for itself. A change to runtime availability takes effect on the next
+executable launch; the Host may terminate and relaunch an active executable
+when the setting changes.
+
 ### Artifact identity
 
 The App subname's `contenthash` remains the executable artifact's immutable
