@@ -9,18 +9,19 @@ mod option_bool_json {
     use parity_scale_codec::OptionBool;
     use serde::{Deserialize, Deserializer};
 
-    pub(super) fn absent() -> OptionBool {
+    /// What an absent JSON field reads as: neither true nor false.
+    pub fn absent() -> OptionBool {
         OptionBool(None)
     }
 
-    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<OptionBool, D::Error>
+    /// Reads a present JSON boolean into the SCALE optional bool.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<OptionBool, D::Error>
     where
         D: Deserializer<'de>,
     {
         Ok(OptionBool(Option::<bool>::deserialize(deserializer)?))
     }
 }
-
 
 /// A size in logical pixels, SCALE-encoded as `Compact<u64>`.
 pub type Size = Compact<u64>;
@@ -405,14 +406,20 @@ pub struct ButtonProps {
     /// Whether the button accepts presses. Absent leaves the default to the host.
     #[cfg_attr(
         feature = "runtime",
-        serde(default = "option_bool_json::absent", deserialize_with = "option_bool_json::deserialize")
+        serde(
+            default = "option_bool_json::absent",
+            deserialize_with = "option_bool_json::deserialize"
+        )
     )]
     pub enabled: OptionBool,
     /// Whether the button shows a loading state. A loading button accepts no
     /// presses. Absent leaves the default to the host.
     #[cfg_attr(
         feature = "runtime",
-        serde(default = "option_bool_json::absent", deserialize_with = "option_bool_json::deserialize")
+        serde(
+            default = "option_bool_json::absent",
+            deserialize_with = "option_bool_json::deserialize"
+        )
     )]
     pub loading: OptionBool,
     /// Action triggered on press. A button without one is inert.
@@ -514,7 +521,10 @@ pub struct TextFieldProps {
     /// Whether the field accepts input. Absent leaves the default to the host.
     #[cfg_attr(
         feature = "runtime",
-        serde(default = "option_bool_json::absent", deserialize_with = "option_bool_json::deserialize")
+        serde(
+            default = "option_bool_json::absent",
+            deserialize_with = "option_bool_json::deserialize"
+        )
     )]
     pub enabled: OptionBool,
     /// Action triggered on every value change. The action carries the new

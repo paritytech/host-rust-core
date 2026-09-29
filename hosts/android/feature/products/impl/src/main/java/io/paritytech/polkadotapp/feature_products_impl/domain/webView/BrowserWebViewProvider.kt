@@ -149,9 +149,8 @@ class BrowserWebViewProvider @AssistedInject constructor(
             notifyOnPageFinished()
         }
 
-        override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-            resetWebView()
-            notifyRenderProcessGone()
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail?): Boolean {
+            replaceDeadWebView(view, scope, initialUrl)
             return true
         }
     }

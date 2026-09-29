@@ -570,13 +570,7 @@ runtime_items! {
     pub mod generated;
 
     #[cfg(not(target_arch = "wasm32"))]
-    mod ws_bridge;
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub mod native;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    mod native_renderer;
 
     #[cfg(target_arch = "wasm32")]
     pub mod wasm;
@@ -611,10 +605,9 @@ runtime_items! {
     };
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub use ws_bridge::{WsBridgeEndpoint, WsBridgeStartError};
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub use native_renderer::{NativeRendererObserver, NativeRendererSubscription};
+    pub use native::{
+        NativeRendererObserver, NativeRendererSubscription, WsBridgeEndpoint, WsBridgeStartError,
+    };
 
     #[cfg(all(target_arch = "wasm32", feature = "wasm-signing-host"))]
     pub use wasm::WasmSigningHostRuntime;

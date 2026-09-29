@@ -85,6 +85,10 @@ The [permission model](docs/rfcs/0002-permission-model.md) separates outbound do
 Android permission prompts belong to one request and close when it finishes or is cancelled,
 including cancellation while the app is backgrounded.
 
+The shared Rust core asks blessed products (`peopl`, `dim2` and `stash`,
+on every supported network) only for device permissions and legacy-account signing.
+All other operations it handles bypass permission prompts and recorded decisions.
+
 ## Repository layout
 
 ```
@@ -195,7 +199,13 @@ genesis hash, so the host ships no chain specs and never refreshes them. The lig
 client holds at most 32 connections at once and refuses a `connect` past that, so a
 consumer that leaks them fails instead of growing; closing one hands its slot back.
 Connections to a remote node, which only the WASM build compiles, are not counted
-against it. The crate
+against it. A light-client connection holds its requests until the chain first
+syncs and then forwards them in order; chain-spec queries, statement-store and
+Bitswap calls, and the `lifecycle_unstable_*` subscription that reports the sync are forwarded at
+once.
+Every artifact exposes the sync progress of a running chain (phase, peer count,
+stall verdict) as a watch.
+The crate
 compiles to one binary artifact per platform, each exposing the same
 `ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
 dependency on the crate:
@@ -329,6 +339,8 @@ On every platform the bridge also rebinds the port itself when its listening soc
 pausing between failed attempts instead of retrying in a tight loop; other accept errors keep the port.
 When WebKit loses its networking process, every MessagePort a page already holds stops
 delivering; the container detects this after a disconnect and reloads the page.
+On Android, a product whose WebView renderer dies reloads in a fresh WebView with the same
+bootstrap, and a running worker whose renderer dies boots again.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission

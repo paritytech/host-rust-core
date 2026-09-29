@@ -344,11 +344,6 @@ private extension TabBarBottomChromeController {
 
     func installBar() {
         chromeSurface.addBar(barView)
-        barView.snp.makeConstraints { make in
-            make.bottom.equalToSuperview().offset(-DSTabBarView.bottomGap)
-            make.leading.trailing.equalTo(chromeSurface.capsuleLayoutReference)
-            make.height.equalTo(DSTabBarView.capsuleHeight)
-        }
 
         barView.onFoldChangeRequested = { [weak self] folded, velocityX in
             self?.foldController.setUserOverride(folded ? .folded : .shown, velocityX: velocityX)

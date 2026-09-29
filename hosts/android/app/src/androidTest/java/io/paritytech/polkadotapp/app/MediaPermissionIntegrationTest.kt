@@ -84,9 +84,9 @@ class MediaPermissionIntegrationTest {
                         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest) =
                             WebResourceResponse("text/html", "UTF-8", PAGE.byteInputStream())
                     }
-                    TrUAPIBootstrapInstaller().installerFor(webView, setOf("http://localhost"))(
+                    TrUAPIBootstrapInstaller(context).installerFor(setOf("http://localhost"))(
                         LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token),
-                    )
+                    )(webView)
                     webView.loadUrl("http://localhost/")
                 }
                 fun call(script: String, expected: String) {
@@ -146,9 +146,9 @@ class MediaPermissionIntegrationTest {
         override val storage: HostStorage = unused()
         override val coreStorage = object : HostCoreStorage {
             private val values = ConcurrentHashMap<List<Byte>, ByteArray>()
-            override fun read(key: ByteArray): ByteArray? = values[key.toList()]
-            override fun write(key: ByteArray, value: ByteArray) { values[key.toList()] = value }
-            override fun clear(key: ByteArray) { values.remove(key.toList()) }
+            override suspend fun read(key: ByteArray): ByteArray? = values[key.toList()]
+            override suspend fun write(key: ByteArray, value: ByteArray) { values[key.toList()] = value }
+            override suspend fun clear(key: ByteArray) { values.remove(key.toList()) }
         }
         override suspend fun navigateTo(url: String) = Unit
         override suspend fun featureSupported(request: HostFeatureSupportedRequest) = false

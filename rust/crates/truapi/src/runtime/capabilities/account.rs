@@ -94,12 +94,11 @@ impl Account for ProductRuntimeHost {
             // surface and reject before the SSO call.
             let approved = until_cancelled(
                 cx,
-                self.platform
-                    .confirm_user_action(UserConfirmationReview::ProductSubtree(
-                        ProductSubtreeReview {
-                            product_id: product_account_id.dot_ns_identifier.clone(),
-                        },
-                    )),
+                self.confirm_product_action(UserConfirmationReview::ProductSubtree(
+                    ProductSubtreeReview {
+                        product_id: product_account_id.dot_ns_identifier.clone(),
+                    },
+                )),
             )
             .await
             .map_err(account_get_authority_error)?
