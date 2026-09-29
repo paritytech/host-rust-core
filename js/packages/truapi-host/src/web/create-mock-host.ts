@@ -75,17 +75,33 @@ function normalizePermissionPolicy(
   );
 }
 
+/** The core's product-storage key prefix, up to and including its version. */
+const CORE_PRODUCT_STORAGE_PREFIX = /^truapi:product-storage:v\d+:/;
+
 /**
- * The core's product-storage key shape, whose tail is the product's own key.
+ * The product's own key inside a core-namespaced one, or `undefined`.
  *
- * Matching on that tail rather than on any `:key` suffix is what keeps a
- * prefixed store distinct from an unprefixed one: a product writing `demo:mykey`
- * and `mykey` produces two keys that both end in `:mykey`, so a suffix search
- * for `mykey` answers with whichever comes first and a test asserting they do
- * not collide can never fail. The shape is the core's, and knowing it here is
- * the point: a suite must not have to.
+ * Reading the tail rather than any `:key` suffix is what keeps a prefixed store
+ * distinct from an unprefixed one: a product writing `demo:mykey` and `mykey`
+ * produces two keys that both end in `:mykey`, so a suffix search for `mykey`
+ * answers with whichever comes first and a test asserting they do not collide
+ * can never fail.
+ *
+ * The product id is length-prefixed by the core precisely because it may hold
+ * colons -- `localhost:3000` is an ordinary one -- so the length is what says
+ * where the id ends, not the next separator.
  */
-const CORE_PRODUCT_STORAGE_KEY = /^truapi:product-storage:v\d+:\d+:[^:]+:(.+)$/;
+function coreProductStorageKey(stored: string): string | undefined {
+  const prefix = CORE_PRODUCT_STORAGE_PREFIX.exec(stored);
+  if (!prefix) return undefined;
+  const rest = stored.slice(prefix[0].length);
+  const separator = rest.indexOf(":");
+  if (separator < 0) return undefined;
+  const length = Number(rest.slice(0, separator));
+  if (!Number.isInteger(length) || length < 0) return undefined;
+  const afterId = rest.slice(separator + 1 + length);
+  return afterId.startsWith(":") ? afterId.slice(1) : undefined;
+}
 
 /**
  * A chain the host will proxy to, rather than answer from memory.
@@ -1408,6 +1424,10 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
     clearStatements: () => {
       injectedStatements.length = 0;
       loopbackStatements.clear();
+      // The chain path retains its own list, which `getStatements` and
+      // `getSubmittedStatements` read when the loopback store is off. Leaving it
+      // would carry one case's statements into the next.
+      chainStatements.length = 0;
     },
     sentRpc: () => [...sentRpc],
     authStates: () => [...authStates],
@@ -1508,10 +1528,10 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
       for (const [stored, value] of storage) {
         if (!stored.startsWith(prefix)) continue;
         const local = stored.slice(prefix.length);
-        const namespaced = CORE_PRODUCT_STORAGE_KEY.exec(local);
+        const namespaced = coreProductStorageKey(local);
         // Falls back to the whole key for a value written straight through the
         // host seam, which never passed through the core's namespacing.
-        if ((namespaced?.[1] ?? local) === key) {
+        if ((namespaced ?? local) === key) {
           return new TextDecoder().decode(value);
         }
       }

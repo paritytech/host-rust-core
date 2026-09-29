@@ -1099,4 +1099,37 @@ describe("reading back submitted statements", () => {
     const host = createMockHost();
     expect(host.getSubmittedStatements()).toEqual([]);
   });
+
+  it("drops what the chain path retained when the statements are cleared", async () => {
+    // `getStatements` and `getSubmittedStatements` read the chain path's own
+    // list whenever the loopback store is off. A clear that leaves it carries
+    // one case's statements into the next, which reads as a product that
+    // submitted something it never did.
+    const original = globalThis.WebSocket;
+    (globalThis as { WebSocket: unknown }).WebSocket = class {
+      constructor(public url: string) {}
+      addEventListener() {}
+      send() {}
+      close() {}
+    };
+    const host = createMockHost({
+      chainProxies: [{ rpcUrl: "ws://chain.test" }],
+    });
+    const conn = await host.callbacks.chain.connect(new Uint8Array(32));
+    (globalThis as { WebSocket: unknown }).WebSocket = original;
+
+    conn.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "truapi:1",
+        method: "statement_submit",
+        params: [encodeStatement({ topics: [`0x${"33".repeat(32)}`] })],
+      }),
+    );
+    expect(host.getSubmittedStatements()).toHaveLength(1);
+
+    host.clearStatements();
+    expect(host.getSubmittedStatements()).toEqual([]);
+    expect(host.getStatements()).toEqual([]);
+  });
 });

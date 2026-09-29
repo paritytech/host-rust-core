@@ -230,6 +230,22 @@ describe("reading a stored value back the way the old package spelled it", () =>
       }
     });
 
+    it("reads a product id that carries a colon", async () => {
+      // The core length-prefixes the product id precisely because it may hold
+      // colons, and `localhost:<port>` is the ordinary local one. Reading the
+      // id up to the next separator instead of by its length stops at
+      // `localhost`, and every lookup answers `undefined`.
+      const { client, host, dispose } = await createMockClient({
+        runtimeConfig: { productId: "localhost:3000" },
+      });
+      try {
+        await client.localStorage.write({ key: "greeting", value: "0x6869" });
+        expect(host.getProductStorageValue("greeting")).toBe("hi");
+      } finally {
+        dispose();
+      }
+    });
+
     it("does not answer a bare key with a prefixed entry", async () => {
       const { client, host, dispose } = await createMockClient();
       try {
