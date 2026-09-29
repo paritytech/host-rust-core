@@ -152,6 +152,7 @@ const SURFACES: {
         callData: "0x000000",
         extensions: [],
         txExtVersion: 0,
+        contacts: [],
       }),
   },
   {
