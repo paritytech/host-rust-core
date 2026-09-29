@@ -19,7 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-use crate::platform::{CoreStorage, CoreStorageKey, normalize_product_identifier};
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use crate::platform::normalize_product_identifier;
+use crate::platform::{CoreStorage, CoreStorageKey};
 use futures::lock::Mutex;
 use parity_scale_codec::{Decode, Encode};
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,6 +84,7 @@ pub enum StatementRenewalTarget {
 impl StatementRenewalTarget {
     /// These legacy entries cannot identify the artifact-scoped decision that
     /// authorized them. Never infer authorization from host-global storage.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn is_product_grant(&self) -> bool {
         match self {
             Self::ProductStatementAllowance { .. } => true,
@@ -117,6 +120,7 @@ impl StatementRenewalTarget {
     /// The renewal account is derived from `product_id`, and a product
     /// connection derives its own from the normalized form, so an unnormalized
     /// id renews an account no product uses while the real one lapses.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn normalized(self) -> Result<Self, String> {
         match self {
             Self::ProductStatementAllowance { product_id } => {
@@ -134,6 +138,7 @@ impl StatementRenewalTarget {
 
 impl TrackedStatementRenewalTarget {
     /// Record `target` under `owner`, which only raw account ids retain.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn new(target: StatementRenewalTarget, owner: [u8; 32]) -> Self {
         let owner = match &target {
             StatementRenewalTarget::Account { .. } => Some(owner),
@@ -210,6 +215,7 @@ impl RenewalState {
 /// the pass: the entries are recipes and raw account ids that
 /// [`track_targets`] rebuilds on the next allocation or pairing, so refusing to
 /// renew anything is strictly worse than starting over.
+#[cfg(any(test, not(target_arch = "wasm32")))]
 async fn read_entries(
     storage: &(impl CoreStorage + ?Sized),
 ) -> Result<Vec<TrackedStatementRenewalTarget>, String> {
@@ -400,6 +406,7 @@ pub async fn inspection_labels(
 }
 
 /// Record `targets` in the ledger under the active identity.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn track(
     signing_host: &SigningHost,
     targets: Vec<StatementRenewalTarget>,
@@ -965,7 +972,10 @@ mod tests {
             // Dropped, not merely skipped, so the cost is paid once.
             assert_eq!(
                 read_entries(&storage).await.unwrap(),
-                vec![TrackedStatementRenewalTarget::new(StatementRenewalTarget::WalletSso, OWNER)]
+                vec![TrackedStatementRenewalTarget::new(
+                    StatementRenewalTarget::WalletSso,
+                    OWNER
+                )]
             );
         });
     }

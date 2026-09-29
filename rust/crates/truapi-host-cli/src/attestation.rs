@@ -20,8 +20,6 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, Weak};
 use tracing::{debug, warn};
-use truapi::latest::GenericError;
-use truapi::platform::IdentityBackendHost;
 use truapi::host_logic::attestation::build_lite_registration;
 use truapi::host_logic::dotns_gateway::{
     MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN, is_registrable_full_label,
@@ -30,6 +28,8 @@ use truapi::host_logic::product_account::{
     derive_identity_keypair, derive_root_keypair_from_entropy, identity_product_id,
     product_public_key_to_address,
 };
+use truapi::latest::GenericError;
+use truapi::platform::IdentityBackendHost;
 use truapi::{LocalIdentityContext, SigningHostRuntime};
 
 use crate::dotns_read::AssetHubReader;

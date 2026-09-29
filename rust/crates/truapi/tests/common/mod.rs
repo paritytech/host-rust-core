@@ -11,8 +11,7 @@ use truapi::platform::{
     JsonRpcConnection, LocaleHost, NativeChatFileExportRequest, NativeChatFilePickRequest,
     NativeChatFilesHost, NativeChatPickedFile, Navigation, Notifications, PairingHostConfig,
     Permissions, PlatformInfo, PreimageHost, ProductContext, ProductOperations, ProductStorage,
-    ProviderError,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    ProviderError, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 use truapi::transport::Transport;
 use truapi::v01;

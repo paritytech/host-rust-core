@@ -18,41 +18,6 @@ fn nightly_toolchain() -> String {
     std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string())
 }
 
-fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
-    let marker = format!("export const {const_name} = [");
-    let start = src
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing {const_name}"));
-    let rest = &src[start + marker.len()..];
-    let end = rest
-        .find("] as const")
-        .unwrap_or_else(|| panic!("unterminated {const_name}"));
-    let body = &rest[..end];
-    let mut strings = Vec::new();
-    let mut chars = body.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '"' {
-            continue;
-        }
-        let mut value = String::new();
-        let mut escaped = false;
-        for ch in chars.by_ref() {
-            if escaped {
-                value.push(ch);
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                break;
-            } else {
-                value.push(ch);
-            }
-        }
-        strings.push(value);
-    }
-    strings
-}
-
 /// Path to the rustdoc JSON of `truapi`'s protocol definitions alone, the
 /// input codegen reads the API from, building it on first use.
 fn produce_rustdoc_json(workspace_root: &Path) -> PathBuf {

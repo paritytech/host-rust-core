@@ -57,7 +57,9 @@ use super::native_chat::{NativeChatContext, NativeChatRegistry};
 use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_internal::extrinsic::build_local_transaction;
-use crate::host_internal::sso_messages::{OnExistingAllowancePolicy, PaymentTopUpRequest, ProductRequest, RingVrfError};
+use crate::host_internal::sso_messages::{
+    OnExistingAllowancePolicy, PaymentTopUpRequest, ProductRequest, RingVrfError,
+};
 use crate::host_internal::transaction::sign_extrinsic_payload;
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::features::genesis_for;
@@ -1645,6 +1647,10 @@ mod tests {
     use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
     use crate::host_internal::extrinsic::tests::split_v4;
     use crate::host_internal::permissions::PermissionsService;
+    use crate::host_internal::sso_messages::{
+        ProductDeviceChatResponse, ProductRequest, RemoteMessage, RemoteMessageData,
+        SsoProductDeviceChatOperation, v1,
+    };
     use crate::host_internal::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
     };
@@ -1652,9 +1658,9 @@ mod tests {
         derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
         derive_root_keypair_from_entropy, index_bytes,
     };
-    use crate::host_internal::sso_messages::{
-        ProductDeviceChatResponse, ProductRequest, RemoteMessage, RemoteMessageData,
-        SsoProductDeviceChatOperation, v1,
+    use crate::platform::{
+        HostInfo, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
+        PlatformInfo, ProductContext, SigningHostConfig,
     };
     use crate::runtime::sso_service::Dispatch;
     use crate::runtime::statement_allowance::collection::PersonhoodCollection;
@@ -1674,10 +1680,6 @@ mod tests {
     };
     use truapi::versioned::signing::{HostSignRawError, HostSignRawRequest, HostSignRawResponse};
     use truapi::{CallContext, CallError, v01};
-    use crate::platform::{
-        HostInfo, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
-        PlatformInfo, ProductContext, SigningHostConfig,
-    };
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
 
