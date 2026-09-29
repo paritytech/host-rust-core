@@ -109,6 +109,9 @@ belongs to an existing type rather than adding another free-standing export.
   does.
 - Prefer one `assert_eq!` over a whole value to several assertions on
   individual fields.
+- In the Android host (`hosts/android`), build test doubles with `mockk` where
+  possible, rather than hand-written fakes or Mockito. Instrumentation tests
+  get it through `mockk-android`.
 
 ## Editing existing Rust
 

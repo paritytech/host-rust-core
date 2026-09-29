@@ -84,7 +84,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "connected"
+            "value" : "Connected"
           }
         }
       }
@@ -95,7 +95,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "connecting"
+            "value" : "Connecting"
           }
         }
       }
@@ -106,7 +106,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "no network"
+            "value" : "No internet"
           }
         }
       }
@@ -514,6 +514,39 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skip"
+          }
+        }
+      }
+    },
+    "statementStoreStatusActive" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection active"
+          }
+        }
+      }
+    },
+    "statementStoreStatusConnecting" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connecting..."
+          }
+        }
+      }
+    },
+    "statementStoreStatusUnavailable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection unavailable"
           }
         }
       }

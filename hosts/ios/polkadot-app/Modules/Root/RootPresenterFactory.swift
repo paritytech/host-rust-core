@@ -1,7 +1,6 @@
 import UIKit
 import Keystore_iOS
 import Operation_iOS
-import JailbreakDetection
 import KeyDerivation
 import SubstrateSdk
 import ChainRegistry
@@ -52,15 +51,7 @@ enum RootPresenterFactory: RootPresenterFactoryProtocol {
 
         let migrator = createLaunchMigrator()
 
-        let jailbreakDetector = JailbreakDetector(
-            device: UIDevice.current,
-            fileManager: FileManager.default,
-            urlOpener: UIApplication.shared,
-            processInfo: ProcessInfo.processInfo
-        )
-
         let resolver = SequentialDecisionResolver<RootDestination>(
-            preChecks: [RootGate.Jailbreak(detector: jailbreakDetector, logger: Logger.shared)],
             gates: [
                 RootGate.Theme(),
                 RootGate.Wallet(

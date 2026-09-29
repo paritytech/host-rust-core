@@ -46,10 +46,6 @@ final class ScanPanelViewController: UIViewController, ViewHolder {
 
 private extension ScanPanelViewController {
     func setupHandlers() {
-        rootView.searchRow.cancelHandler = { [weak self] in
-            self?.cancelSearch()
-        }
-
         rootView.onCameraTapped = { [weak self] in
             self?.cancelSearch()
         }
@@ -76,11 +72,8 @@ extension ScanPanelViewController: TabBarKeyboardTrackingContent {
         rootView.searchRow.searchField.isFirstResponder
     }
 
-    /// Focusing the field shrinks the camera to a thumbnail and disarms recognition, so a code
-    /// cannot be picked up from the sliver of preview left behind the keyboard.
     func setKeyboardInputFocused(_ focused: Bool) {
-        scannerController.setRecognitionArmed(!focused)
-        scannerController.setPreviewCompact(focused)
+        scannerController.setCaptureActive(!focused)
         rootView.setSearchFocused(focused)
     }
 }
