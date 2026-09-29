@@ -1,46 +1,66 @@
-#![cfg_attr(not(feature = "runtime"), no_std)]
+#![cfg_attr(not(feature = "host-api"), no_std)]
 #![allow(
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
 )]
+// The pairing-flow future nests the chain, SSO and identity futures deeply
+// enough that proving the tree's auto traits exceeds the default limit.
+#![recursion_limit = "256"]
 #![doc = include_str!("../README.md")]
-//! TrUAPI trait and type definitions for the host product SDK.
+//! TrUAPI trait and type definitions for the host product SDK, and the runtime
+//! hosts embed (feature `runtime`, on by default).
 //!
 //! Concrete wire types live in per-version modules. Versioned envelopes are in
 //! [`versioned`].
-//! Async API traits use the `async_trait` macro so their concise `async fn` methods
-//! still guarantee `Send` futures. Implementations must annotate their impl
-//! blocks with `#[truapi::async_trait]`.
+//! Async API traits (feature `host-api`) use the `async_trait` macro so their
+//! concise `async fn` methods still guarantee `Send` futures. Implementations
+//! must annotate their impl blocks with `#[truapi::async_trait]`.
+//!
+//! The runtime: hosts instantiate a role runtime around a `platform::Platform`
+//! implementation, then create product-scoped `ProductRuntime` endpoints that
+//! expose the stable byte-frame API used from WASM, native mobile, or desktop
+//! shells. Host-facing bridges:
+//! - `ws_bridge`: localhost WebSocket bridge for
+//!   native WebView hosts (Android/iOS).
+//! - `bootstrap`: the JavaScript those hosts inject to reach that bridge.
+//! - `native`: UniFFI surface exposing the native host runtime + callbacks.
+//! - `wasm` (wasm32 only): wasm-bindgen surface exposing `WasmProductRuntime`.
+//! - `native_debug` (non-wasm32 only): a loopback WebSocket `DebugSink` that
+//!   streams tapped frames to the `@parity/truapi-debugger` app.
+
+// Runtime code, the generated dispatcher and the macros all name this crate
+// `truapi`, the way code outside it does.
+extern crate self as truapi;
 
 extern crate alloc;
 
 use alloc::string::String;
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use alloc::{boxed::Box, format, vec::Vec};
 use core::convert::Infallible;
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use core::fmt;
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use core::future::Future;
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use core::mem;
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use core::pin::Pin;
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use core::task::{Context, Poll, Waker};
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use core::time::Duration;
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 use futures::Stream;
 use parity_scale_codec::{Decode, Encode};
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 pub use async_trait::async_trait;
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 pub mod api;
 pub mod v01;
 pub mod v02;
@@ -52,10 +72,10 @@ pub mod versioned;
 /// version.
 pub type Bytes32 = [u8; 32];
 
-#[cfg(feature = "uniffi")]
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 uniffi::setup_scaffolding!();
 
-#[cfg(feature = "uniffi")]
+#[cfg(all(feature = "runtime", not(target_arch = "wasm32")))]
 uniffi::custom_type!(Bytes32, Vec<u8>, {
     remote,
     lower: |bytes| bytes.to_vec(),
@@ -68,11 +88,11 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, Arrangement, AvatarRect, Background,
-        BlendingMode, BorderStyle, BoxProps, ButtonProps, ButtonVariant, ChainIdentifier,
-        ChatAction, ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage,
-        ChatFile, ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoom,
-        ChatRoomParticipation, ChatRoomRegistrationStatus, ColorToken, ColumnProps,
+        AllocatableResource, AllocationOutcome, Arrangement, AvatarRect, Background, BlendingMode, BorderStyle,
+        BoxProps, ButtonProps, ButtonVariant, ChainIdentifier, ChatAction, ChatActionLayout,
+        ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile, ChatMedia,
+        ChatMessageContent, ChatReaction, ChatRichText, ChatRoom, ChatRoomParticipation,
+        ChatRoomRegistrationStatus, ColorToken, ColumnProps, ContactHandle, ContactPickOutcome,
         ContentAlignment, ContextualAlias, DerivationIndex, Dimensions, Effect, EffectProps,
         GenericError, HorizontalAlignment, HostAccountCreateProofRequest,
         HostAccountGetAliasRequest, HostAccountListRingVrfKeysRequest,
@@ -94,8 +114,8 @@ pub mod latest {
         RemotePermission, RemoteStatementStoreCreateProofError,
         RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
         RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
-        RendererNode, RingLocation, RingLocationJunction, RingVrfKeyDisclosure, RingVrfPublicKey,
-        RowProps, RuntimeApi, RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement,
+        RendererNode, RingLocation, RingLocationJunction, RingVrfKeyDisclosure, RowProps,
+        RuntimeApi, RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement,
         StatementProof, StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps,
         TextProps, ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
         VrfSignature,
@@ -149,6 +169,12 @@ pub mod latest {
         LatestOf<versioned::renderer::ProductRendererRenderRequest>;
     /// Product-to-host renderer tree.
     pub type ProductRendererRenderItem = LatestOf<versioned::renderer::ProductRendererRenderItem>;
+    /// Contact picker request.
+    pub type HostContactsPickRequest = LatestOf<versioned::contacts::HostContactsPickRequest>;
+    /// Contact picker outcome.
+    pub type HostContactsPickResponse = LatestOf<versioned::contacts::HostContactsPickResponse>;
+    /// Contact picker failure.
+    pub type HostContactsPickError = LatestOf<versioned::contacts::HostContactsPickError>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;
@@ -285,9 +311,6 @@ pub use truapi_macros::{service, wire, wire_trait};
 /// from here.
 pub const WIRE_CODEC_VERSION: u8 = 3;
 
-/// Per-message id carried from the transport frame.
-pub type RequestId = String;
-
 /// Framework-level outcomes shared by API methods.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum CallError<D> {
@@ -331,20 +354,20 @@ pub type FrameworkOnlyError = CallError<Infallible>;
 /// when a runtime explicitly cancels it, or when an attached timeout elapses.
 /// Subscription runtimes can cancel this token when the peer sends `_stop` or
 /// disconnects.
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 #[derive(Clone, Default)]
 pub struct CancellationToken {
     inner: Arc<CancellationInner>,
 }
 
 #[derive(Default)]
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 struct CancellationInner {
     state: Mutex<CancellationState>,
 }
 
 #[derive(Default)]
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 struct CancellationState {
     reason: Option<CancellationReason>,
     next_id: u64,
@@ -352,7 +375,7 @@ struct CancellationState {
 }
 
 /// Cause attached to a cancelled call.
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
 pub enum CancellationReason {
     /// The caller or runtime explicitly cancelled the call.
@@ -367,7 +390,7 @@ pub enum CancellationReason {
 }
 
 /// Render a timeout as whole seconds when possible, milliseconds otherwise.
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 fn format_timeout(timeout: &Duration) -> String {
     if timeout.subsec_millis() == 0 {
         format!("{}s", timeout.as_secs())
@@ -377,13 +400,13 @@ fn format_timeout(timeout: &Duration) -> String {
 }
 
 /// Future resolved when a [`CancellationToken`] is cancelled.
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 pub struct CancellationFuture {
     inner: Arc<CancellationInner>,
     id: Option<u64>,
 }
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 impl fmt::Debug for CancellationToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CancellationToken")
@@ -392,7 +415,7 @@ impl fmt::Debug for CancellationToken {
     }
 }
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 impl CancellationToken {
     /// Mark the token as cancelled.
     pub fn cancel(&self) {
@@ -438,7 +461,7 @@ impl CancellationToken {
     }
 }
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 impl Future for CancellationFuture {
     type Output = CancellationReason;
 
@@ -470,7 +493,7 @@ impl Future for CancellationFuture {
     }
 }
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 impl Drop for CancellationFuture {
     fn drop(&mut self) {
         let Some(id) = self.id.take() else {
@@ -485,18 +508,18 @@ impl Drop for CancellationFuture {
 }
 
 /// Ambient context passed to every trait method.
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 #[derive(Clone, Default)]
 pub struct CallContext {
-    request_id: RequestId,
+    request_id: String,
     cancel: CancellationToken,
     timeout: Option<Duration>,
 }
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 impl CallContext {
     /// Construct a context bound to the given `request_id` with a fresh cancellation token.
-    pub fn with_request_id(request_id: RequestId) -> Self {
+    pub fn with_request_id(request_id: String) -> Self {
         Self {
             request_id,
             cancel: CancellationToken::default(),
@@ -505,7 +528,7 @@ impl CallContext {
     }
 
     /// Construct a context from explicit `request_id` and `cancel` parts.
-    pub fn with_parts(request_id: RequestId, cancel: CancellationToken) -> Self {
+    pub fn with_parts(request_id: String, cancel: CancellationToken) -> Self {
         Self {
             request_id,
             cancel,
@@ -541,12 +564,12 @@ impl CallContext {
 /// ends it: the runtime encodes that value as the `_interrupt` payload and
 /// polls no further. A stream that ends without an `Err` interrupts with
 /// `Ok(())`, which the peer reads as a normal completion.
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 pub struct Subscription<Item, Interrupt> {
     inner: Pin<Box<dyn Stream<Item = Result<Item, Interrupt>> + Send>>,
 }
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 impl<Item, Interrupt> Stream for Subscription<Item, Interrupt> {
     type Item = Result<Item, Interrupt>;
 
@@ -555,7 +578,7 @@ impl<Item, Interrupt> Stream for Subscription<Item, Interrupt> {
     }
 }
 
-#[cfg(feature = "runtime")]
+#[cfg(feature = "host-api")]
 impl<Item, Interrupt> Subscription<Item, Interrupt> {
     /// Creates a subscription from a stream of items and at most one
     /// terminating interrupt.
@@ -581,7 +604,94 @@ impl<Item, Interrupt> Subscription<Item, Interrupt> {
     }
 }
 
-#[cfg(all(test, feature = "runtime"))]
+/// Applies `#[cfg(feature = "runtime")]` to every item it wraps.
+macro_rules! runtime_items {
+    ($($item:item)*) => { $( #[cfg(feature = "runtime")] $item )* };
+}
+
+runtime_items! {
+    pub mod bootstrap;
+    mod chain_runtime;
+    mod truapi_core;
+    mod dispatcher;
+    mod dotns_views;
+    mod dynamic_vrf;
+    pub mod frame;
+    mod host_core;
+    mod host_internal;
+    pub mod host_logic;
+    mod host_rpc_client;
+    mod interrupt;
+    pub mod logging;
+    pub mod platform;
+    mod protocol_error;
+    mod runtime;
+    mod session_usernames;
+    pub mod subscription;
+    pub mod transport;
+
+    #[cfg(test)]
+    mod test_support;
+    mod unix_time;
+
+    // Dispatch must keep serving deprecated APIs while clients migrate.
+    #[allow(deprecated)]
+    pub mod generated;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod native;
+
+    #[cfg(target_arch = "wasm32")]
+    pub mod wasm;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod native_debug;
+
+    pub use truapi_core::TrUApiCore;
+    pub use host_core::{
+        ChannelId, DebugEvent, DebugSink, FrameDirection, FrameSink, HostAdmin, PairingHostRuntime,
+        ProductRuntime, ProductRuntimeControl, ProductRuntimeError, SigningHostRuntime,
+    };
+    pub use host_logic::session::{
+        ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
+    };
+    pub use host_logic::worker::{WorkerLedger, WorkerTransition};
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use native_debug::{DebugSinkError, WsDebugSink};
+    pub use platform::{
+        CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostIdentity, PairingHostConfig,
+        PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform, ProductContext,
+        SigningHostConfig, describe_core_storage_key,
+    };
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    pub use runtime::StatementRenewalTarget;
+    pub use runtime::contacts::contact_handle;
+    pub use runtime::login_failure::reports_exhausted_period;
+    pub use runtime::product_manifest::{encode_cached_root_manifest, manifest_cache_key};
+    pub use runtime::statement_allowance;
+    pub use runtime::{
+        AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
+        PairingProposal, PairingProposalMetadata, ResponderExit,
+    };
+    pub use runtime::{LocalIdentity, LocalIdentityContext, WalletAllowanceSnapshot};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use native::{
+        NativeRendererObserver, NativeRendererSubscription, WsBridgeEndpoint, WsBridgeStartError,
+    };
+
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-signing-host"))]
+    pub use wasm::WasmSigningHostRuntime;
+    #[cfg(target_arch = "wasm32")]
+    pub use wasm::{
+        WasmPairingHostRuntime, WasmProductRuntime, WasmRendererSubscription,
+        derive_product_account_public_key, describe_core_storage_key_for_wasm,
+        has_trusted_remote_permissions_for_wasm, product_account_address, set_log_level,
+        wire_schema_hash,
+    };
+}
+
+#[cfg(all(test, feature = "host-api"))]
 mod tests {
     use super::*;
 

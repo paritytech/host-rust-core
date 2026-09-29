@@ -11,7 +11,7 @@ use tempfile::NamedTempFile;
 use truapi::latest::{
     GenericError, HostNativeChatAttachmentKind, HostNativeChatAttachmentMetadata,
 };
-use truapi_platform::NativeChatPickedFile;
+use truapi::platform::NativeChatPickedFile;
 
 const MAX_READ: u32 = 2_000_000;
 const BLOCK_SIZE: u64 = 65_536;
@@ -35,7 +35,7 @@ async fn blocking<T: Send + 'static>(
 
 fn opaque_id() -> Result<String, GenericError> {
     let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(|_| error("Chat file randomness unavailable"))?;
+    getrandom::getrandom(&mut bytes).map_err(|_| error("Chat file randomness unavailable"))?;
     Ok(hex::encode(bytes))
 }
 

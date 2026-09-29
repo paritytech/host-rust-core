@@ -28,12 +28,15 @@ import {
   HostWorkerBeginOperationResponse,
   RemotePermissionRequest,
 } from "@parity/truapi";
-import type { GenericError, NotificationId } from "@parity/truapi";
+import type { GenericError } from "@parity/truapi";
 import {
   AuthState,
   CoreStorageKey,
   DevicePermissionStatus,
   HostChainSet,
+  HostContactLookup,
+  HostContactMatches,
+  HostContactPick,
   NativeChatFileExportRequest,
   NativeChatFilePickRequest,
   NativeChatPickedFile,
@@ -88,6 +91,8 @@ export interface RawCallbacks {
     sendError: (error: GenericError) => void,
   ): (() => void) | void;
   nativeCoinage?(request: Uint8Array): Promise<Uint8Array>;
+  contacts?(lookup: Uint8Array): Promise<Uint8Array>;
+  pickContact?(product: Uint8Array): Promise<Uint8Array>;
   readCoreStorage(key: Uint8Array): Promise<Uint8Array | null | undefined>;
   writeCoreStorage(key: Uint8Array, value: Uint8Array): Promise<void>;
   clearCoreStorage(key: Uint8Array): Promise<void>;
@@ -120,7 +125,7 @@ export interface RawCallbacks {
   cancelChatFileExport(exportId: string): Promise<void>;
   navigateTo(url: string): Promise<void>;
   pushNotification(notification: Uint8Array): Promise<Uint8Array>;
-  cancelNotification(id: NotificationId): Promise<void>;
+  cancelNotification(id: number): Promise<void>;
   devicePermissionStatus?(request: Uint8Array): Promise<Uint8Array>;
   devicePermission(
     product: Uint8Array,
@@ -171,6 +176,7 @@ export function createWasmRawCallbacks(
 ): RawCallbacks {
   const chat = callbacks.chat;
   const coinageWallet = coinageWalletHostAdapter(callbacks.coinageWallet);
+  const contacts = callbacks.contacts;
   const identityBackend = callbacks.identityBackend;
   const permissionStatus = callbacks.permissionStatus;
   const pocket = callbacks.pocket;
@@ -220,6 +226,18 @@ export function createWasmRawCallbacks(
               await coinageWallet.nativeCoinage(
                 NativeCoinageRequest.dec(request),
               ),
+            ),
+        }
+      : {}),
+    ...(contacts
+      ? {
+          contacts: async (lookup) =>
+            HostContactMatches.enc(
+              await contacts.contacts(HostContactLookup.dec(lookup)),
+            ),
+          pickContact: async (product) =>
+            HostContactPick.enc(
+              await contacts.pickContact(ProductContext.dec(product)),
             ),
         }
       : {}),

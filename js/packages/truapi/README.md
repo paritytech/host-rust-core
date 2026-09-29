@@ -153,15 +153,15 @@ again to obtain a new direct client, then recreate its subscriptions.
 
 The debugger does not live in this package, and the product transport carries no debug seam -
 `@parity/truapi` is genuinely untouched by observability. The host taps every product↔host frame in
-its Rust core (`truapi-server`'s `DebugSink`) and streams each one as opaque bytes to a separate
+its Rust core (`truapi`'s `DebugSink`) and streams each one as opaque bytes to a separate
 debugger app, which decodes and groups them.
 
-- The tap: `DebugSink` in `rust/crates/truapi-server/src/host_core.rs`, unset by default. It is read
+- The tap: `DebugSink` in `rust/crates/truapi/src/host_core.rs`, unset by default. It is read
   at two choke points — inbound before the frame is decoded, outbound after the product's copy is
   sent — and is fire-and-forget, so an absent or slow debugger loses traces, never a session.
 - Topology: the host always dials the debugger, over `ws://` on a loopback host **only**. `wss://`,
   certificates, and non-loopback targets are rejected by the native dial gate
-  (`truapi-server/src/native_debug.rs`), which requires every resolved address to be loopback and
+  (`truapi/src/native_debug.rs`), which requires every resolved address to be loopback and
   dials the addresses it checked.
 
 The generated `WIRE_DECODE_TABLE` on the `./wire-decode` subpath (raw SCALE bytes → typed value)
