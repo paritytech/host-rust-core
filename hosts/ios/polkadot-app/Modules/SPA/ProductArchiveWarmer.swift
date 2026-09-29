@@ -1,5 +1,5 @@
 import Foundation
-import Products
+@preconcurrency import Products
 
 /// Fetches the archive a product's surface is served from, before anything
 /// presses through to it.

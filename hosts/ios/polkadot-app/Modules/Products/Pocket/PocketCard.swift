@@ -47,7 +47,7 @@ enum PocketRemoveError: Error, Equatable {
 
 /// The host-owned collection as a product sees it. Cards enter only through the
 /// host's own approval flow, so there is no add here.
-protocol PocketCollection {
+protocol PocketCollection: Sendable {
     /// Throws when the collection cannot be read, which a caller must tell
     /// apart from an empty Pocket.
     func cards() async throws -> [PocketCardEntry]
@@ -79,7 +79,7 @@ protocol PocketCardStore: PocketCollection {
 }
 
 /// The cards the host itself places: present on first run, removable by nobody.
-protocol PinnedPocketCards {
+protocol PinnedPocketCards: Sendable {
     func cards() async -> [PocketCardEntry]
 
     /// The host-placed card `key` names, if it names one. Answers without

@@ -90,13 +90,18 @@ struct PocketFaceStreamsTests {
 
         let streams = makeStreams(workers: workers)
         let drawing = Task { for try await _ in streams.renderFaces(for: loyalty) {} }
-        // Longer than the connect retry interval by several times, and shorter
-        // than the first reopen.
-        try await Task.sleep(for: .milliseconds(900))
-        drawing.cancel()
+        defer { drawing.cancel() }
 
-        // One ask. Waiting a boot out would have made four by now.
-        #expect(execution.renderRequests.count == 1)
+        // Anchored on the first ask rather than on the clock, because a loaded
+        // machine can take longer to reach it than the window being measured.
+        try await waitUntil { execution.renderRequests.count >= 1 }
+        let afterTheFirstAsk = execution.renderRequests.count
+
+        // Two connect intervals, and still inside the first reopen, so waiting
+        // a boot out would have asked again by the time this returns.
+        try await Task.sleep(for: .milliseconds(600))
+
+        #expect(execution.renderRequests.count == afterTheFirstAsk)
     }
 }
 

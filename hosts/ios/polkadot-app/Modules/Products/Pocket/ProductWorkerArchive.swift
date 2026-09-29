@@ -1,5 +1,5 @@
 import Foundation
-import Products
+@preconcurrency import Products
 
 /// A product's worker archive on disk: the one place a card's face and the
 /// images inside it are read from.
