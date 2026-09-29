@@ -106,7 +106,7 @@ failing inside rustc.
 Maintainers merge pull requests by squashing all commits and editing the commit message if necessary using the GitHub
 user interface.
 
-Use an appropriate commit type. Be especially careful with breaking changes.
+Title the pull request as a conventional commit, since the title becomes the squashed commit: `<type>(<scope>): <subject>`, with `!` before the colon for a breaking change. [`.claude/skills/semver-pr-title/SKILL.md`](.claude/skills/semver-pr-title/SKILL.md) lists the types and says what counts as breaking for products, for testers of the host apps, and for the CLI. The `pr-title` check blocks a title that does not parse, and a `major` changeset whose title lacks `!`. It re-runs when the title is edited, so fixing one needs no new commit. RFC pull requests are `docs(rfc): <title>`. The nightly announcements list `!` titles first, marked `Breaking:`.
 
 ## Releasing
 
