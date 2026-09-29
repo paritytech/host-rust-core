@@ -22,12 +22,22 @@
 //! to storage the host owns and the blob for a chain is read before its first connect,
 //! then written back on a schedule the provider sets. `saveDatabase` forces a write at
 //! a moment the host chooses.
+//!
+//! Sync progress of a light-client chain is watched with `lifecycle`, once
+//! something is connected to the chain:
+//!
+//! ```js
+//! const watch = provider.lifecycle("0x3740…");
+//! for (let state; (state = await watch.next()); ) {
+//!   if (state.phase.kind === "syncing") showProgress(state.phase.at, state.phase.target);
+//! }
+//! ```
 
 use std::sync::Arc;
 
+use crate::platform::{ChainProvider as _, JsonRpcConnection};
 use futures::lock::Mutex;
 use futures::stream::{BoxStream, StreamExt};
-use truapi_platform::{ChainProvider as _, JsonRpcConnection};
 use wasm_bindgen::prelude::*;
 
 use crate::config::ChainSource;
@@ -173,7 +183,7 @@ impl ChainProviderBuilder {
             .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
         let (builder, chains) = builder
             .add_network(name)
-            .map_err(|err| JsError::new(&err.reason))?;
+            .map_err(|err| JsError::new(&err.to_string()))?;
         self.inner = Some(builder);
         Ok(NetworkChains {
             relay: hex0x(&chains.relay),
@@ -269,7 +279,7 @@ impl ChainProviderHandle {
                 if let Err(error) = strong.save_database(genesis).await {
                     tracing::warn!(
                         genesis = %hex0x(&genesis),
-                        reason = %error.reason,
+                        reason = %error,
                         "could not store finalized state"
                     );
                 }
@@ -311,7 +321,7 @@ impl ChainProviderHandle {
             .await
             {
                 futures::future::Either::Left((Err(error), _)) => tracing::warn!(
-                    reason = %error.reason,
+                    reason = %error,
                     "storage unavailable, syncing from the chain-spec checkpoint"
                 ),
                 futures::future::Either::Left((Ok(_), _)) => {}
@@ -325,7 +335,7 @@ impl ChainProviderHandle {
             .inner
             .connect(genesis)
             .await
-            .map_err(|err| JsError::new(&err.reason))?;
+            .map_err(|err| JsError::new(&err.to_string()))?;
         #[cfg(feature = "smoldot")]
         {
             // The relay a parachain syncs through is the chain that actually
@@ -355,7 +365,25 @@ impl ChainProviderHandle {
         self.inner
             .load_database(genesis)
             .await
-            .map_err(|err| JsError::new(&err.reason))
+            .map_err(|err| JsError::new(&err.to_string()))
+    }
+
+    /// Watch what the light client is doing on the chain identified by the
+    /// `0x`-prefixed genesis hash. Throws when nothing is connected to it.
+    ///
+    /// A parachain goes from `connecting` straight to `ready`; watch its relay
+    /// for warp sync progress.
+    #[cfg(feature = "smoldot")]
+    pub fn lifecycle(&self, genesis_hash: &str) -> Result<LifecycleWatch, JsError> {
+        let states = self
+            .inner
+            .lifecycle(parse_genesis(genesis_hash)?)
+            .map_err(|err| JsError::new(&err.to_string()))?;
+        let (states, stop) = futures::stream::abortable(states);
+        Ok(LifecycleWatch {
+            states: Arc::new(Mutex::new(states.boxed())),
+            stop,
+        })
     }
 
     /// Snapshot the finalized state of the chain and write it to storage.
@@ -373,7 +401,7 @@ impl ChainProviderHandle {
         self.inner
             .save_database(genesis)
             .await
-            .map_err(|err| JsError::new(&err.reason))
+            .map_err(|err| JsError::new(&err.to_string()))
     }
 }
 
@@ -411,6 +439,84 @@ impl Connection {
     pub fn close(&self) {
         self.inner.close();
     }
+}
+
+#[cfg(feature = "smoldot")]
+#[wasm_bindgen(typescript_custom_section)]
+const CHAIN_LIFECYCLE_TS: &str = r#"
+/** What the light client is doing on one chain. */
+export interface ChainLifecycle {
+  phase:
+    | { kind: "connecting" }
+    | { kind: "syncing"; at: number; target: number }
+    | { kind: "ready" };
+  peers: number;
+  health: { kind: "ok" } | { kind: "stalled"; reason: "noPeers" | "noProgress" };
+}
+"#;
+
+/// A live watch on one chain's lifecycle, from
+/// [`ChainProviderHandle::lifecycle`].
+#[cfg(feature = "smoldot")]
+#[wasm_bindgen]
+pub struct LifecycleWatch {
+    states: Arc<Mutex<BoxStream<'static, crate::ChainLifecycle>>>,
+    stop: futures::stream::AbortHandle,
+}
+
+#[cfg(feature = "smoldot")]
+#[wasm_bindgen]
+impl LifecycleWatch {
+    /// Resolve with the current state on the first call and with the next
+    /// change after that, or with `undefined` once the watch is closed or the
+    /// chain stops running.
+    #[wasm_bindgen(unchecked_return_type = "ChainLifecycle | undefined")]
+    pub async fn next(&self) -> JsValue {
+        let states = Arc::clone(&self.states);
+        let mut states = states.lock().await;
+        states
+            .next()
+            .await
+            .map_or(JsValue::UNDEFINED, lifecycle_to_js)
+    }
+
+    /// Stop the watch; pending `next()` calls resolve to `undefined`.
+    pub fn close(&self) {
+        self.stop.abort();
+    }
+}
+
+#[cfg(feature = "smoldot")]
+impl Drop for LifecycleWatch {
+    fn drop(&mut self) {
+        self.stop.abort();
+    }
+}
+
+/// The `ChainLifecycle` object the TypeScript declaration above describes.
+#[cfg(feature = "smoldot")]
+fn lifecycle_to_js(state: crate::ChainLifecycle) -> JsValue {
+    use crate::{ChainHealth, ChainPhase, StallReason};
+
+    let phase = match state.phase {
+        ChainPhase::Connecting => serde_json::json!({ "kind": "connecting" }),
+        ChainPhase::Syncing { at, target } => {
+            serde_json::json!({ "kind": "syncing", "at": at, "target": target })
+        }
+        ChainPhase::Ready => serde_json::json!({ "kind": "ready" }),
+    };
+    let health = match state.health {
+        ChainHealth::Ok => serde_json::json!({ "kind": "ok" }),
+        ChainHealth::Stalled { reason } => serde_json::json!({
+            "kind": "stalled",
+            "reason": match reason {
+                StallReason::NoPeers => "noPeers",
+                StallReason::NoProgress => "noProgress",
+            },
+        }),
+    };
+    let object = serde_json::json!({ "phase": phase, "peers": state.peers, "health": health });
+    js_sys::JSON::parse(&object.to_string()).expect("serde_json emits valid JSON")
 }
 
 /// The genesis hashes of a network registered via
@@ -453,7 +559,7 @@ impl NetworkChains {
 }
 
 #[cfg(any(feature = "networks", feature = "smoldot"))]
-pub(crate) fn hex0x(bytes: &[u8; 32]) -> String {
+fn hex0x(bytes: &[u8; 32]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
@@ -530,7 +636,7 @@ fn describe_js(error: &JsValue) -> String {
 }
 
 #[cfg(feature = "smoldot")]
-#[truapi_platform::async_trait]
+#[async_trait::async_trait]
 impl crate::storage::StorageClient for HostStorageClient {
     async fn load(
         &self,
@@ -620,7 +726,7 @@ mod tests {
     fn the_exported_names_match_the_documented_ones() {
         let mut builder = ChainProviderBuilder::new();
         let handle = JsValue::from(builder.build().expect("an empty builder builds"));
-        for name in ["connect", "loadDatabase", "saveDatabase"] {
+        for name in ["connect", "lifecycle", "loadDatabase", "saveDatabase"] {
             let found = js_sys::Reflect::get(&handle, &JsValue::from_str(name))
                 .expect("the handle is an object");
             assert!(found.is_function(), "the provider does not export `{name}`");
@@ -636,6 +742,31 @@ mod tests {
                 .expect("the builder is an object");
             assert!(found.is_function(), "the builder does not export `{name}`");
         }
+    }
+
+    /// A host reads these fields by name, so the shape the TypeScript
+    /// declaration promises is the one that crosses the boundary.
+    #[wasm_bindgen_test]
+    fn a_lifecycle_crosses_as_the_declared_object() {
+        let state = crate::ChainLifecycle {
+            phase: crate::ChainPhase::Syncing { at: 7, target: 9 },
+            peers: 3,
+            health: crate::ChainHealth::Stalled {
+                reason: crate::StallReason::NoProgress,
+            },
+        };
+        let json = js_sys::JSON::stringify(&super::lifecycle_to_js(state))
+            .expect("a plain object stringifies");
+        let crossed: serde_json::Value =
+            serde_json::from_str(&String::from(json)).expect("valid JSON");
+        assert_eq!(
+            crossed,
+            serde_json::json!({
+                "phase": { "kind": "syncing", "at": 7, "target": 9 },
+                "peers": 3,
+                "health": { "kind": "stalled", "reason": "noProgress" },
+            })
+        );
     }
 
     /// The crate stores nothing, so a provider nobody gave storage to must say

@@ -19,11 +19,11 @@ import uniffi.truapi.HostSignPayloadData
 import uniffi.truapi.RawPayload
 import uniffi.truapi.RingLocation
 import uniffi.truapi.TxPayloadExtension
-import uniffi.truapi_platform.CreateTransactionReview
-import uniffi.truapi_platform.SignPayloadReview
-import uniffi.truapi_platform.SignRawReview
-import uniffi.truapi_platform.SignVrfReview
-import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi.CreateTransactionReview
+import uniffi.truapi.SignPayloadReview
+import uniffi.truapi.SignRawReview
+import uniffi.truapi.SignVrfReview
+import uniffi.truapi.UserConfirmationReview
 import uniffi.truapi.ProductAccountId as NativeProductAccountId
 
 /**
@@ -129,7 +129,7 @@ private fun <Signer> HostSignPayloadData.toSignerPayloadJson(account: Signer) = 
 
 private fun SignPayloadReview.toSigningRequestBody(): SigningRequestBody = when (this) {
     is SignPayloadReview.Product ->
-        SigningRequestBody.Transaction(v1.payload.toSignerPayloadJson(v1.account.toDomain()))
+        SigningRequestBody.Transaction(request.payload.toSignerPayloadJson(request.account.toDomain()))
     is SignPayloadReview.LegacyAccount ->
         SigningRequestBody.TransactionLegacy(
             v1.payload.toSignerPayloadJson(v1.signer.parseLegacySigner().toDataByteArray()),
@@ -176,11 +176,11 @@ private fun TxPayloadExtension.toDomain() = EncodedTransactionExtensionValue(
 private fun CreateTransactionReview.toSigningRequestBody(): SigningRequestBody = when (this) {
     is CreateTransactionReview.Product -> SigningRequestBody.CreateTransaction(
         TxPayload(
-            signer = v1.signer.toDomain(),
-            genesisHash = v1.genesisHash.toDataByteArray(),
-            callData = v1.callData.toDataByteArray(),
-            extensions = v1.extensions.map { it.toDomain() },
-            txExtVersion = v1.txExtVersion,
+            signer = payload.signer.toDomain(),
+            genesisHash = payload.genesisHash.toDataByteArray(),
+            callData = payload.callData.toDataByteArray(),
+            extensions = payload.extensions.map { it.toDomain() },
+            txExtVersion = payload.txExtVersion,
         ),
     )
     is CreateTransactionReview.LegacyAccount -> SigningRequestBody.CreateTransactionLegacy(

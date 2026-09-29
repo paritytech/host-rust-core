@@ -30,6 +30,13 @@ inputs:
       anchor and the work it covered is never reported by anything.
     required: false
     default: ""
+  required_job:
+    description: >
+      Only anchor on runs in which the job with this name succeeded. A run that
+      skipped its build still concludes success, so without this a night that
+      built nothing becomes the anchor and the work before it goes unannounced.
+    required: false
+    default: ""
 
 outputs:
   release_notes:
@@ -51,6 +58,7 @@ runs:
       env:
         INPUT_HEAD_SHA: ${{ inputs.head_sha }}
         INPUT_EVENT: ${{ inputs.event }}
+        INPUT_REQUIRED_JOB: ${{ inputs.required_job }}
         MAX_COMMIT_PAGES: "5"
       with:
         github-token: ${{ inputs.github_token }}
@@ -89,10 +97,24 @@ runs:
 
             // Newest first, and a run still in progress is not a success, so the
             // only reason this run could appear is a re-read after it finished.
-            const previous = runs.data.workflow_runs
+            const candidates = runs.data.workflow_runs
               .filter((run) => run.id !== context.runId)
               .filter((run) => new Date(run.created_at) < new Date(thisRun.created_at))
-              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            const requiredJob = process.env.INPUT_REQUIRED_JOB || '';
+            let previous;
+            for (const run of candidates) {
+              if (!requiredJob) { previous = run; break; }
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                owner, repo, run_id: run.id, per_page: 100,
+              });
+              if (jobs.some((job) => job.name === requiredJob && job.conclusion === 'success')) {
+                previous = run;
+                break;
+              }
+              core.info(`Run ${run.id} succeeded without '${requiredJob}' running; not an anchor.`);
+            }
 
             if (!previous) {
               core.warning('No earlier successful run of this workflow, so there is no range to list.');

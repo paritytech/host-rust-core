@@ -14,10 +14,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import io.mockk.every
 import io.mockk.mockk
 import io.parity.truapi.HostBridge
-import io.parity.truapi.HostRuntimeConfig
 import io.parity.truapi.LocalhostBridgeBootstrap
-import io.parity.truapi.ProductExecutionConfig
-import io.parity.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import io.paritytech.polkadotapp.common.utils.RealCoroutineDispatchers
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
@@ -34,6 +31,9 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
