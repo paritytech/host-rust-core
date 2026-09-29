@@ -75,7 +75,7 @@ pub fn wire_trait(args: TokenStream, item: TokenStream) -> TokenStream {
 /// The enum and every variant receive generated doc comments; a variant keeps
 /// its own doc attributes when the declaration provides them.
 ///
-/// The declared visibility (`pub`, `pub(crate)`, or none) carries through to the
+/// The declared visibility (`pub`, or none) carries through to the
 /// generated enum.
 ///
 /// The generated impls name `crate::versioned::*` traits, so invoke this from
@@ -102,7 +102,7 @@ pub fn versioned_type(item: TokenStream) -> TokenStream {
 /// other helpers belong in a separate, unannotated implementation.
 ///
 /// The macro uses native async methods and refers to the context and reply
-/// types in `crate::runtime::sso_service`. It only works inside `truapi-server`.
+/// types in `crate::runtime::sso_service`. It only works inside `truapi`.
 #[proc_macro_attribute]
 pub fn sso_service(args: TokenStream, item: TokenStream) -> TokenStream {
     sso_service::expand(args, item)

@@ -34,7 +34,7 @@ git submodule update --init --recursive
 - [ ] **iOS bindings** — only if UniFFI-exposed types changed
       (`HostCallbacks`, `NativeTrUApiHostRuntime`, `NativeProductExecution`,
       the native mirror types in
-      `rust/crates/truapi-server/src/native*`). Run
+      `rust/crates/truapi/src/native*`). Run
       `make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh`, then
       commit `ios/truapi-host/Sources/`. Also update every hand-written
       conformer — `HostCallbackAdapter` in `TrUAPIHost.swift` and

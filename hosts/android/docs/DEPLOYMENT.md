@@ -100,6 +100,12 @@ rust.rustcCommand=/Users/me/.cargo/bin/rustc
 rust.pythonCommand=/usr/bin/python3
 ```
 
+The `:bindings:truapi-host` module uses the Rust plugin's `exec` hook to run
+`cargo rustc -p truapi --lib --crate-type cdylib` with the plugin's existing
+Android target, profile and linker settings. Its host binding-generation build
+requests the same crate type with `--profile codegen`. Ordinary `cargo build`
+produces only the Rust library, not the `libtruapi.so` packaged in the APK.
+
 `developer-tools/setup.sh` only installs the Detekt pre-commit hook; it does not install
 any part of the toolchain.
 
@@ -212,6 +218,7 @@ without it. JSON values are stored as Remote Config strings.
 | `cross_chain_transfers` | JSON object | cross-chain transfers | `feature/cross-chain-transfers` | `{ "chains": [...], "customTeleports": [...] }` — XCM transfer directions. Schema: `feature/cross-chain-transfers/impl/.../data/model/DynamicCrossChainConfigRemote.kt`. |
 | `coinage_instance_id` | string (unsigned integer) | Coinage | `feature/coinage` | Instance id of the Coinage deployment. |
 | `account_data_store_config` | JSON object | Coinage | `feature/coinage` | `{ "contractAddress": "0x…" }` — the account data store contract. |
+| `payment_asset_config` | JSON object | payment asset branding (optional) | `feature/tokens` — `RealPaymentAssetBrandProvider` | `{ "symbol": "CASH", "iconSquareUrl": "https://…/square.svg", "iconWideUrl": "https://…/wide.svg" }` — the payment asset's symbol and logos: a square mark for amounts and chat payments, a wide mark-plus-wordmark for the balance card, as absolute `http(s)` URLs (SVG or PNG). Every field is optional; anything missing or failing to load falls back to `CURRENCY_SYMBOL` and the built-in mark. The last activated value applies at start-up and the object is re-read right after the first sync; logos load on display through the app image loader and are cached by URL, so publish a changed logo under a new URL. |
 | `collectibles_enabled` | boolean | collectibles (optional) | `feature/videogame` | Feature gate for the collectibles webview. |
 | `collectibles_fallback_url` | string (URL) | collectibles (optional) | `feature/videogame` | Fallback URL of the collectibles webview when DotNS resolution fails. |
 
