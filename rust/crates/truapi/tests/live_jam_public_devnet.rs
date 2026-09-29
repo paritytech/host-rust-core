@@ -12,11 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parity_scale_codec::{Decode, Encode};
-use truapi::versioned::jam_peer_transport as wire;
-use truapi::{CallError, latest};
+use truapi::frame::{MESSAGE_TYPE_REQUEST, Payload, ProtocolMessage, request_ids};
 use truapi::platform::ProductContext;
 use truapi::platform::mock::{MockPlatform, PermissionKind};
-use truapi::frame::{MESSAGE_TYPE_REQUEST, Payload, ProtocolMessage, request_ids};
+use truapi::versioned::jam_peer_transport as wire;
+use truapi::{CallError, latest};
 use truapi::{FrameSink, PairingHostRuntime, ProductRuntime};
 
 // Shared harness; this binary uses only part of it.
