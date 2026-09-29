@@ -4,6 +4,7 @@ import androidx.core.net.toUri
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
+import io.novasama.substrate_sdk_android.extensions.toHexString
 import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
@@ -199,10 +200,8 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
             product: ProductExecutionConfig,
             request: RemotePermission,
         ): TrUAPIPermissionDecision {
-            // This app has no JAM peer transport, so it has nothing to grant.
-            val domainRequest = request.toDomain() ?: return TrUAPIPermissionDecision.DENY
             return hostApiInteractor
-                .requestRemotePermissionDecision(callingProductId, domainRequest)
+                .requestRemotePermissionDecision(callingProductId, request.toDomain())
                 .getOrElse { throw it }
                 .toNative()
         }
@@ -367,14 +366,13 @@ private fun HostDevicePermissionRequest.toCapability(): DeviceCapabilityType = w
     HostDevicePermissionRequest.BIOMETRICS -> DeviceCapabilityType.Biometrics
 }
 
-/** The Products domain request, or `null` for a permission this app has no surface for. */
-private fun RemotePermission.toDomain(): RemotePermissionRequest? = when (this) {
+private fun RemotePermission.toDomain(): RemotePermissionRequest = when (this) {
     is RemotePermission.Remote -> RemotePermissionRequest.Remote(domains)
     RemotePermission.WebRtc -> RemotePermissionRequest.WebRtc
     RemotePermission.ChainSubmit -> RemotePermissionRequest.ChainSubmit
     RemotePermission.PreimageSubmit -> RemotePermissionRequest.PreimageSubmit
     RemotePermission.StatementSubmit -> RemotePermissionRequest.StatementSubmit
-    is RemotePermission.JamPeers -> null
+    is RemotePermission.JamPeers -> RemotePermissionRequest.JamPeers(genesis.toHexString(withPrefix = true))
 }
 
 private fun PermissionDecision.toNative(): TrUAPIPermissionDecision = when (this) {
