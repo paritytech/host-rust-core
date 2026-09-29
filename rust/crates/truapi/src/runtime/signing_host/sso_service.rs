@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use crate::platform::{
-    CreateTransactionReview, PermissionAuthorizationStatus, ProductContext, ProductExecutionKind,
+    CreateTransactionReview, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
+    ProductContext, ProductExecutionKind,
     ResourceAllocationReview, SignPayloadReview, SignRawReview, StatementStoreProductSignReview,
     UserConfirmationReview, normalize_product_identifier,
 };
@@ -18,7 +19,7 @@ use super::sso_responder::{
     allocate_product_statement_store_allowance, allocate_smart_contract_allowance,
     allocate_statement_store_allowance,
 };
-use crate::host_internal::permissions::PermissionsService;
+use crate::host_internal::permissions::{ChatAuthorityConsent, PermissionsService};
 use crate::host_internal::sso_messages::{
     CreateAccountProofResponse, CreateTransactionLegacyPayload, CreateTransactionPayload,
     CreateTransactionRequest, CreateTransactionResponse, CreateTransactionWithLegacyAccountRequest,
@@ -691,12 +692,27 @@ impl SigningHostSsoService {
             self.signing_host.platform.as_ref(),
             &calling_product,
         );
-        if permissions
-            .check_or_prompt_chat_authority()
+        let storage_unavailable =
+            |_| WireError::V1(api::HostProductDeviceChatError::StorageUnavailable);
+        // A session-only grant lives with the signing session, since each SSO
+        // request builds its own permissions service.
+        let consent = if permissions
+            .authorization_status(&PermissionAuthorizationRequest::ChatAuthority)
             .await
-            .map_err(|_| WireError::V1(api::HostProductDeviceChatError::StorageUnavailable))?
-            != PermissionAuthorizationStatus::Authorized
+            .map_err(storage_unavailable)?
+            == PermissionAuthorizationStatus::NotDetermined
+            && self
+                .signing_host
+                .chat_session_granted(&cx.session, &calling_product_id)
         {
+            ChatAuthorityConsent::Session
+        } else {
+            permissions
+                .check_or_prompt_chat_authority()
+                .await
+                .map_err(storage_unavailable)?
+        };
+        if consent == ChatAuthorityConsent::Refused {
             return Err(WireError::V1(
                 api::HostProductDeviceChatError::AccessNotGranted,
             ));
@@ -721,6 +737,7 @@ impl SigningHostSsoService {
                 ProductDeviceChatAuthorityRequest {
                     calling_product_id,
                     operation,
+                    session_consent: consent == ChatAuthorityConsent::Session,
                 },
             )
             .await

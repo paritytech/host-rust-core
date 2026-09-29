@@ -28,6 +28,7 @@ use truapi::versioned::account::{
 };
 use truapi::{CallContext, CallError, Subscription, latest, v01};
 
+use crate::host_internal::permissions::ChatAuthorityConsent;
 use crate::host_internal::product_manifest::Granted;
 use crate::host_internal::sso_messages::ProductRequest;
 use crate::runtime::authority::{
@@ -428,12 +429,11 @@ impl Account for ProductRuntimeHost {
                 latest::HostProductDeviceChatError::NotConnected,
             )));
         };
-        if self
+        let consent = self
             .chat_authority_authorization()
             .await
-            .map_err(|reason| CallError::HostFailure { reason })?
-            != PermissionAuthorizationStatus::Authorized
-        {
+            .map_err(|reason| CallError::HostFailure { reason })?;
+        if consent == ChatAuthorityConsent::Refused {
             return Err(CallError::Domain(HostProductDeviceChatError::V1(
                 latest::HostProductDeviceChatError::AccessNotGranted,
             )));
@@ -451,6 +451,7 @@ impl Account for ProductRuntimeHost {
         let authority_request = ProductDeviceChatAuthorityRequest {
             calling_product_id,
             operation,
+            session_consent: consent == ChatAuthorityConsent::Session,
         };
         remote_authority_call(
             &cx,
