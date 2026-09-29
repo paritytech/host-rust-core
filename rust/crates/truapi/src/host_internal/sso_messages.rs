@@ -399,9 +399,40 @@ pub type CreateTransactionResponse = Result<Vec<u8>, String>;
 pub enum SsoSessionStatement {
     /// The outbound request statement was acknowledged with a success code.
     RequestAccepted,
-    /// Application messages in wire order, each decoded on its own so a
-    /// consumer can stop at its match before a later undecodable message.
-    RemoteMessages(Vec<Result<v1::RemoteMessage, String>>),
+    /// Application messages in wire order, each decoded on its own so one
+    /// that fails to decode leaves the others readable.
+    RemoteMessages(Vec<Result<v1::RemoteMessage, UndecodableRemoteMessage>>),
+}
+
+/// A remote message that failed to decode, with whatever correlation its
+/// leading fields still carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndecodableRemoteMessage {
+    /// The string in the position a [`Response`] holds `responding_to`, when
+    /// the bytes up to it decode. Any variant can fill that position, so only
+    /// an exact match with a pending request's id marks the message as its
+    /// reply.
+    pub responding_to: Option<String>,
+    /// Why the message failed to decode.
+    pub error: String,
+}
+
+impl UndecodableRemoteMessage {
+    fn from_encoded(message: &[u8], error: String) -> Self {
+        Self {
+            responding_to: encoded_responding_to(message),
+            error,
+        }
+    }
+}
+
+/// Reads a response's `responding_to` without decoding its payload: it follows
+/// the message id and the version and variant tags.
+fn encoded_responding_to(message: &[u8]) -> Option<String> {
+    let mut input = message;
+    String::decode(&mut input).ok()?;
+    <[u8; 2]>::decode(&mut input).ok()?;
+    String::decode(&mut input).ok()
 }
 
 /// Decode and classify an inbound encrypted SSO session statement.
@@ -447,10 +478,12 @@ pub fn decode_sso_session_statement(
         SsoStatementData::Request { data, .. } => Ok(Some(SsoSessionStatement::RemoteMessages(
             data.iter()
                 .map(|message| {
-                    decode_remote_message(message).map(|message| {
-                        let RemoteMessageData::V1(message) = message.data;
-                        message
-                    })
+                    decode_remote_message(message)
+                        .map(|decoded| {
+                            let RemoteMessageData::V1(decoded) = decoded.data;
+                            decoded
+                        })
+                        .map_err(|error| UndecodableRemoteMessage::from_encoded(message, error))
                 })
                 .collect(),
         ))),
