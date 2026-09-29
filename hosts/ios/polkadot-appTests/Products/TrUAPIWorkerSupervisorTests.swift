@@ -120,7 +120,7 @@ struct TrUAPIWorkerSupervisorTests {
     }
 
     /// Republishing reads the execution back out of the published map, so a
-    /// republish that ran before the execution was published reached nobody —
+    /// republish that ran before the execution was published reached nobody,
     /// and the bridge, whose snapshot had already moved, never sent another.
     @Test
     func tellsTheCoreWhatTheWorkerHoldsOnceItsExecutionIsPublished() async throws {
@@ -210,6 +210,25 @@ struct TrUAPIWorkerSupervisorTests {
         #expect(supervisor.currentExecution(of: "game.paseo") != nil)
     }
 
+    /// Every product's transitions arrive down one queue, and building a worker
+    /// fetches its archive over the network. A product whose archive never
+    /// comes back must not leave every other product's card without a worker
+    /// for as long as the fetch hangs.
+    @Test
+    func aStalledBootDoesNotHoldUpAnotherProduct() async throws {
+        let builder = StubBuilder(stalledProduct: "stalled.paseo")
+        let supervisor = TrUAPIWorkerSupervisor(builder: builder, collection: collectionHolding([loyalty]))
+
+        supervisor.demandChanged(productId: "stalled.paseo", transition: .start)
+        supervisor.demandChanged(productId: "game.paseo", transition: .start)
+        try await settle()
+
+        #expect(supervisor.currentExecution(of: "game.paseo") != nil)
+        #expect(supervisor.currentExecution(of: "stalled.paseo") == nil)
+
+        builder.releaseTheStalledBoot()
+    }
+
     /// A worker already running is told about a card added later because its
     /// bridge follows storage. Nothing announces the write, so a writer that
     /// forgot to say it wrote cannot leave a product's own list stale.
@@ -223,7 +242,7 @@ struct TrUAPIWorkerSupervisorTests {
         try await settle()
         #expect(try builder.bridge?.listCards().map(\.cardId) == ["loyalty"])
 
-        await collection.add(streak, face: .nil)
+        try await collection.add(streak, face: .nil)
         try await settle()
 
         #expect(try builder.bridge?.listCards().map(\.cardId).sorted() == ["loyalty", "streak"])
@@ -275,18 +294,29 @@ private final class StubBuilder: TrUAPIWorkerBuilding, @unchecked Sendable {
     /// How long the first worker sits inside `start()` before failing. The
     /// window a stop and a restart have to land in.
     private let firstStartFailsAfter: Duration?
+    /// The product whose build hangs until `releaseTheStalledBoot()`, standing
+    /// in for an archive fetch that never comes back.
+    private let stalledProduct: ProductId?
+    private let stall = AsyncStream<Void>.makeStream()
     private var buildCount = 0
 
     init(
         cannotBuild: Bool = false,
         engineFails: Bool = false,
         buildDelay: Duration = .zero,
-        firstStartFailsAfter: Duration? = nil
+        firstStartFailsAfter: Duration? = nil,
+        stalledProduct: ProductId? = nil
     ) {
         self.cannotBuild = cannotBuild
         self.engineFails = engineFails
         self.buildDelay = buildDelay
         self.firstStartFailsAfter = firstStartFailsAfter
+        self.stalledProduct = stalledProduct
+    }
+
+    /// Lets the stalled build finish, so the test leaves no task parked on it.
+    func releaseTheStalledBoot() {
+        stall.continuation.finish()
     }
 
     func makeRuntime(
@@ -296,6 +326,9 @@ private final class StubBuilder: TrUAPIWorkerBuilding, @unchecked Sendable {
     ) async throws -> TrUAPIWorkerRuntime {
         if cannotBuild { throw TrUAPIWorkerError.noWorker(productId) }
         if buildDelay > .zero { try await Task.sleep(for: buildDelay) }
+        if productId == stalledProduct {
+            for await _ in stall.stream {}
+        }
 
         bridge = pocket
 

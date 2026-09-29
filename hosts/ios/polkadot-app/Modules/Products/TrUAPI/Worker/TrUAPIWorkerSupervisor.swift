@@ -6,8 +6,8 @@ import TrUAPIHost
 
 /// Runs product workers for as long as the core's reference ledger wants them.
 ///
-/// The core counts the references its modality holders take — a card on screen
-/// takes one, so does a chat session — and reports only the transitions across
+/// The core counts the references its modality holders take, a card on screen
+/// takes one and so does a chat session, and reports only the transitions across
 /// zero. A `.start` boots the product's worker behind its one Worker execution;
 /// a `.stop` tears it down.
 protocol TrUAPIWorkerSupervising: AnyObject, Sendable {
@@ -82,9 +82,9 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
     /// exists, so it is held beside the actor's own state rather than in it.
     private let openSeams = OSAllocatedUnfairLock<[ProductId: TrUAPIWorkerSeams]>(initialState: [:])
 
-    /// Transitions are applied one at a time, in the order the ledger sent
-    /// them. Handing each to its own task leaves the order to the scheduler,
-    /// where a start and the stop that cancels it can overtake each other.
+    /// Transitions are booked one at a time, in the order the ledger sent them.
+    /// Handing each to its own task leaves the order to the scheduler, where a
+    /// start and the stop that cancels it can overtake each other.
     private let transitions = AsyncStream<(ProductId, WorkerTransition)>.makeStream()
     private let executionSubject = AsyncCurrentValueSubject<[ProductId: TrUAPIProductExecutionProtocol]>([:])
 
@@ -158,16 +158,24 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
 
     private func apply(_ transition: WorkerTransition, to productId: ProductId) async {
         switch transition {
-        case .start: await start(productId)
+        case .start: start(productId)
         case .stop: await stop(productId)
         }
     }
 
-    private func start(_ productId: ProductId) async {
+    /// Claims the product and returns, leaving the slow half of the boot to its
+    /// own task. Fetching an archive and booting a web view can stall for as
+    /// long as the network does, and held against this queue that would keep
+    /// every other product off its worker.
+    private func start(_ productId: ProductId) {
         guard held[productId] == nil else { return }
         let boot = Boot()
         held[productId] = .booting(boot)
 
+        Task { await self.bringUp(productId, as: boot) }
+    }
+
+    private func bringUp(_ productId: ProductId, as boot: Boot) async {
         let bridge = ProductPocketHostBridge(productId: productId, collection: collection)
 
         do {
@@ -207,13 +215,6 @@ actor TrUAPIWorkerSupervisor: TrUAPIWorkerSupervising {
             // so never sends another stop to clear it.
             await stop(productId)
         }
-    }
-
-    /// Clears `productId` only while `boot` still holds it.
-    private func discard(_ productId: ProductId, of boot: Boot) {
-        guard held[productId]?.belongsTo(boot) == true else { return }
-
-        held[productId] = nil
     }
 
     private func stop(_ productId: ProductId) async {
