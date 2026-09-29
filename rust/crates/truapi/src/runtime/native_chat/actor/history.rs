@@ -184,6 +184,7 @@ impl NativeChatActor {
         let mut rich = Vec::new();
         let mut bytes_seen = 0usize;
         let mut had_history = false;
+        let mut had_rich = false;
         while let Some((mut bytes, depth)) = work.pop() {
             context.require_current()?;
             bytes_seen = bytes_seen
@@ -243,8 +244,10 @@ impl NativeChatActor {
                     {
                         return Err(Error::InvalidStatement);
                     }
+                    // Attachment tickets and identifiers stay Host-private; the
+                    // product receives this message only as public metadata.
                     rich.push(message);
-                    expanded.push(core::mem::take(&mut *bytes));
+                    had_rich = true;
                 }
                 OpenedDeviceMessage::Payment(memo) => {
                     if !super::receive::valid_peer_timestamp(memo.timestamp, current_unix_secs()) {
@@ -292,9 +295,10 @@ impl NativeChatActor {
                     files::merge_received(state, rich)
                 })
                 .await?;
-            // Preserve the original canonical request when no HOP expansion was
-            // needed, except references already transferred by legacy migration.
-            let plaintext = if had_history {
+            // Preserve the original canonical request when it needed neither HOP
+            // expansion nor removal of private rich-content frames, except
+            // references already transferred by legacy migration.
+            let plaintext = if had_history || had_rich {
                 wire::encode_transport_request_plaintext(&request_id, &expanded)
                     .map_err(|_| Error::InvalidStatement)?
             } else {
