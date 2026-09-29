@@ -70,10 +70,13 @@ an RFC-0009 login flow, and the fixture option only takes `"auto" | "manual"`,
 because this is a signing host and that flow belongs to a pairing host.
 
 The statement-store controls and `injectChatAction` are served, so they are not
-in this grep. `injectStatement` takes a SCALE-encoded signed statement rather
-than a structured one, and `injectChatAction` takes the core's
-`HostChatActionSubscribeItem` rather than `{roomId, peer, payload}`, so those
-call sites change shape even though they keep working.
+in this grep. `injectStatement` takes `{topics, data}` the way the old package
+spells it, or the SCALE wire bytes, and answers the `StatementEntry` it
+retained; `getSubmittedStatements` and `getStatements` answer entries too, so a
+suite reading `0x` hex off them reads `entry.data` instead.
+`injectChatAction` takes the core's `HostChatActionSubscribeItem` rather than
+`{roomId, peer, payload}`, so that call site changes shape even though it keeps
+working.
 
 ## 1. Swap the import
 
@@ -195,8 +198,10 @@ implementation. Read through the control surface instead:
 +const raw = await testHost.findProductStorage("mykey");
 ```
 
-`findProductStorage` matches on key suffix, so the caller does not need to know
-the namespacing. It returns `Uint8Array | undefined`.
+`findProductStorage` reads the product's own key out of the namespaced one, so
+the caller does not need to know the namespacing and a prefixed store stays
+distinct from an unprefixed one. It returns `Uint8Array | undefined`;
+`getProductStorageValue` returns the same value decoded as UTF-8.
 
 **A pinned product account.** `productAccounts: { "demo.dot/0": "bob" }` is
 rejected at construction, and cannot be supported: TrUAPI *derives* a product
