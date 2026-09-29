@@ -56,6 +56,7 @@ extension CompactedExpansionMessageMapper: CoreDataMapperProtocol {
                 try expandedMessageMapper.populate(
                     entity: expandedEntity,
                     from: localMessage,
+                    inheritingOrder: entity.order,
                     using: context
                 )
             }

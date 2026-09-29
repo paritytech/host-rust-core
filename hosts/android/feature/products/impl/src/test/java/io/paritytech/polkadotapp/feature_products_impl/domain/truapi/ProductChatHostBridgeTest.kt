@@ -15,8 +15,8 @@ import org.junit.Test
 import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatReaction
 import uniffi.truapi.ChatRoomParticipation
-import uniffi.truapi_server.HostRejection
-import uniffi.truapi_server.NativeChatRoomRegistrationStatus
+import uniffi.truapi.HostRejection
+import uniffi.truapi.ChatRoomRegistrationStatus
 
 private const val MESSAGING_NOT_SUPPORTED_CODE = "messaging_not_supported"
 private const val ROOM = "jollity"
@@ -115,8 +115,8 @@ class ProductChatHostBridgeTest {
             FakeChatMessaging(onCreateRoom = { Result.success(CreateProductRoomResult(status)) }),
         ).createRoom(ROOM, "Jollity", "icon")
 
-        assertEquals(NativeChatRoomRegistrationStatus.NEW, statusFor(CreateRoomStatus.New))
-        assertEquals(NativeChatRoomRegistrationStatus.EXISTS, statusFor(CreateRoomStatus.Exists))
+        assertEquals(ChatRoomRegistrationStatus.NEW, statusFor(CreateRoomStatus.New))
+        assertEquals(ChatRoomRegistrationStatus.EXISTS, statusFor(CreateRoomStatus.Exists))
     }
 
     private fun bridge(api: FakeChatMessaging) = ProductChatHostBridge(productId, api)

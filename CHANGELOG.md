@@ -5,6 +5,33 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.22.0] - 2026-09-28
+
+### Added
+
+- hold light-client requests until the chain syncs, expose its lifecycle (#1030)
+- draw the contact picker (#939)
+- draw the contact picker (#907)
+- pick a contact, contact them by an opaque handle (#17)
+- stop prompting first-party products for remote access (#971)
+
+### Changed
+
+- split native.rs into focused native/ submodules (#1027)
+- build the native bridge and debug sink without feature flags (#1024)
+- Adopt general AGENTS.md guidelines and refactor the Rust workspace to match (#1000)
+
+### Fixed
+
+- follow previewnet through its latest reset (#995)
+- prompt blessed products only for device access (#999)
+- rebind the port when the listener fails instead of spinning (#983)
+- reload a page whose MessagePorts died with WebKit's networking process (#976)
+- sign with a product account its owner granted context (#873)
+- recover products after the app returns from the background (#974)
+- protect permission checks without breaking libraries (#916)
+- give the Android preview the real backend identifiers (#975)
+
 ## [0.21.0] - 2026-09-24
 
 ### Added
@@ -18,6 +45,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.21.0, @parity/truapi-host 0.21.0, @parity/truapi-provider 0.2.2, @parity/ios-host 0.21.0, @parity/android-host 0.21.0 (#973)
 - build smoldot's secp256k1 tables on first use in the browser (#928)
 
 ### Fixed

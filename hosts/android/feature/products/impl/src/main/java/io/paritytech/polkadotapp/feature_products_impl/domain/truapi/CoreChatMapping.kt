@@ -3,7 +3,7 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatRoom
 import uniffi.truapi.ChatRoom
 import uniffi.truapi.ChatRoomParticipation
-import uniffi.truapi_server.HostRejection
+import uniffi.truapi.HostRejection
 
 internal fun ProductChatRoom.toCoreChatRoom(): ChatRoom = ChatRoom(
     roomId = roomId,

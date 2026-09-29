@@ -1,7 +1,7 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker
 
 import dagger.Lazy
-import io.parity.truapi.ProductExecutionKind
+import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIProductExecution
 import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.childScope
@@ -132,8 +132,9 @@ class TrUAPIWorkerSupervisor @Inject constructor(
         // The bootstrap publishes the loopback port and token, so it goes to the worker's own origin only.
         val installBootstrap = runCatching {
             webViewRuntime.initialize()
-            bootstrapInstaller.installerFor(provider.getWebView(), setOf(workerScript.baseUrl))
+            bootstrapInstaller.installerFor(setOf(workerScript.baseUrl))
         }.getOrElse { return Result.failure(it) }
+        provider.addOnWebViewDestroyedListener { rebootAfterRendererLoss(productId, worker) }
 
         return hostBridgeFactory.create(worker.scope)
             .attach(
@@ -142,9 +143,8 @@ class TrUAPIWorkerSupervisor @Inject constructor(
                 chainDirectory.resolve(),
                 ignoredNavigation(),
                 ProductExecutionKind.WORKER,
-                installBootstrap,
                 chat = ProductChatHostBridge(productId, refCounter.get().chatMessaging(productId)),
-            )
+            ) { bootstrap -> provider.addWebViewSetup(installBootstrap(bootstrap)) }
             .flatMap { execution ->
                 runCatching {
                     provider.useTrUAPIPermissions(execution)
@@ -158,6 +158,17 @@ class TrUAPIWorkerSupervisor @Inject constructor(
                     .flatMap { webViewRuntime.loadEntryModule(workerScript.entrypoint) }
                     .map { execution }
             }
+    }
+
+    // The renderer takes the running script with it, and only a fresh boot runs the script again.
+    private fun rebootAfterRendererLoss(productId: ProductId, worker: RunningWorker) {
+        scope.launch {
+            transitions.withLock {
+                if (workers[productId] !== worker || currentExecution(productId) == null) return@withLock
+                stop(productId)
+                start(productId)
+            }
+        }
     }
 
     private fun stop(productId: ProductId) {

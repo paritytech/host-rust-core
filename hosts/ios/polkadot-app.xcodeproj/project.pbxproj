@@ -45,7 +45,6 @@
 		CC0CC0502FBA000100CCAA05 /* EventCenter in Frameworks */ = {isa = PBXBuildFile; productRef = CC0CC0602FBA000100CCAA06 /* EventCenter */; };
 		CC0CC0702FBA000100CCAA07 /* EventCenter in Frameworks */ = {isa = PBXBuildFile; productRef = CC0CC0802FBA000100CCAA08 /* EventCenter */; };
 		D0D0D0022FDA0000000D0002 /* DurableTransactions in Frameworks */ = {isa = PBXBuildFile; productRef = D0D0D0012FDA0000000D0001 /* DurableTransactions */; };
-		E9C7172E2ECDD6730014841F /* JailbreakDetection in Frameworks */ = {isa = PBXBuildFile; productRef = E9C7172D2ECDD6730014841F /* JailbreakDetection */; };
 		EA11ACCE000000000000B001 /* ExternalAccessibility in Frameworks */ = {isa = PBXBuildFile; productRef = EA11ACCE000000000000B002 /* ExternalAccessibility */; };
 /* End PBXBuildFile section */
 
@@ -89,11 +88,6 @@
 
 /* Begin PBXFileReference section */
 		0C6EC9592EC629FB00C9B292 /* NotificationServiceExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationServiceExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		0C88BDA32FEED6A800895B94 /* MetadataShortenerApi.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = MetadataShortenerApi.xcodeproj; sourceTree = "<group>"; };
-		0C88CD992FEED62E00895B94 /* MetadataShortenerApi.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = MetadataShortenerApi.xcodeproj; sourceTree = "<group>"; };
-		0CA025802F74DBAF0000CDC9 /* ProtocolBuffers_iOS.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = ProtocolBuffers_iOS.xcodeproj; sourceTree = "<group>"; };
-		0CA025812F74DBAF0000CDC9 /* ProtocolBuffers_OSX.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = ProtocolBuffers_OSX.xcodeproj; sourceTree = "<group>"; };
-		0CA025822F74DBAF0000CDC9 /* ProtocolBuffers_tvOS.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; path = ProtocolBuffers_tvOS.xcodeproj; sourceTree = "<group>"; };
 		65E2C5D62E971DC0004FBA34 /* polkadot-appIntegrationTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "polkadot-appIntegrationTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A5EDAAD52E93ECAF005DDA62 /* polkadot-app.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "polkadot-app.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A5EDAAE32E93ECB0005DDA62 /* polkadot-appTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "polkadot-appTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -188,6 +182,7 @@
 				"Modules/Chat/Model/CoreData/ChatMessageEntityMapper+Grouping.swift",
 				"Modules/Chat/Model/CoreData/ChatMessageEntityMapper+Invariant.swift",
 				"Modules/Chat/Model/CoreData/ChatMessageEntityMapper+TransferState.swift",
+				Modules/Chat/Model/CoreData/ChatMessageOrderAllocator.swift,
 				Modules/Chat/Model/CoreData/ChatMessageStatusUpdateMapper.swift,
 				Modules/Chat/Model/CoreData/ChatRoomMetadataEntityMapper.swift,
 				Modules/Chat/Model/CoreData/ContactDeviceSettingsMapper.swift,
@@ -244,6 +239,7 @@
 				Chat/Mocks/MockChatParticipant.swift,
 				Chat/Mocks/MockStatement.swift,
 				Chat/Mocks/MockStatementStore.swift,
+				Chat/Mocks/StubChatMessageOrderAllocator.swift,
 				Coinage/CoinageCoreDataLedger.swift,
 				Coinage/TestInstallation.swift,
 				Helpers/Mocks/MockInstallationKeyIdStore.swift,
@@ -340,7 +336,6 @@
 				0C6058402FB598D70008050F /* AssetsManagement in Frameworks */,
 				0C148EF42EAA61E8002497EC /* XcmDefinition in Frameworks */,
 				0C148EF02EAA61DC002497EC /* HydrationSdk in Frameworks */,
-				E9C7172E2ECDD6730014841F /* JailbreakDetection in Frameworks */,
 				0C0DFC2F2F90983800D9D574 /* Individuality in Frameworks */,
 				0CA3EA882EAA711100C43F10 /* AssetHubSdk in Frameworks */,
 				A5B437012E96B82E00CFF21D /* MessageExchangeKit in Frameworks */,
@@ -379,41 +374,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		0C88C2662FEED6A800895B94 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		0C88CD9C2FEED62E00895B94 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		0CA02DE42F74DBAF0000CDC9 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		0CA02DE62F74DBAF0000CDC9 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		0CA02DE82F74DBAF0000CDC9 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
 		0CEC59AA2F08EBFC0009CC37 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
@@ -535,7 +495,6 @@
 				0C148EF32EAA61E8002497EC /* XcmDefinition */,
 				0CA3EA872EAA711100C43F10 /* AssetHubSdk */,
 				A526CB2F2EBBA06D00D2987B /* PolkadotUI */,
-				E9C7172D2ECDD6730014841F /* JailbreakDetection */,
 				0CEC59AB2F08EBFC0009CC37 /* FoundationExt */,
 				EA11ACCE000000000000B002 /* ExternalAccessibility */,
 				A57CAF652F45ECB70066D722 /* StructuredConcurrency */,
@@ -622,28 +581,6 @@
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A5EDAAD62E93ECAF005DDA62 /* Products */;
 			projectDirPath = "";
-			projectReferences = (
-				{
-					ProductGroup = 0C88CD9C2FEED62E00895B94 /* Products */;
-					ProjectRef = 0C88CD992FEED62E00895B94 /* MetadataShortenerApi.xcodeproj */;
-				},
-				{
-					ProductGroup = 0C88C2662FEED6A800895B94 /* Products */;
-					ProjectRef = 0C88BDA32FEED6A800895B94 /* MetadataShortenerApi.xcodeproj */;
-				},
-				{
-					ProductGroup = 0CA02DE42F74DBAF0000CDC9 /* Products */;
-					ProjectRef = 0CA025802F74DBAF0000CDC9 /* ProtocolBuffers_iOS.xcodeproj */;
-				},
-				{
-					ProductGroup = 0CA02DE62F74DBAF0000CDC9 /* Products */;
-					ProjectRef = 0CA025812F74DBAF0000CDC9 /* ProtocolBuffers_OSX.xcodeproj */;
-				},
-				{
-					ProductGroup = 0CA02DE82F74DBAF0000CDC9 /* Products */;
-					ProjectRef = 0CA025822F74DBAF0000CDC9 /* ProtocolBuffers_tvOS.xcodeproj */;
-				},
-			);
 			projectRoot = "";
 			targets = (
 				A5EDAAD42E93ECAF005DDA62 /* polkadot-app */,
@@ -1976,10 +1913,6 @@
 		D0D0D0012FDA0000000D0001 /* DurableTransactions */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = DurableTransactions;
-		};
-		E9C7172D2ECDD6730014841F /* JailbreakDetection */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = JailbreakDetection;
 		};
 		EA11ACCE000000000000B002 /* ExternalAccessibility */ = {
 			isa = XCSwiftPackageProductDependency;

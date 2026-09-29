@@ -49,7 +49,7 @@ import uniffi.truapi.HostRendererActionSubscribeItem
 import uniffi.truapi.ProductRendererRenderRequest
 import uniffi.truapi.RenderContext
 import uniffi.truapi.RendererNode
-import uniffi.truapi_server.ProductRuntimeException
+import uniffi.truapi.ProductRuntimeException
 import kotlin.time.Duration.Companion.milliseconds
 
 class TrUAPIChatWorkerTest {

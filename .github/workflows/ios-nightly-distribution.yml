@@ -1,4 +1,8 @@
 name: Nightly Distribution
+# The run is always dispatched on main, whatever it builds, so the ref it built
+# is recorded here. The nightly's changed check matches on it to tell a build of
+# main apart from one of a release branch.
+run-name: Nightly Distribution (${{ inputs.release_branch }})
 
 on:
   workflow_dispatch:

@@ -6,67 +6,7 @@
 <defaults>
     <entry>
         <key>chains_v2</key>
-        <value>[
-  {
-    "chainId": "preview-people",
-    "name": "Individuality",
-    "addressPrefix": 42,
-    "genesisHash": "4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48",
-    "nodes": [
-      { "url": "wss://paseo-people-next-system-rpc.polkadot.io", "name": "Parity" }
-    ],
-    "assets": [
-      { "assetId": 0, "symbol": "PAS", "precision": 10 },
-      {
-        "assetId": 1, "symbol": "pUSD", "precision": 10,
-        "type": "statemine", "typeExtras": { "assetId": "1" }
-      }
-    ],
-    "options": ["testnet", "fullSyncByDefault"]
-  },
-  {
-    "chainId": "preview-bulletin",
-    "name": "Bulletin",
-    "addressPrefix": 42,
-    "genesisHash": "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
-    "nodes": [
-      { "url": "wss://paseo-bulletin-next-rpc.polkadot.io", "name": "Parity" }
-    ],
-    "assets": [
-      { "assetId": 0, "symbol": "PAS", "precision": 10 }
-    ],
-    "options": ["testnet", "fullSyncByDefault"]
-  },
-  {
-    "chainId": "preview-ah",
-    "name": "Asset Hub",
-    "addressPrefix": 42,
-    "genesisHash": "4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
-    "nodes": [
-      { "url": "wss://paseo-asset-hub-next-rpc.polkadot.io", "name": "Parity" }
-    ],
-    "assets": [
-      { "assetId": 0, "symbol": "PAS", "precision": 10 },
-      {
-        "assetId": 1, "symbol": "USDT", "precision": 6,
-        "type": "statemine", "typeExtras": { "assetId": "1" }
-      },
-      {
-        "assetId": 2, "symbol": "USDC", "precision": 6,
-        "type": "statemine", "typeExtras": { "assetId": "2" }
-      },
-      {
-        "assetId": 3, "symbol": "pUSD", "precision": 10,
-        "type": "statemine", "typeExtras": { "assetId": "3" }
-      },
-      {
-        "assetId": 4, "symbol": "PGAS", "precision": 10,
-        "type": "statemine", "typeExtras": { "assetId": "4" }
-      }
-    ],
-    "options": ["testnet", "fullSyncByDefault"]
-  }
-]</value>
+        <value>[{&quot;chainId&quot;:&quot;preview-people&quot;,&quot;name&quot;:&quot;Individuality&quot;,&quot;addressPrefix&quot;:42,&quot;genesisHash&quot;:&quot;4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48&quot;,&quot;nodes&quot;:[{&quot;url&quot;:&quot;wss://paseo-people-next-system-rpc.polkadot.io&quot;,&quot;name&quot;:&quot;Parity&quot;}],&quot;assets&quot;:[{&quot;assetId&quot;:0,&quot;symbol&quot;:&quot;PAS&quot;,&quot;precision&quot;:10},{&quot;assetId&quot;:1,&quot;symbol&quot;:&quot;pUSD&quot;,&quot;precision&quot;:10,&quot;type&quot;:&quot;statemine&quot;,&quot;typeExtras&quot;:{&quot;assetId&quot;:&quot;1&quot;}},{&quot;assetId&quot;:65,&quot;symbol&quot;:&quot;HOLLAR&quot;,&quot;precision&quot;:10,&quot;type&quot;:&quot;statemine&quot;,&quot;typeExtras&quot;:{&quot;assetId&quot;:&quot;65&quot;}}],&quot;options&quot;:[&quot;testnet&quot;,&quot;fullSyncByDefault&quot;]},{&quot;chainId&quot;:&quot;preview-bulletin&quot;,&quot;name&quot;:&quot;Bulletin&quot;,&quot;addressPrefix&quot;:42,&quot;genesisHash&quot;:&quot;8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22&quot;,&quot;nodes&quot;:[{&quot;url&quot;:&quot;wss://paseo-bulletin-next-rpc.polkadot.io&quot;,&quot;name&quot;:&quot;Parity&quot;}],&quot;assets&quot;:[{&quot;assetId&quot;:0,&quot;symbol&quot;:&quot;PAS&quot;,&quot;precision&quot;:10}],&quot;options&quot;:[&quot;testnet&quot;,&quot;fullSyncByDefault&quot;]},{&quot;chainId&quot;:&quot;preview-ah&quot;,&quot;name&quot;:&quot;Asset Hub&quot;,&quot;addressPrefix&quot;:42,&quot;genesisHash&quot;:&quot;4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a&quot;,&quot;nodes&quot;:[{&quot;url&quot;:&quot;wss://paseo-asset-hub-next-rpc.polkadot.io&quot;,&quot;name&quot;:&quot;Parity&quot;}],&quot;assets&quot;:[{&quot;assetId&quot;:0,&quot;symbol&quot;:&quot;PAS&quot;,&quot;precision&quot;:10},{&quot;assetId&quot;:1,&quot;symbol&quot;:&quot;USDT&quot;,&quot;precision&quot;:6,&quot;type&quot;:&quot;statemine&quot;,&quot;typeExtras&quot;:{&quot;assetId&quot;:&quot;1&quot;}},{&quot;assetId&quot;:2,&quot;symbol&quot;:&quot;USDC&quot;,&quot;precision&quot;:6,&quot;type&quot;:&quot;statemine&quot;,&quot;typeExtras&quot;:{&quot;assetId&quot;:&quot;2&quot;}},{&quot;assetId&quot;:3,&quot;symbol&quot;:&quot;pUSD&quot;,&quot;precision&quot;:10,&quot;type&quot;:&quot;statemine&quot;,&quot;typeExtras&quot;:{&quot;assetId&quot;:&quot;3&quot;}},{&quot;assetId&quot;:4,&quot;symbol&quot;:&quot;PGAS&quot;,&quot;precision&quot;:10,&quot;type&quot;:&quot;statemine&quot;,&quot;typeExtras&quot;:{&quot;assetId&quot;:&quot;4&quot;}}],&quot;options&quot;:[&quot;testnet&quot;,&quot;fullSyncByDefault&quot;]}]</value>
     </entry>
     <entry>
         <key>dot_ns_config</key>

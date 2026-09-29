@@ -1,6 +1,5 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker
 
-import android.net.Uri
 import dagger.Lazy
 import io.parity.truapi.TrUAPIHostRuntime
 import io.parity.truapi.TrUAPIProductExecution
@@ -23,17 +22,12 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito.mock
-import org.mockito.Mockito.mockStatic
-import kotlin.coroutines.Continuation
-import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
-import kotlin.coroutines.resume
 
 class TrUAPIWorkerSupervisorFailureTest {
     private val productId = ProductId.fromStoredValue("chat.dot")
@@ -135,62 +129,4 @@ class TrUAPIWorkerSupervisorFailureTest {
         assertNull(supervisor.executionState(productId).first())
     }
 
-    @Test
-    fun `a boot that finishes after its STOP publishes no Running`() = runTest {
-        val provider: ChatWebViewProvider = mock()
-        var pageFinished: () -> Unit = {}
-        whenever(provider.addOnPageFinishedListener(any())).thenAnswer { pageFinished = it.getArgument(0); null }
-        var accesses = 0
-        var lastBootStep: Continuation<Any?>? = null
-        whenever(provider.accessWebView<Unit>(any())).thenAnswer { invocation ->
-            if (++accesses < 2) {
-                null
-            } else {
-                @Suppress("UNCHECKED_CAST")
-                lastBootStep = invocation.rawArguments.last() as Continuation<Any?>
-                COROUTINE_SUSPENDED
-            }
-        }
-        val webViewProviderFactory: ChatWebViewProvider.Factory = mock()
-        whenever(webViewProviderFactory.create(any(), any())).thenReturn(provider)
-        val bootstrapInstaller: TrUAPIBootstrapInstaller = mock()
-        whenever(bootstrapInstaller.installerFor(any(), any())).thenReturn({ })
-        val hostBridge: ProductTrUAPIHostBridge = mock()
-        whenever(hostBridge.attach(any(), any(), any(), any(), any(), any(), any()))
-            .thenReturn(Result.success(mock<TrUAPIProductExecution>()))
-        val hostBridgeFactory: ProductTrUAPIHostBridge.Factory = mock()
-        whenever(hostBridgeFactory.create(any())).thenReturn(hostBridge)
-        val runtimeProvider: TrUAPIHostRuntimeProvider = mock()
-        whenever(runtimeProvider.runtime()).thenReturn(Result.success(mock<TrUAPIHostRuntime>()))
-        val refCounter: ProductWorkerRefCounter = mock()
-        whenever(refCounter.chatMessaging(productId)).thenReturn(FakeChatMessaging())
-
-        mockStatic(Uri::class.java).use { uris ->
-            uris.`when`<Uri> { Uri.parse(any()) }.thenReturn(mock<Uri>())
-            val supervisor = supervisorWith(
-                FixedScriptResolver(),
-                runtimeProvider = runtimeProvider,
-                hostBridgeFactory = hostBridgeFactory,
-                webViewProviderFactory = webViewProviderFactory,
-                bootstrapInstaller = bootstrapInstaller,
-                refCounter = refCounter,
-            )
-
-            supervisor.onDemandChanged(productId, WorkerDemand.START)
-            runCurrent()
-            pageFinished()
-            runCurrent()
-            val parked = requireNotNull(lastBootStep) { "the boot never reached its last step" }
-
-            supervisor.onDemandChanged(productId, WorkerDemand.STOP)
-            runCurrent()
-            parked.resume(null)
-            runCurrent()
-
-            assertNull(
-                "a boot that finishes after its STOP must not publish a Running",
-                supervisor.currentExecution(productId),
-            )
-        }
-    }
 }

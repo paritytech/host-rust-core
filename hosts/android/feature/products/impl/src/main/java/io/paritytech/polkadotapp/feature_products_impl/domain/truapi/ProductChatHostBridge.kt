@@ -12,16 +12,16 @@ import kotlinx.coroutines.flow.firstOrNull
 import timber.log.Timber
 import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatRoom
-import uniffi.truapi_server.HostRejection
-import uniffi.truapi_server.NativeChatBotRegistrationStatus
-import uniffi.truapi_server.NativeChatRoomRegistrationStatus
+import uniffi.truapi.HostRejection
+import uniffi.truapi.ChatBotRegistrationStatus
+import uniffi.truapi.ChatRoomRegistrationStatus
 
 class ProductChatHostBridge(
     private val productId: ProductId,
     private val chatMessaging: ProductChatMessaging,
 ) : ChatHostBridge {
 
-    override suspend fun createRoom(roomId: String, name: String, icon: String): NativeChatRoomRegistrationStatus {
+    override suspend fun createRoom(roomId: String, name: String, icon: String): ChatRoomRegistrationStatus {
         if (roomId.isEmpty()) throw HostRejection.Rejected("a chat room needs an id")
         return chatMessaging.createRoom(CreateProductRoomRequest(ProductChatIdParameter(roomId), name, icon))
             .orReject()
@@ -29,7 +29,7 @@ class ProductChatHostBridge(
             .toCoreStatus()
     }
 
-    override suspend fun registerBot(botId: String, name: String, icon: String): NativeChatBotRegistrationStatus =
+    override suspend fun registerBot(botId: String, name: String, icon: String): ChatBotRegistrationStatus =
         throw HostRejection.Rejected("this host has no bot registry")
 
     override suspend fun postMessage(roomId: String, content: ChatMessageContent): String {
@@ -61,8 +61,8 @@ class ProductChatHostBridge(
         -> null
     }
 
-    private fun CreateRoomStatus.toCoreStatus(): NativeChatRoomRegistrationStatus = when (this) {
-        CreateRoomStatus.New -> NativeChatRoomRegistrationStatus.NEW
-        CreateRoomStatus.Exists -> NativeChatRoomRegistrationStatus.EXISTS
+    private fun CreateRoomStatus.toCoreStatus(): ChatRoomRegistrationStatus = when (this) {
+        CreateRoomStatus.New -> ChatRoomRegistrationStatus.NEW
+        CreateRoomStatus.Exists -> ChatRoomRegistrationStatus.EXISTS
     }
 }
