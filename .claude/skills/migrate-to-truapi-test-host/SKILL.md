@@ -287,6 +287,22 @@ deterministic, so it holds for every later run. Re-fund only when the suite
 changes its `accounts` or its product id: both feed the derivation, so either
 change is a different account.
 
+That funded address is now the suite's to keep alive, and this is the part worth
+writing down. `@parity/host-api-test-sdk` pinned the product to a dev account
+such as Bob, and a testnet funds Bob as a matter of course, so no suite ever had
+to think about a balance. A derived product account is specific to this suite
+and nobody tops it up. It drains as the suite spends, and a chain reset empties
+it outright -- and either way the next run fails as `Invalid.Payment` before
+inclusion, the same opaque symptom as never having funded it.
+
+Two things make that cheap to live with. Record the derived address somewhere a
+person will find it, next to the suite rather than in a run log, so topping it
+up does not start with re-deriving it. And check the balance in the run's setup
+rather than letting the first extrinsic discover it: a setup that fails with the
+address and the balance it found turns a protocol-looking failure into an
+errand. A setup that funds the account itself removes the chore entirely, which
+is worth doing once a suite runs anywhere unattended.
+
 The address is encoded at the prefix the core mandates, which is **not**
 necessarily the one the product displays -- a product rendering at another
 prefix shows a different string for the same account. Pass this to a faucet or a
