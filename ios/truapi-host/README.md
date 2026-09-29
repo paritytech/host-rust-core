@@ -50,6 +50,11 @@ targets:
 make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh
 ```
 
+Synchronization also removes generated Swift sources and FFI headers from the
+former `truapi_server` and `truapi_platform` namespaces. Only the unified `truapi`
+bindings belong in the package and its release tag. The binary asset remains
+`truapi_server.xcframework`, and its Swift FFI module is `truapiFFI`.
+
 CI's `iOS bindings (uniffi)` job runs the same two commands. With nothing
 committed to diff against, what it gates is that bindgen still produces a
 binding for every UniFFI-exposed type. It runs on Linux, so it never compiles
