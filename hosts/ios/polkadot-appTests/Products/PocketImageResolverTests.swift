@@ -76,6 +76,40 @@ struct PocketImageResolverTests {
         #expect(url.absoluteString == "https://gateway.invalid/ipfs/bafyimage")
     }
 
+    /// A cold start with no network reaches no manifest, so the name the
+    /// product publishes its worker archive under cannot be read. The subname
+    /// dotNS fixes by convention needs no read at all, so a card whose archive
+    /// is already unpacked draws its images out of it rather than losing them
+    /// to a manifest read that cannot land.
+    @Test
+    func drawsFromTheArchiveOnDiskWhenTheManifestCannotBeRead() async throws {
+        let root = try makeArchive(files: ["art/badge.png": "png"])
+        let onDisk: @Sendable (ProductId) -> URL? = { $0 == "worker.game.paseo" ? root : nil }
+        let name = PocketWorkerArchiveName(productId: "game.paseo", published: { nil }, onDisk: onDisk)
+        let resolver = PocketImageResolver(
+            contentId: { await name.resolve() },
+            archive: ProductWorkerArchive(dotNsResolver: FailingResolver(), cachedRoot: onDisk),
+            ipfsUrl: { _ in nil }
+        )
+
+        let url = try #require(await resolver.resolve(.archive(path: "art/badge.png")))
+
+        #expect(try Data(contentsOf: url) == Data("png".utf8))
+    }
+
+    /// Nothing unpacked under the conventional subname is a worker this host
+    /// has never fetched, and only the manifest can say where that one lives.
+    @Test
+    func asksTheManifestForAWorkerArchiveThatIsNotOnDisk() async {
+        let name = PocketWorkerArchiveName(
+            productId: "game.paseo",
+            published: { "worker.elsewhere.paseo" },
+            onDisk: { _ in nil }
+        )
+
+        #expect(await name.resolve() == "worker.elsewhere.paseo")
+    }
+
     /// An archive that cannot be fetched leaves the rest of the face drawable.
     @Test
     func answersNoUrlWhenTheArchiveCannotBeRead() async {

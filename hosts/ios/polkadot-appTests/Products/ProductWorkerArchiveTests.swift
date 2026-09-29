@@ -19,6 +19,49 @@ struct ProductWorkerArchiveTests {
         #expect(String(decoding: data, as: UTF8.self) == "{}")
     }
 
+    /// The approval sheet is the one read that has to show what the product
+    /// publishes now. An archive kept from an earlier version of it would have
+    /// the user approve a face that product no longer ships.
+    @Test
+    func readsTheCurrentArchiveForAFaceAwaitingApproval() async throws {
+        let published = try makeArchive(files: ["faces/loyalty.json": #"{"published":true}"#])
+        let kept = try makeArchive(files: ["faces/loyalty.json": #"{"kept":true}"#])
+        let archive = ProductWorkerArchive(
+            dotNsResolver: StubResolver(root: published),
+            content: .current,
+            cachedRoot: { _ in kept }
+        )
+
+        let data = try await archive.file(
+            contentId: "worker.game.paseo",
+            path: "faces/loyalty.json",
+            maxBytes: PocketPreviewLoader.maxBytes
+        )
+
+        #expect(String(decoding: data, as: UTF8.self) == #"{"published":true}"#)
+    }
+
+    /// Every other read answers from what is already unpacked: an image node in
+    /// a card being drawn must not pay a chain read for each appearance, and
+    /// offline it has none to pay with.
+    @Test
+    func readsWhatIsAlreadyOnDiskForEveryOtherFace() async throws {
+        let published = try makeArchive(files: ["faces/loyalty.json": #"{"published":true}"#])
+        let kept = try makeArchive(files: ["faces/loyalty.json": #"{"kept":true}"#])
+        let archive = ProductWorkerArchive(
+            dotNsResolver: StubResolver(root: published),
+            cachedRoot: { _ in kept }
+        )
+
+        let data = try await archive.file(
+            contentId: "worker.game.paseo",
+            path: "faces/loyalty.json",
+            maxBytes: PocketPreviewLoader.maxBytes
+        )
+
+        #expect(String(decoding: data, as: UTF8.self) == #"{"kept":true}"#)
+    }
+
     /// The preview path comes from a manifest anyone can publish, so it must not
     /// be able to name a file outside the archive it belongs to.
     @Test
