@@ -88,8 +88,10 @@ pub use signing_host::{
     respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{LocalIdentity, LocalIdentityContext, WalletAllowanceSnapshot};
+#[cfg(any(test, not(target_arch = "wasm32")))]
+pub use signing_host::StatementRenewalTarget;
 #[cfg(not(target_arch = "wasm32"))]
-pub use signing_host::{StatementRenewalTarget, TrackedStatementRenewalTarget};
+pub use signing_host::TrackedStatementRenewalTarget;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use tracing::Instrument;
 use tracing::{instrument, warn};
