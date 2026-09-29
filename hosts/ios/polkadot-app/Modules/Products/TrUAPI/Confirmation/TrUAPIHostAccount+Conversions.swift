@@ -6,6 +6,8 @@ import TrUAPIHost
 enum TrUAPIReviewMappingError: Error, Equatable {
     case invalidDerivationIndexLength(Int)
     case notASigningReview
+    /// A resource this app has no allowance prompt for yet.
+    case unsupportedResource
 }
 
 // MARK: - TrUAPIHost account conversions

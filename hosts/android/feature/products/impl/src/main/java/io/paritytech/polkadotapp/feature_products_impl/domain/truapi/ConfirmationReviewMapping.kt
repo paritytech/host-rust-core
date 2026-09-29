@@ -97,6 +97,7 @@ private fun AllocatableResource.describe(): String = when (this) {
     is AllocatableResource.BulletinAllowance -> "bulletin allowance"
     is AllocatableResource.SmartContractAllowance -> "smart-contract allowance"
     is AllocatableResource.AutoSigning -> "auto-signing"
+    is AllocatableResource.AutomaticUpload -> "automatic preimage uploads"
 }
 
 private fun NativeProductAccountId.toDomain(): ProductAccountId = ProductAccountId(
