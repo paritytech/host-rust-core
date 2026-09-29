@@ -177,20 +177,16 @@ runs:
 
             // One line per pull request, the same shape the release-branch diff
             // produces. A title carrying `!` is a breaking change by this
-            // repository's convention (.claude/skills/semver-pr-title), and those
-            // are listed first under their own heading so a tester sees them
-            // before anything else.
-            const line = (pr) => `- [#${pr.number}](${pr.html_url}): ${pr.title}`.trimEnd();
+            // repository's convention (.claude/skills/semver-pr-title). Those
+            // come first and say so inside their own line: the announcement
+            // renders every line as a list item, so a heading line would show
+            // up as an item of its own.
             const isBreaking = (pr) => /^\w+(\([^)]*\))?!:/.test(pr.title || '');
+            const line = (pr) =>
+              `- [#${pr.number}](${pr.html_url}): ${isBreaking(pr) ? 'Breaking: ' : ''}${pr.title}`.trimEnd();
             const breaking = merged.filter(isBreaking);
             const rest = merged.filter((pr) => !isBreaking(pr));
-            const notes = breaking.length === 0
-              ? rest.map(line).join('\n')
-              : [
-                  '**Breaking changes**',
-                  ...breaking.map(line),
-                  ...(rest.length ? ['', '**Everything else**', ...rest.map(line)] : []),
-                ].join('\n');
+            const notes = [...breaking, ...rest].map(line).join('\n');
             core.info(notes);
             core.setOutput('release_notes', notes);
             core.setOutput('pr_count', String(merged.length));

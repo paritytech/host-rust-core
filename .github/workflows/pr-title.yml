@@ -8,6 +8,9 @@ name: pr-title
 
 on:
   pull_request:
+    # Only main is gated. Pull requests into release branches carry generated
+    # titles that never reach main as they are.
+    branches: [main]
     # `edited` so that fixing a title re-runs the check without a new commit.
     types: [opened, edited, synchronize, reopened]
   # The check is required, and a required check has to report in the merge
@@ -26,7 +29,10 @@ jobs:
     name: PR title
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # A job-level block replaces the workflow's, so contents is restated for the
+    # changeset step, which reads files at the head commit.
     permissions:
+      contents: read
       pull-requests: read
     steps:
       # The title was checked on the pull request, and a queued entry cannot
@@ -35,8 +41,26 @@ jobs:
         if: github.event_name == 'merge_group'
         run: echo "The title was validated on the pull request."
 
+      - name: A revert of a conventional title
+        if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.title, 'Revert "')
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # GitHub's Revert button titles a pull request `Revert "<original>"`,
+          # which no type matches. It passes when the original was conventional.
+          inner="${TITLE#Revert \"}"
+          inner="${inner%\"}"
+          types='feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert|release'
+          if grep -qE "^(${types})(\([^)]*\))?!?: .+" <<<"$inner"; then
+            echo "Reverts a conventional title: ${inner}"
+          else
+            echo "::error::A revert title passes only when what it reverts was conventional, got: ${TITLE}"
+            exit 1
+          fi
+
       - name: Conventional-commit title
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'Revert "')
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -84,8 +108,10 @@ jobs:
               const { data } = await github.rest.repos.getContent({
                 owner, repo, path: file.filename, ref: process.env.HEAD_SHA,
               });
-              const text = Buffer.from(data.content, 'base64').toString('utf8');
-              const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+              const text = Buffer.from(data.content, 'base64').toString('utf8').replace(/^\uFEFF/, '');
+              // Closing fence on its own line, so an empty frontmatter (what
+              // `changeset --empty` writes) cannot run on into the body.
+              const front = /^---\r?\n([\s\S]*?)^---\s*$/m.exec(text);
               if (front && /:\s*["']?major["']?\s*$/m.test(front[1])) major.push(file.filename);
             }
 

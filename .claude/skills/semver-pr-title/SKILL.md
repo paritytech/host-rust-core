@@ -8,8 +8,8 @@ description: Title a pull request in this repository as a conventional commit, a
 Pull requests are squashed, so the title becomes the commit on `main`. Two
 things read it: `.github/workflows/pr-title.yml`, which blocks a merge whose
 title does not parse, and the nightly announcements, which list every title
-carrying `!` under **Breaking changes** before everything else. A breaking
-change titled without `!` reaches testers as an ordinary line.
+carrying `!` first and mark it `Breaking:`. A breaking change titled without
+`!` reaches testers as an ordinary line.
 
 ## The format
 
@@ -25,11 +25,22 @@ change titled without `!` reaches testers as an ordinary line.
 - **subject** starts lowercase, describes what the change does, and has no
   trailing period.
 
+Some pull requests have a fixed shape:
+
+- **An RFC** is `docs(rfc): <title>`. The `RFC: <Title>` form is for the
+  tracking issue, which this check does not see.
+- **A revert** made with GitHub's Revert button keeps its generated
+  `Revert "<original title>"`, which passes as long as the original did.
+- **Titles a workflow writes**, such as backport work orders, releases and
+  diagnosis reports, are already conventional. Keep them that way when
+  editing those workflows.
+
 ```
 feat(truapi-server): withdraw a call before it prompts
 fix(ios): conform the chat bridge's inert host provider
 refactor(truapi)!: rename Provider type to WireProvider
 chore(hosts)!: backport 13 commits into hosts/ios
+docs(rfc): scoped grants in trustedProducts
 release: @parity/truapi 0.21.0
 ```
 
@@ -95,5 +106,7 @@ chore(hosts)!: backport 13 commits into hosts/ios
 
 ## Checking a title
 
-The check uses `amannn/action-semantic-pull-request`. It runs on every edit of
-the title, so fixing a failing title needs no new commit.
+The check uses `amannn/action-semantic-pull-request` and only gates pull
+requests into `main`. It runs on every edit of the title, so fixing a failing
+title needs no new commit. A title edited after the pull request has entered
+the merge queue is not checked again, so retitle before queueing.
