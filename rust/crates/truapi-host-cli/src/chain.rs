@@ -6,15 +6,13 @@
 //! statement-store RPC.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc, watch};
-use tokio::time::Instant;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -103,19 +101,19 @@ impl ChainProvider for WsChainProvider {
     }
 }
 
-/// A Ping every this often keeps a quiet socket from looking dead to the far side and, with
-/// [`KEEPALIVE_TIMEOUT`], detects one that is.
+/// How often a quiet connection is pinged, and how long the reader waits for any frame, a
+/// Pong included, before treating the socket as half-open. Closing it ends the response
+/// streams, which is what the runtime reconnects on.
+///
+/// The timeout spans three pings, so one lost Pong does not tear down a healthy connection.
+/// No Ping goes out while a frame is being sent, so one frame must also transfer within it.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-/// No inbound frame at all for this long (a Pong counts) means the socket is half-open: the
-/// far side went away without a close frame, reads would block for ever and writes would sink
-/// into the kernel buffer, so every RPC on it would hang until the caller's own deadline. The
-/// connection is closed here instead, which ends its response streams, which is what the
-/// runtime watches before it reconnects.
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// One WebSocket JSON-RPC connection: outbound requests are queued to a writer
-/// task, inbound frames are broadcast to every `responses()` stream, and a
-/// keepalive task pings the socket and closes it when it falls silent.
+/// One WebSocket JSON-RPC connection: outbound requests and keepalive pings are
+/// sent by a writer task, and inbound frames are broadcast to every
+/// `responses()` stream by a reader task that closes the connection when the
+/// socket falls silent.
 pub struct WsJsonRpcConnection {
     outbound: mpsc::UnboundedSender<Message>,
     inbound: broadcast::Sender<String>,
@@ -123,19 +121,15 @@ pub struct WsJsonRpcConnection {
     /// stream takes it so an immediate RPC response cannot race subscription
     /// setup and disappear while the broadcast channel has no receivers.
     initial_inbound: Mutex<Option<broadcast::Receiver<String>>>,
-    /// True once the socket is gone: set by the reader on a close frame or a
-    /// read error, by the keepalive on silence, or by `close`. Every response
-    /// stream ends on it, and `send` drops requests after it.
-    closed: Arc<watch::Sender<bool>>,
+    /// True once the socket is gone: set by the reader on a close frame, a read
+    /// error or silence, by the writer on a failed send, or by `close`. Every
+    /// response stream ends on it, and `send` drops requests after it.
+    closed: watch::Sender<bool>,
 }
 
-/// Resolves once `closed` is true (or the sender is gone).
+/// Resolves once `closed` is true, or once its sender is gone.
 async fn until_closed(mut closed: watch::Receiver<bool>) {
-    while !*closed.borrow_and_update() {
-        if closed.changed().await.is_err() {
-            return;
-        }
-    }
+    let _ = closed.wait_for(|&is_closed| is_closed).await;
 }
 
 impl WsJsonRpcConnection {
@@ -154,44 +148,54 @@ impl WsJsonRpcConnection {
         let (mut write, mut read) = stream.split();
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
         let (inbound_tx, initial_inbound) = broadcast::channel(INBOUND_CHANNEL_CAPACITY);
-        let closed = Arc::new(watch::channel(false).0);
-        // Milliseconds since `started` of the last inbound frame of any kind.
-        let started = Instant::now();
-        let last_inbound = Arc::new(AtomicU64::new(0));
+        let closed = watch::Sender::new(false);
 
         let writer_closed = closed.clone();
-        let writer_stop = closed.subscribe();
         tokio::spawn(async move {
+            let mut ticker = tokio::time::interval_at(
+                tokio::time::Instant::now() + keepalive_interval,
+                keepalive_interval,
+            );
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
-                tokio::select! {
+                let message = tokio::select! {
                     message = outbound_rx.recv() => match message {
-                        Some(message) => {
-                            if write.send(message).await.is_err() {
-                                break;
-                            }
-                        }
+                        Some(message) => message,
                         None => break,
                     },
-                    () = until_closed(writer_stop.clone()) => break,
+                    _ = ticker.tick() => Message::Ping(Vec::new()),
+                    () = until_closed(writer_closed.subscribe()) => break,
+                };
+                let sent = tokio::select! {
+                    sent = write.send(message) => sent.is_ok(),
+                    () = until_closed(writer_closed.subscribe()) => false,
+                };
+                if !sent {
+                    break;
                 }
             }
-            // A writer that could not send is a dead socket as much as a reader that could not
-            // read; without this the connection stayed open until the reader noticed.
+            // A failed send means the socket is dead, even if the reader has not noticed yet.
             writer_closed.send_replace(true);
-            let _ = write.close().await;
+            let _ = tokio::time::timeout(keepalive_timeout, write.close()).await;
         });
 
         let reader_inbound = inbound_tx.clone();
         let reader_closed = closed.clone();
-        let reader_stop = closed.subscribe();
-        let reader_last_inbound = last_inbound.clone();
+        let reader_url = url.to_string();
         tokio::spawn(async move {
             loop {
+                let next = tokio::time::timeout(keepalive_timeout, read.next());
                 let message = tokio::select! {
-                    message = read.next() => message,
-                    () = until_closed(reader_stop.clone()) => break,
+                    message = next => match message {
+                        Ok(message) => message,
+                        Err(_elapsed) => {
+                            let url = &reader_url;
+                            warn!(%url, "chain socket silent; closing it to reconnect");
+                            break;
+                        }
+                    },
+                    () = until_closed(reader_closed.subscribe()) => break,
                 };
-                reader_last_inbound.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         let _ = reader_inbound.send(text.to_string());
@@ -202,44 +206,10 @@ impl WsJsonRpcConnection {
                         }
                     }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    // Pings are answered by the socket layer while it is read; a Pong is
-                    // the keepalive's answer and counts as inbound like any frame.
                     Some(Ok(_)) => {}
                 }
             }
             reader_closed.send_replace(true);
-        });
-
-        let keepalive_outbound = outbound_tx.clone();
-        let keepalive_closed = closed.clone();
-        let keepalive_stop = closed.subscribe();
-        let keepalive_url = url.to_string();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(keepalive_interval);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            ticker.tick().await; // the first tick completes at once
-            loop {
-                tokio::select! {
-                    _ = ticker.tick() => {}
-                    () = until_closed(keepalive_stop.clone()) => break,
-                }
-                let silent_for = started
-                    .elapsed()
-                    .saturating_sub(Duration::from_millis(last_inbound.load(Ordering::Relaxed)));
-                if silent_for > keepalive_timeout {
-                    warn!(
-                        url = %keepalive_url,
-                        silent_secs = silent_for.as_secs(),
-                        "chain socket answered nothing; closing it so the runtime reconnects"
-                    );
-                    keepalive_closed.send_replace(true);
-                    break;
-                }
-                if keepalive_outbound.send(Message::Ping(Vec::new())).is_err() {
-                    keepalive_closed.send_replace(true);
-                    break;
-                }
-            }
         });
 
         Ok(Self {
@@ -260,7 +230,7 @@ impl WsJsonRpcConnection {
             outbound,
             inbound,
             initial_inbound: Mutex::new(Some(initial_inbound)),
-            closed: Arc::new(watch::channel(false).0),
+            closed: watch::Sender::new(false),
         }
     }
 }
@@ -324,22 +294,60 @@ mod tests {
         assert_eq!(frame, r#"{"jsonrpc":"2.0","id":1,"result":"ready"}"#);
     }
 
-    /// The runtime reconnects only when a connection's response stream has ended; a stream
-    /// that outlived its socket kept every later RPC hanging on a dead connection.
+    /// The runtime reconnects only once a connection's response stream ends, so closing the
+    /// connection must end every stream.
     #[tokio::test]
     async fn response_streams_end_once_the_connection_is_closed() {
-        let (outbound, _outbound_rx) = mpsc::unbounded_channel();
+        let (outbound, mut outbound_rx) = mpsc::unbounded_channel();
         let (inbound, initial_inbound) = broadcast::channel(INBOUND_CHANNEL_CAPACITY);
         let connection = WsJsonRpcConnection::for_test(outbound, inbound, initial_inbound);
-        let mut responses = connection.responses();
+        let mut before = connection.responses();
         connection.close();
-        assert_eq!(responses.next().await, None);
+        let mut after = connection.responses();
+        let ended = |stream| tokio::time::timeout(Duration::from_secs(5), StreamExt::next(stream));
+        assert_eq!(
+            ended(&mut before)
+                .await
+                .expect("a stream from before the close ends"),
+            None
+        );
+        assert_eq!(
+            ended(&mut after)
+                .await
+                .expect("a stream from after the close ends"),
+            None
+        );
         connection.send("dropped after close".to_string());
+        assert!(outbound_rx.try_recv().is_err());
     }
 
-    /// A peer that holds the socket open but never reads it (so never pongs) is what a load
-    /// balancer or a node leaves behind; without the keepalive the connection stayed "open"
-    /// for good.
+    /// A peer that answers pings but has nothing to say must stay connected: closing it would
+    /// drop every subscription on the socket each timeout.
+    #[tokio::test]
+    async fn a_quiet_socket_that_answers_pings_stays_open() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut peer = tokio_tungstenite::accept_async(socket).await.unwrap();
+            // Reading is what makes tungstenite answer each Ping.
+            while peer.next().await.is_some() {}
+        });
+        let connection = WsJsonRpcConnection::connect_with_keepalive(
+            &format!("ws://{address}"),
+            Duration::from_millis(20),
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap();
+        let mut responses = connection.responses();
+        let open = tokio::time::timeout(Duration::from_millis(1500), responses.next()).await;
+        assert!(open.is_err(), "a peer that answers pings was closed");
+        assert!(!*connection.closed.borrow());
+    }
+
+    /// A peer that holds the socket open but never reads it (so never pongs), as a load
+    /// balancer or a restarted node leaves behind, must be closed by the keepalive.
     #[tokio::test]
     async fn a_silent_socket_is_closed_by_the_keepalive() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
