@@ -1378,7 +1378,7 @@ pub trait Features: Send + Sync {
 
 /// Wallet and asset binding checked by the native service before every operation.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct NativeCoinageScope {
     /// Authenticated root key of the wallet owning the main purse.
     pub root_public_key: [u8; 32],
@@ -1390,7 +1390,7 @@ pub struct NativeCoinageScope {
 
 /// Immutable, Host-authenticated outgoing intent. No field is a product display hint.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct NativeCoinagePaymentIntent {
     /// Stable wallet-, network- and product-scoped operation identity.
     pub operation_id: [u8; 32],
@@ -1409,7 +1409,7 @@ pub struct NativeCoinagePaymentIntent {
 /// Host-private bearer material. Never return this through the product API or log it.
 /// Raw amounts are canonical unsigned decimal u128 strings, avoiding FFI truncation.
 #[derive(Clone, PartialEq, Eq, Encode, Decode, zeroize::Zeroize)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct NativeCoinageMemo {
     /// Validated 64-byte native sr25519 secret keys, confined to the trusted Host.
     pub secret_keys: Vec<Vec<u8>>,
@@ -1419,7 +1419,7 @@ pub struct NativeCoinageMemo {
 
 /// Durable native-wallet operations, not an alternative inventory ledger.
 #[derive(Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Enum))]
 pub enum NativeCoinageOperation {
     /// Read trusted denomination metadata without selecting or allocating inventory.
     Denomination,
@@ -1492,7 +1492,7 @@ impl zeroize::Zeroize for NativeCoinageOperation {
 
 /// One native operation with the immutable wallet/network scope to authenticate.
 #[derive(Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct NativeCoinageRequest {
     /// Expected owner and asset, verified against the active native wallet.
     pub scope: NativeCoinageScope,
@@ -1508,7 +1508,7 @@ impl zeroize::Zeroize for NativeCoinageRequest {
 
 /// Sanitized failures. Never forward secret-bearing native exception descriptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Enum))]
 pub enum NativeCoinageFailure {
     /// The selected native owner, its durable store or its session is unavailable.
     Unavailable,
@@ -1528,7 +1528,7 @@ pub enum NativeCoinageFailure {
 
 /// Incoming settlement result; acceptance and best-head observations are not finality.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Enum))]
 pub enum NativeCoinageTopUpOutcome {
     /// The original requested minimum has been credited at finality.
     /// For a zero minimum, the source claim is terminal with positive finalized credit.
@@ -1546,7 +1546,7 @@ pub enum NativeCoinageTopUpOutcome {
 
 /// Typed native results. Only the trusted Host may consume a Prepared memo.
 #[derive(Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Enum))]
 pub enum NativeCoinageResponse {
     /// Trusted denomination metadata for the selected wallet/asset.
     Denomination {
@@ -1606,7 +1606,7 @@ pub trait CoinageWalletHost: Send + Sync {
 
 /// Trusted native Chat selection context; never passed to a product.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct NativeChatFilePickRequest {
     /// Authenticated product requesting selection.
     pub product_id: String,
@@ -1620,7 +1620,7 @@ pub struct NativeChatFilePickRequest {
 
 /// Immutable Host-owned source and metadata derived from its actual bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct NativeChatPickedFile {
     /// Opaque private handle surviving restart until explicitly released.
     pub source_id: String,
@@ -1630,7 +1630,7 @@ pub struct NativeChatPickedFile {
 
 /// Trusted context for exporting a verified native Chat attachment.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct NativeChatFileExportRequest {
     /// Authenticated product requesting presentation.
     pub product_id: String,
@@ -3587,7 +3587,7 @@ pub struct IdentityDisclosureReview {
 
 /// Review shown before a product binds or uses wallet-held Chat identity authority.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct ChatAuthorityReview {
     /// Product requesting the Chat identity operation.
     pub product_id: String,
@@ -3598,7 +3598,7 @@ pub struct ChatAuthorityReview {
 /// This review never grants a reusable spending permission. Chat authority and
 /// automatic product signing do not authorize it.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(all(feature = "runtime", not(target_arch = "wasm32")), derive(uniffi::Record))]
 pub struct MainPurseChatPaymentReview {
     /// Authenticated product requesting this payment.
     pub calling_product_id: String,
