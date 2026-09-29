@@ -157,7 +157,6 @@ impl ResourceAllocation for ProductRuntimeHost {
                 })
             }
         };
-        let product_id = self.product_id();
         let service = self.permissions_service();
         let mut grants = Vec::new();
         for resource in &inner.resources {

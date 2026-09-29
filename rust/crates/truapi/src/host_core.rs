@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::platform::{ChatPlatform, ContactsPlatform, CoinageWalletHost, PermissionStatusHost, PocketPlatform};
+use crate::platform::{
+    ChatPlatform, CoinageWalletHost, ContactsPlatform, PermissionStatusHost, PocketPlatform,
+};
 use crate::platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -28,7 +30,6 @@ use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
 
-use crate::truapi_core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::host_internal::sso_messages::{RemoteMessage, SsoRequestOutcome};
 use crate::host_logic::worker::WorkerLedger;
@@ -42,6 +43,7 @@ use crate::runtime::{
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
+use crate::truapi_core::TrUApiCore;
 
 /// Outgoing frame sink owned by a host adapter.
 ///
@@ -616,7 +618,14 @@ impl SigningHostRuntime {
     where
         P: Platform + 'static,
     {
-        Self::with_platforms(platform, config, spawner, chat_platform, None, native_wallet)
+        Self::with_platforms(
+            platform,
+            config,
+            spawner,
+            chat_platform,
+            None,
+            native_wallet,
+        )
     }
 
     /// Build a signing-host runtime serving both optional adapters.
@@ -1093,10 +1102,7 @@ impl SigningHostRuntime {
     /// even while that request is still being answered by another call, and a
     /// withdrawn request is answered `Ignored`.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.answer_sso_request"))]
-    pub async fn answer_sso_request(
-        &self,
-        message: RemoteMessage,
-    ) -> SsoRequestOutcome {
+    pub async fn answer_sso_request(&self, message: RemoteMessage) -> SsoRequestOutcome {
         let service = SigningHostSsoService::new(self.signing_host.clone());
         match service.answer(message).await {
             Dispatch::Response(answer) => SsoRequestOutcome::Response {
@@ -1223,7 +1229,7 @@ pub struct ConnectionAdapters {
     /// same one that presents the prompt.
     pub permission_status: Option<Arc<dyn PermissionStatusHost>>,
     /// SDK and internal network connections must share an execution's one-use grants.
-    pub permission_grants: Arc<crate::host_internal::permissions::TemporaryPermissions>,
+    pub(crate) permission_grants: Arc<crate::host_internal::permissions::TemporaryPermissions>,
     pub chat: Arc<ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
     pub renderer: Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
     pub pocket_platform: Option<Arc<dyn PocketPlatform>>,
@@ -2263,7 +2269,7 @@ mod tests {
     }
 
     #[test]
-    fn network_access_trusted_products_ignore_recorded_denials() {
+    fn network_access_trusted_products_honor_recorded_denials() {
         futures::executor::block_on(async {
             let platform = Arc::new(StubPlatform::default());
             let (config, _) = runtime_config("peopl.dot");
@@ -2302,7 +2308,7 @@ mod tests {
                         granted: true
                     }),
                     permissions::RemotePermissionResponse::V1(RemotePermissionResponse {
-                        granted: true
+                        granted: false
                     }),
                     vec![],
                 )

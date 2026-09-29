@@ -291,8 +291,10 @@ pub enum CreateTransactionAuthorityRequest {
 
 /// Host-owned Chat operation after the caller's capability authorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProductDeviceChatAuthorityRequest {
+pub struct ProductDeviceChatAuthorityRequest {
+    /// Product whose capability authorization was checked by the host.
     pub calling_product_id: String,
+    /// Authorized wallet-local Chat operation.
     pub operation: HostProductDeviceChatRequest,
 }
 
@@ -315,11 +317,16 @@ pub(crate) fn chat_requires_preimage_submit(operation: &HostProductDeviceChatReq
     }
 }
 
+/// A wallet-local Chat failure before conversion to its public protocol error.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProductDeviceChatAuthorityError {
+pub enum ProductDeviceChatAuthorityError {
+    /// The wallet session is no longer connected.
     Disconnected,
+    /// The user rejected the operation.
     Rejected,
+    /// A host backend is unavailable; diagnostics remain host-owned.
     Unavailable(String),
+    /// A typed Chat failure safe to return to the product.
     Domain(HostProductDeviceChatError),
 }
 
@@ -346,8 +353,10 @@ impl From<ProductDeviceChatAuthorityError> for truapi::v02::HostProductDeviceCha
 
 /// Payment failures retain typed wallet results without exposing backend diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PaymentTopUpAuthorityError {
+pub enum PaymentTopUpAuthorityError {
+    /// Session, consent, or backend authority failure.
     Authority(AuthorityError),
+    /// A typed wallet top-up failure.
     Domain(truapi::v01::HostPaymentTopUpError),
 }
 

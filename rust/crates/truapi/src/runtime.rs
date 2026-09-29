@@ -65,6 +65,12 @@ type ContactsPicker = (
     Arc<dyn crate::platform::ContactsPlatform>,
     crate::runtime::contacts::ContactHandles,
 );
+use crate::platform::{
+    AccountAccessReview, ChatFieldError, PermissionAuthorizationRequest,
+    PermissionAuthorizationStatus, PermissionDecision, Platform, ProductContext, ProductStorageKey,
+    SessionUiInfo, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
+    validate_chat_icon, validate_chat_message_content, validate_chat_name,
+};
 use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use pairing_host::PairingHost;
@@ -81,19 +87,8 @@ pub use signing_host::{
     respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{LocalIdentity, LocalIdentityContext, WalletAllowanceSnapshot};
-#[cfg(all(target_arch = "wasm32", feature = "test-host"))]
-pub use vrf::ring_vrf_member;
-// `TrackedStatementRenewalTarget` is only read back by the native renewal
-// reporting, so re-exporting it on wasm leaves an unused import.
-use crate::platform::{
-    AccountAccessReview, ChatFieldError, IdentityDisclosureReview, PermissionAuthorizationRequest,
-    PermissionAuthorizationStatus, PermissionDecision, Platform, ProductContext, ProductStorageKey,
-    SessionUiInfo, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
-    validate_chat_icon, validate_chat_message_content, validate_chat_name,
-};
-pub use signing_host::StatementRenewalTarget;
 #[cfg(not(target_arch = "wasm32"))]
-pub use signing_host::TrackedStatementRenewalTarget;
+pub use signing_host::{StatementRenewalTarget, TrackedStatementRenewalTarget};
 use tracing::{instrument, warn};
 use truapi::api::{Chat, Contacts, Pocket, Renderer};
 use truapi::versioned::account::{
@@ -119,6 +114,8 @@ use truapi::versioned::renderer::{
     HostRendererActionSubscribeRequest,
 };
 use truapi::{CallContext, CallError, CancellationReason, Subscription, v01};
+#[cfg(all(target_arch = "wasm32", feature = "test-host"))]
+pub use vrf::ring_vrf_member;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
