@@ -67,9 +67,7 @@ The light client dials peers over `wss://`, and over plain `ws://` to localhost
 and to other hosts. A page whose browser blocks some of those can turn them off:
 
 ```js
-const types = new ConnectionTypes();
-types.remoteWebSocket = false; // mixed content on an https page
-builder.setConnectionTypes(types);
+builder.setConnectionTypes({ unsecure: false }); // mixed content on an https page
 ```
 
 A light-client connection holds its requests until the chain first syncs, then

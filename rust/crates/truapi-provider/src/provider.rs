@@ -36,8 +36,8 @@ pub struct EmbeddedChainProviderBuilder {
     #[cfg(feature = "smoldot")]
     storage: Option<std::sync::Arc<dyn crate::storage::StorageClient>>,
     /// The peer connections the browser light client opens.
-    #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
-    connection_types: crate::ConnectionTypes,
+    #[cfg(feature = "smoldot")]
+    connection_types: crate::connection_types::ConnectionTypes,
 }
 
 impl core::fmt::Debug for EmbeddedChainProviderBuilder {
@@ -48,9 +48,8 @@ impl core::fmt::Debug for EmbeddedChainProviderBuilder {
         builder
             .field("relays", &self.relays)
             .field("seeded_databases", &self.seeded_databases)
-            .field("storage", &self.storage.is_some());
-        #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
-        builder.field("connection_types", &self.connection_types);
+            .field("storage", &self.storage.is_some())
+            .field("connection_types", &self.connection_types);
         builder.finish()
     }
 }
@@ -128,10 +127,8 @@ impl EmbeddedChainProviderBuilder {
             storage: self.storage,
             #[cfg(feature = "smoldot")]
             stored_quality: Mutex::new(HashMap::new()),
-            #[cfg(all(feature = "smoldot", target_arch = "wasm32"))]
+            #[cfg(feature = "smoldot")]
             light: crate::light::LightState::new(self.connection_types),
-            #[cfg(all(feature = "smoldot", not(target_arch = "wasm32")))]
-            light: crate::light::LightState::new(),
         }
     }
 }

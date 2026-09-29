@@ -38,7 +38,7 @@
 // which is how truapi depends on it.
 #[cfg(any(feature = "ws", feature = "smoldot"))]
 mod config;
-#[cfg(all(feature = "smoldot", any(target_arch = "wasm32", test)))]
+#[cfg(feature = "smoldot")]
 mod connection_types;
 mod error;
 #[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
