@@ -84,9 +84,9 @@ class MediaPermissionIntegrationTest {
                         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest) =
                             WebResourceResponse("text/html", "UTF-8", PAGE.byteInputStream())
                     }
-                    TrUAPIBootstrapInstaller().installerFor(webView, setOf("http://localhost"))(
+                    TrUAPIBootstrapInstaller(context).installerFor(setOf("http://localhost"))(
                         LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token),
-                    )
+                    )(webView)
                     webView.loadUrl("http://localhost/")
                 }
                 fun call(script: String, expected: String) {

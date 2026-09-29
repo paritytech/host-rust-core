@@ -106,8 +106,9 @@ class TrUAPIWorkerSupervisor @Inject constructor(
         // The bootstrap publishes the loopback port and token, so it goes to the worker's own origin only.
         val installBootstrap = runCatching {
             webViewRuntime.initialize()
-            bootstrapInstaller.installerFor(provider.getWebView(), setOf(workerScript.baseUrl))
+            bootstrapInstaller.installerFor(setOf(workerScript.baseUrl))
         }.getOrElse { return Result.failure(it) }
+        provider.addOnWebViewDestroyedListener { rebootAfterRendererLoss(productId, worker) }
 
         return hostBridgeFactory.create(worker.scope)
             .attach(
@@ -116,8 +117,7 @@ class TrUAPIWorkerSupervisor @Inject constructor(
                 chainDirectory.resolve(),
                 ignoredNavigation(),
                 ProductExecutionKind.WORKER,
-                installBootstrap,
-            )
+            ) { bootstrap -> provider.addWebViewSetup(installBootstrap(bootstrap)) }
             .flatMap { execution ->
                 runCatching {
                     provider.useTrUAPIPermissions(execution)
@@ -132,6 +132,17 @@ class TrUAPIWorkerSupervisor @Inject constructor(
                     .map { execution }
             }
             .onSuccess { execution -> executions.update { it + (productId to execution) } }
+    }
+
+    // The renderer takes the running script with it, and only a fresh boot runs the script again.
+    private fun rebootAfterRendererLoss(productId: ProductId, worker: RunningWorker) {
+        scope.launch {
+            transitions.withLock {
+                if (workers[productId] !== worker || productId !in executions.value) return@withLock
+                stop(productId)
+                start(productId)
+            }
+        }
     }
 
     private fun stop(productId: ProductId) {

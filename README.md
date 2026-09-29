@@ -339,6 +339,8 @@ On every platform the bridge also rebinds the port itself when its listening soc
 pausing between failed attempts instead of retrying in a tight loop; other accept errors keep the port.
 When WebKit loses its networking process, every MessagePort a page already holds stops
 delivering; the container detects this after a disconnect and reloads the page.
+On Android, a product whose WebView renderer dies reloads in a fresh WebView with the same
+bootstrap, and a running worker whose renderer dies boots again.
 The container routes fetch, XHR and WebSocket permission checks to Rust.
 WebRTC and camera/microphone access use the same live permission checks.
 `/script` shares these wrappers for the APIs available in Bun. CLI permission

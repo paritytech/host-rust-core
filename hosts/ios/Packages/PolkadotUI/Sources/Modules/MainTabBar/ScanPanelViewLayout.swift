@@ -3,10 +3,6 @@ import UIKit
 internal import SnapKit
 
 public final class ScanPanelViewLayout: UIView {
-    private enum Constants {
-        static let compactCameraWidthRatio: CGFloat = 0.25
-    }
-
     public let searchRow = DSSearchRowView()
     public let resultsView = SearchContactResultsView()
 
@@ -20,11 +16,13 @@ public final class ScanPanelViewLayout: UIView {
         return view
     }()
 
-    private lazy var cameraTapRecognizer: UITapGestureRecognizer = {
-        let recognizer = UITapGestureRecognizer(target: self, action: #selector(cameraTapped))
-        recognizer.isEnabled = false
-        return recognizer
-    }()
+    private let scanButton = DSIconButton(
+        style: .secondary,
+        shape: .pill,
+        size: .mediumIncreased,
+        icon: UIImage(resource: .scan18),
+        glass: true
+    )
 
     private let contentStack: UIStackView = {
         let stack = UIStackView()
@@ -34,8 +32,16 @@ public final class ScanPanelViewLayout: UIView {
         return stack
     }()
 
+    private let searchRowStack: UIStackView = {
+        let stack = UIStackView()
+        stack.axis = .horizontal
+        stack.spacing = DSSpacings.small
+        stack.alignment = .center
+        return stack
+    }()
+
     private var fullCameraWidthConstraint: Constraint?
-    private var compactCameraWidthConstraint: Constraint?
+    private var collapsedCameraWidthConstraint: Constraint?
     private var resultsCollapsedConstraint: Constraint?
 
     public var onCameraTapped: (() -> Void)?
@@ -46,16 +52,21 @@ public final class ScanPanelViewLayout: UIView {
         resultsView.clipsToBounds = true
         contentStack.addArrangedSubview(resultsView)
         addSubview(contentStack)
-        addSubview(searchRow)
 
-        searchRow.snp.makeConstraints { make in
+        searchRowStack.addArrangedSubview(scanButton)
+        searchRowStack.addArrangedSubview(searchRow)
+        addSubview(searchRowStack)
+
+        searchRowStack.snp.makeConstraints { make in
             make.leading.trailing.equalToSuperview().inset(DSSpacings.mediumIncreased)
             make.bottom.equalToSuperview().inset(DSSpacings.small)
         }
 
+        scanButton.onTap = { [weak self] in self?.onCameraTapped?() }
+
         contentStack.snp.makeConstraints { make in
             make.top.leading.trailing.equalToSuperview()
-            make.bottom.equalTo(searchRow.snp.top).offset(-DSSpacings.small)
+            make.bottom.equalTo(searchRowStack.snp.top).offset(-DSSpacings.small)
         }
 
         resultsView.snp.makeConstraints { make in
@@ -80,17 +91,16 @@ public final class ScanPanelViewLayout: UIView {
         scannerView.snp.makeConstraints { make in
             fullCameraWidthConstraint = make.width.equalTo(contentStack)
                 .offset(-DSSpacings.mediumIncreased * 2).constraint
-            compactCameraWidthConstraint = make.width.equalTo(contentStack)
-                .multipliedBy(Constants.compactCameraWidthRatio).constraint
+            collapsedCameraWidthConstraint = make.width.equalTo(0).constraint
         }
 
-        scannerView.addGestureRecognizer(cameraTapRecognizer)
         setSearchFocused(false)
     }
 
-    /// Unfocused implies no results, so the late empty snapshot from the interactor changes nothing
-    /// visible. The collapse is a constraint, not the stack's animated hide, because the panel
-    /// measures its height mid-animation and the hide still reports the rows' height then.
+    /// When search is focused, the camera collapses away entirely and a scan button appears
+    /// to the left of the search field. Unfocused, the camera expands to full width and the
+    /// button hides. The collapse is a constraint, not the stack's animated hide, because the
+    /// panel measures its height mid-animation and the hide still reports the rows' height then.
     public func setSearchFocused(_ focused: Bool) {
         if focused {
             resultsCollapsedConstraint?.deactivate()
@@ -102,19 +112,13 @@ public final class ScanPanelViewLayout: UIView {
 
         if focused {
             fullCameraWidthConstraint?.deactivate()
-            compactCameraWidthConstraint?.activate()
+            collapsedCameraWidthConstraint?.activate()
         } else {
-            compactCameraWidthConstraint?.deactivate()
+            collapsedCameraWidthConstraint?.deactivate()
             fullCameraWidthConstraint?.activate()
         }
 
-        searchRow.setCancelVisible(focused)
-        cameraTapRecognizer.isEnabled = focused
-    }
-}
-
-private extension ScanPanelViewLayout {
-    @objc func cameraTapped() {
-        onCameraTapped?()
+        scanButton.isHidden = !focused
+        scanButton.alpha = focused ? 1 : 0
     }
 }

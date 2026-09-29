@@ -34,7 +34,7 @@ let dependencyConfigs: [DependencyConfig] = [
     .init(
         name: "firebase-ios-sdk",
         url: "https://github.com/firebase/firebase-ios-sdk",
-        version: .exact("12.5.0"),
+        version: .exact("12.6.0"),
         products: [
             "FirebaseCore",
             "FirebaseRemoteConfig"
@@ -129,8 +129,8 @@ let dependencyConfigs: [DependencyConfig] = [
     ),
     .init(
         name: "AsyncExtensions",
-        url: "https://github.com/sideeffect-io/AsyncExtensions",
-        version: .exact("0.5.4"),
+        url: "https://github.com/paritytech/AsyncExtensions",
+        version: .exact("0.5.6"),
         products: ["AsyncExtensions"]
     ),
     .init(
