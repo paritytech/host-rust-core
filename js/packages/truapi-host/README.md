@@ -29,6 +29,8 @@ host and excludes `WasmSigningHostRuntime`; `wasm/testing` adds the Rust `wasm-s
 which is what lets the test host hold keys and answer resource allocation as granted without allocating anything. A real
 browser wallet instead needs a web bundle built with `--no-default-features --features wasm-signing-host`, without
 `test-host`. That enables native signing and wallet administration without the testing-only allocation shortcuts.
+Build that wallet variant with `npm run build:wasm -- --web-only --signing-host`.
+The default web build remains pairing-only.
 `ProductRuntimeConfig` configures the pairing host and requires no network suffix. The signing constructor's
 configuration requires `runtimeConfig.networkSuffix` in addition: the bare TLD (`dot`, `paseo`, or `testnet`) matching
 the People chain and the wallet's onboarding configuration.
@@ -291,6 +293,10 @@ Prerequisites on PATH:
 - Binaryen 117's `wasm-opt`, matching wasm-pack 0.14.0's optimizer. Download the appropriate
   [Binaryen version_117 archive](https://github.com/WebAssembly/binaryen/releases/tag/version_117)
   and add its `bin` directory to PATH.
+
+From the repository root, `bash scripts/install-wasm-artifact-tools.sh` installs
+the matching bindgen CLI and checksum-verified Binaryen archive, then prints the
+directory to add to PATH. CI uses the same installer.
 
 Build after editing `rust/crates/truapi` and before packaging, publishing, or running tests that load the raw WASM bundle:
 
