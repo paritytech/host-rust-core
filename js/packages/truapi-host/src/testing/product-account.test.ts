@@ -27,7 +27,17 @@ suite("the address a product account will be given", () => {
   });
 
   it("gives each product its own account", async () => {
-    expect(CONTRACTS).not.toBe(TX);
+    // The product id is an input to the derivation, so one account's products
+    // do not share a balance -- which is why funding is per (product, account).
+    const contracts = await productAccountAddress({
+      account: "bob",
+      productId: "contracts-demo.dot",
+    });
+    const tx = await productAccountAddress({
+      account: "bob",
+      productId: "tx-demo.dot",
+    });
+    expect(contracts).not.toBe(tx);
   });
 
   it("gives each session root its own account", async () => {
