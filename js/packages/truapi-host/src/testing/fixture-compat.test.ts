@@ -256,6 +256,23 @@ describe("reading a stored value back the way the old package spelled it", () =>
       }
     });
 
+    it("answers a value that is not text with an absence, not mojibake", async () => {
+      // A lenient decode turns bytes that are not UTF-8 into replacement
+      // characters, which compare equal to nothing a product wrote and read as
+      // a value it did. Absence says what happened and points at
+      // `getProductStorage`, which hands back the bytes.
+      const { client, host, dispose } = await createMockClient();
+      try {
+        await client.localStorage.write({ key: "blob", value: "0xdeadbeef" });
+        expect(host.getProductStorageValue("blob")).toBeUndefined();
+        expect(Object.values(host.getProductStorage())).toContainEqual(
+          Uint8Array.from([0xde, 0xad, 0xbe, 0xef]),
+        );
+      } finally {
+        dispose();
+      }
+    });
+
     it("returns synchronously, not a promise", async () => {
       const { host, dispose } = await createMockClient();
       try {

@@ -579,8 +579,12 @@ export interface MockHost {
    *
    * Synchronous, because `@parity/host-api-test-sdk` publishes it that way and
    * a suite compares the result inside a `page.waitForFunction` predicate.
-   * The core namespaces the key before the host sees it, so this matches on
-   * the product's own key as a suffix rather than the internal shape.
+   * The core namespaces the key before the host sees it, so this reads the
+   * product's own key out of that shape rather than matching the whole string.
+   *
+   * `undefined` for a value that is not UTF-8, the same answer a key nothing
+   * wrote gets: read those through {@link MockHost.getProductStorage}, which
+   * hands back bytes.
    */
   getProductStorageValue(key: string): string | undefined;
   /** Seeded preimage values. */
@@ -1531,8 +1535,14 @@ export function createMockHost(config: MockHostConfig = {}): MockHost {
         const namespaced = coreProductStorageKey(local);
         // Falls back to the whole key for a value written straight through the
         // host seam, which never passed through the core's namespacing.
-        if ((namespaced ?? local) === key) {
-          return new TextDecoder().decode(value);
+        if ((namespaced ?? local) !== key) continue;
+        try {
+          return new TextDecoder("utf-8", { fatal: true }).decode(value);
+        } catch {
+          // A lenient decode answers replacement characters, which read as a
+          // value the product wrote. An absence instead sends a suite to
+          // `getProductStorage`, which hands back the bytes themselves.
+          return undefined;
         }
       }
       return undefined;
