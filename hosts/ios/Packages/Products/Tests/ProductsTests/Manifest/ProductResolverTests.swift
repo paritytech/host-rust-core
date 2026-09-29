@@ -147,6 +147,20 @@ struct ProductResolverTests {
         #expect(resolved.executables.worker == nil)
     }
 
+    /// Chat and Pocket ride on one worker record, so a pocket section the
+    /// publisher typed wrong must not take the product's chat off the air.
+    @Test func keepsAChatWorkerWhoseProductPublishedAMalformedPocketSection() async throws {
+        let stub = StubDotNsResolver()
+        stub.set(Fixtures.root, name: "hackm3.dot", key: "manifest")
+        stub.set(Fixtures.workerWithMalformedPocket, name: "worker.hackm3.dot", key: "executable")
+
+        let resolved = try await makeResolver(stub).resolve("hackm3.dot")
+
+        #expect(resolved.executables.worker?.includesChat == true)
+        #expect(resolved.executables.worker?.entrypoint == "src/worker.js")
+        #expect(resolved.executables.worker?.pocketCards.isEmpty == true)
+    }
+
     @Test func failsWhenTheRootManifestItselfIsMalformed() async {
         let stub = StubDotNsResolver()
         stub.set(#"{"$v":9,"displayName":"x"}"#, name: "hackm3.dot", key: "manifest")
@@ -231,5 +245,10 @@ private enum Fixtures {
     static let worker = """
     {"$v":1,"kind":"worker","appVersion":[1,0,0],"entrypoint":"src/worker.js",
      "includes":{"chat":true,"pocket":false}}
+    """
+
+    static let workerWithMalformedPocket = """
+    {"$v":1,"kind":"worker","appVersion":[1,0,0],"entrypoint":"src/worker.js",
+     "includes":{"chat":true,"pocket":true},"pocket":{"cards":{"loyalty":"Loyalty"}}}
     """
 }

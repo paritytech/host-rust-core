@@ -184,7 +184,16 @@ private extension ProductManifestParser {
         includesPocket: Bool,
         identifier: ProductId
     ) -> [PocketCardDefinition] {
-        guard let cards = dto?.cards else { return [] }
+        let cards: [PocketCardDTO]
+
+        switch dto?.cards ?? .absent {
+        case .absent:
+            return []
+        case .malformed:
+            return noCards("\(identifier): pocket section is not the shape the manifest format describes")
+        case let .declared(declared):
+            cards = declared
+        }
 
         guard includesPocket else {
             return noCards("\(identifier): pocket.cards published without includes.pocket")
@@ -198,7 +207,7 @@ private extension ProductManifestParser {
             }
             return definitions
         } catch {
-            return noCards("\(identifier): publishing no cards — \(error)")
+            return noCards("\(identifier): publishing no cards, \(error)")
         }
     }
 

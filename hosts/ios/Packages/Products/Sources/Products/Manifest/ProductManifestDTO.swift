@@ -52,8 +52,32 @@ struct IncludesDTO: Decodable {
     let pocket: Bool?
 }
 
+/// The section decodes leniently so a publisher who typed it wrong costs the product its cards and
+/// not the worker record, which is also where the product's chat is declared.
 struct PocketDTO: Decodable {
-    let cards: [PocketCardDTO]?
+    /// An absent section and a malformed one are held apart because only the second is worth
+    /// reporting: most workers publish no cards at all.
+    enum Cards {
+        case absent
+        case declared([PocketCardDTO])
+        case malformed
+    }
+
+    let cards: Cards
+
+    private enum CodingKeys: String, CodingKey {
+        case cards
+    }
+
+    init(from decoder: Decoder) throws {
+        do {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            cards = try container.decodeIfPresent([PocketCardDTO].self, forKey: .cards)
+                .map(Cards.declared) ?? .absent
+        } catch {
+            cards = .malformed
+        }
+    }
 }
 
 struct PocketCardDTO: Decodable {

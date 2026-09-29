@@ -247,6 +247,25 @@ struct ProductManifestParserTests {
         }
     }
 
+    /// A pocket section whose JSON types are wrong is the same defect as a card
+    /// the parser refuses, so it costs the same: the cards. Decoding it as part
+    /// of the executable record would instead lose the worker, and with it the
+    /// chat the product serves from the very same record.
+    @Test(arguments: [
+        #"{"cards":{"loyalty":{"title":"Loyalty","preview":"faces/loyalty.json"}}}"#,
+        #"{"cards":[{"id":7,"title":"Loyalty","preview":"faces/loyalty.json"}]}"#,
+        #"{"cards":"faces/loyalty.json"}"#,
+        #""cards""#,
+        "[]"
+    ])
+    func keepsTheWorkerWhenThePocketSectionHasTheWrongJsonTypes(_ section: String) throws {
+        let worker = try #require(parsedWorker(Fixtures.worker(pocket: "true", pocketSection: section)))
+
+        #expect(worker.entrypoint == "src/worker.js")
+        #expect(worker.includesChat)
+        #expect(worker.pocketCards.isEmpty)
+    }
+
     /// Two cards under one id would make the card a product hands out ambiguous,
     /// so the whole set is refused rather than one of them picked.
     @Test func publishesNoCardsWhenIdsRepeat() throws {
@@ -353,7 +372,11 @@ private enum Fixtures {
     }
 
     static func worker(chat: String = "true", pocket: String = "false", cards: String? = nil) -> String {
-        let pocketField = cards.map { ",\"pocket\":{\"cards\":\($0)}" } ?? ""
+        worker(chat: chat, pocket: pocket, pocketSection: cards.map { "{\"cards\":\($0)}" })
+    }
+
+    static func worker(chat: String = "true", pocket: String = "false", pocketSection: String?) -> String {
+        let pocketField = pocketSection.map { ",\"pocket\":\($0)" } ?? ""
         return """
         {"$v":1,"kind":"worker","appVersion":[1,0,0],"entrypoint":"src/worker.js",
          "includes":{"chat":\(chat),"pocket":\(pocket)}\(pocketField)}
