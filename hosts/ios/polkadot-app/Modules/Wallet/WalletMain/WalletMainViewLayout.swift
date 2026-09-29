@@ -71,7 +71,7 @@ struct WalletView: View {
                 ForEach(viewModel.pocketCards) { card in
                     // A press takes the user into the product the card belongs
                     // to, at the page the card names. The shape is named so the
-                    // peek a card shows is all of it that takes a press — the
+                    // peek a card shows is all of it that takes a press, the
                     // rest is under the card above.
                     PocketCollectionCardView(card: card)
                         .contentShape(RoundedRectangle(cornerRadius: PocketCardSize.cornerRadius))

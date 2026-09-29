@@ -55,7 +55,7 @@ final class ProductBotFactory {
 
 private extension ProductBotFactory {
     /// A bot is a chat surface, so a worker that declares `includes.chat: false`
-    /// gets none — that is a valid background-only worker, and a bot for it
+    /// gets none. That is a valid background-only worker, and a bot for it
     /// would take a reference on a modality the product never declared.
     ///
     /// A script installed by hand through debug settings stands in for a product

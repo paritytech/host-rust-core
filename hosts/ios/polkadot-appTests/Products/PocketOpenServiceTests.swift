@@ -24,7 +24,7 @@ struct PocketOpenServiceTests {
     }
 
     /// The reserved target belongs to the host, so a card id the core would
-    /// refuse is answered here — with a message — rather than opening the
+    /// refuse is answered here, with a message, rather than opening the
     /// product's own page.
     @Test
     func claimsAndRefusesAHiddenCardId() async throws {

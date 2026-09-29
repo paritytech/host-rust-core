@@ -2,12 +2,12 @@
 
 Two loops. The first proves a face decodes and draws with no worker, no manifest
 and no product in the way; the second proves the whole card, live. Build in that
-order — a card that does not draw is almost always a face problem, and the first
+order. A card that does not draw is almost always a face problem, and the first
 loop tells you that in seconds.
 
 Everything below is Debug-only and reached from **Settings → Debug**.
 
-## Loop A — the face preview
+## Loop A: the face preview
 
 **Debug → Pocket Face Preview.** Type a URL, press Draw, and the face is fetched,
 decoded and drawn in the real card frame. A face the decoder refuses shows the
@@ -25,7 +25,7 @@ Then draw `http://127.0.0.1:5173/pocket/<name>.json`.
 The size bound is the same one the approval sheet applies (256 KiB), so a face
 that draws here is one the sheet will accept.
 
-## Loop B — the whole card, live
+## Loop B: the whole card, live
 
 A product with **no published worker**, driven by hand.
 
@@ -61,7 +61,7 @@ A product with **no published worker**, driven by hand.
 
 ## What fails where
 
-Work down this list — each step rules out the one below it.
+Work down this list. Each step rules out the one below it.
 
 | Symptom | Where to look |
 |---|---|

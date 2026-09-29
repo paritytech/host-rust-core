@@ -13,7 +13,7 @@ struct DebugPocketCardsView: View {
             Section {
                 ForEach(viewModel.cards) { card in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("\(card.title) — \(card.cardId)")
+                        Text("\(card.title): \(card.cardId)")
                             .font(.headline)
                         Text(card.productId)
                             .font(.caption)

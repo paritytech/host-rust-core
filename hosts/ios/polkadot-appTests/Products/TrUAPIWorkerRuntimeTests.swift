@@ -67,7 +67,7 @@ struct TrUAPIWorkerRuntimeTests {
     }
 
     /// The worker owns the execution, so stopping it is what closes the
-    /// execution, its bridge and its chain pool — exactly once.
+    /// execution, its bridge and its chain pool, exactly once.
     @Test
     func tearsDownTheExecutionOnce() async throws {
         let execution = MockProductExecution()

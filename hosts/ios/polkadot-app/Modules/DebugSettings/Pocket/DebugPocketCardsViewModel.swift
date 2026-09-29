@@ -27,7 +27,7 @@ final class DebugPocketCardsViewModel {
     }
 
     /// The id is screened here rather than at the deeplink, because a card
-    /// id the core refuses reads as no card at all — which looks like the
+    /// id the core refuses reads as no card at all, which looks like the
     /// card simply never arriving.
     func save() {
         let card = DebugPocketCard(productId: productId, cardId: cardId, title: title, faceUrl: faceUrl)

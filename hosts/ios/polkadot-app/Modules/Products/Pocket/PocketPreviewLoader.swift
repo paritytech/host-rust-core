@@ -25,7 +25,7 @@ enum PocketPreviewError: Error, CustomStringConvertible {
     }
 }
 
-/// Reads a published card's static face — the one the approval sheet shows.
+/// Reads a published card's static face, the one the approval sheet shows.
 ///
 /// This runs before the user has approved anything, so how much there is to
 /// read is the product's choice. The bound goes to whoever does the reading

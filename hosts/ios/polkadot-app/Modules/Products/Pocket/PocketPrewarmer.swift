@@ -4,7 +4,7 @@ import Products
 /// Warms the archive a host-placed card opens, before the user presses it.
 ///
 /// Host-placed cards only. They are few and fixed, where a Pocket full of added
-/// cards would turn one visit to the tab into a fetch per product — which is
+/// cards would turn one visit to the tab into a fetch per product, which is
 /// the opposite of what this is for.
 @MainActor
 final class PocketPrewarmer {

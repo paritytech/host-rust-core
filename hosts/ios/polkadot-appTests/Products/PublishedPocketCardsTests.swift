@@ -26,7 +26,7 @@ struct PublishedPocketCardsTests {
     }
 
     /// A deeplink may name the product in any casing dotNS accepts, and the
-    /// collection is keyed by one id only — the one the resolver settled on.
+    /// collection is keyed by one id only, the one the resolver settled on.
     @Test
     func keysTheCardByTheResolvedProductIdRatherThanTheOneAskedFor() async throws {
         let cards = PublishedPocketCards(products: gameResolver(worker: workerPublishing([loyalty])))

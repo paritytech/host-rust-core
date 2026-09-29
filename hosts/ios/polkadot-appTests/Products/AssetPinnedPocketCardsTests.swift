@@ -43,7 +43,7 @@ struct AssetPinnedPocketCardsTests {
     }
 
     /// The bundled face is shipped with the app, so a failure to read it is a
-    /// build defect rather than product input — but it must actually decode
+    /// build defect rather than product input, but it must actually decode
     /// through the same path a live face takes.
     @Test
     func bundledFaceDecodesThroughTheRendererPath() async throws {

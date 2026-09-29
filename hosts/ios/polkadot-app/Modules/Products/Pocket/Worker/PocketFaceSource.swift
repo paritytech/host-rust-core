@@ -14,11 +14,11 @@ protocol PocketFaceSourcing: Sendable {
 ///
 /// Drawn first, kept second: the face is what the screen is waiting for, and
 /// keeping it is bookkeeping the user should not wait on. A failure ends the
-/// stream quietly rather than throwing — the card keeps the face it has and
+/// stream quietly rather than throwing. The card keeps the face it has and
 /// waits for its product to draw again.
 struct RealPocketFaceSource: PocketFaceSourcing {
     /// How often the newest face is written down. Faces change at frame rate,
-    /// and each write serialises the whole tree into storage — at every frame
+    /// and each write serialises the whole tree into storage. At every frame
     /// that is the screen waiting on bookkeeping. What the card needs is one
     /// recent face to draw offline and at cold start, not every face it drew.
     private static let keepInterval = Duration.seconds(2)

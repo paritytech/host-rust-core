@@ -15,8 +15,8 @@ struct PocketCardViewModel: Identifiable {
 /// Assembles the collection the Wallet tab shows: the cards the host holds,
 /// each with the newest face it has for them.
 ///
-/// The face is whatever is held right now — bundled for a pinned card, approved
-/// for an added one, or the last one its product drew — so the tab draws
+/// The face is whatever is held right now, bundled for a pinned card, approved
+/// for an added one, or the last one its product drew, so the tab draws
 /// immediately, offline and at cold start, without waiting on any worker.
 struct PocketCardsProvider {
     private let store: any PocketCardStore

@@ -4,7 +4,7 @@ import Testing
 @testable import polkadot_app
 
 /// The store on a device is migrated forward at launch, and a version the
-/// bundled models do not cover ends in `UserStorageMigrator`'s `fatalError` —
+/// bundled models do not cover ends in `UserStorageMigrator`'s `fatalError`,
 /// a crash with nothing to do but reinstall.
 ///
 /// The Pocket's version is numbered well clear of the sequence

@@ -30,7 +30,7 @@ struct PocketFaceConformanceTests {
     }
 
     /// The bound the approval sheet applies, checked against the largest face a
-    /// real product ships — so the limit is known to be above what products
+    /// real product ships, so the limit is known to be above what products
     /// actually send rather than guessed.
     @Test
     func theLargestPublishedFaceFitsWellInsideTheSizeBound() throws {
