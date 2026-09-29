@@ -1087,6 +1087,33 @@ impl SubscriptionMethod for CoinPaymentListenForPayment {
     const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
 }
 
+/// `contacts_pick` method marker.
+pub struct ContactsPick;
+impl ContactsPick {
+    /// Canonical metadata and frame ids for this method.
+    pub const DESCRIPTOR: MethodDescriptor = MethodDescriptor {
+        service: "Contacts",
+        method: "pick",
+        wire_name: "contacts_pick",
+        request_type: "truapi::versioned::contacts::HostContactsPickRequest",
+        response_type: "truapi::versioned::contacts::HostContactsPickResponse",
+        error_type: Some("truapi::versioned::contacts::HostContactsPickError"),
+        kind: MethodKind::Request,
+        direction: Direction::ProductToHost,
+        required_execution: None,
+        wire: MethodWire::Request(MethodIds {
+            trait_id: 20,
+            method_id: 0,
+        }),
+    };
+}
+impl RequestMethod for ContactsPick {
+    type Request = truapi::versioned::contacts::HostContactsPickRequest;
+    type Response = truapi::versioned::contacts::HostContactsPickResponse;
+    type Error = truapi::versioned::contacts::HostContactsPickError;
+    const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
+}
+
 /// `entropy_derive` method marker.
 pub struct EntropyDerive;
 impl EntropyDerive {
@@ -2428,6 +2455,7 @@ pub const APP_METHODS: &[MethodDescriptor] = &[
     CoinPaymentDeposit::DESCRIPTOR,
     CoinPaymentRefund::DESCRIPTOR,
     CoinPaymentListenForPayment::DESCRIPTOR,
+    ContactsPick::DESCRIPTOR,
     EntropyDerive::DESCRIPTOR,
     LocalStorageRead::DESCRIPTOR,
     LocalStorageWrite::DESCRIPTOR,
@@ -2509,6 +2537,7 @@ pub const WIDGET_METHODS: &[MethodDescriptor] = &[
     CoinPaymentDeposit::DESCRIPTOR,
     CoinPaymentRefund::DESCRIPTOR,
     CoinPaymentListenForPayment::DESCRIPTOR,
+    ContactsPick::DESCRIPTOR,
     EntropyDerive::DESCRIPTOR,
     LocalStorageRead::DESCRIPTOR,
     LocalStorageWrite::DESCRIPTOR,
@@ -2595,6 +2624,7 @@ pub const WORKER_METHODS: &[MethodDescriptor] = &[
     CoinPaymentDeposit::DESCRIPTOR,
     CoinPaymentRefund::DESCRIPTOR,
     CoinPaymentListenForPayment::DESCRIPTOR,
+    ContactsPick::DESCRIPTOR,
     EntropyDerive::DESCRIPTOR,
     LocalStorageRead::DESCRIPTOR,
     LocalStorageWrite::DESCRIPTOR,

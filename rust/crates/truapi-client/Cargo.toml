@@ -7,7 +7,7 @@ description = "Transport-neutral no-std TrUAPI client codecs and generated metho
 publish = false
 
 [dependencies]
-parity-scale-codec = { version = "3", default-features = false }
+parity-scale-codec = { workspace = true }
 truapi = { path = "../truapi", default-features = false }
 
 [lints]

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use truapi::latest::{HostProfilePresentError, HostProfilePresentRequest};
-use truapi_platform::{ProductContext, ProfilePlatform, async_trait};
+use truapi::platform::{ProductContext, ProfilePlatform, async_trait};
 
 /// A presenter that shows nothing and remembers everything it was asked.
 pub struct CliProfileHost {

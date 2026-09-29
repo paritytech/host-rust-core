@@ -189,6 +189,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
         profile: false,
         identityBackend: false,
         coinageWallet: false,
+        contacts: false,
       },
       // Null under `bun test`: the `import.meta.env.DEV` gate reads undefined,
       // so no dial resolves and the worker builds no tap.
@@ -366,6 +367,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       profile: false,
       identityBackend: false,
       coinageWallet: false,
+      contacts: false,
     });
   });
 
@@ -414,6 +416,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       profile: true,
       identityBackend: false,
       coinageWallet: false,
+      contacts: false,
     });
   });
 
@@ -1648,6 +1651,26 @@ describe("createWebWorkerPairingHostRuntime", () => {
     });
     await settle();
     expect(dials).toBe(MAX_JSON_RPC_CONNECTIONS + 1);
+    runtime.dispose();
+  });
+
+  it("posts notifyContactsChanged to the worker", async () => {
+    const worker = new FakeWorker();
+    const config = runtimeConfig();
+    const runtimePromise = createWebWorkerPairingHostRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        hostConfig: hostConfigFromRuntimeConfig(config),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const runtime = await runtimePromise;
+
+    runtime.notifyContactsChanged();
+
+    expect(worker.messages.at(-1)).toEqual({ kind: "notifyContactsChanged" });
     runtime.dispose();
   });
 

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result as AnyResult, bail, ensure};
 use image::{ImageReader, Limits};
-use truapi_server::host_logic::sso::pairing::decode_pairing_deeplink;
+use truapi::host_logic::sso::pairing::decode_pairing_deeplink;
 
 const MAX_IMAGE_EDGE: usize = 8_192;
 const MAX_IMAGE_PIXELS: usize = 24 * 1024 * 1024;
@@ -16,14 +16,14 @@ const MAX_FINDER_INTERSECTIONS: usize = 65_536;
 const MAX_FINDER_CLUSTERS: usize = 512;
 const MAX_GRID_FINDERS: usize = 64;
 
-pub(super) struct RgbaFrame {
+pub struct RgbaFrame {
     width: usize,
     height: usize,
     pixels: Vec<u8>,
 }
 
 impl RgbaFrame {
-    pub(super) fn new(width: usize, height: usize, pixels: Vec<u8>) -> AnyResult<Self> {
+    pub fn new(width: usize, height: usize, pixels: Vec<u8>) -> AnyResult<Self> {
         validate_rgba_frame(width, height, &pixels)?;
         Ok(Self {
             width,
@@ -79,7 +79,7 @@ struct Finder {
     matches: usize,
 }
 
-pub(super) fn decode_path(path: &Path) -> AnyResult<String> {
+pub fn decode_path(path: &Path) -> AnyResult<String> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("read image metadata from {}", path.display()))?;
     ensure!(
@@ -113,7 +113,7 @@ pub(super) fn decode_path(path: &Path) -> AnyResult<String> {
     decode(&frame)
 }
 
-pub(super) fn decode(frame: &RgbaFrame) -> AnyResult<String> {
+pub fn decode(frame: &RgbaFrame) -> AnyResult<String> {
     decode_rgba_frame(frame.width, frame.height, &frame.pixels)?.pairing_deeplink()
 }
 
@@ -422,7 +422,7 @@ mod tests {
     use parity_scale_codec::Encode;
     use qrcode::{Color, QrCode};
     use tempfile::tempdir;
-    use truapi_server::host_logic::sso::pairing::{
+    use truapi::host_logic::sso::pairing::{
         VersionedHandshakeProposal,
         v2::{Device, MetadataEntry, MetadataKey, Proposal},
     };

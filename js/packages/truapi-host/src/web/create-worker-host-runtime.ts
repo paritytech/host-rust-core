@@ -86,6 +86,11 @@ export interface WorkerPairingHostRuntime {
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
   /**
+   * Tell the core the host's contacts changed. Call it whenever a contact is
+   * removed or blocked, so a contact handle the core cached stops resolving.
+   */
+  notifyContactsChanged(): void;
+  /**
    * Restore the session persisted in the core's `AuthSession` slot. Resolves
    * once product frames may use it, so a host can await this at boot before
    * routing. Rejects when the runtime has been disposed or the worker faulted,
@@ -1669,6 +1674,7 @@ function createWebWorkerHostRuntime(
             profile: host.profile !== undefined,
             identityBackend: host.identityBackend !== undefined,
             coinageWallet: callbacks.nativeCoinage !== undefined,
+            contacts: host.contacts !== undefined,
           },
           debuggerUrl: debuggerDial,
         } satisfies MainToWorker);
@@ -1887,6 +1893,9 @@ function buildRuntime(
       state.worker.postMessage({
         kind: "notifySessionStoreChanged",
       } satisfies MainToWorker);
+    },
+    notifyContactsChanged(): void {
+      postUnlessDisposed(state, { kind: "notifyContactsChanged" });
     },
     acquireWorker(productId: string): void {
       postUnlessDisposed(state, { kind: "acquireWorker", productId });

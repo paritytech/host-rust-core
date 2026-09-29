@@ -20,7 +20,7 @@ pub(crate) fn is_scale_vector_result(ty: &TypeRef) -> bool {
 
 /// Traits the platform surface actually composes: the super trait's
 /// constituents when one exists, otherwise every collected trait.
-pub(crate) fn composed_traits(definition: &PlatformDefinition) -> Vec<&PlatformTrait> {
+pub fn composed_traits(definition: &PlatformDefinition) -> Vec<&PlatformTrait> {
     let mut composed: BTreeSet<String> = match &definition.super_trait {
         Some(s) => s.composes.iter().cloned().collect(),
         None => definition.traits.iter().map(|t| t.name.clone()).collect(),
@@ -36,7 +36,7 @@ pub(crate) fn composed_traits(definition: &PlatformDefinition) -> Vec<&PlatformT
 /// Capability trait names a host may omit, taken from the `OptionalPlatform`
 /// super-trait. A host that supplies none of a trait's callbacks is not
 /// broken: the core applies the capability's absence behavior.
-pub(crate) fn optional_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
+pub fn optional_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
     definition
         .optional_super_trait
         .as_ref()
@@ -45,17 +45,17 @@ pub(crate) fn optional_trait_names(definition: &PlatformDefinition) -> BTreeSet<
 }
 
 /// JS-side callback name for a platform method (camelCase of the Rust name).
-pub(crate) fn raw_callback_name(method: &PlatformMethod) -> String {
+pub fn raw_callback_name(method: &PlatformMethod) -> String {
     to_camel_case(&method.name)
 }
 
 /// Set of all platform trait names, used to recognize trait-object returns.
-pub(crate) fn platform_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
+pub fn platform_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
     definition.traits.iter().map(|t| t.name.clone()).collect()
 }
 
 /// Name of the platform trait a method returns as a handle, if any.
-pub(crate) fn trait_object_return_name<'a>(
+pub fn trait_object_return_name<'a>(
     method: &'a PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
 ) -> Option<&'a str> {
@@ -71,7 +71,7 @@ pub(crate) fn trait_object_return_name<'a>(
 /// Wire name of a raw callback. Handle-returning methods get a trait
 /// namespace prefix so equally named methods on different traits stay
 /// distinct.
-pub(crate) fn raw_callback_wire_name(
+pub fn raw_callback_wire_name(
     trait_def: &PlatformTrait,
     method: &PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
@@ -93,7 +93,7 @@ pub(crate) fn raw_callback_wire_name(
 }
 
 /// Field name holding the callback in the generated Rust bridge struct.
-pub(crate) fn raw_callback_field_name(
+pub fn raw_callback_field_name(
     trait_def: &PlatformTrait,
     method: &PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
@@ -106,7 +106,7 @@ pub(crate) fn raw_callback_field_name(
 }
 
 /// TS type name for the raw callback in the generated host-callback bridge.
-pub(crate) fn raw_callback_type_name(
+pub fn raw_callback_type_name(
     trait_def: &PlatformTrait,
     method: &PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
@@ -119,7 +119,7 @@ pub(crate) fn raw_callback_type_name(
 }
 
 /// Name of the TS adapter that wraps a typed host callback into its raw form.
-pub(crate) fn raw_callback_adapter_name(
+pub fn raw_callback_adapter_name(
     trait_def: &PlatformTrait,
     method: &PlatformMethod,
     platform_trait_names: &BTreeSet<String>,
@@ -132,7 +132,7 @@ pub(crate) fn raw_callback_adapter_name(
 
 /// Callback-object namespace for a trait: its name with the role suffix
 /// (`Provider`, `Presenter`, `Host`) stripped, lower-cased first letter.
-pub(crate) fn callback_namespace(trait_name: &str) -> String {
+pub fn callback_namespace(trait_name: &str) -> String {
     let stem = ["Provider", "Presenter", "Host", "Platform"]
         .into_iter()
         .find_map(|suffix| trait_name.strip_suffix(suffix))
@@ -156,7 +156,7 @@ fn named_platform_trait<'a>(
 /// Unwrap a `Result<T, E>` stream item to its `T`; other item types pass
 /// through. Streams carry `Result`s on the Rust side but the JS raw bridge
 /// already unwraps them before handing each item to the WASM callback sink.
-pub(crate) fn stream_item(item: &TypeRef) -> &TypeRef {
+pub fn stream_item(item: &TypeRef) -> &TypeRef {
     if let TypeRef::Named { name, args } = item
         && name == "Result"
         && let Some(ok) = args.first()
@@ -167,7 +167,7 @@ pub(crate) fn stream_item(item: &TypeRef) -> &TypeRef {
 }
 
 /// Convert a snake_case identifier to camelCase.
-pub(crate) fn to_camel_case(name: &str) -> String {
+pub fn to_camel_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut upper_next = false;
     for (idx, ch) in name.chars().enumerate() {
@@ -210,7 +210,7 @@ fn upper_first(name: &str) -> String {
 }
 
 /// Convert a camelCase identifier to snake_case.
-pub(crate) fn snake_case(name: &str) -> String {
+pub fn snake_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);
     for (idx, ch) in name.chars().enumerate() {
         if ch.is_ascii_uppercase() {
@@ -227,9 +227,7 @@ pub(crate) fn snake_case(name: &str) -> String {
 
 /// Collect local types reachable from callback payloads, including transitive
 /// field references, for the Rust WASM and TypeScript host bridges.
-pub(crate) fn collect_local_bridge_payload_types(
-    definition: &PlatformDefinition,
-) -> BTreeSet<&str> {
+pub fn collect_local_bridge_payload_types(definition: &PlatformDefinition) -> BTreeSet<&str> {
     let local: BTreeSet<&str> = definition.types.iter().map(|ty| ty.name.as_str()).collect();
     let mut out = BTreeSet::new();
     for trait_def in &definition.traits {

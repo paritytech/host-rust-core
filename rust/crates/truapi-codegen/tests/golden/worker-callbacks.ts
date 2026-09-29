@@ -3,7 +3,7 @@
 // Worker-side metadata and proxy functions for the raw WASM callback
 // surface. The worker transport/lifecycle remains hand-written; this
 // file owns the callback names, host-hook arity, and
-// subscription payload shape derived from `truapi-platform`.
+// subscription payload shape derived from the `platform` modules.
 
 import type { RawCallbacks } from "./host-callbacks-adapter.js";
 import type { GenericError } from "@parity/truapi";
@@ -16,6 +16,8 @@ export const CALLBACK_NAMES = [
   "registerChatBot",
   "postChatMessage",
   "nativeCoinage",
+  "contacts",
+  "pickContact",
   "readCoreStorage",
   "writeCoreStorage",
   "clearCoreStorage",
@@ -288,6 +290,21 @@ function coinageWalletRawCallbacks(
   };
 }
 
+function contactsRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "contacts" | "pickContact">> {
+  return {
+    contacts: (lookup) =>
+      bridge.callbackRequest("contacts", [lookup]) as ReturnType<
+        Required<RawCallbacks>["contacts"]
+      >,
+    pickContact: (product) =>
+      bridge.callbackRequest("pickContact", [product]) as ReturnType<
+        Required<RawCallbacks>["pickContact"]
+      >,
+  };
+}
+
 function identityBackendRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<Pick<RawCallbacks, "identityUsernameCandidates">> {
@@ -368,6 +385,8 @@ export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   coinageWallet?: boolean;
   /** Whether the host serves this capability. */
+  contacts?: boolean;
+  /** Whether the host serves this capability. */
   identityBackend?: boolean;
   /** Whether the host serves this capability. */
   permissionStatus?: boolean;
@@ -390,6 +409,8 @@ export function createWorkerRawCallbacks(
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
   if (capabilities.coinageWallet)
     Object.assign(callbacks, coinageWalletRawCallbacks(bridge));
+  if (capabilities.contacts)
+    Object.assign(callbacks, contactsRawCallbacks(bridge));
   if (capabilities.identityBackend)
     Object.assign(callbacks, identityBackendRawCallbacks(bridge));
   if (capabilities.permissionStatus)

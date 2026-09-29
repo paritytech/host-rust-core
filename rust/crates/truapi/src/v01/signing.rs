@@ -6,7 +6,10 @@ use super::ProductAccountId;
 /// Full Substrate extrinsic signing payload with all fields needed for signature
 /// generation.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct HostSignPayloadData {
     /// Reference block hash.
     pub block_hash: Vec<u8>,
@@ -42,7 +45,10 @@ pub struct HostSignPayloadData {
 
 /// Request to sign an extrinsic payload with a product account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct HostSignPayloadRequest {
     /// Product account that will sign this payload.
     pub account: ProductAccountId,
@@ -52,7 +58,10 @@ pub struct HostSignPayloadRequest {
 
 /// Raw data to sign -- either binary bytes or a string message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Enum)
+)]
 pub enum RawPayload {
     /// Raw binary data to sign.
     Bytes {
@@ -68,7 +77,10 @@ pub enum RawPayload {
 
 /// A raw signing request pairing an account with the payload to sign.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct HostSignRawRequest {
     /// Product account that will sign this payload.
     pub account: ProductAccountId,
@@ -104,7 +116,10 @@ pub enum HostSignPayloadError {
 /// Sign raw bytes with a non-product (legacy) account. The signer field
 /// identifies which legacy account to use.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct HostSignRawWithLegacyAccountRequest {
     /// Signer address (SS58 or hex) of the legacy account.
     pub signer: String,
@@ -116,7 +131,10 @@ pub struct HostSignRawWithLegacyAccountRequest {
 /// Contains the same fields as [`HostSignPayloadRequest`] minus `address`
 /// (replaced by `signer`).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Record)
+)]
 pub struct HostSignPayloadWithLegacyAccountRequest {
     /// Signer address (SS58 or hex) of the legacy account.
     pub signer: String,
