@@ -461,7 +461,6 @@ export async function startTestHost(
   };
 }
 
-/** The main-thread signing runtime: hands back a product core directly. */
 /** The core's pure product-account derivation helpers. */
 interface ProductAccountDerivation {
   deriveProductAccountPublicKey(
@@ -471,6 +470,7 @@ interface ProductAccountDerivation {
   productAccountAddress(publicKey: Uint8Array): string;
 }
 
+/** The main-thread signing runtime: hands back a product core directly. */
 interface DirectSigningRuntime {
   setGrantAllowancesUnchecked?(granted: boolean): void;
   productSubtreePublicKey(

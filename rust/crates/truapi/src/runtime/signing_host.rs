@@ -354,11 +354,6 @@ impl SigningHost {
         Ok(())
     }
 
-    /// Derive the product-account keypair for `account` from the root entropy.
-    ///
-    /// The root keypair is recomputed per call (PBKDF2, 2048 rounds, via
-    /// `substrate-bip39`) rather than cached: the signing host holds only the
-    /// raw, zeroizable entropy, never an expanded secret key.
     /// The product's hard-subtree public key, derived from the active session
     /// root.
     ///
@@ -384,6 +379,11 @@ impl SigningHost {
         Ok(Some(subtree.public.to_bytes()))
     }
 
+    /// Derive the product-account keypair for `account` from the root entropy.
+    ///
+    /// The root keypair is recomputed per call (PBKDF2, 2048 rounds, via
+    /// `substrate-bip39`) rather than cached: the signing host holds only the
+    /// raw, zeroizable entropy, never an expanded secret key.
     fn product_keypair_with_owner(
         &self,
         account: &v01::ProductAccountId,

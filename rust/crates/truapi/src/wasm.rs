@@ -1325,12 +1325,6 @@ impl WasmSigningHostRuntime {
     }
 }
 
-/// Soft-derive a product account public key from a product's hard-subtree key
-/// and a SCALE-encoded `DerivationIndex`.
-///
-/// The index crosses encoded rather than as a number so the chain code stays
-/// core-owned: a host that rebuilds it wrongly gets a valid-looking wrong
-/// address rather than an error.
 /// Derive a product's hard-subtree public key from a session's root entropy.
 ///
 /// Pure: no runtime and no session, so a test harness can work out the address
@@ -1350,6 +1344,12 @@ pub fn derive_product_subtree_public_key(
         .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
+/// Soft-derive a product account public key from a product's hard-subtree key
+/// and a SCALE-encoded `DerivationIndex`.
+///
+/// The index crosses encoded rather than as a number so the chain code stays
+/// core-owned: a host that rebuilds it wrongly gets a valid-looking wrong
+/// address rather than an error.
 #[wasm_bindgen(js_name = deriveProductAccountPublicKey)]
 pub fn derive_product_account_public_key(
     product_subtree_public_key: Vec<u8>,
