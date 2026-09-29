@@ -20,6 +20,7 @@ mod callbacks;
 mod config;
 mod errors;
 mod events;
+mod executor;
 mod platform;
 mod renderer;
 mod runtime;

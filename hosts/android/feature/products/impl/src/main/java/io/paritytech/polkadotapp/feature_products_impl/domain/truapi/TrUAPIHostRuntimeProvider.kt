@@ -275,11 +275,11 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
 }
 
 private object HostLevelStorage : HostStorage {
-    override fun read(key: String): ByteArray? = null
+    override suspend fun read(key: String): ByteArray? = null
 
-    override fun write(key: String, value: ByteArray) = throw noProductScope()
+    override suspend fun write(key: String, value: ByteArray) = throw noProductScope()
 
-    override fun clear(key: String) = throw noProductScope()
+    override suspend fun clear(key: String) = throw noProductScope()
 
     private fun noProductScope() =
         HostLocalStorageReadException.Unknown("no product scope at host level")

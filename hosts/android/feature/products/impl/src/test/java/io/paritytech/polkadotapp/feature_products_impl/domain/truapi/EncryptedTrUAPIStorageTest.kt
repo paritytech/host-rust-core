@@ -3,10 +3,11 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.EncryptedPreferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.truapi.HostLocalStorageReadException
 
@@ -14,7 +15,7 @@ class EncryptedTrUAPIStorageTest {
     private val prefs = FakeEncryptedPreferences()
 
     @Test
-    fun `an empty value is a value, not a miss`() {
+    fun `an empty value is a value, not a miss`() = runTest {
         val storage = EncryptedHostStorage(prefs, productStorageNamespace("a.dot"))
 
         storage.write("k", ByteArray(0))
@@ -25,14 +26,16 @@ class EncryptedTrUAPIStorageTest {
 
     /** `EncryptionUtil` returns "" instead of throwing when encryption fails. */
     @Test
-    fun `a silently failed write is reported`() {
+    fun `a silently failed write is reported`() = runTest {
         val storage = EncryptedHostStorage(prefs.swallowingWrites(), productStorageNamespace("a.dot"))
 
-        assertThrows(HostLocalStorageReadException::class.java) { storage.write("k", byteArrayOf(9)) }
+        val failure = runCatching { storage.write("k", byteArrayOf(9)) }.exceptionOrNull()
+
+        assertTrue("expected HostLocalStorageReadException, got $failure", failure is HostLocalStorageReadException)
     }
 
     @Test
-    fun `an undecryptable value reads as a miss, not empty bytes`() {
+    fun `an undecryptable value reads as a miss, not empty bytes`() = runTest {
         val storage = EncryptedHostStorage(prefs, productStorageNamespace("a.dot"))
         storage.write("k", byteArrayOf(9))
         prefs.corrupt()
@@ -41,14 +44,14 @@ class EncryptedTrUAPIStorageTest {
     }
 
     @Test
-    fun `products cannot read each other's keys`() {
+    fun `products cannot read each other's keys`() = runTest {
         EncryptedHostStorage(prefs, productStorageNamespace("a.dot")).write("shared", byteArrayOf(7))
 
         assertNull(EncryptedHostStorage(prefs, productStorageNamespace("b.dot")).read("shared"))
     }
 
     @Test
-    fun `core storage is shared across products by design`() {
+    fun `core storage is shared across products by design`() = runTest {
         val first = EncryptedHostCoreStorage(prefs)
         first.write(byteArrayOf(1), byteArrayOf(42))
 

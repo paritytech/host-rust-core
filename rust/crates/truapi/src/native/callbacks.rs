@@ -20,7 +20,7 @@ use super::NativeTrUApiHostRuntime;
 /// the entire bridge — not just the request being served. Async callbacks
 /// (`navigate_to`, `push_notification`, `device_permission`,
 /// `remote_permission`, `feature_supported`, `confirm_user_action`, `confirm_permission`,
-/// `lookup_preimage`) are awaited by the core — implementations hop to the
+/// `lookup_preimage`, and the core and local storage callbacks) are awaited by the core. Implementations hop to the
 /// main thread for any UI and may keep the future pending arbitrarily long,
 /// but must suspend rather than block the polling thread (foreign
 /// implementations bridged through UniFFI suspend naturally; the rule
@@ -28,7 +28,10 @@ use super::NativeTrUApiHostRuntime;
 /// cancels the foreign task. The remaining sync callbacks run inline on the
 /// dispatcher thread and must return promptly without blocking; in
 /// particular `auth_state_changed` should only hand the state to the host
-/// UI thread, never wait for the user.
+/// UI thread, never wait for the user. `chain_send` and `chain_close` are
+/// sync so requests reach the connection in the order the core sent them;
+/// they must only enqueue work on the host's connection, never wait on the
+/// network.
 #[uniffi::export(rust, foreign)]
 #[async_trait::async_trait]
 pub trait HostCallbacks: Send + Sync {
@@ -90,15 +93,15 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Read a core-owned host-private storage slot. `key` is a SCALE-encoded
     /// [`CoreStorageKey`].
-    fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
+    async fn core_storage_read(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
 
     /// Persist a core-owned host-private storage slot. `key` is a
     /// SCALE-encoded [`CoreStorageKey`].
-    fn core_storage_write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), HostRejection>;
+    async fn core_storage_write(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), HostRejection>;
 
     /// Clear a core-owned host-private storage slot. `key` is a SCALE-encoded
     /// [`CoreStorageKey`].
-    fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection>;
+    async fn core_storage_clear(&self, key: Vec<u8>) -> Result<(), HostRejection>;
 
     /// Open a JSON-RPC connection for a chain. Return a host-assigned
     /// connection id, or `None` when unsupported.
@@ -176,11 +179,18 @@ pub trait HostCallbacks: Send + Sync {
     fn device_paired(&self, device: PairedSsoPeer);
 
     /// Read a value from the host's scoped key-value store.
-    fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError>;
+    async fn local_storage_read(
+        &self,
+        key: String,
+    ) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError>;
     /// Write a value to the host's scoped key-value store.
-    fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), v01::HostLocalStorageReadError>;
+    async fn local_storage_write(
+        &self,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<(), v01::HostLocalStorageReadError>;
     /// Clear a value from the host's scoped key-value store.
-    fn local_storage_clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError>;
+    async fn local_storage_clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError>;
 
     /// Record a pending operation, whose id keeps the product's worker alive
     /// until it ends.
@@ -237,14 +247,15 @@ pub trait NativeChatCallbacks: Send + Sync {
 
 /// Native Pocket collection adapter. Hosts with a Pocket surface pass an
 /// implementation to [`NativeTrUApiHostRuntime::open_product_execution`]; hosts
-/// without one pass `None`. Callbacks run inline on the process-wide dispatch
-/// pool shared by every product execution, so one that blocks stalls the
-/// others.
+/// without one pass `None`. `list_cards` runs inline on the core runtime
+/// shared by every product execution, so it must return promptly;
+/// `remove_card` is awaited and may suspend while the host's storage works.
 ///
 /// The host decides a removal and reports what it did, so the check and the
 /// removal happen together under whatever lock it holds. A card cannot be
 /// pinned between the two.
 #[uniffi::export(rust, foreign)]
+#[async_trait::async_trait]
 pub trait NativePocketCallbacks: Send + Sync {
     /// Return the product's cards as this host currently holds them, each with
     /// the flag saying whether the host pinned it.
@@ -252,7 +263,7 @@ pub trait NativePocketCallbacks: Send + Sync {
 
     /// Remove one of the product's cards, reporting whether the card was
     /// taken out, was already gone, or is pinned and stays.
-    fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection>;
+    async fn remove_card(&self, card_id: String) -> Result<NativePocketRemoval, HostRejection>;
 }
 
 /// What a host did with a removal request.
