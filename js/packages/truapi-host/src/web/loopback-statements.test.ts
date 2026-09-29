@@ -13,8 +13,8 @@ const TOPIC_B = `0x${"bb".repeat(32)}`;
  * A statement carrying `topics`, encoded the way the core sends it.
  *
  * Built with the store's own encoder, which the pinned real submission below
- * holds to the wire format. Hand-rolling the bytes here is what let this file
- * exercise the topic filter against a shape no product ever submits.
+ * holds to the wire format. Hand-rolled bytes would let this file exercise the
+ * topic filter against a shape no product ever submits.
  */
 function statement(topics: string[]): string {
   return encodeStatement({ topics });

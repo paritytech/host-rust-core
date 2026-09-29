@@ -372,10 +372,10 @@ describe("the permission policy the old package's name asks for", () => {
 
   suite("against the real core", () => {
     it("takes `reject-all` without complaint", async () => {
-      // Both spellings denied before this, but only by accident: `granted`
-      // compares against "allow-all", so every other string fell through to a
-      // denial. What changed is that the name is now recognised rather than
-      // merely unequal -- which is what makes the check below possible.
+      // The name the old package spells the denying policy with, recognised
+      // rather than merely unequal to "allow-all". Recognising it is what
+      // leaves the mock free to refuse a name it does not know, which the
+      // case below asserts.
       const { host, dispose } = await createMockClient();
       try {
         expect(() => host.setPermissionBehavior("reject-all")).not.toThrow();
@@ -385,8 +385,8 @@ describe("the permission policy the old package's name asks for", () => {
     });
 
     it("refuses a policy name that means nothing here", async () => {
-      // This is the case the accident hid: a typo denied everything silently,
-      // and a suite meaning to allow saw refusals with nothing saying why.
+      // Without this a typo denies everything silently, and a suite meaning to
+      // allow sees refusals with nothing saying why.
       const { host, dispose } = await createMockClient();
       try {
         expect(() =>
