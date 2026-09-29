@@ -47,7 +47,7 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
+      - uses: ./.github/actions/rust-cache
 
       - run: cargo +nightly fmt -p truapi-provider --check
 
@@ -76,7 +76,7 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: ./.github/actions/rust-cache
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.14.0 --locked

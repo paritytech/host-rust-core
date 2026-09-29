@@ -235,7 +235,7 @@ jobs:
           toolchain: stable
 
       - if: steps.version.outputs.proceed == 'true'
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: ./.github/actions/rust-cache
 
       - name: Install dependencies
         if: steps.version.outputs.proceed == 'true'

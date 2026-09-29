@@ -129,6 +129,7 @@ scripts/refresh-host-import.sh
                            Refresh a vendored host tree from its source repository
 scripts/battery.sh         Run the generated battery against both headless CLI host roles,
                            plus the Pocket phase a Worker execution serves
+scripts/bundle-size.mjs    Measure the JS and WASM the truapi-* packages ship, against a baseline
 ```
 
 Taking a screenshot opens **Report app issue** wherever the shake-opened Debug
@@ -367,6 +368,25 @@ truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id localhost:30
 To run the playground inside a real host instead, start it with `yarn dev` and
 open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
 [`playground/README.md`](playground/README.md) for deployment.
+
+### Bundle size
+
+The `Bundle size` CI job builds the packages and runs
+[`.github/actions/bundle-size`](.github/actions/bundle-size/action.yml) on them.
+The action's `assets` input lists the groups it measures (raw, gzip and
+brotli): the wasm-pack output of the Rust crates (the `@parity/truapi-host` web
+bundle and `@parity/truapi-provider`) and the compiled TypeScript of
+`@parity/truapi` and `@parity/truapi-host`, without
+the test host behind `@parity/truapi-host/testing`. A push to `main` stores the
+measurement as the baseline, and every pull request gets one comment comparing
+with it. A size change never fails the job. To see the same report locally,
+build the assets and pass the job's `assets` list to the script:
+
+```bash
+make wasm
+npm run build --prefix js/packages/truapi-host
+node scripts/bundle-size.mjs --assets "<the job's list>" [--baseline <snapshot.json>]
+```
 
 ### Refreshing a vendored host tree
 
