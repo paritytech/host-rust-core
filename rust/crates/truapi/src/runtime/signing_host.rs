@@ -361,7 +361,7 @@ impl SigningHost {
     /// Account Holder for it the way a pairing host must, and answers the
     /// `ProductAuthority` request of the same name from the same derivation.
     /// `None` when no session is active: there is no root to derive from.
-    pub(crate) fn derive_subtree_public_key(
+    pub fn derive_subtree_public_key(
         &self,
         product_id: &str,
     ) -> Result<Option<[u8; 32]>, AuthorityError> {
