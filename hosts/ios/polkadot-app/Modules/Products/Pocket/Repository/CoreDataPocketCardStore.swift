@@ -11,11 +11,11 @@ import TrUAPIHost
 /// newest face for any card are rows here; a host-placed card has no membership
 /// row, but its face is kept like every other.
 ///
-/// Reads and removals raise what went wrong. The core tells a failure apart from
-/// an empty Pocket and from a card that was already gone, and a product told its
-/// removal succeeded when it did not will not ask again. Surfaces with nowhere
-/// to put a failure, the Wallet tab first of all, fall back to an empty list
-/// themselves.
+/// Reads, additions and removals raise what went wrong. The core tells a
+/// failure apart from an empty Pocket and from a card that was already gone,
+/// and a product told its removal succeeded when it did not will not ask again.
+/// Surfaces with nowhere to put a failure, the Wallet tab first of all, fall
+/// back to an empty list themselves.
 ///
 /// Faces are the exception: one that no longer reads is answered as none, and
 /// the card keeps its place and waits for its product to draw again.
@@ -44,7 +44,7 @@ final class CoreDataPocketCardStore: PocketCardStore, @unchecked Sendable {
     }
 
     /// Pinned cards keep the front, and a card the user added before the host
-    /// came to pin it is listed once, as the pinned one — the stored copy is
+    /// came to pin it is listed once, as the pinned one. The stored copy is
     /// not privileged, so listing it too would offer a permanent card for
     /// removal.
     func cards() async throws -> [PocketCardEntry] {
@@ -87,14 +87,9 @@ final class CoreDataPocketCardStore: PocketCardStore, @unchecked Sendable {
         return held ? .removed : .absent
     }
 
-    func add(_ card: PocketCardEntry, face: RendererNode) async {
+    func add(_ card: PocketCardEntry, face: RendererNode) async throws {
         let stored = StoredPocketCard(key: card.key, title: card.title, addedAt: Date())
-
-        do {
-            try await cardRows.saveOperation({ [stored] }, { [] }).asyncExecute()
-        } catch {
-            logger.error("pocket: '\(card.key.storageId)' could not be stored: \(error)")
-        }
+        try await cardRows.saveOperation({ [stored] }, { [] }).asyncExecute()
 
         await cacheFace(face, for: card.key)
     }

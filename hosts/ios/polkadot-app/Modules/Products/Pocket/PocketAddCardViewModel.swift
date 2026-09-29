@@ -58,8 +58,13 @@ final class PocketAddCardViewModel {
         guard case let .offered(offer, _) = state, !isAdding else { return }
 
         isAdding = true
-        await interactor.approve(offer)
-        onFinish()
+        do {
+            try await interactor.approve(offer)
+            onFinish()
+        } catch {
+            isAdding = false
+            state = .refused(message(for: error))
+        }
     }
 
     /// A product that publishes no such card is told apart from one that

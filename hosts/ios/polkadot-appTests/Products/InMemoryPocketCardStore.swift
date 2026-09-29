@@ -31,8 +31,8 @@ actor InMemoryPocketCardStore: PocketCardStore {
         readsFail = true
     }
 
-    /// Storage the app can no longer write to, which is a removal that did not
-    /// happen rather than one that found nothing.
+    /// Storage the app can no longer write to: a card that was not added, and
+    /// a removal that did not happen rather than one that found nothing.
     func failWrites() {
         writesFail = true
     }
@@ -68,7 +68,9 @@ actor InMemoryPocketCardStore: PocketCardStore {
         return stored.count != before ? .removed : .absent
     }
 
-    func add(_ card: PocketCardEntry, face: RendererNode) async {
+    func add(_ card: PocketCardEntry, face: RendererNode) async throws {
+        if writesFail { throw Unavailable() }
+
         stored.removeAll { $0.key == card.key }
         stored.append(card)
         faces[card.key] = face

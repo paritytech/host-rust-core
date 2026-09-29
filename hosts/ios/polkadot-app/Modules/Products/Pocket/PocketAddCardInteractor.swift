@@ -79,8 +79,8 @@ struct PocketAddCardInteractor {
     /// The card is stored with the face the sheet showed, so what the Pocket
     /// draws next is what the user approved. Only the host places a privileged
     /// card, so an approved one never is.
-    func approve(_ offer: PocketAddCardOffer) async {
-        await store.add(
+    func approve(_ offer: PocketAddCardOffer) async throws {
+        try await store.add(
             PocketCardEntry(key: offer.key, title: offer.title, privileged: false),
             face: offer.face
         )

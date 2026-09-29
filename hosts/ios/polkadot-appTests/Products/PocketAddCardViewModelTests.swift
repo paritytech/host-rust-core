@@ -35,6 +35,37 @@ struct PocketAddCardViewModelTests {
         #expect(asked.products == ["game.paseo"])
         #expect(resolved?.lastPathComponent == "logo.png")
     }
+
+    /// A card that could not be stored must not dismiss the sheet as approved:
+    /// the user would be left believing the Pocket holds a card it never took.
+    @Test
+    func refusesTheOfferWhenTheCardCouldNotBeStored() async throws {
+        let store = InMemoryPocketCardStore()
+        await store.failWrites()
+        let dismissal = Dismissal()
+        let viewModel = makeViewModel(store: store)
+        viewModel.onFinish = { dismissal.note() }
+
+        await viewModel.load()
+        await viewModel.add()
+
+        guard case let .refused(message) = viewModel.state else {
+            Issue.record("the sheet stayed on the offer")
+            return
+        }
+        #expect(message == String(localized: .Products.pocketAddCardFailed))
+        #expect(!dismissal.happened)
+    }
+}
+
+@MainActor
+private func makeViewModel(store: any PocketCardStore) -> PocketAddCardViewModel {
+    PocketAddCardViewModel(
+        productId: "game.paseo",
+        cardId: PocketCardId(value: "loyalty"),
+        interactor: makeAddCardInteractor(published: [loyalty], store: store),
+        images: { _ in nil }
+    )
 }
 
 private let loyalty = PocketCardDefinition(
@@ -42,6 +73,16 @@ private let loyalty = PocketCardDefinition(
     title: "Loyalty",
     preview: .archive(path: "faces/loyalty.json")
 )
+
+/// Whether the sheet dismissed as approved.
+@MainActor
+private final class Dismissal {
+    private(set) var happened = false
+
+    func note() {
+        happened = true
+    }
+}
 
 @MainActor
 private final class Recorder {

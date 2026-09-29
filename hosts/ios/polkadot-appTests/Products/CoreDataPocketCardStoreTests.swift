@@ -17,8 +17,8 @@ struct CoreDataPocketCardStoreTests {
     func listsAddedCardsOldestFirst() async throws {
         let store = makeStore()
 
-        await store.add(loyalty, face: .nil)
-        await store.add(streak, face: .nil)
+        try await store.add(loyalty, face: .nil)
+        try await store.add(streak, face: .nil)
 
         #expect(try await store.cards().map(\.key) == [loyalty.key, streak.key])
     }
@@ -29,7 +29,7 @@ struct CoreDataPocketCardStoreTests {
     func listsPinnedCardsBeforeAddedOnes() async throws {
         let store = makeStore(pinned: [humanity])
 
-        await store.add(loyalty, face: .nil)
+        try await store.add(loyalty, face: .nil)
 
         #expect(try await store.cards().map(\.key) == [humanity.key, loyalty.key])
     }
@@ -39,8 +39,8 @@ struct CoreDataPocketCardStoreTests {
     @Test
     func listsACardHeldBothWaysOnlyOnce() async throws {
         let store = makeStore(pinned: [humanity])
-        await store.add(PocketCardEntry(key: humanity.key, title: "stale copy", privileged: false), face: .nil)
-        await store.add(loyalty, face: .nil)
+        try await store.add(PocketCardEntry(key: humanity.key, title: "stale copy", privileged: false), face: .nil)
+        try await store.add(loyalty, face: .nil)
 
         let cards = try await store.cards()
 
@@ -71,7 +71,7 @@ struct CoreDataPocketCardStoreTests {
     @Test
     func removingAHeldCardDropsIt() async throws {
         let store = makeStore()
-        await store.add(loyalty, face: .nil)
+        try await store.add(loyalty, face: .nil)
 
         #expect(try await store.removeCard(loyalty.key) == .removed)
         #expect(try await store.cards().isEmpty)
@@ -81,8 +81,8 @@ struct CoreDataPocketCardStoreTests {
     @Test
     func removesOnlyTheCardItWasAsked() async throws {
         let store = makeStore()
-        await store.add(loyalty, face: .nil)
-        await store.add(streak, face: .nil)
+        try await store.add(loyalty, face: .nil)
+        try await store.add(streak, face: .nil)
 
         _ = try await store.removeCard(loyalty.key)
 
@@ -97,7 +97,7 @@ struct CoreDataPocketCardStoreTests {
     func keepsTheFaceACardWasAddedWith() async throws {
         let store = makeStore()
 
-        await store.add(loyalty, face: .string(text: "approved"))
+        try await store.add(loyalty, face: .string(text: "approved"))
 
         #expect(await store.face(for: loyalty.key) == .string(text: "approved"))
     }
@@ -107,7 +107,7 @@ struct CoreDataPocketCardStoreTests {
     @Test
     func dropsTheFaceWhenTheCardIsRemoved() async throws {
         let store = makeStore()
-        await store.add(loyalty, face: .string(text: "approved"))
+        try await store.add(loyalty, face: .string(text: "approved"))
 
         _ = try await store.removeCard(loyalty.key)
 
@@ -158,7 +158,7 @@ struct CoreDataPocketCardStoreTests {
         }
         defer { following.cancel() }
 
-        await store.add(loyalty, face: .nil)
+        try await store.add(loyalty, face: .nil)
         try await waitUntil { await seen.last?.contains { $0.key == loyalty.key } == true }
 
         #expect(await seen.last?.map(\.key) == [loyalty.key])

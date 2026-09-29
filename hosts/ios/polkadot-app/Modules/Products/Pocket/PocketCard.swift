@@ -64,7 +64,10 @@ protocol PocketCollection {
 /// the writes only the host makes.
 protocol PocketCardStore: PocketCollection {
     /// Adds a card the user approved, together with the face they approved it by.
-    func add(_ card: PocketCardEntry, face: RendererNode) async
+    ///
+    /// Throws when the card could not be stored, which the approval sheet must
+    /// tell apart from a card the Pocket now holds.
+    func add(_ card: PocketCardEntry, face: RendererNode) async throws
 
     /// The newest face held for `key`: the last one its product drew, or the
     /// bundled one for a host-placed card that has never drawn.

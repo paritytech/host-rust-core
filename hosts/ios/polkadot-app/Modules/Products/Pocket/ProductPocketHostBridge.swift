@@ -3,18 +3,26 @@ import os
 import Products
 import TrUAPIHost
 
+/// Raised while the bridge holds no snapshot of the collection, because no read
+/// of it has landed yet.
+struct PocketCollectionUnreadable: Error {}
+
 /// Serves one product's slice of the collection to the core.
 ///
 /// Both callbacks run inline on the core's dispatcher thread, so neither may
 /// await: the list is answered from a snapshot, and a removal decides against
-/// that same snapshot before touching storage.
+/// that same snapshot before touching storage. Until a read fills that
+/// snapshot, both raise rather than answer, because the core tells a failure
+/// apart from an empty Pocket and a product does not ask again about a card it
+/// was told is gone.
 final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
     private let productId: String
     private let collection: any PocketCollection
     private let logger: LoggerProtocol
-    private let snapshot = OSAllocatedUnfairLock(initialState: [PocketCard]())
+    private let snapshot = OSAllocatedUnfairLock(initialState: [PocketCard]?.none)
     private let republish = OSAllocatedUnfairLock(initialState: (([PocketCard]) -> Void)?.none)
     private let following = OSAllocatedUnfairLock(initialState: Task<Void, Never>?.none)
+    private let stopped = OSAllocatedUnfairLock(initialState: false)
 
     init(productId: String, collection: any PocketCollection, logger: LoggerProtocol = Logger.shared) {
         self.productId = productId
@@ -28,13 +36,17 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
     ///
     /// The opening publish is what closes the boot window: the snapshot is
     /// filled before the worker's script comes up, so every change taken into
-    /// it until here was seen by nobody.
+    /// it until here was seen by nobody. With no snapshot there is nothing to
+    /// open with, and the first read that lands publishes instead.
     func start(publish: @escaping ([PocketCard]) -> Void) {
         republish.withLock { $0 = publish }
-        publish(snapshot.withLock { $0 })
+        guard let held = snapshot.withLock({ $0 }) else { return }
+
+        publish(held)
     }
 
     func stop() {
+        stopped.withLock { $0 = true }
         republish.withLock { $0 = nil }
         following.withLock { held in
             held?.cancel()
@@ -49,8 +61,12 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
     /// after that point leaves the product reading an empty Pocket for the
     /// whole life of its worker.
     func begin() async {
-        let held = try? await collection.cards()
-        take(held)
+        do {
+            let held = try await collection.cards()
+            take(held)
+        } catch {
+            logger.error("[pocket] \(productId)'s slice could not be read: \(error)")
+        }
 
         let task = Task { [weak self, collection, logger, productId] in
             do {
@@ -62,18 +78,22 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
                 logger.error("[pocket] \(productId) stopped following the collection: \(error)")
             }
         }
+
+        // A stop can land while the read above is in flight. Installing the
+        // follow task after that would leave one observing the collection for a
+        // bridge nothing holds any more.
+        guard !stopped.withLock({ $0 }) else {
+            task.cancel()
+            return
+        }
+
         following.withLock { $0 = task }
     }
 
     /// Tells the core only if this product's own slice changed. A face
     /// streaming at frame rate changes the stored collection continuously
     /// without changing any card the core knows about.
-    private func take(_ held: [PocketCardEntry]?) {
-        guard let held else {
-            logger.error("[pocket] \(productId)'s slice could not be read; the core keeps the last one")
-            return
-        }
-
+    private func take(_ held: [PocketCardEntry]) {
         let current = held
             .filter { $0.key.productId == productId }
             .map { PocketCard(cardId: $0.key.cardId.value, privileged: $0.privileged) }
@@ -89,11 +109,13 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
     }
 
     func listCards() throws -> [PocketCard] {
-        snapshot.withLock { $0 }
+        guard let held = snapshot.withLock({ $0 }) else { throw PocketCollectionUnreadable() }
+
+        return held
     }
 
     func removeCard(cardId: String) throws -> NativePocketRemoval {
-        let held = snapshot.withLock { $0 }
+        let held = try listCards()
 
         // Both answered from the snapshot, which is what the core was served in
         // the first place. Neither touches storage, so neither pays the
@@ -105,7 +127,7 @@ final class ProductPocketHostBridge: PocketHostBridge, @unchecked Sendable {
         let outcome = try blockingRemove(key)
 
         if outcome == .removed {
-            snapshot.withLock { $0.removeAll { $0.cardId == cardId } }
+            snapshot.withLock { $0?.removeAll { $0.cardId == cardId } }
         }
         return outcome
     }

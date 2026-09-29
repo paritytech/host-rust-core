@@ -29,7 +29,7 @@ struct WalletMainPocketTests {
         try await settle()
         let beforeTheChange = presenter.pocketCards.count
 
-        await collection.add(loyalty, face: .nil)
+        try await collection.add(loyalty, face: .nil)
         try await settle()
 
         #expect(presenter.pocketCards.count > beforeTheChange)
