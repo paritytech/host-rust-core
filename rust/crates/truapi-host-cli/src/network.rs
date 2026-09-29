@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 use truapi::latest::ChainIdentifier;
-use truapi_platform::{HostChainEntry, HostChainSet};
+use truapi::platform::{HostChainEntry, HostChainSet};
 
 /// Supported live network presets for the headless hosts.
 ///
@@ -81,7 +81,7 @@ fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> Ne
 // usernames) resolves through Asset Hub, SSO through People, preimages through
 // Bulletin.
 
-pub(crate) const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
+pub const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
         "4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
     ),
@@ -107,7 +107,7 @@ const PASEO_BULLETIN: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "c27c8bf3f13f96dc2130cd2b0a3debe57618fd02521ecc1902bd7dd4ed83d2fe",
+        "bac97e23fc8f4bccae72a98f8aeb2bcab20bf755862304e4b46ad6473456e896",
     ),
     ws: "wss://previewnet.substrate.dev/asset-hub",
     required_for_host: true,
@@ -115,7 +115,7 @@ const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "f720c28fe3315e67fa799a616fc59abad47dd257b1a336af6538435844d35218",
+        "55e3e689ecfa9d2fffcf7d309b8011956671493982230bfd0420c683542249e9",
     ),
     ws: "wss://previewnet.substrate.dev/people",
     required_for_host: true,
@@ -123,7 +123,7 @@ const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_BULLETIN: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "ea9158d768971553e315b76323cbffda238b6b865f3d3d5e138350b12312173d",
+        "a081192b90c1f6a3f8e9ce7b2a8246f41af805c66456c84e05fd97c2b3502425",
     ),
     ws: "wss://previewnet.substrate.dev/bulletin",
     required_for_host: true,
@@ -148,6 +148,7 @@ pub struct NetworkConfig {
     pub network_suffix: &'static str,
     pub identity_backend_base: &'static str,
     pub people_ws: &'static str,
+    // Read only by tests; production routing goes through `live_chain_endpoints`.
     #[allow(dead_code)]
     pub bulletin_ws: &'static str,
     /// Asset Hub RPC, where PGAS allowances are claimed.
@@ -213,7 +214,7 @@ impl NetworkConfig {
     /// should stop this compiling rather than reach a `None` that only a test
     /// run notices, and one of those tests is `#[ignore]`d.
     #[cfg(test)]
-    pub(crate) fn url_for_role(&self, role: ChainIdentifier) -> Option<&'static str> {
+    pub fn url_for_role(&self, role: ChainIdentifier) -> Option<&'static str> {
         match role {
             ChainIdentifier::People => Some(self.people_ws),
             ChainIdentifier::Bulletin => Some(self.bulletin_ws),
@@ -296,6 +297,29 @@ mod tests {
         }
     }
 
+    /// `TRUAPI_LIGHT_CLIENT=1` finds each chain in the provider's bundled catalog by
+    /// the preset's genesis hash, so a network reset applied to only one of the two
+    /// copies leaves the light client unable to connect.
+    #[test]
+    fn every_preset_matches_the_light_client_catalog() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            let (_, catalog) = truapi_provider::EmbeddedChainProviderBuilder::new()
+                .add_network(config.id)
+                .unwrap_or_else(|error| panic!("{} is not in the catalog: {error:?}", config.id));
+            assert_eq!(
+                (catalog.people, catalog.assethub, catalog.bulletin),
+                (
+                    config.people_genesis,
+                    config.asset_hub_genesis,
+                    config.bulletin_genesis
+                ),
+                "{} genesis hashes differ from the light-client catalog",
+                config.id
+            );
+        }
+    }
+
     /// Anchors the served set itself. Every other test that reads it iterates, so
     /// all of them pass on an empty set; this is what notices a dropped role, and it
     /// covers each preset rather than only the default.
@@ -375,7 +399,7 @@ mod tests {
         for network in Network::value_variants() {
             let config = network.preset();
             assert!(
-                truapi_platform::DOTNS_TLDS.contains(&config.network_suffix),
+                truapi::platform::DOTNS_TLDS.contains(&config.network_suffix),
                 "preset `{}` derives reserved identities under `.{}`, a TLD navigation does not \
                  accept",
                 config.id,
@@ -445,7 +469,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs network access to the preset's chains"]
     async fn the_advertised_genesis_matches_what_each_chain_reports() {
-        use truapi_server::statement_allowance as alloc;
+        use truapi::statement_allowance as alloc;
 
         let mut checked = 0usize;
         let mut drifted = Vec::new();

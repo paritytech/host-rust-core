@@ -258,8 +258,10 @@ extension ServiceCoordinator {
             return nil
         }
 
+        let statementStoreMonitor = StatementStoreActivityMonitor()
         let chatCoordinatorFactory = MessageExchangeCoordinatorFactory(
-            bulletInManager: allowanceManagerFacade.bulletInManager
+            bulletInManager: allowanceManagerFacade.bulletInManager,
+            statementStoreMonitor: statementStoreMonitor
         )
 
         let allowanceSupport = AllowanceSupport(
@@ -421,11 +423,18 @@ extension ServiceCoordinator {
             chainTimeProviders: createChainTimeProviders()
         )
 
+        let statementStoreStatusService = StatementStoreStatusService(
+            networkStatusService: networkStatusService,
+            activityMonitor: statementStoreMonitor,
+            logger: logger
+        )
+
         let chainStatusProvider = ChainStatusProvider(
             networkStatusService: networkStatusService,
             blockProvider: chainBlockProvider,
             anchorProvider: chainLivenessAnchorProvider,
             appStateStreamFactory: ApplicationStateStreamFactory(),
+            statementStoreStatusProvider: statementStoreStatusService,
             logger: logger
         )
 

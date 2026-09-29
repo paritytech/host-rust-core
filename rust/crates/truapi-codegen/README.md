@@ -34,9 +34,8 @@ Missing or duplicate wire ids fail generation. Trait id 255 is reserved for corr
 cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
-  --rust-output rust/crates/truapi-server/src/generated \
+  --rust-output rust/crates/truapi/src/generated \
   --rust-client-output rust/crates/truapi-client/src/generated.rs
-  --output js/packages/truapi/src/generated
 ```
 
 ## Typical workflow
@@ -46,14 +45,13 @@ cargo +nightly rustdoc -p truapi -- -Z unstable-options --output-format json
 cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
-  --rust-output rust/crates/truapi-server/src/generated \
+  --rust-output rust/crates/truapi/src/generated \
   --rust-client-output rust/crates/truapi-client/src/generated.rs
-  --output js/packages/truapi/src/generated
 ```
 
 The repo wraps both steps in [`scripts/codegen.sh`](../../../scripts/codegen.sh), which is what you should run from the repo root.
 
-CI passes the generated TypeScript and Rust output to the Rust job. `TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi-server --test wire_table_ts_parity` enforces actual Rust/TypeScript wire-table parity; `cargo test -p truapi-client` exercises client frame codecs after regeneration. Generated Rust source is not compared against checked-in dispatcher or wire-table text snapshots.
+CI passes the generated TypeScript and Rust output to the Rust job. `TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi --test wire_table_ts_parity` enforces actual Rust/TypeScript wire-table parity; `cargo test -p truapi-client` exercises client frame codecs after regeneration. Generated Rust source is not compared against checked-in dispatcher or wire-table text snapshots.
 
 ## When to run it
 

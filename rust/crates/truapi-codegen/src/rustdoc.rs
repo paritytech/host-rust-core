@@ -266,7 +266,7 @@ struct ItemCandidate {
 /// Maps rustdoc item ids and full paths to the output type names used in
 /// generated code, disambiguated when several types share a simple name.
 #[derive(Debug, Default)]
-pub(crate) struct NameContext {
+pub struct NameContext {
     by_item_id: HashMap<String, String>,
     by_path: HashMap<String, String>,
 }
@@ -1048,7 +1048,7 @@ fn extract_generic_arg(
 }
 
 /// Resolve a rustdoc JSON type node into the internal type reference model.
-pub(crate) fn resolve_type(ty: &serde_json::Value, names: &NameContext) -> Result<TypeRef> {
+pub fn resolve_type(ty: &serde_json::Value, names: &NameContext) -> Result<TypeRef> {
     if let Some(name) = ty.get("generic").and_then(|value| value.as_str()) {
         return Ok(TypeRef::Generic(name.to_string()));
     }
@@ -1200,7 +1200,7 @@ fn expect_single_arg(type_name: &str, mut args: Vec<TypeRef>) -> Result<TypeRef>
 }
 
 /// Extract a struct item, including field docs and generic parameters.
-pub(crate) fn extract_struct(
+pub fn extract_struct(
     item_id: &str,
     item: &Item,
     krate: &Crate,
@@ -1302,7 +1302,7 @@ pub(crate) fn extract_struct(
 }
 
 /// Extract an enum item, including variant docs and field payloads.
-pub(crate) fn extract_enum(
+pub fn extract_enum(
     item_id: &str,
     item: &Item,
     krate: &Crate,
@@ -1533,7 +1533,7 @@ fn value_id(value: &serde_json::Value) -> Result<String> {
 }
 
 /// Render a bounded JSON snippet for diagnostics.
-pub(crate) fn summarize_json(value: &serde_json::Value) -> String {
+pub fn summarize_json(value: &serde_json::Value) -> String {
     const LIMIT: usize = 200;
 
     let mut text =

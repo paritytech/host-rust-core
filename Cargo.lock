@@ -6032,161 +6032,7 @@ dependencies = [
 
 [[package]]
 name = "truapi"
-version = "0.21.0"
-dependencies = [
- "async-trait",
- "derive_more 2.1.1",
- "futures",
- "hex",
- "parity-scale-codec",
- "truapi-macros",
- "uniffi",
-]
-
-[[package]]
-name = "truapi-client"
-version = "0.16.0"
-dependencies = [
- "parity-scale-codec",
- "truapi",
-]
-
-[[package]]
-name = "truapi-codegen"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "convert_case 0.6.0",
- "indoc",
- "serde",
- "serde_json",
- "tempfile",
- "truapi",
-]
-
-[[package]]
-name = "truapi-host-cli"
-version = "0.21.0"
-dependencies = [
- "anyhow",
- "arboard",
- "async-trait",
- "base64",
- "bip39",
- "clap",
- "crossterm",
- "derive_more 2.1.1",
- "flate2",
- "fs2",
- "futures",
- "futures-util",
- "hex",
- "image",
- "parity-scale-codec",
- "qrcode",
- "ratatui",
- "reqwest",
- "rqrr",
- "rustix",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "shlex 1.3.0",
- "subxt-rpcs",
- "tar",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "truapi",
- "truapi-platform",
- "truapi-server",
- "unicode-width 0.2.2",
- "zeroize",
-]
-
-[[package]]
-name = "truapi-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "trybuild",
-]
-
-[[package]]
-name = "truapi-platform"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "derive_more 2.1.1",
- "futures",
- "parity-scale-codec",
- "sp-crypto-hashing",
- "truapi",
- "unicode-normalization",
- "uniffi",
- "url",
- "zeroize",
-]
-
-[[package]]
-name = "truapi-polkavm-host"
-version = "0.2.0"
-dependencies = [
- "polkavm-host-runtime",
- "truapi-server",
-]
-
-[[package]]
-name = "truapi-provider"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake2b_simd",
- "derive_more 2.1.1",
- "futures",
- "futures-timer",
- "getrandom 0.2.17",
- "hex",
- "js-sys",
- "jsonrpsee",
- "jsonrpsee-client-transport",
- "jsonrpsee-core",
- "libsecp256k1",
- "log",
- "pin-project",
- "rand 0.8.7",
- "send_wrapper",
- "serde_json",
- "smoldot 4.0.0",
- "smoldot-light 2.1.0",
- "thiserror 1.0.69",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tracing",
- "tracing-subscriber",
- "truapi",
- "truapi-platform",
- "uniffi",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
- "web-time",
- "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "truapi-server"
-version = "0.1.0"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -6228,9 +6074,8 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
- "truapi",
  "truapi-macros",
- "truapi-platform",
+ "truapi-provider",
  "truapi-verifiable",
  "unicode-normalization",
  "uniffi",
@@ -6244,6 +6089,128 @@ dependencies = [
  "x25519-dalek",
  "x509-parser 0.17.0",
  "zeroize",
+]
+
+[[package]]
+name = "truapi-client"
+version = "0.16.0"
+dependencies = [
+ "parity-scale-codec",
+ "truapi",
+]
+
+[[package]]
+name = "truapi-codegen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "convert_case 0.6.0",
+ "indoc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "truapi",
+]
+
+[[package]]
+name = "truapi-host-cli"
+version = "0.23.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "async-trait",
+ "base64",
+ "bip39",
+ "clap",
+ "crossterm",
+ "derive_more 2.1.1",
+ "flate2",
+ "fs2",
+ "futures",
+ "futures-util",
+ "hex",
+ "image",
+ "parity-scale-codec",
+ "qrcode",
+ "ratatui",
+ "reqwest",
+ "rqrr",
+ "rustix",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shlex 1.3.0",
+ "subxt-rpcs",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "truapi",
+ "truapi-provider",
+ "unicode-width 0.2.2",
+ "zeroize",
+]
+
+[[package]]
+name = "truapi-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "trybuild",
+]
+
+[[package]]
+name = "truapi-polkavm-host"
+version = "0.2.0"
+dependencies = [
+ "polkavm-host-runtime",
+ "truapi",
+]
+
+[[package]]
+name = "truapi-provider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake2b_simd",
+ "derive_more 2.1.1",
+ "futures",
+ "futures-timer",
+ "getrandom 0.2.17",
+ "hex",
+ "js-sys",
+ "jsonrpsee",
+ "jsonrpsee-client-transport",
+ "jsonrpsee-core",
+ "libsecp256k1",
+ "log",
+ "pin-project",
+ "rand 0.8.7",
+ "send_wrapper",
+ "serde_json",
+ "smoldot 4.0.0",
+ "smoldot-light 2.1.0",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+ "uniffi",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+ "web-time",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
