@@ -11,7 +11,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import io.mockk.every
+import io.mockk.coEvery
 import io.mockk.mockk
 import io.parity.truapi.HostBridge
 import io.parity.truapi.LocalhostBridgeBootstrap
@@ -49,7 +49,7 @@ class RendererLossRecoveryTest {
         val context = instrumentation.targetContext
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         val reports = Reports()
-        val bridge = mockk<HostBridge>(relaxed = true) { every { coreStorage.read(any()) } returns null }
+        val bridge = mockk<HostBridge>(relaxed = true) { coEvery { coreStorage.read(any()) } returns null }
         TrUAPIHostRuntime(bridge, CONFIG).use { runtime ->
             runtime.openProductExecution(bridge, ProductExecutionConfig(PRODUCT, ProductExecutionKind.APP)).use { execution ->
                 val endpoint = execution.startWsBridge()
