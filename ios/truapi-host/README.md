@@ -257,6 +257,10 @@ any notice goes out, and a pairing that then fails untracks it again unless the
 device was already paired. `disconnectPairedHost` submits the notice and nothing more, so ending
 a pairing also means cancelling that peer's `resumePairing` task and untracking
 its renewal account; dropping the stored pairing alone leaves both running.
+Cancelling a Swift task does not yet stop the core call it awaits, so a
+cancelled `resumePairing` keeps serving the peer: UniFFI's Swift bindings cannot
+cancel a Rust future ([mozilla/uniffi-rs#3007](https://github.com/mozilla/uniffi-rs/pull/3007)
+would add it). Kotlin coroutine cancellation does reach the core.
 
 Which undo a failure owes is the thrown case, not the message: `.rejected`
 means the peer may already have been reached and its target tracked, while

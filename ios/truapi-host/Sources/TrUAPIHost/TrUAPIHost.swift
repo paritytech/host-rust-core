@@ -854,7 +854,9 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// otherwise keeps answering a host this one no longer considers paired,
     /// and untrack its device statement account, which otherwise keeps being
     /// renewed every period. Dropping the stored pairing alone leaves both
-    /// running.
+    /// running. Cancelling that task does not stop the core yet, because
+    /// UniFFI's Swift bindings cannot cancel a Rust future
+    /// (https://github.com/mozilla/uniffi-rs/pull/3007).
     public func disconnectPairedHost(peer: PairedSsoPeer) async throws {
         try await inner.disconnectPairedHost(peer: peer)
     }
@@ -933,9 +935,11 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// Run one renewal pass now, reporting what each tracked target got.
     ///
     /// Submits extrinsics and returns once they are included. Cancelling the
-    /// calling task stops the pass; a pass with several targets can outlast a
-    /// short background budget, though a target registered before the process
-    /// is killed is not lost and reads back as already allocated.
+    /// calling task does not stop the pass: UniFFI's Swift bindings cannot
+    /// cancel a Rust future yet (https://github.com/mozilla/uniffi-rs/pull/3007).
+    /// A pass with several targets can outlast a short background budget,
+    /// though a target registered before the process is killed is not lost and
+    /// reads back as already allocated.
     public func renewStatementAllowances() async throws -> StatementRenewalReport {
         try await inner.renewStatementAllowances()
     }
