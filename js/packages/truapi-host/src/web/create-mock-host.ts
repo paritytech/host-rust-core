@@ -55,10 +55,9 @@ export type PermissionPolicy = "allow-all" | "deny-all";
 /**
  * The denying policy under the name `@parity/host-api-test-sdk` gives it.
  *
- * Accepted rather than ignored: the two spellings differ, and an unrecognised
- * one used to deny by accident -- `granted` compares against `"allow-all"`, so
- * any other string denied and a suite meaning to allow saw refusals it never
- * asked for, with nothing saying why.
+ * Recognised rather than merely unequal to `"allow-all"`: a policy name the
+ * mock does not know is refused, so a typo says so instead of denying every
+ * permission with nothing to explain the refusals.
  */
 export type PermissionPolicyAlias = "reject-all";
 
@@ -453,13 +452,13 @@ export interface MockHost {
   /** Notifications the core asked the host to show, in order. */
   getNotificationLog(): NotificationLogEntry[];
   /**
-   * Deliver a SCALE-encoded signed statement to the product as a chain
-   * notification, returning how many live subscriptions it reached. Zero means
-   * the product is not subscribed yet: subscribe first, then inject.
+   * Deliver a statement to the product as a chain notification, answering the
+   * entry the store retained.
    *
-   * The bytes are the wire form, not a structured statement. The core decodes
-   * what the chain would have sent it, so anything else is dropped during
-   * decode with no error a suite can see.
+   * Takes the topics and payload as a structure, or the SCALE wire bytes the
+   * chain would have sent. Retained either way, so a suite that injects before
+   * its product subscribes has the statement replayed to it on subscribe
+   * rather than losing it.
    */
   injectStatement(statement: StatementInput | Uint8Array | string): StatementEntry;
   /** Statements injected so far, in order, as `0x` hex. */
@@ -472,8 +471,7 @@ export interface MockHost {
    */
   getStatements(): StatementEntry[];
   /**
-   * Statements the product submitted, as `0x` hex, read off the chain
-   * transport.
+   * Statements the product submitted, decoded, read off the chain transport.
    *
    * The core sends `statement_submit` without consulting an allowance, so a
    * product that signs its own statements is observable here. One that asks the

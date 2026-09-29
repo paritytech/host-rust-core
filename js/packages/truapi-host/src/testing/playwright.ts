@@ -281,8 +281,8 @@ export interface TestHost {
    * for the host to record -- not a host seam the mock declined to implement.
    */
   /**
-   * Statements the product submitted, as `0x` hex, read off the chain
-   * transport rather than a host-side log.
+   * Statements the product submitted, decoded, read off the chain transport
+   * rather than a host-side log.
    *
    * Empty for a product that asks the host to sign
    * (`createProofAuthorized`): that needs a statement allowance, and without
@@ -293,9 +293,13 @@ export interface TestHost {
   /** Every statement the store holds, submitted or injected, in order. */
   getStatements(): Promise<StatementEntry[]>;
   /**
-   * Deliver a statement to the product as a chain notification, returning how
-   * many live subscriptions it reached. Subscribe first: zero means nothing
-   * was listening.
+   * Deliver a statement to the product as a chain notification, answering the
+   * entry the store retained.
+   *
+   * Takes the topics and payload as a structure, or the SCALE wire bytes the
+   * chain would have sent. Retained either way, so a suite that injects before
+   * its product subscribes has the statement replayed to it on subscribe
+   * rather than losing it.
    */
   injectStatement(
     statement: StatementInput | Uint8Array | string,
