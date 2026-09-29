@@ -166,6 +166,48 @@ the foreground, closes, or loses authorization. Clipboard access requires a
 separate permission and explicit user action; approved pasted text may then be
 delivered through baseline committed-text input.
 
+User files are runtime-authorized in the same way. An App registers file
+handlers while it runs, and a file reaches it only when the user selects one in
+Host UI. A handler either delivers the file to the running App or relaunches
+the App with the file mounted as an asset. The PolkaVM application ABI defines
+the registration and delivery contract.
+
+### File-type hint
+
+A PolkaVM App may list the files it opens in a top-level `fileTypes` field:
+
+```json
+{
+  "$v": 2,
+  "kind": "app",
+  "appVersion": [0, 5, 0],
+  "runtime": {
+    "kind": "polkavm",
+    "abiVersion": 1,
+    "entrypoint": "app.polkavm"
+  },
+  "capabilities": {
+    "graphics": { "abiVersion": 1, "profile": "framebuffer" }
+  },
+  "fileTypes": [
+    {
+      "label": "SNES cartridge image",
+      "extensions": [".sfc", ".smc"],
+      "handler": "snes-rom"
+    }
+  ]
+}
+```
+
+Each entry names a label, file extensions or MIME types, and optionally the
+runtime handler that receives those files. A Host may use the list to suggest
+the App for a file before it has run, and a store may show it as the files the
+App opens. The list is not a capability and grants nothing: a file is delivered
+only to a handler the running App registered.
+
+`fileTypes` is defined only for the PolkaVM runtime. Publisher tooling rejects
+it on a web App.
+
 ### Host behavior
 
 Before launch, the Host checks whether it supports:
@@ -173,6 +215,8 @@ Before launch, the Host checks whether it supports:
 - the declared runtime and runtime ABI;
 - the declared graphics profile and ABI;
 - the ABI version of a declared audio capability.
+
+`fileTypes` never makes an App incompatible.
 
 If a requirement is unsupported, the Host skips that App executable and
 reports it as incompatible. The Product and its other executable records
@@ -202,10 +246,10 @@ It must not interpret its artifact as a version 1 web application.
 
 A Host supporting version 2 continues to accept version 1 App manifests.
 
-Draft implementations emitted a `deviceInput` capability before the baseline
-input contract was settled. That field is not part of App manifest version 2.
-Publishers must republish those executable manifests without it; Hosts must not
-derive permission or input-delivery behavior from it.
+Draft implementations emitted `deviceInput` and `fileInput` capabilities.
+Neither field is part of App manifest version 2. Publishers must republish
+those executable manifests without them; Hosts must not derive permission or
+input-delivery behavior from them.
 
 This RFC changes only the App executable. Other executable kinds and
 user-facing surfaces are outside its scope.
