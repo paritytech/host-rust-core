@@ -1,12 +1,15 @@
 package io.paritytech.polkadotapp.common.utils.calendar
 
 import android.Manifest
+import android.content.ContentProviderOperation
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
 import android.provider.CalendarContract
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.paritytech.polkadotapp.common.presentation.sharing.SharingManager
 import io.paritytech.polkadotapp.common.utils.EventCalendarSharing
@@ -25,14 +28,18 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.util.TimeZone
 import javax.inject.Inject
+import kotlin.time.Duration
 
 interface CalendarEventsMixin {
     fun observeEventAddedToCalendar(event: CalendarEvent): Flow<Boolean>
 
     suspend fun addEvent(event: CalendarEvent): Result<Unit>
+
+    suspend fun addEventIfPermitted(event: CalendarEvent, alertBefore: Duration): Result<Unit>
 }
 
 class RealCalendarEventsMixin @Inject constructor(
@@ -77,18 +84,42 @@ class RealCalendarEventsMixin @Inject constructor(
         }
     }
 
+    override suspend fun addEventIfPermitted(event: CalendarEvent, alertBefore: Duration): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val granted = listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
+                    .all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+                // A failed dedupe query aborts rather than risking a duplicate.
+                if (!granted || findEventId(event) != null) return@runCatching
+
+                val calendarId = getMostRelevantCalendarId() ?: return@runCatching
+                val operations = arrayListOf(
+                    ContentProviderOperation.newInsert(CalendarContract.Events.CONTENT_URI)
+                        .withValues(eventValues(calendarId, event))
+                        .build(),
+                    ContentProviderOperation.newInsert(CalendarContract.Reminders.CONTENT_URI)
+                        .withValueBackReference(CalendarContract.Reminders.EVENT_ID, 0)
+                        .withValue(CalendarContract.Reminders.MINUTES, alertBefore.inWholeMinutes)
+                        .withValue(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+                        .build(),
+                )
+                context.contentResolver.applyBatch(CalendarContract.AUTHORITY, operations)
+                manualRefresh.tryEmit(Unit)
+            }
+        }
+
     private fun readPermissionsAreGranted() = permissionAsker.getPermissionState(Manifest.permission.READ_CALENDAR).isGranted()
 
     private fun addEventToCalendarDirectly(calendarId: Long, event: CalendarEvent) {
-        val values = ContentValues().apply {
-            put(CalendarContract.Events.DTSTART, event.timeStart)
-            put(CalendarContract.Events.DTEND, event.timeStart + event.duration.inWholeMilliseconds)
-            put(CalendarContract.Events.TITLE, event.title)
-            put(CalendarContract.Events.CALENDAR_ID, calendarId)
-            put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
-        }
+        context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, eventValues(calendarId, event))
+    }
 
-        context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
+    private fun eventValues(calendarId: Long, event: CalendarEvent) = ContentValues().apply {
+        put(CalendarContract.Events.DTSTART, event.timeStart)
+        put(CalendarContract.Events.DTEND, event.timeStart + event.duration.inWholeMilliseconds)
+        put(CalendarContract.Events.TITLE, event.title)
+        put(CalendarContract.Events.CALENDAR_ID, calendarId)
+        put(CalendarContract.Events.EVENT_TIMEZONE, TimeZone.getDefault().id)
     }
 
     // As fallback we add event to calendar via intent
@@ -163,7 +194,9 @@ class RealCalendarEventsMixin @Inject constructor(
     }
 
     private fun isEventAddedToCalendar(event: CalendarEvent): Boolean {
-        val eventId = runCatching { findEventId(event) }.getOrNull()
+        val eventId = runCatching { findEventId(event) }
+            .onFailure { Timber.e(it, "Failed to find event in calendar") }
+            .getOrNull()
         return eventId != null
     }
 
@@ -175,21 +208,17 @@ class RealCalendarEventsMixin @Inject constructor(
         val selection = "${CalendarContract.Events.DTSTART} = ? AND ${CalendarContract.Events.TITLE} = ?"
         val selectionArgs = arrayOf(event.timeStart.toString(), event.title)
 
-        try {
-            context.contentResolver.query(
-                CalendarContract.Events.CONTENT_URI,
-                arrayOf(CalendarContract.Events._ID),
-                selection,
-                selectionArgs,
-                null
-            )?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val id = cursor.getLong(0)
-                    return id
-                }
+        context.contentResolver.query(
+            CalendarContract.Events.CONTENT_URI,
+            arrayOf(CalendarContract.Events._ID),
+            selection,
+            selectionArgs,
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(0)
+                return id
             }
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to find event in calendar")
         }
 
         return null

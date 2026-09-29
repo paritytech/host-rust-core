@@ -71,10 +71,6 @@ const JS_ONLY: Record<string, string> = {
   clearStatements: "loopback statement store, refused on both sides",
   payment: "unimplemented by every host; the mock refuses and explains",
   coinPayment: "unimplemented by every host; the mock refuses and explains",
-  getGameReminders:
-    "Game control state; the Rust MockPlatform does not implement GamePlatform",
-  clearGameReminders:
-    "Game control state; the Rust MockPlatform does not implement GamePlatform",
 };
 
 /** snake_case -> camelCase, unless the name is an explicit alias. */
@@ -209,7 +205,7 @@ describe("mock host surface agreement", () => {
     ].map(([, variant, key]) => ({ variant, key }));
 
     // A regex that matched nothing would make this pass forever.
-    expect(arms.length).toBe(15);
+    expect(arms.length).toBe(16);
     expect(arms.filter(({ variant, key }) => variant !== key)).toEqual([]);
   });
 

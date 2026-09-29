@@ -201,6 +201,7 @@ private extension ProductPermissionPromptViewFactory {
         )
     }
 
+    // swiftlint:disable:next cyclomatic_complexity
     static func capabilityDisplayName(_ capability: DeviceCapabilityType) -> String {
         switch capability {
         case .notifications: String(localized: .Products.permissionCapabilityNotifications)
@@ -213,9 +214,11 @@ private extension ProductPermissionPromptViewFactory {
         case .openUrl: String(localized: .Products.permissionCapabilityOpenUrl)
         case .biometrics: String(localized: .Products.permissionCapabilityBiometrics)
         case .alarm: String(localized: .Products.permissionCapabilityAlarm)
+        case .calendar: String(localized: .Products.permissionCapabilityCalendar)
         }
     }
 
+    // swiftlint:disable:next cyclomatic_complexity
     static func capabilityDescription(_ capability: DeviceCapabilityType) -> String {
         switch capability {
         case .notifications: String(localized: .Products.permissionCapabilityDescriptionNotifications)
@@ -228,9 +231,11 @@ private extension ProductPermissionPromptViewFactory {
         case .openUrl: String(localized: .Products.permissionCapabilityDescriptionOpenUrl)
         case .biometrics: String(localized: .Products.permissionCapabilityDescriptionBiometrics)
         case .alarm: String(localized: .Products.permissionCapabilityDescriptionAlarm)
+        case .calendar: String(localized: .Products.permissionCapabilityDescriptionCalendar)
         }
     }
 
+    // swiftlint:disable:next cyclomatic_complexity
     static func iconForCapability(_ capability: DeviceCapabilityType) -> UIImage? {
         let name =
             switch capability {
@@ -244,6 +249,7 @@ private extension ProductPermissionPromptViewFactory {
             case .openUrl: "safari.fill"
             case .biometrics: "faceid"
             case .alarm: "alarm.fill"
+            case .calendar: "calendar"
             }
         return makeIcon(systemName: name)
     }

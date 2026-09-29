@@ -27,6 +27,9 @@ class VideoGameReminderBroadcastReceiver : BroadcastReceiver() {
     @Inject
     lateinit var videoGameStateReader: VideoGameStateReader
 
+    @Inject
+    lateinit var productGameReminder: RealProductGameReminder
+
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             ACTION_POST_NOTIFICATION -> {
@@ -52,9 +55,11 @@ class VideoGameReminderBroadcastReceiver : BroadcastReceiver() {
                     }
 
                     VideoGameNotificationType.ProductGameStartsSoon -> {
-                        // In the foreground the pill and the auto-open take over.
-                        if (appLifecycleObserver.getCurrentState() != AppLifecycleState.FOREGROUND) {
-                            notificationPublisher.publishProductGameStartsSoonNotification()
+                        // In the foreground the pill and the auto-open take over. An inexact alarm may fire
+                        // well after the start.
+                        val slot = productGameReminder.slotStartingNow()
+                        if (slot != null && appLifecycleObserver.getCurrentState() != AppLifecycleState.FOREGROUND) {
+                            notificationPublisher.publishProductGameStartsSoonNotification(slot.ringAlarm)
                         }
                     }
 

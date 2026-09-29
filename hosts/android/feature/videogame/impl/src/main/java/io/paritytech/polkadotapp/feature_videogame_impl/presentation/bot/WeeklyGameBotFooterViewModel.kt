@@ -1,6 +1,8 @@
 package io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot
 
+import android.content.Context
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.paritytech.polkadotapp.chains.multiNetwork.chain.model.ChainAssetWithAmount
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.common.utils.calendar.CalendarEvent
@@ -44,6 +46,7 @@ import kotlinx.coroutines.flow.runningReduce
 import kotlinx.coroutines.flow.update
 import timber.log.Timber
 import javax.inject.Inject
+import io.paritytech.polkadotapp.common.R as RCommon
 
 @HiltViewModel
 internal class WeeklyGameBotFooterViewModel @Inject constructor(
@@ -53,6 +56,7 @@ internal class WeeklyGameBotFooterViewModel @Inject constructor(
     private val router: VideoGameRouter,
     private val videoGameNotificationsMixin: VideoGameNotificationsMixin,
     private val calendarEventsMixin: CalendarEventsMixin,
+    @ApplicationContext context: Context,
     gameInfoSyncService: VideoGameInfoSyncService,
     private val pillVisibility: WeeklyGamePillVisibilityHolder,
     dimSwitchMixinFactory: DimSwitchMixin.Factory
@@ -73,7 +77,7 @@ internal class WeeklyGameBotFooterViewModel @Inject constructor(
         .map {
             it?.let {
                 CalendarEvent(
-                    title = "Web3Citizenship video game",
+                    title = context.getString(RCommon.string.video_game_calendar_event_title),
                     timeStart = it.gameStartMillis,
                     duration = it.gameDuration()
                 )

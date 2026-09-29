@@ -20,8 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::platform::SigningHostConfig;
 use crate::platform::{
     ChainProvider, ChatPlatform, ContactsPlatform, GamePlatform, HostInfo, JsonRpcConnection,
-    PairingHostConfig, PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
-    ProviderError, RuntimeConfigValidationError,
+    PairingHostConfig, PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext,
+    ProductExecutionKind, ProviderError, RuntimeConfigValidationError,
 };
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable};

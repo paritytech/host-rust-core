@@ -745,8 +745,8 @@ Scripts under `js/scripts/` include:
   in `TRUAPI_POCKET_LOG`. The cases read that transcript, so a pass means the
   host and the product agree rather than resting on the product's word.
 
-  The CLI holds Game reminders in memory for the length of the process, on
-  every execution kind.
+  The CLI accepts and logs Game reminders on every execution kind, without
+  holding or firing them.
 
   Contacts are served on every phase, from `TRUAPI_CONTACTS`
   (`alice=0x<32-byte account>;bob=0x…`) or, unset, from a two-name development

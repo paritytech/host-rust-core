@@ -116,4 +116,5 @@ enum class DeviceCapabilityType {
     Biometrics,
     OpenUrl,
     Alarm,
+    Calendar,
 }

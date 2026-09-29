@@ -10,15 +10,10 @@ enum ProductOpener {
         guard tabBar?.mountedProductId != productId else {
             return
         }
-        if tabBar?.mountExistingTab(where: { $0.dotDomain == productId }) == true {
+        guard tabBar?.mountExistingTab(where: { $0.dotDomain == productId }) != true,
+              let url = URL(string: "\(AppConfig.ProductUniversalLink.scheme)://\(productId)") else {
             return
         }
-
-        if let tabBar,
-           let host = ProductHostFactory(tldProvider: DotNsTldProviderFacade.shared).host(rawString: productId) {
-            tabBar.openProduct(page: ProductPage(host: host, page: nil))
-        } else if let url = URL(string: "https://\(productId)") {
-            DeferredLinkHandler.shared.handle(with: url)
-        }
+        DeferredLinkHandler.shared.handle(with: url)
     }
 }

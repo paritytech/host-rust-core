@@ -1,4 +1,4 @@
-package io.paritytech.polkadotapp.feature_products_impl.domain.notifications
+package io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -8,12 +8,13 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import io.paritytech.polkadotapp.common.utils.launchAsyncJob
+import io.paritytech.polkadotapp.common.utils.logFailure
 
-class ProductNotificationBootReceiver : BroadcastReceiver() {
+class ProductGameBootReceiver : BroadcastReceiver() {
     @EntryPoint
     @InstallIn(SingletonComponent::class)
     interface Dependencies {
-        fun scheduler(): ProductNotificationScheduler
+        fun productGameReminder(): RealProductGameReminder
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -21,13 +22,13 @@ class ProductNotificationBootReceiver : BroadcastReceiver() {
 
         // Resolved lazily rather than via @AndroidEntryPoint: the generated injection runs before the
         // action check and blows up when the broadcast reaches a process whose graph is not built yet
-        // (HiltTestApplication under instrumentation). Restoring notifications is best-effort — skip instead.
-        val scheduler = runCatching {
-            EntryPointAccessors.fromApplication(context.applicationContext, Dependencies::class.java).scheduler()
+        // (HiltTestApplication under instrumentation). Restoring the reminder is best-effort — skip instead.
+        val productGameReminder = runCatching {
+            EntryPointAccessors.fromApplication(context.applicationContext, Dependencies::class.java).productGameReminder()
         }.getOrNull() ?: return
 
         launchAsyncJob {
-            scheduler.restoreAll()
+            runCatching { productGameReminder.restore() }.logFailure("product game reminder restore")
         }
     }
 }

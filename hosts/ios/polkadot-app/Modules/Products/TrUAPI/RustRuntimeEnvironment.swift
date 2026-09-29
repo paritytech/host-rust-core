@@ -13,7 +13,7 @@ struct RustRuntimeEnvironment {
     let runtime: TrUAPIHostRuntime
     let chainRegistry: ChainRegistryProtocol
     let notificationScheduler: ProductNotificationScheduling
-    let gameReminders: ProductGameReminderScheduling
+    let gameReminders: ProductGameReminderScheduling?
     let ipfsFetcher: IpfsFetching
     let hostProvider: ProductHostProviding
     let logger: LoggerProtocol
@@ -89,7 +89,7 @@ private extension RustRuntimeEnvironment {
             bridge: bridge,
             configuration: ProductExecutionConfig(productId: productId, executionKind: kind),
             chat: chatBridge,
-            game: bridge
+            game: gameReminders == nil ? nil : bridge
         )
 
         bridge.attach(execution)

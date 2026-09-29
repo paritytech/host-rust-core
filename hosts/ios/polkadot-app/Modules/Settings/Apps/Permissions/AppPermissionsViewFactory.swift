@@ -10,8 +10,7 @@ enum AppPermissionsViewFactory {
         let interactor = AppPermissionsInteractor(
             productId: productId,
             providerFactory: ProductPermissionDataProviderFactory(),
-            repository: ProductPermissionRepository(),
-            gameReminders: ProductGameReminderCenter.shared
+            repository: ProductPermissionRepository()
         )
 
         let wireframe = AppPermissionsWireframe()

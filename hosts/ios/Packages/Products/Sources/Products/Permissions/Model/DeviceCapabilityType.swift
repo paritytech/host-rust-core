@@ -14,4 +14,5 @@ public enum DeviceCapabilityType: String, CaseIterable, Sendable {
     case openUrl = "OpenUrl"
     case biometrics = "Biometrics"
     case alarm = "Alarm"
+    case calendar = "Calendar"
 }

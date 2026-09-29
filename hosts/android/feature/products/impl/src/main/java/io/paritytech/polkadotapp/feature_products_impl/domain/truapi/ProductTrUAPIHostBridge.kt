@@ -51,6 +51,7 @@ import uniffi.truapi.HostChainSet
 import uniffi.truapi.UserConfirmationReview
 import uniffi.truapi.HostNavigateToException
 import uniffi.truapi.HostRejection
+import uniffi.truapi.HostRemindNextGameException
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Instant
 import uniffi.truapi.ThemeVariant as NativeThemeVariant
@@ -229,11 +230,14 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         override fun chainClose(connectionId: UInt) = chainProvider.close(connectionId)
     }
 
-    private fun gameBridge(callingProductId: ProductId) = object : GameHostBridge {
-        override fun scheduleReminder(startsAt: ULong) =
-            productGameReminder.schedule(callingProductId, startsAt.toLong())
+    internal fun gameBridge(callingProductId: ProductId) = object : GameHostBridge {
+        override suspend fun scheduleReminder(startsAt: ULong, ringAlarm: Boolean, addCalendarEvent: Boolean) {
+            if (!productGameReminder.schedule(callingProductId, startsAt.toLong(), ringAlarm, addCalendarEvent)) {
+                throw HostRemindNextGameException.Busy()
+            }
+        }
 
-        override fun cancelReminder() = productGameReminder.cancel(callingProductId)
+        override suspend fun cancelReminder() = productGameReminder.cancel(callingProductId)
     }
 
     /**
@@ -373,6 +377,7 @@ private fun HostDevicePermissionRequest.toCapability(): DeviceCapabilityType = w
     HostDevicePermissionRequest.OPEN_URL -> DeviceCapabilityType.OpenUrl
     HostDevicePermissionRequest.BIOMETRICS -> DeviceCapabilityType.Biometrics
     HostDevicePermissionRequest.ALARM -> DeviceCapabilityType.Alarm
+    HostDevicePermissionRequest.CALENDAR -> DeviceCapabilityType.Calendar
 }
 
 private fun RemotePermission.toDomain(): RemotePermissionRequest = when (this) {

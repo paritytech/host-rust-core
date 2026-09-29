@@ -88,7 +88,7 @@ enum MainTabBarViewFactory {
             viewFactory: tabFactory,
             browserCoordinator: browserCoordinator,
             flowStateProvider: flowStateProvider,
-            gameReminders: .shared
+            productReminders: RootDependencyLocator.getDependency()
         )
 
         presenter.view = view

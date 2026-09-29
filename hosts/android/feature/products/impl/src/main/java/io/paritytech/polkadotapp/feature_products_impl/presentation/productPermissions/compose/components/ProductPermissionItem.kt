@@ -84,6 +84,7 @@ private fun DeviceCapabilityType.nameRes(): Int = when (this) {
     DeviceCapabilityType.Biometrics -> RCommon.string.product_permission_capability_biometrics
     DeviceCapabilityType.OpenUrl -> RCommon.string.product_permission_capability_open_url
     DeviceCapabilityType.Alarm -> RCommon.string.product_permission_capability_alarm
+    DeviceCapabilityType.Calendar -> RCommon.string.product_permission_capability_calendar
 }
 
 @StringRes

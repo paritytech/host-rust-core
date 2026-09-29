@@ -35,10 +35,11 @@ use truapi::latest::{
     HostFeatureSupportedResponse, HostLocalStorageChangeItem, HostLocaleSubscribeItem,
     HostNavigateToError, HostPlatform, HostPocketListSubscribeItem, HostPocketRemoveCardError,
     HostPocketRemoveCardRequest, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, HostWorkerBeginOperationResponse,
-    HostWorkerOperationError, LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload,
-    ProductProofContext, RemotePermission, RemotePermissionRequest, RingLocation,
+    HostRemindNextGameError, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
+    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
+    HostWorkerBeginOperationResponse, HostWorkerOperationError, LegacyAccountTxPayload,
+    ProductAccountId, ProductAccountTxPayload, ProductProofContext, RemotePermission,
+    RemotePermissionRequest, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -3275,23 +3276,31 @@ pub trait PocketPlatform: Send + Sync {
 /// Optional: a host that omits it leaves Game requests answered `Unsupported`.
 /// See [`OptionalPlatform`].
 ///
-/// The core checks the `Alarm` grant and refuses a start that is not in the
-/// future before it calls here. The host owns everything else: one reminder
-/// per product, replaced by every schedule; kept across app kill and device
-/// reboot; rung as an alarm, or delivered as an ordinary notification when the
-/// OS refuses alarms; dropped once the game has started, when the product's
-/// `Alarm` grant is revoked, and when the product is uninstalled. A host
-/// reports `Alarm` as OS-`Denied` only when the OS allows neither alarms nor
-/// notifications.
+/// The core refuses a start that is not in the future and settles the `Alarm`,
+/// `Notifications` and optional `Calendar` grants before it calls here. A host
+/// keeps one reminder per product, or one for the whole host that refuses
+/// other products with `Busy` until the holder cancels or its start passes.
+/// Such a host decides `Busy` and takes the reminder in one step, so two
+/// products scheduling at once cannot both hold it. The host keeps the
+/// reminder across app kill and device reboot, delivers it as an alarm or an
+/// ordinary notification, and drops it once the game has started. A host that
+/// reports OS status reports `Alarm` as OS-`Denied` only when the OS allows
+/// neither alarms nor notifications.
 #[async_trait]
 pub trait GamePlatform: Send + Sync {
     /// Hold `starts_at` (Unix milliseconds, UTC) as the product's reminder,
-    /// replacing any it holds.
+    /// replacing any it holds, or refuse with `Busy` when this host keeps a
+    /// single reminder and another product holds a start still in the future.
+    /// `ring_alarm` false: deliver an ordinary notification, not an alarm.
+    /// `add_calendar_event` says the product holds the `Calendar` grant, so
+    /// the host may also add the game to the user's calendar.
     async fn schedule_game_reminder(
         &self,
         product: &ProductContext,
         starts_at: u64,
-    ) -> Result<(), GenericError>;
+        ring_alarm: bool,
+        add_calendar_event: bool,
+    ) -> Result<(), HostRemindNextGameError>;
 
     /// Drop the product's reminder. Idempotent: dropping none succeeds.
     async fn cancel_game_reminder(&self, product: &ProductContext) -> Result<(), GenericError>;

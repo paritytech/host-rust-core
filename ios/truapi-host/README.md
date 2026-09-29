@@ -225,40 +225,6 @@ A card's face does not cross this bridge. The host keeps each card's newest
 face itself: that is what the card shows while the worker is down, and at cold
 start before the worker answers.
 
-## Game
-
-A host that can hold reminders implements `GameHostBridge`, passed as `game:`
-to `openProductExecution`. Hosts without the bridge pass nothing and Game
-calls answer unsupported.
-
-```swift
-final class MyGameBridge: GameHostBridge, @unchecked Sendable {
-    private let reminders: ReminderStore
-
-    init(reminders: ReminderStore) { self.reminders = reminders }
-
-    func scheduleReminder(startsAt: UInt64) throws {
-        reminders.hold(startsAt: startsAt)
-    }
-
-    func cancelReminder() throws {
-        reminders.drop()
-    }
-}
-
-let execution = try runtime.openProductExecution(
-    bridge: bridge,
-    configuration: ProductExecutionConfig(productId: "game.dot", executionKind: .worker),
-    game: MyGameBridge(reminders: reminderStore)
-)
-```
-
-The host owns the reminder: one per product, replaced by every
-`scheduleReminder`, kept across app kill and device reboot, rung as an alarm or
-delivered as an ordinary notification when the OS refuses alarms, and dropped
-once the game has started, when the product's Alarm grant is revoked, and when
-the product is uninstalled.
-
 On the execution: `publishChatAction` delivers a user's action back to the
 product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
 republishes the room list; `render` returns a stream of `RendererNode` trees
@@ -319,6 +285,52 @@ a device that pairs again reports again; a resumed pairing reports nothing, so
 the host keeps its own record of which devices it has already seen. It arrives
 on the thread answering the handshake, so hand the device off rather than
 announcing it inline. Defaults to a no-op for a host that answers no pairing.
+
+## Game
+
+A host that can hold reminders implements `GameHostBridge`, passed as `game:`
+to `openProductExecution`. Hosts without the bridge pass nothing and Game
+calls answer unsupported.
+
+```swift
+final class MyGameBridge: GameHostBridge, @unchecked Sendable {
+    private let reminders: ReminderStore
+
+    init(reminders: ReminderStore) { self.reminders = reminders }
+
+    func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
+        guard reminders.hold(
+            startsAt: startsAt,
+            ringAlarm: ringAlarm,
+            addCalendarEvent: addCalendarEvent
+        ) else {
+            throw HostRemindNextGameError.Busy
+        }
+    }
+
+    func cancelReminder() async throws {
+        reminders.drop()
+    }
+}
+
+let execution = try runtime.openProductExecution(
+    bridge: bridge,
+    configuration: ProductExecutionConfig(productId: "game.dot", executionKind: .worker),
+    game: MyGameBridge(reminders: reminderStore)
+)
+```
+
+The host holds one reminder for the whole host. The product holding it replaces
+it with every `scheduleReminder`; another product gets
+`HostRemindNextGameError.Busy` until the holder cancels or the held start
+passes. The host decides `Busy` and takes the reminder in one step. The
+reminder is kept across app kill and device reboot, rung as an alarm or
+delivered as an ordinary notification when the OS refuses alarms, and dropped
+once the game has started.
+`ringAlarm` is false when Alarm is denied and Notifications granted, so the host
+delivers an ordinary notification instead of an alarm.
+`addCalendarEvent` is true when the product also holds the optional Calendar
+grant, so the host may add the game to the user's calendar.
 
 ## Architecture
 

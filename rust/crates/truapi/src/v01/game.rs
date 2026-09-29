@@ -1,3 +1,4 @@
+use derive_more::Display;
 use parity_scale_codec::{Decode, Encode};
 
 /// Request to remind the user when this product's next game starts.
@@ -8,14 +9,25 @@ pub struct HostRemindNextGameRequest {
 }
 
 /// Why a reminder was not taken.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
+#[cfg_attr(
+    all(feature = "runtime", not(target_arch = "wasm32")),
+    derive(uniffi::Error)
+)]
 pub enum HostRemindNextGameError {
     /// `starts_at` is not after the device's current time.
+    #[display("the game has already started")]
     StartsInPast,
-    /// The user did not allow this product to remind them, or the OS allows
-    /// neither alarms nor notifications.
+    /// The user allowed neither alarms nor notifications, or the OS allows
+    /// neither.
+    #[display("reminders are not authorized")]
     PermissionDenied,
+    /// Another product holds the host's reminder; retry after it is cancelled
+    /// or its game starts.
+    #[display("another product holds the host's reminder")]
+    Busy,
     /// Catch-all.
+    #[display("{reason}")]
     Unknown {
         /// Human-readable reason.
         reason: String,

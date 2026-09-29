@@ -255,24 +255,32 @@ public protocol PocketHostBridge: AnyObject, Sendable {
 
 /// Native game-reminder surface. Implement and pass to
 /// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:pocket:game:)``
-/// when the host can hold reminders; hosts without one pass nothing. Called
-/// from the process-wide dispatch pool shared by every product execution:
-/// implementations must be safe to enter concurrently, and one that blocks
-/// stalls the others.
+/// when the host can hold reminders; hosts without one pass nothing. Both
+/// calls are async, so an implementation may hop to the main actor to answer;
+/// implementations must be safe to enter concurrently.
 ///
-/// The host owns the reminder: one per product, replaced by every schedule,
-/// kept across app kill and reboot, rung as an alarm or delivered as a
-/// notification when the OS refuses alarms, and dropped once the game starts.
+/// The host holds one reminder for the whole host: the product holding it
+/// replaces it with every schedule, and another product gets `.Busy` until the
+/// holder cancels or the held start passes. Decide `.Busy` and take the
+/// reminder together, so two products scheduling at once cannot both hold
+/// it. The reminder is kept across app kill and reboot, rung as an alarm or
+/// delivered as a notification when the OS refuses alarms, and dropped once
+/// the game starts. Temporary: will be replaced by generic reminder and pill
+/// APIs.
 ///
-/// Throw ``HostRejection`` (or an error conforming to `LocalizedError`) to
-/// decline a call.
+/// `scheduleReminder` throws ``HostRemindNextGameError``; any other error
+/// reaches the product as `.Unknown`. `cancelReminder` throws
+/// ``HostRejection`` (or an error conforming to `LocalizedError`) to decline.
 public protocol GameHostBridge: AnyObject, Sendable {
     /// Hold `startsAt` (Unix milliseconds, UTC) as this product's reminder,
-    /// replacing any it holds.
-    func scheduleReminder(startsAt: UInt64) throws
+    /// replacing any it holds, or throw `.Busy` while another product holds
+    /// the host's reminder. `ringAlarm` false: deliver an ordinary
+    /// notification, not an alarm. `addCalendarEvent` says the product holds
+    /// the Calendar grant, so the host may also add the game to the calendar.
+    func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws
 
     /// Drop this product's reminder. Dropping none succeeds.
-    func cancelReminder() throws
+    func cancelReminder() async throws
 }
 
 /// Host-implemented contacts surface: a lookup from handles to contacts, and
@@ -444,17 +452,27 @@ private final class GameCallbackAdapter: NativeGameCallbacks, @unchecked Sendabl
         self.bridge = bridge
     }
 
-    func scheduleReminder(startsAt: UInt64) throws {
-        try withHostRejection { try bridge.scheduleReminder(startsAt: startsAt) }
-    }
-
-    func cancelReminder() throws {
-        try withHostRejection { try bridge.cancelReminder() }
-    }
-
-    private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
+    func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
         do {
-            return try operation()
+            try await bridge.scheduleReminder(
+                startsAt: startsAt,
+                ringAlarm: ringAlarm,
+                addCalendarEvent: addCalendarEvent
+            )
+        } catch let error as HostRemindNextGameError {
+            throw error
+        } catch {
+            throw HostRemindNextGameError.Unknown(reason: hostRejectionReason(error))
+        }
+    }
+
+    func cancelReminder() async throws {
+        try await withHostRejection { try await bridge.cancelReminder() }
+    }
+
+    private func withHostRejection<T>(_ operation: () async throws -> T) async throws -> T {
+        do {
+            return try await operation()
         } catch let error as HostRejection {
             throw error
         } catch {

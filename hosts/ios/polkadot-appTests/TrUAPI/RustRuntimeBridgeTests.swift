@@ -79,6 +79,7 @@ private func makeBridge(
     permissionGuard: MockPermissionGuard = MockPermissionGuard(),
     osPermissionAsker: MockOSPermissionAsker = MockOSPermissionAsker(),
     notificationScheduler: MockNotificationScheduler = MockNotificationScheduler(),
+    gameReminders: MockGameReminderScheduler? = nil,
     chainRegistry: MockChainRegistry = MockChainRegistry(),
     confirmationPresenter: MockConfirmationPresenter = MockConfirmationPresenter(),
     preimageCache: TrUAPIPreimageCache = TrUAPIPreimageCache { _ in nil },
@@ -98,7 +99,7 @@ private func makeBridge(
         permissionGuard: permissionGuard,
         osPermissionAsker: osPermissionAsker,
         notificationScheduler: notificationScheduler,
-        gameReminders: MockGameReminderScheduler(),
+        gameReminders: gameReminders ?? MockGameReminderScheduler(),
         navigationRouter: router,
         chainRegistry: chainRegistry,
         chainConnections: pool,
@@ -146,7 +147,7 @@ struct RustRuntimeBridgeTests {
     }
 
     @Test func devicePermissionStatusReadsOSWithoutPrompting() async throws {
-        for request in [HostDevicePermissionRequest.camera, .microphone, .notifications, .alarm] {
+        for request in [HostDevicePermissionRequest.camera, .microphone, .notifications, .alarm, .calendar] {
             for status in [OSPermissionStatus.allowed, .denied, .notDetermined] {
                 let osAsker = MockOSPermissionAsker()
                 osAsker.statusToReturn = status
@@ -184,6 +185,33 @@ struct RustRuntimeBridgeTests {
         #expect(try await bridge.devicePermissionStatus(request: request) == expected)
         #expect(osAsker.checkedCapabilities.isEmpty)
         #expect(osAsker.requestedCapabilities.isEmpty)
+    }
+
+    // MARK: gameReminders
+
+    @Test func scheduleReminderSchedulesForTheProduct() async throws {
+        let gameReminders = MockGameReminderScheduler()
+        let bridge = makeBridge(productId: "game.dot", gameReminders: gameReminders)
+
+        try await bridge.scheduleReminder(startsAt: 2_000_000_000_000, ringAlarm: false, addCalendarEvent: true)
+        #expect(gameReminders.scheduled == [
+            .init(
+                productId: "game.dot",
+                startsAt: Date(timeIntervalSince1970: 2_000_000_000),
+                ringAlarm: false,
+                addCalendarEvent: true
+            )
+        ])
+    }
+
+    @Test func scheduleReminderThrowsBusy() async {
+        let gameReminders = MockGameReminderScheduler()
+        gameReminders.outcome = .busy
+        let bridge = makeBridge(productId: "game.dot", gameReminders: gameReminders)
+
+        await #expect(throws: HostRemindNextGameError.Busy) {
+            try await bridge.scheduleReminder(startsAt: 2_000_000_000_000, ringAlarm: true, addCalendarEvent: false)
+        }
     }
 
     // MARK: remotePermission

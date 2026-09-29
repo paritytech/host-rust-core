@@ -161,6 +161,14 @@
             android:exported="false" />
 
         <receiver
+            android:name="io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.ProductGameBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
             android:name="io.paritytech.polkadotapp.feature_products_impl.domain.notifications.ProductNotificationReminderBroadcastReceiver"
             android:exported="false" />
 

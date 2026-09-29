@@ -5,27 +5,22 @@ import androidx.compose.runtime.getValue
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.lifecycle.HiltViewModel
-import io.paritytech.polkadotapp.common.data.time.TimeProvider
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
+import io.paritytech.polkadotapp.common.utils.currentTimestampFlow
 import io.paritytech.polkadotapp.common.utils.stateInBackground
 import io.paritytech.polkadotapp.feature_chats_api.domain.middleware.bot.CustomChatOverlayRenderer
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameRouter
+import io.paritytech.polkadotapp.feature_videogame_impl.data.VideoGameTimings
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealProductGameReminder
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
-
-internal val PRODUCT_GAME_PILL_LEAD = 5.minutes
 
 class ProductGamePillOverlayRenderer : CustomChatOverlayRenderer {
     @Composable
@@ -47,31 +42,22 @@ class ProductGamePillOverlayRenderer : CustomChatOverlayRenderer {
 internal class ProductGamePillOverlayViewModel @Inject constructor(
     private val reminder: RealProductGameReminder,
     private val router: VideoGameRouter,
-    private val timeProvider: TimeProvider,
 ) : BaseViewModel() {
     val pillState: StateFlow<VideoGamePillState> = reminder.slot
-        .flatMapLatest { slot -> slot?.let { countdown(it.startsAtMillis) } ?: flowOf(VideoGamePillState.Hidden) }
+        .flatMapLatest { slot ->
+            slot?.let { currentTimestampFlow().map { now -> countdown((it.startsAtMillis - now).milliseconds) } }
+                ?: flowOf(VideoGamePillState.Hidden)
+        }
         .stateInBackground(SharingStarted.WhileSubscribed(), VideoGamePillState.Hidden)
 
     fun open() {
         reminder.currentSlot()?.let { router.openGameProduct(it.productId) }
     }
 
-    private fun countdown(startsAtMillis: Long): Flow<VideoGamePillState> = flow {
-        while (true) {
-            val untilStart = (startsAtMillis - timeProvider.now().toEpochMilliseconds()).milliseconds
-            if (untilStart <= Duration.ZERO) {
-                emit(VideoGamePillState.Hidden)
-                break
-            }
-            if (untilStart <= PRODUCT_GAME_PILL_LEAD) {
-                emit(VideoGamePillState.Shown.WaitingCountdown(untilStart.inWholeSeconds))
-                delay(1.seconds)
-            } else {
-                emit(VideoGamePillState.Hidden)
-                // Re-check at least once a minute: a sleeping device stretches delays.
-                delay((untilStart - PRODUCT_GAME_PILL_LEAD).coerceAtMost(1.minutes))
-            }
+    private fun countdown(untilStart: Duration): VideoGamePillState =
+        if (untilStart > Duration.ZERO && untilStart <= VideoGameTimings.WAITING_ROOM_AVAILABLE_BEFORE) {
+            VideoGamePillState.Shown.WaitingCountdown(untilStart.inWholeSeconds)
+        } else {
+            VideoGamePillState.Hidden
         }
-    }
 }

@@ -136,11 +136,15 @@ calling product's cards and every later replacement, and `removePocketCard`
 takes one out. The host owns the collection: removing an absent card succeeds,
 and a card the host pins is refused with `Privileged`.
 
-`game` holds one reminder per product. `scheduleGameReminder` replaces the
-product's held reminder, and `cancelGameReminder` drops it. The mock test host
-(`@parity/truapi-host/testing`) exposes what it holds through
-`getGameReminders()` and `clearGameReminders()`, and the Playwright `TestHost`
-fixture wraps the same pair.
+`game` holds the host's game reminder. `scheduleGameReminder` replaces the
+product's held reminder, and `cancelGameReminder` drops it. Its `ringAlarm`
+argument is false when `Alarm` is denied and `Notifications` granted, so the
+host delivers an ordinary notification instead of an alarm, and its
+`addCalendarEvent` argument is true when the product also holds the optional
+`Calendar` grant. A native host holds one reminder for the whole host and
+refuses another product's schedule with `Busy`. The mock test host
+(`@parity/truapi-host/testing`) accepts every reminder and cancel without
+holding them.
 
 Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
 reported to the worker in its `init` message, so the core sees the same

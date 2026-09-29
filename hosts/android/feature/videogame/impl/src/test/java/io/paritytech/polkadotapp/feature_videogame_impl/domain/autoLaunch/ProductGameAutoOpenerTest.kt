@@ -27,7 +27,7 @@ class ProductGameAutoOpenerTest {
     private val lifecycle: AppLifecycleObserver = mock()
     private val lifecycleState = MutableStateFlow(AppLifecycleState.FOREGROUND)
 
-    private val slot = ProductGameSlot(ProductId.fromStoredValue("jollity.dot"), startsAtMillis = 60_000)
+    private val slot = ProductGameSlot(ProductId.fromStoredValue("game.dot"), startsAtMillis = 60_000, ringAlarm = true)
 
     @Test
     fun `opens the product at its start while in the foreground and drops the slot`() = runTest {
@@ -41,6 +41,24 @@ class ProductGameAutoOpenerTest {
         runCurrent()
         verify(router).openGameProduct(slot.productId)
         verify(reminder).clear(slot)
+    }
+
+    @Test
+    fun `opens a slot whose start passed within the grace`() = runTest {
+        advanceTimeBy(slot.startsAtMillis + 29_999)
+
+        startOpener()
+
+        verify(router).openGameProduct(slot.productId)
+    }
+
+    @Test
+    fun `does not open a slot whose start passed beyond the grace`() = runTest {
+        advanceTimeBy(slot.startsAtMillis + 30_000)
+
+        startOpener()
+
+        verify(router, never()).openGameProduct(slot.productId)
     }
 
     @Test

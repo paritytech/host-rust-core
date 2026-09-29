@@ -71,6 +71,7 @@ import uniffi.truapi.PairedSsoPeer
 import uniffi.truapi.ResponderExit
 import uniffi.truapi.ProductRuntimeException
 import uniffi.truapi.HostNavigateToException
+import uniffi.truapi.HostRemindNextGameException
 import uniffi.truapi.HostRejection
 import uniffi.truapi.HostLocalStorageReadException
 import uniffi.truapi.localhostBridgeBootstrapScript
@@ -414,22 +415,32 @@ interface PocketHostBridge {
  * [TrUAPIHostRuntime.openProductExecution] when the host can hold reminders;
  * hosts without one pass nothing.
  *
- * The host owns the reminder: one per product, replaced by every schedule,
- * kept across app kill and reboot, rung as an alarm or delivered as a
- * notification when the OS refuses alarms, and dropped once the game starts.
+ * The host holds one reminder for the whole host: the product holding it
+ * replaces it with every schedule, and another product gets
+ * [HostRemindNextGameException.Busy] until the holder cancels or the held start
+ * passes. Decide `Busy` and take the reminder together, so two products
+ * scheduling at once cannot both hold it. The reminder is kept across app kill
+ * and reboot, rung as an alarm or delivered as a notification when the OS
+ * refuses alarms, and dropped once the game starts. Temporary: will be
+ * replaced by generic reminder and pill APIs.
  *
- * Threading: these run inline on the process-wide dispatch pool shared by
- * every product execution, so implementations must be safe to enter
- * concurrently and one that blocks stalls the others.
+ * Threading: both calls suspend, so an implementation may switch to its own
+ * dispatcher to answer; implementations must be safe to enter concurrently.
  */
 interface GameHostBridge {
-    /** Hold [startsAt] (Unix milliseconds, UTC) as this product's reminder, replacing any it holds. */
-    @Throws(HostRejection::class)
-    fun scheduleReminder(startsAt: ULong)
+    /**
+     * Hold [startsAt] (Unix milliseconds, UTC) as this product's reminder, replacing any it holds,
+     * or throw [HostRemindNextGameException.Busy] while another product holds the host's reminder.
+     * [ringAlarm] false: deliver an ordinary notification, not an alarm. [addCalendarEvent] says
+     * the product holds the Calendar grant, so the host may also add the game to the calendar. Any
+     * other exception reaches the product as `Unknown`.
+     */
+    @Throws(HostRemindNextGameException::class)
+    suspend fun scheduleReminder(startsAt: ULong, ringAlarm: Boolean, addCalendarEvent: Boolean)
 
     /** Drop this product's reminder. Dropping none succeeds. */
     @Throws(HostRejection::class)
-    fun cancelReminder()
+    suspend fun cancelReminder()
 }
 
 /**
@@ -584,6 +595,18 @@ private inline fun <T> withNavigateRejection(operation: () -> T): T =
             .apply { initCause(error) }
     }
 
+private inline fun <T> withRemindRejection(operation: () -> T): T =
+    try {
+        operation()
+    } catch (rejection: HostRemindNextGameException) {
+        throw rejection
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        throw HostRemindNextGameException.Unknown(hostRejectionReason(error))
+            .apply { initCause(error) }
+    }
+
 private inline fun <T> withStorageException(operation: () -> T): T =
     try {
         operation()
@@ -678,9 +701,13 @@ private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : Nati
  * [NativeGameCallbacks] interface.
  */
 private class GameCallbackAdapter(private val bridge: GameHostBridge) : NativeGameCallbacks {
-    override fun scheduleReminder(startsAt: ULong) = withHostRejection { bridge.scheduleReminder(startsAt) }
+    override suspend fun scheduleReminder(
+        startsAt: ULong,
+        ringAlarm: Boolean,
+        addCalendarEvent: Boolean,
+    ) = withRemindRejection { bridge.scheduleReminder(startsAt, ringAlarm, addCalendarEvent) }
 
-    override fun cancelReminder() = withHostRejection { bridge.cancelReminder() }
+    override suspend fun cancelReminder() = withHostRejection { bridge.cancelReminder() }
 }
 
 /**

@@ -104,3 +104,11 @@ protocol SPAHosting: AnyObject {
     func minimizeSPA()
     func closeSPA(tabId: UUID)
 }
+
+/// Product reminders the tab bar surfaces as widgets, hidden for the mounted product.
+@MainActor
+protocol ProductReminderHosting: AnyObject {
+    var mountedProductId: ProductId? { get set }
+
+    func start(widgets: AppWidgetManaging)
+}

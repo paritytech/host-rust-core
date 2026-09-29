@@ -35,12 +35,15 @@ class VideoGameSettingsPreferences @Inject constructor(
         .distinctUntilChanged()
 
     fun setProductGameSlot(slot: ProductGameSlot?) {
-        val encoded = slot?.let { "${it.productId.value}$SLOT_SEPARATOR${it.startsAtMillis}" }
+        val encoded = slot?.let { "${it.productId.value}$SLOT_SEPARATOR${it.startsAtMillis}$SLOT_SEPARATOR${it.ringAlarm}" }
         preferences.putString(KEY_PRODUCT_GAME_SLOT, encoded)
     }
 
     private fun String.toProductGameSlot(): ProductGameSlot? {
-        val startsAtMillis = substringAfterLast(SLOT_SEPARATOR).toLongOrNull() ?: return null
-        return ProductGameSlot(ProductId.fromStoredValue(substringBeforeLast(SLOT_SEPARATOR)), startsAtMillis)
+        val ringAlarm = substringAfterLast(SLOT_SEPARATOR).toBooleanStrictOrNull() ?: return null
+        val idAndStart = substringBeforeLast(SLOT_SEPARATOR)
+        val startsAtMillis = idAndStart.substringAfterLast(SLOT_SEPARATOR).toLongOrNull() ?: return null
+        val productId = ProductId.fromStoredValue(idAndStart.substringBeforeLast(SLOT_SEPARATOR))
+        return ProductGameSlot(productId, startsAtMillis, ringAlarm)
     }
 }

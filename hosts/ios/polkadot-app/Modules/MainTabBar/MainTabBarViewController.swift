@@ -6,12 +6,12 @@ import DesignSystem
 import UIKitExt
 import Products
 
-final class MainTabBarViewController: UIViewController {
+final class MainTabBarViewController: UIViewController, TopmostChildProviding {
     let presenter: MainTabBarPresenterProtocol
     let viewFactory: TabFactoryProtocol
     let browserCoordinator: SPABrowserCoordinating
     let flowStateProvider: any SPAFlowStateProviding
-    let gameReminders: ProductGameReminderCenter
+    let productReminders: ProductReminderHosting?
 
     private let chromeController = TabBarBottomChromeController()
 
@@ -38,13 +38,13 @@ final class MainTabBarViewController: UIViewController {
         viewFactory: TabFactoryProtocol,
         browserCoordinator: SPABrowserCoordinating,
         flowStateProvider: any SPAFlowStateProviding,
-        gameReminders: ProductGameReminderCenter
+        productReminders: ProductReminderHosting?
     ) {
         self.presenter = presenter
         self.viewFactory = viewFactory
         self.browserCoordinator = browserCoordinator
         self.flowStateProvider = flowStateProvider
-        self.gameReminders = gameReminders
+        self.productReminders = productReminders
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -75,7 +75,7 @@ final class MainTabBarViewController: UIViewController {
         }
 
         chromeController.onChipTapped = { [weak self] id in
-            self?.mountExistingTab { $0.id == id }
+            _ = self?.mountExistingTab { $0.id == id }
         }
 
         chromeController.onChipCloseRequested = { [weak self] id in
@@ -90,13 +90,17 @@ final class MainTabBarViewController: UIViewController {
         }
 
         presenter.setup()
-        gameReminders.start(widgets: self)
+        productReminders?.start(widgets: self)
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
 
         chromeController.applyLayout(chromeContext(for: container.selectedController))
+    }
+
+    var topmostChild: UIViewController? {
+        container.selectedController
     }
 
     override var childForStatusBarStyle: UIViewController? {
@@ -284,7 +288,6 @@ extension MainTabBarViewController {
         mountedSPATabId.flatMap { id in browserCoordinator.tabs.first { $0.id == id }?.dotDomain }
     }
 
-    @discardableResult
     func mountExistingTab(where predicate: (SPATab) -> Bool) -> Bool {
         guard let tab = browserCoordinator.tabs.first(where: predicate) else {
             return false
@@ -292,6 +295,11 @@ extension MainTabBarViewController {
         chromeController.setPanel(nil, animated: true)
         mountSPA(for: tab)
         return true
+    }
+
+    /// Opens the scan panel from outside the bar, as a tap on the `.scan` action would.
+    func openScanPanel() {
+        chromeController.setPanel(.content(.scan), animated: true)
     }
 }
 
@@ -381,14 +389,13 @@ extension MainTabBarViewController: MainTabBarViewProtocol {
         let width = max(1, ChainConnectionStatusBarView.ringsWidth(count: models.count))
         chainStatusAnchorWidth?.update(offset: width)
     }
-}
 
-// MARK: - Scan panel
+    func attachWidget(_ configuration: any HashableContentConfiguration, for id: AppWidgetID) {
+        chromeController.attachWidget(configuration, for: id)
+    }
 
-extension MainTabBarViewController {
-    /// Opens the scan panel from outside the bar, as a tap on the `.scan` action would.
-    func openScanPanel() {
-        chromeController.setPanel(.content(.scan), animated: true)
+    func detachWidget(for id: AppWidgetID) {
+        chromeController.detachWidget(for: id)
     }
 }
 
@@ -413,22 +420,6 @@ extension MainTabBarViewController: AppNavigationControllerTransitionObserving {
             stack: navigationController.viewControllers,
             showing: viewController
         ))
-    }
-}
-
-extension MainTabBarViewController: TopmostChildProviding {
-    var topmostChild: UIViewController? {
-        container.selectedController
-    }
-}
-
-extension MainTabBarViewController {
-    func attachWidget(_ configuration: any HashableContentConfiguration, for id: AppWidgetID) {
-        chromeController.attachWidget(configuration, for: id)
-    }
-
-    func detachWidget(for id: AppWidgetID) {
-        chromeController.detachWidget(for: id)
     }
 }
 
@@ -500,13 +491,10 @@ private extension MainTabBarViewController {
             DSTabBarChip(id: $0.id, name: $0.name, icon: $0.icon)
         }
         chromeController.setSPATabs(chips, selected: mountedSPATabId)
-        gameReminders.mountedProductId = mountedProductId
+        productReminders?.mountedProductId = mountedProductId
     }
 
     var mountedSPATabId: UUID? {
-        guard case let .spa(id) = container.selection else {
-            return nil
-        }
-        return id
+        if case let .spa(id) = container.selection { id } else { nil }
     }
 }

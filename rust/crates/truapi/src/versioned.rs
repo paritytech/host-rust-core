@@ -119,6 +119,8 @@ mod tests {
             Clipboard,
             OpenUrl,
             Biometrics,
+            Alarm,
+            Calendar,
         ]
         .into_iter()
         .enumerate()

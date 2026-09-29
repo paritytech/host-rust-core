@@ -314,6 +314,10 @@ extension ServiceCoordinator {
         )
         RootDependencyLocator.setDependency(truapiRuntimeProvider as TrUAPIHostRuntimeProviding)
 
+        let gameReminders = ProductGameReminderCenter.shared
+        RootDependencyLocator.setDependency(gameReminders as ProductGameReminderScheduling)
+        RootDependencyLocator.setDependency(gameReminders as ProductReminderHosting)
+
         guard
             let signInHostCoordinator = createSignInHostCoordinator(
                 factory: chatCoordinatorFactory,
@@ -366,6 +370,7 @@ extension ServiceCoordinator {
         let (chatExtensionsRegistry, productWorkerFacade) = createChatExtensionsRegistry(
             accountManager: accountManager,
             truapiRuntimeProvider: truapiRuntimeProvider,
+            gameReminders: gameReminders,
             syncStore: syncServiceResult.syncStore,
             personDataStore: syncServiceResult.personDataStore,
             syncService: syncServiceResult.service,

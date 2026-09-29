@@ -14,7 +14,6 @@ import type { Page, FrameLocator } from "@playwright/test";
 import type {
   ChainStatus,
   ChatMessageRecord,
-  GameReminderEntry,
   MockHostConfig,
   NotificationLogEntry,
   PermissionLogEntry,
@@ -43,7 +42,6 @@ export type { DevAccount, DevAccountName } from "./dev-accounts.js";
 // so a suite that annotates a control-surface result compiles unchanged.
 export type {
   ChatMessageRecord as ChatMessageLogEntry,
-  GameReminderEntry,
   NotificationLogEntry,
   PermissionLogEntry,
   PermissionPolicy as PermissionBehavior,
@@ -174,10 +172,6 @@ export interface TestHost {
   clearNavigationLog(): Promise<void>;
   getNotificationLog(): Promise<NotificationLogEntry[]>;
   clearNotificationLog(): Promise<void>;
-  /** Game reminders the test host holds per product. */
-  getGameReminders(): Promise<GameReminderEntry[]>;
-  /** Drop every held game reminder. */
-  clearGameReminders(): Promise<void>;
   getSigningLog(): Promise<SigningLogEntry[]>;
   clearSigningLog(): Promise<void>;
   getPermissionLog(): Promise<PermissionLogEntry[]>;
@@ -561,8 +555,6 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
         clearNavigationLog: () => call("clearNavigationLog"),
         getNotificationLog: () => call("getNotificationLog"),
         clearNotificationLog: () => call("clearNotificationLog"),
-        getGameReminders: () => call("getGameReminders"),
-        clearGameReminders: () => call("clearGameReminders"),
         getSigningLog: () => call("getSigningLog"),
         clearSigningLog: () => call("clearSigningLog"),
         getPermissionLog: () => call("getPermissionLog"),

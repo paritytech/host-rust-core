@@ -9,6 +9,7 @@ import io.paritytech.polkadotapp.common.utils.runCancellableCatching
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameRouter
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.ProductGameSlot
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealProductGameReminder
+import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.isLiveAt
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
@@ -33,10 +34,10 @@ class ProductGameAutoOpener @Inject constructor(
     }
 
     private suspend fun openAtStart(slot: ProductGameSlot) {
-        val untilStart = slot.startsAtMillis - timeProvider.now().toEpochMilliseconds()
-        if (untilStart < 0) return
+        val now = timeProvider.now().toEpochMilliseconds()
+        if (!slot.isLiveAt(now)) return
 
-        delay(untilStart)
+        delay(slot.startsAtMillis - now)
         router.openGameProduct(slot.productId)
         reminder.clear(slot)
     }

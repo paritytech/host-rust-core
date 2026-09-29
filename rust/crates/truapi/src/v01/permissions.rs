@@ -47,10 +47,13 @@ pub enum HostDevicePermissionRequest {
     /// Biometric authentication.
     #[display("biometrics")]
     Biometrics,
-    /// Ringing an alarm when a product's game starts, or delivering an
+    /// Ringing an alarm at a time the product schedules, or delivering an
     /// ordinary notification in its place when the OS refuses alarms.
     #[display("alarms")]
     Alarm,
+    /// Adding events to the user's calendar.
+    #[display("calendar")]
+    Calendar,
 }
 
 /// One remote-operation permission requested by the product (RFC 0002).

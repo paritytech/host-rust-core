@@ -7,7 +7,7 @@ interface VideoGameNotificationPublisher {
     fun publishWaitingRoomAvailableNotification()
     fun publishGameAboutToStartNotification()
     fun publishGameStartsSoonNotification()
-    fun publishProductGameStartsSoonNotification()
+    fun publishProductGameStartsSoonNotification(ringAlarm: Boolean)
     fun cancelProductGameStartsSoonNotification()
     fun cancelGameStartNotifications()
 }

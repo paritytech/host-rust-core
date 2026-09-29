@@ -2243,12 +2243,13 @@ fn pocket_is_denied_to_apps_and_sessionless_workers_and_unsupported_without_an_a
 /// A game start far enough ahead that no test run reaches it.
 const FUTURE_START: u64 = u64::MAX / 2;
 
-/// Records every reminder call, and fails them all when `fail` is set.
+/// Records every reminder call, and fails every schedule with `error` when it
+/// is set, and every cancel with the same reason when it is `Unknown`.
 #[derive(Default)]
 struct RecordingGamePlatform {
-    scheduled: Mutex<Vec<(String, u64)>>,
+    scheduled: Mutex<Vec<(String, u64, bool, bool)>>,
     cancelled: Mutex<Vec<String>>,
-    fail: bool,
+    error: Option<truapi::latest::HostRemindNextGameError>,
 }
 
 #[truapi::async_trait]
@@ -2257,16 +2258,21 @@ impl crate::platform::GamePlatform for RecordingGamePlatform {
         &self,
         product: &ProductContext,
         starts_at: u64,
-    ) -> Result<(), truapi::latest::GenericError> {
-        if self.fail {
-            return Err(truapi::latest::GenericError {
-                reason: "alarm store unavailable".to_string(),
-            });
+        ring_alarm: bool,
+        add_calendar_event: bool,
+    ) -> Result<(), truapi::latest::HostRemindNextGameError> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
         }
         self.scheduled
             .lock()
             .expect("scheduled mutex poisoned")
-            .push((product.product_id.clone(), starts_at));
+            .push((
+                product.product_id.clone(),
+                starts_at,
+                ring_alarm,
+                add_calendar_event,
+            ));
         Ok(())
     }
 
@@ -2274,9 +2280,9 @@ impl crate::platform::GamePlatform for RecordingGamePlatform {
         &self,
         product: &ProductContext,
     ) -> Result<(), truapi::latest::GenericError> {
-        if self.fail {
+        if let Some(truapi::latest::HostRemindNextGameError::Unknown { reason }) = &self.error {
             return Err(truapi::latest::GenericError {
-                reason: "alarm store unavailable".to_string(),
+                reason: reason.clone(),
             });
         }
         self.cancelled
@@ -2333,7 +2339,7 @@ fn cancel(
     ))
 }
 
-fn scheduled(game: &RecordingGamePlatform) -> Vec<(String, u64)> {
+fn scheduled(game: &RecordingGamePlatform) -> Vec<(String, u64, bool, bool)> {
     game.scheduled
         .lock()
         .expect("scheduled mutex poisoned")
@@ -2371,8 +2377,9 @@ fn game_is_unsupported_without_an_adapter_and_open_to_apps_and_workers_without_a
         crate::platform::ProductExecutionKind::App,
         crate::platform::ProductExecutionKind::Worker,
     ] {
+        let platform = stub_platform();
         let game = Arc::new(RecordingGamePlatform::default());
-        let host = game_host(kind, stub_platform(), Some(game.clone()));
+        let host = game_host(kind, platform.clone(), Some(game.clone()));
         assert_eq!(
             remind(&host, FUTURE_START),
             Ok(HostRemindNextGameResponse::V1),
@@ -2385,7 +2392,15 @@ fn game_is_unsupported_without_an_adapter_and_open_to_apps_and_workers_without_a
         );
         assert_eq!(
             scheduled(&game),
-            vec![("game.dot".to_string(), FUTURE_START)],
+            vec![("game.dot".to_string(), FUTURE_START, true, true)],
+            "{kind:?}"
+        );
+        assert_eq!(
+            prompts(&platform),
+            vec![
+                v01::HostDevicePermissionRequest::Alarm,
+                v01::HostDevicePermissionRequest::Calendar,
+            ],
             "{kind:?}"
         );
     }
@@ -2450,15 +2465,25 @@ fn remind_next_game_rejects_a_start_that_passes_while_the_prompt_is_open() {
                 v01::HostRemindNextGameError::StartsInPast
             ))),
             vec![],
-            vec![v01::HostDevicePermissionRequest::Alarm],
+            vec![
+                v01::HostDevicePermissionRequest::Alarm,
+                v01::HostDevicePermissionRequest::Calendar,
+            ],
         )
     );
 }
 
 #[test]
-fn remind_next_game_denial_never_reaches_the_host_and_is_not_asked_again() {
+fn remind_next_game_denial_of_alarm_and_notifications_never_reaches_the_host_and_is_not_asked_again()
+{
     let platform = Arc::new(StubPlatform {
-        device_permission_decisions: Mutex::new([crate::platform::PermissionDecision::Deny].into()),
+        device_permission_decisions: Mutex::new(
+            [
+                crate::platform::PermissionDecision::Deny,
+                crate::platform::PermissionDecision::Deny,
+            ]
+            .into(),
+        ),
         ..Default::default()
     });
     let game = Arc::new(RecordingGamePlatform::default());
@@ -2482,21 +2507,18 @@ fn remind_next_game_denial_never_reaches_the_host_and_is_not_asked_again() {
             denied.clone(),
             denied,
             vec![],
-            vec![v01::HostDevicePermissionRequest::Alarm],
+            vec![
+                v01::HostDevicePermissionRequest::Alarm,
+                v01::HostDevicePermissionRequest::Notifications,
+            ],
         )
     );
 }
 
 #[test]
-fn remind_next_game_consumes_allow_once_before_scheduling() {
+fn remind_next_game_falls_back_to_a_notification_when_alarm_is_denied() {
     let platform = Arc::new(StubPlatform {
-        device_permission_decisions: Mutex::new(
-            [
-                crate::platform::PermissionDecision::AllowOnce,
-                crate::platform::PermissionDecision::Deny,
-            ]
-            .into(),
-        ),
+        device_permission_decisions: Mutex::new([crate::platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
     let game = Arc::new(RecordingGamePlatform::default());
@@ -2509,23 +2531,25 @@ fn remind_next_game_consumes_allow_once_before_scheduling() {
     assert_eq!(
         (
             remind(&host, FUTURE_START),
-            remind(&host, FUTURE_START),
             scheduled(&game),
-            prompts(&platform),
+            prompts(&platform)
         ),
         (
             Ok(HostRemindNextGameResponse::V1),
-            Err(CallError::Domain(HostRemindNextGameError::V1(
-                v01::HostRemindNextGameError::PermissionDenied
-            ))),
-            vec![("game.dot".to_string(), FUTURE_START)],
-            vec![v01::HostDevicePermissionRequest::Alarm; 2],
+            vec![("game.dot".to_string(), FUTURE_START, false, true)],
+            vec![
+                v01::HostDevicePermissionRequest::Alarm,
+                v01::HostDevicePermissionRequest::Notifications,
+                v01::HostDevicePermissionRequest::Calendar,
+            ],
         )
     );
 }
 
+/// Calendar is optional: denying it still schedules the reminder, without a
+/// calendar event, and the remembered denial is not asked again.
 #[test]
-fn remind_next_game_reuses_allow_always_for_each_replacement() {
+fn remind_next_game_schedules_without_a_calendar_event_when_calendar_is_denied() {
     let platform = Arc::new(StubPlatform {
         device_permission_decisions: Mutex::new(
             [
@@ -2554,10 +2578,13 @@ fn remind_next_game_reuses_allow_always_for_each_replacement() {
             Ok(HostRemindNextGameResponse::V1),
             Ok(HostRemindNextGameResponse::V1),
             vec![
-                ("game.dot".to_string(), FUTURE_START),
-                ("game.dot".to_string(), FUTURE_START + 1),
+                ("game.dot".to_string(), FUTURE_START, true, false),
+                ("game.dot".to_string(), FUTURE_START + 1, true, false),
             ],
-            vec![v01::HostDevicePermissionRequest::Alarm],
+            vec![
+                v01::HostDevicePermissionRequest::Alarm,
+                v01::HostDevicePermissionRequest::Calendar,
+            ],
         )
     );
 }
@@ -2594,8 +2621,35 @@ fn cancel_next_game_delegates_without_prompting() {
 
 #[test]
 fn game_host_failures_reach_the_product_with_their_reason() {
+    for error in [
+        truapi::latest::HostRemindNextGameError::Busy,
+        truapi::latest::HostRemindNextGameError::Unknown {
+            reason: "alarm store unavailable".to_string(),
+        },
+    ] {
+        let game = Arc::new(RecordingGamePlatform {
+            error: Some(error.clone()),
+            ..Default::default()
+        });
+        let host = game_host(
+            crate::platform::ProductExecutionKind::Worker,
+            stub_platform(),
+            Some(game.clone()),
+        );
+
+        assert_eq!(
+            (remind(&host, FUTURE_START), scheduled(&game)),
+            (
+                Err(CallError::Domain(HostRemindNextGameError::V1(error))),
+                vec![],
+            )
+        );
+    }
+
     let game = Arc::new(RecordingGamePlatform {
-        fail: true,
+        error: Some(truapi::latest::HostRemindNextGameError::Unknown {
+            reason: "alarm store unavailable".to_string(),
+        }),
         ..Default::default()
     });
     let host = game_host(
@@ -2603,71 +2657,13 @@ fn game_host_failures_reach_the_product_with_their_reason() {
         stub_platform(),
         Some(game),
     );
-
     assert_eq!(
-        (remind(&host, FUTURE_START), cancel(&host)),
-        (
-            Err(CallError::Domain(HostRemindNextGameError::V1(
-                v01::HostRemindNextGameError::Unknown {
-                    reason: "alarm store unavailable".to_string(),
-                }
-            ))),
-            Err(CallError::Domain(HostCancelNextGameError::V1(
-                truapi::latest::GenericError {
-                    reason: "alarm store unavailable".to_string(),
-                }
-            ))),
-        )
-    );
-}
-
-/// Reports every device permission as refused by the OS.
-struct OsRefusesEverything;
-
-#[truapi::async_trait]
-impl crate::platform::PermissionStatusHost for OsRefusesEverything {
-    async fn device_permission_status(
-        &self,
-        _request: truapi::latest::HostDevicePermissionRequest,
-    ) -> Result<crate::platform::DevicePermissionStatus, truapi::latest::GenericError> {
-        Ok(crate::platform::DevicePermissionStatus::Denied)
-    }
-}
-
-/// A host reports `Alarm` as OS-refused only when it can deliver neither an
-/// alarm nor a notification, so the product learns it cannot be reminded.
-#[test]
-fn remind_next_game_is_denied_when_the_os_refuses_every_way_to_remind() {
-    let platform = stub_platform();
-    let game = Arc::new(RecordingGamePlatform::default());
-    let (host_config, _) = runtime_config("game.dot");
-    let product = ProductContext::new_with_execution(
-        "game.dot".to_string(),
-        crate::platform::ProductExecutionKind::Worker,
-    )
-    .expect("test game product context is valid");
-    let services = RuntimeServices::new(
-        platform.clone() as Arc<dyn Platform>,
-        host_config.host.host_info.clone(),
-        host_config.people_chain_genesis_hash,
-        host_config.bulletin_chain_genesis_hash,
-        host_config.asset_hub_chain_genesis_hash,
-        test_spawner(),
-    );
-    let pairing_host = PairingHost::new(services.clone(), host_config);
-    let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
-    adapters.game_platform = Some(game.clone() as Arc<dyn crate::platform::GamePlatform>);
-    adapters.permission_status = Some(Arc::new(OsRefusesEverything));
-    let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
-
-    assert_eq!(
-        (remind(&host, FUTURE_START), scheduled(&game)),
-        (
-            Err(CallError::Domain(HostRemindNextGameError::V1(
-                v01::HostRemindNextGameError::PermissionDenied
-            ))),
-            vec![],
-        )
+        cancel(&host),
+        Err(CallError::Domain(HostCancelNextGameError::V1(
+            truapi::latest::GenericError {
+                reason: "alarm store unavailable".to_string(),
+            }
+        )))
     );
 }
 

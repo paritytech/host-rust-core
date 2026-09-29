@@ -155,6 +155,17 @@
         }
       }
     },
+    "app.permission.capability.calendar": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calendar"
+          }
+        }
+      }
+    },
     "app.permission.capability.camera": {
       "extractionState": "manual",
       "localizations": {
@@ -529,6 +540,17 @@
         }
       }
     },
+    "permission.capability.calendar": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calendar"
+          }
+        }
+      }
+    },
     "permission.capability.camera": {
       "extractionState": "manual",
       "localizations": {
@@ -557,7 +579,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alarm access is required to ring an alarm when a game you registered for starts."
+            "value": "Alarm access is required to ring alarms for scheduled events."
           }
         }
       }
@@ -580,6 +602,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bluetooth access is required to connect to nearby devices."
+          }
+        }
+      }
+    },
+    "permission.capability.description.calendar": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calendar access is required to add events to your calendar."
           }
         }
       }

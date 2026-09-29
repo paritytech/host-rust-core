@@ -19,11 +19,11 @@ enum SettingsKey: String {
     case gameAlarmId
     case gameAlarmFireDate
     case gameAlarmTimingSeconds
-    case productGameReminderProductId
-    case productGameReminderStartsAt
+    case productGameReminder
     case productGameAlarmId
     case productGameAlarmFireDate
     case productGameStartNotificationDate
+    case productGameCalendarStartsAt
     // Balance restored notification
     case deviceEncryptId = "deviceEncryptId.v3"
     // App Group suite. The raw key predates the rename from "entropy id" and is kept so existing

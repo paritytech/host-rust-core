@@ -28,13 +28,11 @@ import io.paritytech.polkadotapp.feature_connection_status_api.presentation.mixi
 import io.paritytech.polkadotapp.feature_fund_api.domain.AutoConvertDepositService
 import io.paritytech.polkadotapp.feature_products_impl.domain.exploreProducts.ExploreProductsService
 import io.paritytech.polkadotapp.feature_products_impl.domain.funding.FundingProductsWarmUp
-import io.paritytech.polkadotapp.feature_products_impl.presentation.spaBrowser.SpaBrowserFragment
 import io.paritytech.polkadotapp.feature_settings_impl.domain.interactors.SyncPriceCurrencyChange
 import io.paritytech.polkadotapp.feature_splash_api.presentation.SplashPassedObserver
 import io.paritytech.polkadotapp.feature_sso_impl.domain.SsoService
 import io.paritytech.polkadotapp.feature_statement_store_api.domain.slotAllocator.StatementStoreSlotAllocator
 import io.paritytech.polkadotapp.feature_usernames_api.domain.usecase.ObserveAccountOnboardingStatusUseCase
-import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.ProductGamePillOverlayRenderer
 import io.paritytech.polkadotapp.tools_jwt_auth_impl.domain.warmUp.JwtAuthWarmUpService
 import io.paritytech.polkadotapp.tools_remoteconfig_api.RemoteConfigService
 import kotlinx.coroutines.CoroutineScope
@@ -66,13 +64,14 @@ class RootViewModel @Inject constructor(
     private val jwtAuthWarmUpService: JwtAuthWarmUpService,
     chatBotStateController: ChatBotStateController,
     chatEngine: ChatEngine,
+    featureOverlays: Set<@JvmSuppressWildcards ChatOverlay>,
     observeAccountOnboardingStatus: ObserveAccountOnboardingStatusUseCase,
     bottomNavHeightProvider: BottomNavHeightProvider,
     chainHealthMixinFactory: ChainHealthMixin.Factory,
     coroutineDispatchers: CoroutineDispatchers,
 ) : BaseViewModel(), RootContract {
-    // Prepended: each overlay gets its own padded box, so a later one would push the native pill up.
-    override val chatOverlays = chatEngine.observeActiveOverlays().map { listOf(productGamePill) + it }
+    // Prepended: each overlay gets its own padded box, so appending would push the extension overlays up.
+    override val chatOverlays = chatEngine.observeActiveOverlays().map { featureOverlays.toList() + it }
     override val isOnboarded = observeAccountOnboardingStatus().map { it.isOnboarded }
     override val bottomNavHeight = bottomNavHeightProvider.heightDp
     override val chainsHealth = chainHealthMixinFactory.create(this).model
@@ -166,9 +165,3 @@ class RootViewModel @Inject constructor(
         }
     }
 }
-
-// Owned fragments hide an overlay: the pill stays off while a product is on screen.
-private val productGamePill = ChatOverlay(
-    renderer = ProductGamePillOverlayRenderer(),
-    ownedFragmentClasses = setOf(SpaBrowserFragment::class.java.name),
-)

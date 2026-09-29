@@ -13,6 +13,7 @@ extension ServiceCoordinator {
     static func createChatExtensionsRegistry(
         accountManager: ProductsAccountManaging,
         truapiRuntimeProvider: TrUAPIHostRuntimeProviding,
+        gameReminders: ProductGameReminderScheduling,
         syncStore: DetermineStateSyncStore,
         personDataStore: DetermineStatePersonDataStore,
         syncService: DetermineStateSyncServicing,
@@ -49,7 +50,7 @@ extension ServiceCoordinator {
             hostProvider: spaFlowState.hostProvider,
             runtimeProvider: truapiRuntimeProvider,
             workerManager: workerFacade.manager,
-            gameReminders: ProductGameReminderCenter.shared
+            gameReminders: gameReminders
         )
 
         let productBotProvider = ProductBotProvider(

@@ -19,7 +19,7 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         let permissionGuard: ProductPermissionGuarding
         let osPermissionAsker: OSPermissionAsking
         let notificationScheduler: ProductNotificationScheduling
-        let gameReminders: ProductGameReminderScheduling
+        let gameReminders: ProductGameReminderScheduling?
         let navigationRouter: ProductsNavigationRouting
         let chainRegistry: ChainRegistryProtocol
         let chainConnections: TrUAPIChainConnecting
@@ -78,7 +78,8 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         case .camera,
              .microphone,
              .notifications,
-             .alarm:
+             .alarm,
+             .calendar:
             switch await dependencies.osPermissionAsker.checkPermission(for: request.deviceCapabilityType) {
             case .allowed: .granted
             case .denied: .denied
@@ -204,27 +205,25 @@ extension RustProductExecutionBridge: TrUAPIChainEventHandling {
 
 // MARK: - Game reminders
 
-/// Called on a shared dispatch pool; hopping to the main queue keeps schedule and cancel in order.
 extension RustProductExecutionBridge: GameHostBridge {
-    func scheduleReminder(startsAt: UInt64) throws {
-        let productId = dependencies.productId
-        let gameReminders = dependencies.gameReminders
+    func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
+        guard let gameReminders = dependencies.gameReminders else {
+            throw HostRemindNextGameError.Unknown(reason: "game reminders unavailable")
+        }
         let date = Date(timeIntervalSince1970: TimeInterval(startsAt) / 1000)
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                gameReminders.schedule(productId: productId, startsAt: date)
-            }
+        let outcome = await gameReminders.schedule(
+            productId: dependencies.productId,
+            startsAt: date,
+            ringAlarm: ringAlarm,
+            addCalendarEvent: addCalendarEvent
+        )
+        if outcome == .busy {
+            throw HostRemindNextGameError.Busy
         }
     }
 
-    func cancelReminder() throws {
-        let productId = dependencies.productId
-        let gameReminders = dependencies.gameReminders
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                gameReminders.cancel(productId: productId)
-            }
-        }
+    func cancelReminder() async throws {
+        await dependencies.gameReminders?.cancel(productId: dependencies.productId)
     }
 }
 
@@ -254,6 +253,7 @@ extension HostDevicePermissionRequest {
         case .openUrl: .openUrl
         case .biometrics: .biometrics
         case .alarm: .alarm
+        case .calendar: .calendar
         }
     }
 }

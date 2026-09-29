@@ -39,6 +39,18 @@ impl ProductRuntimeHost {
     fn game_platform<E>(&self) -> Result<Arc<dyn GamePlatform>, CallError<E>> {
         self.game_platform.clone().ok_or(CallError::Unsupported)
     }
+
+    async fn authorize_game_device(
+        &self,
+        request: latest::HostDevicePermissionRequest,
+    ) -> Result<PermissionAuthorizationStatus, CallError<HostRemindNextGameError>> {
+        self.permissions_service()
+            .authorize_device(request)
+            .await
+            .map_err(|error| CallError::HostFailure {
+                reason: format!("permission storage failed: {error:?}"),
+            })
+    }
 }
 
 #[truapi::async_trait]
@@ -54,32 +66,41 @@ impl Game for ProductRuntimeHost {
         if starts_at <= now_ms() {
             return Err(remind_error(latest::HostRemindNextGameError::StartsInPast));
         }
-        let status = self
-            .permissions_service()
-            .authorize_device(latest::HostDevicePermissionRequest::Alarm)
-            .await
-            .map_err(|error| CallError::HostFailure {
-                reason: format!("permission storage failed: {error:?}"),
-            })?;
-        if status != PermissionAuthorizationStatus::Authorized {
+        let ring_alarm = if self
+            .authorize_game_device(latest::HostDevicePermissionRequest::Alarm)
+            .await?
+            == PermissionAuthorizationStatus::Authorized
+        {
+            true
+        } else if self
+            .authorize_game_device(latest::HostDevicePermissionRequest::Notifications)
+            .await?
+            == PermissionAuthorizationStatus::Authorized
+        {
+            false
+        } else {
             return Err(remind_error(
                 latest::HostRemindNextGameError::PermissionDenied,
             ));
-        }
-        // The prompt can outlast the start, and a reminder for a game that
+        };
+        // Calendar is optional: without it the host still reminds the user and
+        // only leaves the calendar alone.
+        let add_calendar_event = matches!(
+            self.permissions_service()
+                .authorize_device(latest::HostDevicePermissionRequest::Calendar)
+                .await,
+            Ok(PermissionAuthorizationStatus::Authorized)
+        );
+        // The prompts can outlast the start, and a reminder for a game that
         // has begun brings nobody back.
         if starts_at <= now_ms() {
             return Err(remind_error(latest::HostRemindNextGameError::StartsInPast));
         }
         platform
-            .schedule_game_reminder(&self.product, starts_at)
+            .schedule_game_reminder(&self.product, starts_at, ring_alarm, add_calendar_event)
             .await
             .map(|()| HostRemindNextGameResponse::V1)
-            .map_err(|error| {
-                remind_error(latest::HostRemindNextGameError::Unknown {
-                    reason: error.reason,
-                })
-            })
+            .map_err(remind_error)
     }
 
     #[instrument(skip_all, fields(runtime.method = "game.cancel_next_game"))]

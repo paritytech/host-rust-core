@@ -553,6 +553,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="video_game_about_to_start_reminder_message">The game is about to start! Join and get ready for fun and rewards!</string>
     <string name="video_game_start_reminder_title">Game starting now!</string>
     <string name="video_game_start_reminder_message">The game is starting! Jump in!</string>
+    <string name="video_game_calendar_event_title">Web3Citizenship video game</string>
 
     <string name="video_game_alert_setting_title">Alert</string>
     <string name="video_game_alert_offset_seconds">%d sec before</string>
@@ -894,7 +895,9 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="product_permission_device_open_url_title">%1$s would like to open external links</string>
     <string name="product_permission_device_open_url_subtitle">The app will open links in your browser or other apps. %1$s</string>
     <string name="product_permission_device_alarm_title">%1$s would like to set alarms</string>
-    <string name="product_permission_device_alarm_subtitle">Alarm access is required to ring an alarm when a game you registered for starts. %1$s</string>
+    <string name="product_permission_device_alarm_subtitle">Alarm access is required to ring alarms for scheduled events. %1$s</string>
+    <string name="product_permission_device_calendar_title">%1$s would like to add events to your calendar</string>
+    <string name="product_permission_device_calendar_subtitle">Calendar access is required to add events to your calendar. %1$s</string>
     <string name="product_permission_webrtc_title">%1$s would like to use WebRTC</string>
     <string name="product_permission_webrtc_subtitle">WebRTC access can reveal your IP address to remote peers. %1$s</string>
     <string name="product_permission_chain_submit_title">%1$s would like to submit transactions</string>
@@ -1358,6 +1361,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="product_permission_capability_biometrics">Biometrics</string>
     <string name="product_permission_capability_open_url">External links</string>
     <string name="product_permission_capability_alarm">Alarms</string>
+    <string name="product_permission_capability_calendar">Calendar</string>
     <string name="product_permission_type_webrtc">WebRTC</string>
     <string name="product_permission_type_chain_submit">Chain transactions</string>
     <string name="product_permission_type_statement_submit">Statement submission</string>

@@ -115,6 +115,16 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for v01::HostNavigateToError {
     }
 }
 
+impl From<uniffi::UnexpectedUniFFICallbackError> for v01::HostRemindNextGameError {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "host callback threw an undeclared error; reporting it as a rejection"
+        );
+        v01::HostRemindNextGameError::Unknown { reason: err.reason }
+    }
+}
+
 impl From<v01::GenericError> for HostRejection {
     fn from(err: v01::GenericError) -> Self {
         HostRejection::Rejected { reason: err.reason }
@@ -616,21 +626,29 @@ pub enum NativePocketRemoval {
 
 /// Native game-reminder adapter. Hosts that can hold reminders pass an
 /// implementation to [`NativeTrUApiHostRuntime::open_product_execution`];
-/// hosts without one pass `None`. Callbacks run inline on the process-wide
-/// dispatch pool shared by every product execution, so one that blocks stalls
-/// the others.
+/// hosts without one pass `None`. Both callbacks are async, so a host may hop
+/// to its own thread to answer without blocking the core's dispatch pool.
 ///
 /// The execution is bound to one product, so neither call names it. The host
 /// owns the reminder: see [`crate::platform::GamePlatform`] for what it must
-/// do with one.
+/// do with one. Temporary: will be replaced by generic reminder and pill APIs.
 #[uniffi::export(rust, foreign)]
+#[async_trait::async_trait]
 pub trait NativeGameCallbacks: Send + Sync {
     /// Hold `starts_at` (Unix milliseconds, UTC) as this product's reminder,
-    /// replacing any it holds.
-    fn schedule_reminder(&self, starts_at: u64) -> Result<(), HostRejection>;
+    /// replacing any it holds, or fail with `Busy` while another product holds
+    /// the host's reminder. `ring_alarm` false: deliver an ordinary
+    /// notification, not an alarm. `add_calendar_event` says the product holds
+    /// the `Calendar` grant.
+    async fn schedule_reminder(
+        &self,
+        starts_at: u64,
+        ring_alarm: bool,
+        add_calendar_event: bool,
+    ) -> Result<(), v01::HostRemindNextGameError>;
 
     /// Drop this product's reminder. Idempotent.
-    fn cancel_reminder(&self) -> Result<(), HostRejection>;
+    async fn cancel_reminder(&self) -> Result<(), HostRejection>;
 }
 
 /// Native contacts adapter. A host with a contact list and a picker passes an
@@ -2452,12 +2470,12 @@ impl crate::platform::GamePlatform for GameCallbackPlatform {
         &self,
         _product: &ProductContext,
         starts_at: u64,
-    ) -> Result<(), v01::GenericError> {
+        ring_alarm: bool,
+        add_calendar_event: bool,
+    ) -> Result<(), v01::HostRemindNextGameError> {
         self.game
-            .schedule_reminder(starts_at)
-            .map_err(|error| v01::GenericError {
-                reason: error.to_string(),
-            })
+            .schedule_reminder(starts_at, ring_alarm, add_calendar_event)
+            .await
     }
 
     async fn cancel_game_reminder(
@@ -2466,6 +2484,7 @@ impl crate::platform::GamePlatform for GameCallbackPlatform {
     ) -> Result<(), v01::GenericError> {
         self.game
             .cancel_reminder()
+            .await
             .map_err(|error| v01::GenericError {
                 reason: error.to_string(),
             })
@@ -2629,6 +2648,18 @@ mod tests {
         assert_eq!(
             navigate,
             v01::HostNavigateToError::Unknown {
+                reason: reason.to_string(),
+            }
+        );
+
+        let remind = <v01::HostRemindNextGameError as uniffi::ConvertError<crate::UniFfiTag>>::
+            try_convert_unexpected_callback_error(
+                uniffi::UnexpectedUniFFICallbackError::new(reason),
+            )
+            .expect("an unexpected foreign error must convert");
+        assert_eq!(
+            remind,
+            v01::HostRemindNextGameError::Unknown {
                 reason: reason.to_string(),
             }
         );
@@ -3549,19 +3580,30 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingGameCallbacks {
-        calls: Mutex<Vec<Option<u64>>>,
+        calls: Mutex<Vec<Option<(u64, bool, bool)>>>,
+        busy: bool,
     }
 
+    #[async_trait::async_trait]
     impl NativeGameCallbacks for RecordingGameCallbacks {
-        fn schedule_reminder(&self, starts_at: u64) -> Result<(), HostRejection> {
+        async fn schedule_reminder(
+            &self,
+            starts_at: u64,
+            ring_alarm: bool,
+            add_calendar_event: bool,
+        ) -> Result<(), v01::HostRemindNextGameError> {
             self.calls
                 .lock()
                 .expect("game calls mutex poisoned")
-                .push(Some(starts_at));
-            Ok(())
+                .push(Some((starts_at, ring_alarm, add_calendar_event)));
+            if self.busy {
+                Err(v01::HostRemindNextGameError::Busy)
+            } else {
+                Ok(())
+            }
         }
 
-        fn cancel_reminder(&self) -> Result<(), HostRejection> {
+        async fn cancel_reminder(&self) -> Result<(), HostRejection> {
             self.calls
                 .lock()
                 .expect("game calls mutex poisoned")
@@ -3570,10 +3612,8 @@ mod tests {
         }
     }
 
-    /// The execution is already bound to its product, so the native callbacks
-    /// take no product and the adapter only forwards the start time.
     #[test]
-    fn game_callbacks_receive_the_start_time_and_the_cancel() {
+    fn game_callbacks_receive_the_start_time_the_cancel_and_a_busy_refusal() {
         let callbacks = Arc::new(RecordingGameCallbacks::default());
         let platform = GameCallbackPlatform {
             game: callbacks.clone(),
@@ -3581,9 +3621,11 @@ mod tests {
         let product = ProductContext::new("game.dot".to_string()).expect("valid product id");
 
         futures::executor::block_on(async {
-            crate::platform::GamePlatform::schedule_game_reminder(&platform, &product, 42)
-                .await
-                .expect("schedule succeeds");
+            crate::platform::GamePlatform::schedule_game_reminder(
+                &platform, &product, 42, false, true,
+            )
+            .await
+            .expect("schedule succeeds");
             crate::platform::GamePlatform::cancel_game_reminder(&platform, &product)
                 .await
                 .expect("cancel succeeds");
@@ -3591,7 +3633,20 @@ mod tests {
 
         assert_eq!(
             *callbacks.calls.lock().expect("game calls mutex poisoned"),
-            vec![Some(42), None]
+            vec![Some((42, false, true)), None]
+        );
+
+        let busy = GameCallbackPlatform {
+            game: Arc::new(RecordingGameCallbacks {
+                busy: true,
+                ..Default::default()
+            }),
+        };
+        assert_eq!(
+            futures::executor::block_on(crate::platform::GamePlatform::schedule_game_reminder(
+                &busy, &product, 42, true, false,
+            )),
+            Err(v01::HostRemindNextGameError::Busy)
         );
     }
 
@@ -3665,6 +3720,7 @@ mod tests {
             v01::HostDevicePermissionRequest::OpenUrl,
             v01::HostDevicePermissionRequest::Biometrics,
             v01::HostDevicePermissionRequest::Alarm,
+            v01::HostDevicePermissionRequest::Calendar,
         ];
         let remote_cases = [
             v01::RemotePermission::Remote {

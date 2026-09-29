@@ -405,9 +405,15 @@ revokes the grant.
   reaches the product — only a handle for the selection does. The core caches
   resolved handles; a host calls `notify_contacts_changed` on its runtime when
   a contact is removed or blocked.
-- `GamePlatform`: hold a product's next-game reminder and drop it. The host
-  owns the reminder: one per product, replaced by every schedule, kept across
-  app kill and reboot, rung as an alarm or delivered as a notification.
+- `GamePlatform`: hold a product's next-game reminder and drop it. A native
+  host holds one reminder for the whole host: the holder replaces it with
+  every schedule, and another product is refused with `Busy` until the holder
+  cancels or the held start passes. Other hosts may keep one per product, as
+  the CLI and the JS mock do. The reminder is kept across app kill and reboot,
+  rung as an alarm or delivered as a notification. When `Alarm` is denied
+  and `Notifications` granted, the core asks for a notification instead of an
+  alarm. When the core reports the optional `Calendar` grant, the host may
+  also add a calendar event.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
 traits above except `ChatPlatform`, `ContactsPlatform`, `PermissionStatusHost`,

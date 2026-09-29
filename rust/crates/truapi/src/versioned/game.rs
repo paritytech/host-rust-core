@@ -22,17 +22,14 @@ mod tests {
     fn remind_errors_keep_their_discriminants() {
         let past = HostRemindNextGameError::V1(v01::HostRemindNextGameError::StartsInPast);
         let denied = HostRemindNextGameError::V1(v01::HostRemindNextGameError::PermissionDenied);
+        let busy = HostRemindNextGameError::V1(v01::HostRemindNextGameError::Busy);
+        let unknown = HostRemindNextGameError::V1(v01::HostRemindNextGameError::Unknown {
+            reason: "x".to_string(),
+        });
 
         assert_eq!(hex::encode(past.encode()), "0000");
         assert_eq!(hex::encode(denied.encode()), "0001");
-    }
-
-    // The empty cancel request carries no bytes beyond its envelope tag, the
-    // same encoding a bare `V1` would have.
-    #[test]
-    fn the_cancel_request_encodes_as_its_envelope_tag() {
-        let request = HostCancelNextGameRequest::V1(v01::HostCancelNextGameRequest {});
-
-        assert_eq!(hex::encode(request.encode()), "00");
+        assert_eq!(hex::encode(busy.encode()), "0002");
+        assert_eq!(hex::encode(unknown.encode()), "00030478");
     }
 }

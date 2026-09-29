@@ -72,11 +72,11 @@ class RealVideoGameNotificationPublisher @Inject constructor(
     }
 
     override fun publishGameStartsSoonNotification() {
-        publishGameStartsSoon(videoGameDeeplinkMapper.toWaitingRoomDeeplink(), REGISTERED_GAME_NOTIFICATION_ID)
+        publishGameStartsSoon(videoGameDeeplinkMapper.toWaitingRoomDeeplink(), REGISTERED_GAME_NOTIFICATION_ID, ringAlarm = true)
     }
 
-    override fun publishProductGameStartsSoonNotification() {
-        publishGameStartsSoon(videoGameDeeplinkMapper.toProductGameDeeplink(), PRODUCT_GAME_NOTIFICATION_ID)
+    override fun publishProductGameStartsSoonNotification(ringAlarm: Boolean) {
+        publishGameStartsSoon(videoGameDeeplinkMapper.toProductGameDeeplink(), PRODUCT_GAME_NOTIFICATION_ID, ringAlarm)
     }
 
     override fun cancelProductGameStartsSoonNotification() {
@@ -88,19 +88,24 @@ class RealVideoGameNotificationPublisher @Inject constructor(
         cancel(PRODUCT_GAME_NOTIFICATION_ID)
     }
 
-    private fun publishGameStartsSoon(deeplink: Uri, notificationId: Int) {
-        val channel = PolkadotNotificationChannel.VIDEO_GAME_ALARM
+    private fun publishGameStartsSoon(deeplink: Uri, notificationId: Int, ringAlarm: Boolean) {
+        val channel = if (ringAlarm) PolkadotNotificationChannel.VIDEO_GAME_ALARM else PolkadotNotificationChannel.VIDEO_GAME
 
-        val notification = NotificationCompat.Builder(appContext, channel.id)
+        val builder = NotificationCompat.Builder(appContext, channel.id)
             .setupDefaultNotification(deepLink = deeplink)
             .setContentTitle(appContext.getString(RCommon.string.video_game_start_reminder_title))
             .setContentText(appContext.getString(RCommon.string.video_game_start_reminder_message))
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setVibrate(channel.vibrationPattern)
-            .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
-            .build()
-            .applyAlarmFlags()
+        val notification = if (ringAlarm) {
+            builder
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setVibrate(channel.vibrationPattern)
+                .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+                .build()
+                .applyAlarmFlags()
+        } else {
+            builder.build()
+        }
 
         publish(
             notificationId = notificationId,
