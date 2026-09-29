@@ -4016,6 +4016,12 @@ pub struct PresentedContactProfile {
     /// When the contact's host sent the share, in Unix milliseconds, as in
     /// [`PlacedAvatar::shared_at`].
     pub shared_at: u64,
+    /// The contact's username, when the core knows one: the name its Chat
+    /// roster holds for `peer_identity`, verified when the contact was bound
+    /// or first authenticated, else the peer's verified dotNS name. Never a
+    /// name from the product. `None` when neither is known in time; show the
+    /// contact without a name then, never by address.
+    pub username: Option<String>,
 }
 
 impl core::fmt::Debug for PresentedContactProfile {
@@ -4024,6 +4030,7 @@ impl core::fmt::Debug for PresentedContactProfile {
             .field("reference", &"[REDACTED]")
             .field("peer_identity", &self.peer_identity)
             .field("shared_at", &self.shared_at)
+            .field("username", &self.username)
             .finish()
     }
 }
