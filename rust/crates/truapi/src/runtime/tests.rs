@@ -2433,6 +2433,74 @@ fn present_contact(
     ))
 }
 
+fn own_profile_status(
+    host: &ProductRuntimeHost,
+) -> Result<HostProfileOwnStatusResponse, CallError<HostProfileOwnStatusError>> {
+    futures::executor::block_on(Profile::own_status(
+        host,
+        &CallContext::default(),
+        HostProfileOwnStatusRequest::V1,
+    ))
+}
+
+fn present_own_profile(
+    host: &ProductRuntimeHost,
+) -> Result<HostProfilePresentOwnResponse, CallError<HostProfilePresentOwnError>> {
+    futures::executor::block_on(Profile::present_own(
+        host,
+        &CallContext::default(),
+        HostProfilePresentOwnRequest::V1,
+    ))
+}
+
+#[test]
+fn own_profile_status_and_presentation_resolve_the_host_owned_disclosure() {
+    let platform = stub_platform();
+    let presented = Arc::new(RecordingProfilePlatform::default());
+    let chat = signed_in(
+        profile_host_on(platform.clone(), egui_chat(), Some(presented.clone())),
+        WALLET,
+    );
+    let owner = owner_of(&chat);
+    assert_eq!(
+        own_profile_status(&chat).expect("status is available"),
+        HostProfileOwnStatusResponse::V1(v01::HostProfileOwnStatusResponse { configured: false })
+    );
+    assert!(matches!(
+        present_own_profile(&chat),
+        Err(CallError::Domain(HostProfilePresentOwnError::V1(
+            v01::HostProfilePresentOwnError::NotConfigured
+        )))
+    ));
+
+    futures::executor::block_on(profile::write_disclosure(
+        platform.as_ref(),
+        owner,
+        &profile::Disclosure {
+            product_id: "seity.dot".to_string(),
+            reference: CONTACTS_REFERENCE.to_string(),
+            revision: 1,
+        },
+    ))
+    .expect("own disclosure stored");
+    assert_eq!(
+        own_profile_status(&chat).expect("status is available"),
+        HostProfileOwnStatusResponse::V1(v01::HostProfileOwnStatusResponse { configured: true })
+    );
+    assert_eq!(
+        present_own_profile(&chat).expect("own profile is presented"),
+        HostProfilePresentOwnResponse::V1
+    );
+    assert_eq!(
+        presented
+            .presented
+            .lock()
+            .expect("presented mutex poisoned")
+            .as_slice(),
+        [("egui-chat.dot".to_string(), CONTACTS_REFERENCE.to_string())]
+    );
+}
+
 const CONTACTS_REFERENCE: &str = "seity-contacts:v1:5c9584ba6e565351723d57394780b31b4c2156123e1269c4724ae5f01258bb535c9584ba6e565351723d57394780b31b4c2156123e1269c4724ae5f01258bb53";
 
 const WALLET: [u8; 32] = [0x57; 32];
@@ -2960,16 +3028,101 @@ fn placed_avatars(avatars: Vec<crate::platform::PlacedAvatar>) -> crate::platfor
     }
 }
 
+/// Place as a v0.1 caller, answered as the dispatcher answers one.
 fn place_avatars(
     host: &ProductRuntimeHost,
     request: v01::HostProfilePlaceContactAvatarsRequest,
 ) -> Result<HostProfilePlaceContactAvatarsResponse, CallError<HostProfilePlaceContactAvatarsError>>
 {
+    use truapi::versioned::{FromLatest, IntoLatest};
     futures::executor::block_on(Profile::place_contact_avatars(
         host,
         &CallContext::default(),
         HostProfilePlaceContactAvatarsRequest::V1(request),
     ))
+    .map(|response| HostProfilePlaceContactAvatarsResponse::from_latest(response.into_latest(), 1))
+    .map_err(|error| truapi::frame::downgrade_call_error(error, 1))
+}
+
+/// Place as a v0.2 caller, which may add the user's own avatar.
+fn place_profile_avatars(
+    host: &ProductRuntimeHost,
+    request: v02::HostProfilePlaceContactAvatarsRequest,
+) -> Result<HostProfilePlaceContactAvatarsResponse, CallError<HostProfilePlaceContactAvatarsError>>
+{
+    futures::executor::block_on(Profile::place_contact_avatars(
+        host,
+        &CallContext::default(),
+        HostProfilePlaceContactAvatarsRequest::V2(request),
+    ))
+}
+
+#[test]
+fn own_avatar_placement_draws_the_disclosed_profile_without_returning_its_reference() {
+    let platform = stub_platform();
+    let avatars = Arc::new(RecordingAvatarHost::default());
+    let chat = signed_in(avatar_host(&platform, egui_chat(), &avatars), WALLET);
+    let owner = owner_of(&chat);
+    futures::executor::block_on(profile::write_disclosure(
+        platform.as_ref(),
+        owner,
+        &profile::Disclosure {
+            product_id: "seity.dot".to_string(),
+            reference: CONTACTS_REFERENCE.to_string(),
+            revision: 7,
+        },
+    ))
+    .expect("own disclosure stored");
+
+    assert_eq!(
+        place_profile_avatars(
+            &chat,
+            v02::HostProfilePlaceContactAvatarsRequest {
+                surface_width: 360,
+                surface_height: 640,
+                own: Some(v02::OwnAvatarSlot {
+                    slot: 0,
+                    rect: avatar_rect(16, 80, 44),
+                    clip: AVATAR_CLIP,
+                }),
+                slots: Vec::new(),
+            },
+        )
+        .expect("own placement accepted"),
+        HostProfilePlaceContactAvatarsResponse::V2
+    );
+    assert_eq!(
+        avatars.placements(),
+        [(
+            "egui-chat.dot".to_string(),
+            placed_avatars(vec![crate::platform::PlacedAvatar {
+                shared_at: 7,
+                ..placed_avatar(0, CONTACTS_REFERENCE)
+            }])
+        )]
+    );
+}
+
+#[test]
+fn own_and_contact_slots_share_one_slot_namespace() {
+    let platform = stub_platform();
+    let avatars = Arc::new(RecordingAvatarHost::default());
+    let chat = signed_in(avatar_host(&platform, egui_chat(), &avatars), WALLET);
+    let mut request = truapi::versioned::IntoLatest::into_latest(
+        HostProfilePlaceContactAvatarsRequest::V1(avatar_placement(&[(0, [0xa1; 32])])),
+    );
+    request.own = Some(v02::OwnAvatarSlot {
+        slot: 0,
+        rect: avatar_rect(16, 16, 44),
+        clip: AVATAR_CLIP,
+    });
+    assert!(matches!(
+        place_profile_avatars(&chat, request),
+        Err(CallError::Domain(HostProfilePlaceContactAvatarsError::V2(
+            v01::HostProfilePlaceContactAvatarsError::Unknown { .. }
+        )))
+    ));
+    assert!(avatars.placements().is_empty());
 }
 
 #[test]
