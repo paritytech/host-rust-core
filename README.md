@@ -85,16 +85,20 @@ The [permission model](docs/rfcs/0002-permission-model.md) separates outbound do
 Android permission prompts belong to one request and close when it finishes or is cancelled,
 including cancellation while the app is backgrounded.
 
+The shared Rust core asks blessed products (`peopl`, `dim2` and `stash`,
+on every supported network) only for device permissions and legacy-account signing.
+All other operations it handles bypass permission prompts and recorded decisions.
+
 ## Repository layout
 
 ```
 rust/crates/
-  truapi/                Rust traits, versioned envelopes, and latest payload re-exports
+  truapi/                Rust traits, versioned envelopes, latest payload re-exports, and the
+                         host runtime (feature `runtime`): dispatcher, typed SCALE logic,
+                         chain signing, WASM surface, host syscall traits
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
   truapi-macros/         TrUAPI wire annotations and inter-host SSO proc macros
-  truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
-  truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
-  truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
+  truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client) and chain-access traits
   truapi-verifiable/     Ring-VRF operations over `verifiable`; a lazily loaded WASM module in the browser
 js/packages/
   truapi/                  @parity/truapi TypeScript client
@@ -108,11 +112,11 @@ js/packages/
                           (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
-android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
+android/truapi-host/       Kotlin host adapter package over the truapi UniFFI core;
                            published to GitHub Packages as io.parity:truapi-host-android
                            (AAR with per-ABI cdylibs; see android/truapi-host/README.md)
 android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
-ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
+ios/truapi-host/           Swift host adapter package over the truapi UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
 playground/                Interactive Next.js playground (truapi-playground dotNS label)
 hosts/ios/                 iOS host app; resolves the core from this tree
@@ -150,7 +154,7 @@ whole multipart request. The Debug menu and **Share logs** remain available.
 
 See the [proc-macro guide](rust/crates/truapi-macros/README.md) for typed SSO handlers, their shared response envelope, and the macro implementation modules.
 
-The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
+The Swift host adapter (the `TrUAPIHost` SPM package over the truapi
 UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
 manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
 dependency. The UniFFI bindings and the container bundle are gitignored build
@@ -171,7 +175,7 @@ ignored; a `Cancel` returns at once, so the wallet passes it on without queueing
 it behind the request it withdraws) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
 for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
 session-record cleanup remain on the wallet side.
-See the core's [inter-host SSO design](rust/crates/truapi-server/README.md#inter-host-sso)
+See the core's [inter-host SSO design](rust/crates/truapi/RUNTIME.md#inter-host-sso)
 for typed handlers, canonical resource types, and consent bound to the signing session.
 Product and SSO signing share canonical payloads and the one-byte `OptionBool`
 encoding for `with_signed_transaction`.
@@ -195,7 +199,13 @@ genesis hash, so the host ships no chain specs and never refreshes them. The lig
 client holds at most 32 connections at once and refuses a `connect` past that, so a
 consumer that leaks them fails instead of growing; closing one hands its slot back.
 Connections to a remote node, which only the WASM build compiles, are not counted
-against it. The crate
+against it. A light-client connection holds its requests until the chain first
+syncs and then forwards them in order; chain-spec queries, statement-store and
+Bitswap calls, and the `lifecycle_unstable_*` subscription that reports the sync are forwarded at
+once.
+Every artifact exposes the sync progress of a running chain (phase, peer count,
+stall verdict) as a watch.
+The crate
 compiles to one binary artifact per platform, each exposing the same
 `ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
 dependency on the crate:
@@ -219,7 +229,7 @@ control of quota and of whether the bytes are backed up or encrypted.
 ### Wire debugger
 
 [`@parity/truapi-debugger`](js/packages/truapi-debugger) is the consumer for the
-payload-blind frame tap in `truapi-server`. The core streams raw SCALE frames out
+payload-blind frame tap in `truapi`. The core streams raw SCALE frames out
 of two choke points; the debugger correlates them into per-operation traces,
 decodes envelopes and values behind a `TRUAPI_WIRE_SCHEMA_HASH` match, and renders
 them through one of two mounts:
@@ -256,7 +266,7 @@ make setup    # submodules + JS dependencies
 make build    # Rust workspace + TypeScript client + @parity/truapi-host
 make test     # Rust + TypeScript client + @parity/truapi-host tests
 make check    # full suite: build, fmt, clippy, test, TS tests, playground build + lint
-make wasm     # rebuild truapi-server WASM artifacts under js/packages/truapi-host/dist/wasm/
+make wasm     # rebuild truapi WASM artifacts under js/packages/truapi-host/dist/wasm/
 ```
 
 CI regenerates the shared bindings before building and testing both npm
@@ -396,8 +406,8 @@ make ios-bootstrap
 ```
 
 Then open `hosts/ios/polkadot-app.xcodeproj`. Rerun it after changing anything
-the bindings are generated from, which is the `truapi`, `truapi-platform`,
-`truapi-server` or `truapi-provider` crates. `SIM_ONLY=1` halves it by skipping
+the bindings are generated from, which is the `truapi` or `truapi-provider`
+crates. `SIM_ONLY=1` halves it by skipping
 the device slice, which is enough for Simulator but not for an archive.
 
 Because the app builds against the core in this tree, a core change that breaks

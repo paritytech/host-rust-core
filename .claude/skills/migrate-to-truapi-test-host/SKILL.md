@@ -274,7 +274,7 @@ createTestHostFixture({
 The reason then arrives on the page console:
 
 ```
-WARN truapi_server::runtime::signing_host: direct resource allocation item failed
+WARN truapi::runtime::signing_host: direct resource allocation item failed
   {reason=signing host: statement-store allowance allocation is native-only}
 ```
 
