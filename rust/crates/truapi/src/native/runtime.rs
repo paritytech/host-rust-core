@@ -6,9 +6,6 @@ use crate::platform::{
     CoreAdmin, PermissionAuthorizationRequest, PermissionAuthorizationStatus, ProductContext,
     ProductExecutionKind,
 };
-use futures::executor::ThreadPool;
-use futures::future::BoxFuture;
-use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
 use truapi::{Bytes32, v01};
 
@@ -34,6 +31,7 @@ use super::config::{
     ProductExecutionConfig,
 };
 use super::errors::HostRejection;
+use super::executor::shared_native_executor;
 use super::events::NativeEventBus;
 use super::platform::{
     CallbackPlatform, ChatCallbackPlatform, ContactsCallbackPlatform, PocketCallbackPlatform,
@@ -63,13 +61,18 @@ impl NativeTrUApiHostRuntime {
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         crate::logging::init();
         callbacks.on_core_log(log_marker.to_string(), log_detail.to_string());
+        let executor = shared_native_executor().map_err(|err| {
+            NativeRuntimeConfigError::RuntimeUnavailable {
+                reason: err.to_string(),
+            }
+        })?;
         let events = Arc::new(NativeEventBus::default());
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
             storage_events: events.clone(),
         });
-        let spawner = native_thread_pool_spawner(&callbacks);
+        let spawner = executor.spawner();
         let runtime = Arc::new(SigningHostRuntime::new(
             platform.clone(),
             runtime_config.signing,
@@ -914,33 +917,6 @@ impl NativeTrUApiHostRuntime {
 impl Drop for NativeProductExecution {
     fn drop(&mut self) {
         self.shutdown();
-    }
-}
-
-/// Build a [`Spawner`] backed by a shared `futures::executor::ThreadPool`.
-/// The pool is sized at the default (one worker per logical CPU). Falls
-/// back to a thread-per-subscription spawner if the pool fails to build,
-/// which only ever happens if the host has no available threads at all.
-fn native_thread_pool_spawner(callbacks: &Arc<dyn HostCallbacks>) -> Spawner {
-    match ThreadPool::new() {
-        Ok(pool) => {
-            let callbacks = callbacks.clone();
-            Arc::new(move |fut: BoxFuture<'static, ()>| {
-                if let Err(err) = pool.spawn(fut) {
-                    callbacks.on_core_log(
-                        "truapi.native.core.subscription.spawn_failed".to_string(),
-                        format!("{err}"),
-                    );
-                }
-            })
-        }
-        Err(err) => {
-            callbacks.on_core_log(
-                "truapi.native.core.subscription.pool_unavailable".to_string(),
-                format!("{err}; falling back to thread-per-subscription"),
-            );
-            crate::subscription::thread_per_subscription_spawner()
-        }
     }
 }
 

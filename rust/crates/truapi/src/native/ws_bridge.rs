@@ -18,12 +18,12 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use futures::{FutureExt, SinkExt, StreamExt};
 use rand::RngCore;
 use tokio::net::TcpListener;
-use tokio::runtime::{Handle, Runtime};
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -31,6 +31,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::{Response as HttpResponse, StatusCode};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
+use super::executor::shared_native_executor;
 use crate::{FrameSink, ProductRuntime};
 
 // Allow reconnect overlap without one execution exhausting the shared limit.
@@ -113,60 +114,6 @@ where
     fn product_runtime(&self, sink: Arc<dyn FrameSink>) -> ProductRuntime {
         self(sink)
     }
-}
-
-/// Process-wide executor shared by every native product bridge.
-///
-/// The runtime intentionally lives until process exit. Native products have
-/// independent bridge lifecycles, so shutting the executor down with any one
-/// bridge would interrupt the others.
-struct SharedNativeExecutor {
-    runtime: Runtime,
-}
-
-impl SharedNativeExecutor {
-    fn new() -> io::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .thread_name("truapi-native-worker")
-            .enable_all()
-            .build()
-            .map_err(|err| io::Error::other(err.to_string()))?;
-        Ok(Self { runtime })
-    }
-
-    fn handle(&self) -> Handle {
-        self.runtime.handle().clone()
-    }
-
-    fn worker_threads(&self) -> usize {
-        self.runtime.metrics().num_workers()
-    }
-}
-
-static SHARED_NATIVE_EXECUTOR: OnceLock<SharedNativeExecutor> = OnceLock::new();
-static SHARED_NATIVE_EXECUTOR_INIT: Mutex<()> = Mutex::new(());
-
-fn shared_native_executor() -> io::Result<(&'static SharedNativeExecutor, bool)> {
-    if let Some(executor) = SHARED_NATIVE_EXECUTOR.get() {
-        return Ok((executor, false));
-    }
-
-    // Serialize fallible initialization without caching a transient thread
-    // creation failure for the rest of the process.
-    let _guard = SHARED_NATIVE_EXECUTOR_INIT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(executor) = SHARED_NATIVE_EXECUTOR.get() {
-        return Ok((executor, false));
-    }
-
-    let initialized = SHARED_NATIVE_EXECUTOR
-        .set(SharedNativeExecutor::new()?)
-        .is_ok();
-    let executor = SHARED_NATIVE_EXECUTOR
-        .get()
-        .ok_or_else(|| io::Error::other("shared native executor initialization failed"))?;
-    Ok((executor, initialized))
 }
 
 struct RegistryEntry {
@@ -436,27 +383,16 @@ impl WsBridge {
         let socket = bind_loopback(bind_port)?;
         let port = socket.local_addr()?.port();
 
-        let (executor, initialized) = shared_native_executor()?;
+        let executor = shared_native_executor()?;
         let handle = executor.handle();
         let runtime_id = handle.id();
         let registry = Arc::new(WsBridgeRegistry::default());
         let listener = Listener::serve(socket, &handle, registry.clone(), logger.clone())?;
 
-        // An error return here would lose the executor's one-time startup event.
-        let mut pending_logs: Vec<(&'static str, String)> = Vec::new();
-        if initialized {
-            pending_logs.push((
-                "truapi.native.executor.started",
-                format!(
-                    "runtime_id={runtime_id} worker_threads={}",
-                    executor.worker_threads()
-                ),
-            ));
-        }
-        pending_logs.push((
+        let pending_logs = vec![(
             "truapi.ws_bridge.started",
             format!("port={port} runtime_id={runtime_id}"),
-        ));
+        )];
 
         Ok((
             Self {
@@ -476,7 +412,7 @@ impl WsBridge {
             listener.stop(!self.on_shared_executor());
         }
         let socket = bind_loopback(self.port)?;
-        let (executor, _) = shared_native_executor()?;
+        let executor = shared_native_executor()?;
         self.listener = Some(Listener::serve(
             socket,
             &executor.handle(),
@@ -540,7 +476,7 @@ fn join_aborted_connections(handles: Vec<tokio::task::JoinHandle<()>>) {
     if handles.is_empty() {
         return;
     }
-    let Ok((executor, _)) = shared_native_executor() else {
+    let Ok(executor) = shared_native_executor() else {
         return;
     };
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
@@ -1016,59 +952,9 @@ mod tests {
     }
 
     #[test]
-    fn shared_executor_uses_multithread_scheduler() {
-        let (executor, _) = shared_native_executor().expect("shared native executor");
-        let handle = executor.handle();
-        assert_eq!(
-            handle.runtime_flavor(),
-            tokio::runtime::RuntimeFlavor::MultiThread
-        );
-
-        // Each task blocks one runtime worker at the barrier. They can only
-        // both complete if the executor actually schedules them concurrently
-        // on distinct worker threads.
-        if executor.worker_threads() < 2 {
-            return;
-        }
-        let barrier = Arc::new(std::sync::Barrier::new(2));
-        let first = handle.spawn({
-            let barrier = barrier.clone();
-            async move {
-                let worker = std::thread::current().id();
-                barrier.wait();
-                worker
-            }
-        });
-        let second = handle.spawn(async move {
-            let worker = std::thread::current().id();
-            barrier.wait();
-            worker
-        });
-
-        let client = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        let (first, second) = client.block_on(async { tokio::join!(first, second) });
-        assert_ne!(
-            first.expect("first dispatch task"),
-            second.expect("second dispatch task"),
-        );
-    }
-
-    #[test]
-    fn shared_executor_is_reused() {
-        let (first, _) = shared_native_executor().expect("first executor access");
-        let (second, initialized) = shared_native_executor().expect("second executor access");
-
-        assert!(!initialized);
-        assert_eq!(first.handle().id(), second.handle().id());
-    }
-
-    #[test]
     fn drop_from_shared_executor_does_not_block_worker() {
         let bridge = start_test_bridge();
-        let (executor, _) = shared_native_executor().expect("shared native executor");
+        let executor = shared_native_executor().expect("shared native executor");
         let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
 
         executor.handle().spawn(async move {
@@ -1712,7 +1598,7 @@ mod tests {
         let registry = Arc::new(WsBridgeRegistry::default());
         let token = "a".repeat(64);
         registry.insert(token.clone(), test_runtime_factory(), no_log());
-        let (executor, _) = shared_native_executor().expect("shared native executor");
+        let executor = shared_native_executor().expect("shared native executor");
         let listener =
             Listener::serve(socket, &executor.handle(), registry, logger).expect("serve");
 

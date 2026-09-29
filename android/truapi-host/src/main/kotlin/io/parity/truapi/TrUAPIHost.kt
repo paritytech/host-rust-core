@@ -99,13 +99,13 @@ object TrUAPIHost {
  */
 interface HostStorage {
     @Throws(HostLocalStorageReadException::class)
-    fun read(key: String): ByteArray?
+    suspend fun read(key: String): ByteArray?
 
     @Throws(HostLocalStorageReadException::class)
-    fun write(key: String, value: ByteArray)
+    suspend fun write(key: String, value: ByteArray)
 
     @Throws(HostLocalStorageReadException::class)
-    fun clear(key: String)
+    suspend fun clear(key: String)
 }
 
 /**
@@ -116,13 +116,13 @@ interface HostStorage {
  */
 interface HostCoreStorage {
     @Throws(HostRejection::class)
-    fun read(key: ByteArray): ByteArray?
+    suspend fun read(key: ByteArray): ByteArray?
 
     @Throws(HostRejection::class)
-    fun write(key: ByteArray, value: ByteArray)
+    suspend fun write(key: ByteArray, value: ByteArray)
 
     @Throws(HostRejection::class)
-    fun clear(key: ByteArray)
+    suspend fun clear(key: ByteArray)
 }
 
 /** Ids handed out by the default [HostBridge.beginOperation], distinct for the life of the process. */
@@ -228,11 +228,14 @@ interface HostBridge {
     @Throws(HostRejection::class)
     fun chainConnect(genesisHash: ByteArray): UInt? = null
 
-    /** Send one JSON-RPC request on a native chain connection. */
+    /**
+     * Send one JSON-RPC request on a native chain connection. Enqueue it and
+     * return without waiting on the network, so requests go out in call order.
+     */
     @Throws(HostRejection::class)
     fun chainSend(connectionId: UInt, request: String) {}
 
-    /** Close a native chain connection. */
+    /** Close a native chain connection. Enqueue the close and return without waiting on the network. */
     @Throws(HostRejection::class)
     fun chainClose(connectionId: UInt) {}
 
@@ -387,9 +390,9 @@ interface ChatHostBridge {
  * [TrUAPIHostRuntime.openProductExecution] when the host has a Pocket surface;
  * hosts without one pass nothing.
  *
- * Threading: these run inline on the process-wide dispatch pool shared by
- * every product execution, so implementations must be safe to enter
- * concurrently and one that blocks stalls the others.
+ * Threading: [listCards] runs inline on the core runtime shared by every
+ * product execution, so it must be safe to enter concurrently and return
+ * promptly. [removeCard] suspends, so it can wait on the host's storage.
  */
 interface PocketHostBridge {
     /**
@@ -405,7 +408,7 @@ interface PocketHostBridge {
      * be pinned between the two.
      */
     @Throws(HostRejection::class)
-    fun removeCard(cardId: String): NativePocketRemoval
+    suspend fun removeCard(cardId: String): NativePocketRemoval
 }
 
 /**
@@ -470,13 +473,13 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
         }
     }
 
-    override fun coreStorageRead(key: ByteArray): ByteArray? =
+    override suspend fun coreStorageRead(key: ByteArray): ByteArray? =
         withHostRejection { bridge.coreStorage.read(key) }
 
-    override fun coreStorageWrite(key: ByteArray, value: ByteArray) =
+    override suspend fun coreStorageWrite(key: ByteArray, value: ByteArray) =
         withHostRejection { bridge.coreStorage.write(key, value) }
 
-    override fun coreStorageClear(key: ByteArray) =
+    override suspend fun coreStorageClear(key: ByteArray) =
         withHostRejection { bridge.coreStorage.clear(key) }
 
     override fun chainConnect(genesisHash: ByteArray): UInt? =
@@ -509,13 +512,13 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun supportedChains(): HostChainSet =
         withHostRejection { bridge.supportedChains() }
 
-    override fun localStorageRead(key: String): ByteArray? =
+    override suspend fun localStorageRead(key: String): ByteArray? =
         withStorageException { bridge.storage.read(key) }
 
-    override fun localStorageWrite(key: String, value: ByteArray) =
+    override suspend fun localStorageWrite(key: String, value: ByteArray) =
         withStorageException { bridge.storage.write(key, value) }
 
-    override fun localStorageClear(key: String) =
+    override suspend fun localStorageClear(key: String) =
         withStorageException { bridge.storage.clear(key) }
 
     override suspend fun beginOperation(productId: String, label: String): UInt =
@@ -645,7 +648,7 @@ private class ContactsCallbackAdapter(private val bridge: ContactsHostBridge) : 
 private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : NativePocketCallbacks {
     override fun listCards(): List<PocketCard> = withHostRejection { bridge.listCards() }
 
-    override fun removeCard(cardId: String): NativePocketRemoval =
+    override suspend fun removeCard(cardId: String): NativePocketRemoval =
         withHostRejection { bridge.removeCard(cardId) }
 }
 
