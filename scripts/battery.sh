@@ -104,10 +104,10 @@ fi
 generated=(
   "js/packages/truapi/src/generated/client.ts"
   "js/packages/truapi/src/playground/codegen/services.ts"
-  "rust/crates/truapi-server/src/generated/mod.rs"
-  "rust/crates/truapi-server/src/generated/dispatcher.rs"
-  "rust/crates/truapi-server/src/generated/wire_table.rs"
-  "rust/crates/truapi-server/src/wasm/generated_bridge.rs"
+  "rust/crates/truapi/src/generated/mod.rs"
+  "rust/crates/truapi/src/generated/dispatcher.rs"
+  "rust/crates/truapi/src/generated/wire_table.rs"
+  "rust/crates/truapi/src/wasm/generated_bridge.rs"
 )
 for path in "${generated[@]}"; do
   if [ ! -f "$path" ]; then

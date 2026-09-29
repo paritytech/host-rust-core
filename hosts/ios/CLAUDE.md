@@ -219,4 +219,7 @@ Rules:
 - Do not guess Apple APIs when documentation is needed
 - After meaningful code changes, validate through xcode-tools/Xcode-native flow
 - Always check whether xcstrings-crud available via mcp or command line to edit .xcstrings. It can do it safely and efficiently. Check that extractionState is set to manual for each added string.
+- Xcode writes `.xcstrings` JSON with space before every colon (`"key" : "value"`, 2-space indent).
+  Any tool editing catalogs must match this format; `json.dump`/`JSONEncoder` bloats diffs.
+  Verify the diff after editing.
 - Always check whether figma mcp server is available in local settings. Prefer figma mcp to undertand layers and styles when a user asks for layout implementation from Figma mockups.

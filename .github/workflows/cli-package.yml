@@ -94,8 +94,8 @@ jobs:
         with:
           name: generated-rust
           path: |
-            rust/crates/truapi-server/src/generated
-            rust/crates/truapi-server/src/wasm
+            rust/crates/truapi/src/generated
+            rust/crates/truapi/src/wasm
             rust/crates/truapi-host-cli/js/script-types.d.ts
           if-no-files-found: error
 
