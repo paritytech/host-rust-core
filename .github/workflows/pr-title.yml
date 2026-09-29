@@ -42,15 +42,23 @@ jobs:
         run: echo "The title was validated on the pull request."
 
       - name: A revert of a conventional title
-        if: github.event_name == 'pull_request' && startsWith(github.event.pull_request.title, 'Revert "')
+        if: >-
+          github.event_name == 'pull_request'
+          && (startsWith(github.event.pull_request.title, 'Revert "')
+              || startsWith(github.event.pull_request.title, 'Reapply "'))
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
           # GitHub's Revert button titles a pull request `Revert "<original>"`,
-          # which no type matches. It passes when the original was conventional.
-          inner="${TITLE#Revert \"}"
-          inner="${inner%\"}"
+          # which no type matches, and reverting a revert nests it. A local
+          # `git revert` of a revert writes `Reapply "<original>"` instead. It
+          # passes when the innermost title was conventional.
+          inner="${TITLE}"
+          while [[ "${inner}" == 'Revert "'* || "${inner}" == 'Reapply "'* ]]; do
+            inner="${inner#*\"}"
+            inner="${inner%\"}"
+          done
           types='feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert|release'
           if grep -qE "^(${types})(\([^)]*\))?!?: .+" <<<"$inner"; then
             echo "Reverts a conventional title: ${inner}"
@@ -60,7 +68,10 @@ jobs:
           fi
 
       - name: Conventional-commit title
-        if: github.event_name == 'pull_request' && !startsWith(github.event.pull_request.title, 'Revert "')
+        if: >-
+          github.event_name == 'pull_request'
+          && !startsWith(github.event.pull_request.title, 'Revert "')
+          && !startsWith(github.event.pull_request.title, 'Reapply "')
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -108,10 +119,13 @@ jobs:
               const { data } = await github.rest.repos.getContent({
                 owner, repo, path: file.filename, ref: process.env.HEAD_SHA,
               });
-              const text = Buffer.from(data.content, 'base64').toString('utf8').replace(/^\uFEFF/, '');
-              // Closing fence on its own line, so an empty frontmatter (what
-              // `changeset --empty` writes) cannot run on into the body.
-              const front = /^---\r?\n([\s\S]*?)^---\s*$/m.exec(text);
+              const text = Buffer.from(data.content, 'base64').toString('utf8')
+                .replace(/^\uFEFF/, '').replace(/^\s+/, '');
+              // Fences on their own lines, trailing whitespace allowed as the
+              // changesets parser allows it, and the opening one at the very
+              // start, so a `---` rule in the body is never read as a fence.
+              const front = /^---[ \t]*\r?\n([\s\S]*?)^---[ \t]*\r?$/m.exec(text);
+              if (front && front.index !== 0) continue;
               if (front && /:\s*["']?major["']?\s*$/m.test(front[1])) major.push(file.filename);
             }
 

@@ -243,8 +243,8 @@ Two ways to lose work that involve no pushing at all:
 - Title every pull request as a conventional commit, with `!` for a breaking
   change. Load `.claude/skills/semver-pr-title/SKILL.md` before opening or
   retitling one; it defines what breaking means here. CI blocks a title that
-  does not parse, and the nightly announcements read `!` to list breaking
-  changes first.
+  does not parse, and a `major` changeset whose title lacks `!`. The nightly
+  announcements read `!` to list breaking changes first.
 
 ## Scope of a change
 

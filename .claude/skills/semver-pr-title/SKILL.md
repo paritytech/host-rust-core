@@ -29,11 +29,13 @@ Some pull requests have a fixed shape:
 
 - **An RFC** is `docs(rfc): <title>`. The `RFC: <Title>` form is for the
   tracking issue, which this check does not see.
-- **A revert** made with GitHub's Revert button keeps its generated
-  `Revert "<original title>"`, which passes as long as the original did.
-- **Titles a workflow writes**, such as backport work orders, releases and
-  diagnosis reports, are already conventional. Keep them that way when
-  editing those workflows.
+- **A revert** keeps its generated `Revert "<original title>"`, nested or
+  not, and so does a `Reapply "<original title>"`. It passes as long as the
+  original did.
+- **Titles a workflow writes into `main`**, such as backport work orders,
+  releases and diagnosis reports, are already conventional. Keep them that way
+  when editing those workflows. Pull requests into a release branch, such as the
+  lifecycle's `Backport:` ones, are not checked.
 
 ```
 feat(truapi-server): withdraw a call before it prompts
