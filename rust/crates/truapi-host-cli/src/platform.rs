@@ -30,7 +30,7 @@ use truapi::platform::{
 };
 use truapi::v01;
 
-use crate::chain::WsChainProvider;
+use crate::chain::CliChainProvider;
 use crate::terminal_ui::{ApprovalKind, SystemEvent, UiHandle};
 
 static NEXT_STORAGE_TEMP_ID: AtomicU32 = AtomicU32::new(0);
@@ -89,7 +89,7 @@ impl CliStoragePaths {
 
 /// Headless-host platform shared by both roles.
 pub struct CliPlatform {
-    chain: WsChainProvider,
+    chain: CliChainProvider,
     /// Chain roles this host serves, answered by `Features::supported_chains`.
     chains: truapi::platform::HostChainSet,
     product_storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
@@ -121,7 +121,10 @@ impl CliPlatform {
     /// rather than assume it.
     #[cfg(test)]
     pub fn routed_url(&self, genesis_hash: &[u8; 32]) -> &str {
-        self.chain.routed_url(genesis_hash)
+        let CliChainProvider::Rpc(rpc) = &self.chain else {
+            panic!("routing is only asserted on the RPC provider");
+        };
+        rpc.routed_url(genesis_hash)
     }
 
     /// Build a platform whose chain provider connects to the network's People
@@ -179,7 +182,7 @@ impl CliPlatform {
             .unwrap_or_default();
 
         Arc::new(Self {
-            chain: WsChainProvider::new(network.people_ws, network.live_chain_endpoints),
+            chain: CliChainProvider::new(network),
             chains: network.host_chain_set(),
             product_storage: Mutex::new(product_storage),
             core_storage: Mutex::new(core_storage),
