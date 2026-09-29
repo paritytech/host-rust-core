@@ -10,17 +10,16 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.CreatePr
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatIdParameter
 import kotlinx.coroutines.flow.firstOrNull
 import timber.log.Timber
+import uniffi.truapi.ChatBotRegistrationStatus
 import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatRoom
-import uniffi.truapi.HostRejection
-import uniffi.truapi.ChatBotRegistrationStatus
 import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi.HostRejection
 
 class ProductChatHostBridge(
     private val productId: ProductId,
     private val chatMessaging: ProductChatMessaging,
 ) : ChatHostBridge {
-
     override suspend fun createRoom(roomId: String, name: String, icon: String): ChatRoomRegistrationStatus {
         if (roomId.isEmpty()) throw HostRejection.Rejected("a chat room needs an id")
         return chatMessaging.createRoom(CreateProductRoomRequest(ProductChatIdParameter(roomId), name, icon))

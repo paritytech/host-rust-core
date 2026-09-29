@@ -1,12 +1,8 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker
 
 import dagger.Lazy
-import io.parity.truapi.TrUAPIHostRuntime
-import io.parity.truapi.TrUAPIProductExecution
 import io.paritytech.polkadotapp.feature_products_api.model.ProductExecutable
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
-import io.paritytech.polkadotapp.feature_products_api.model.SemVer
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.FakeChatMessaging
 import io.paritytech.polkadotapp.feature_products_impl.domain.product.ProductScriptResolver
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.ProductTrUAPIHostBridge
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.TrUAPIBootstrapInstaller
@@ -14,9 +10,7 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.TrUAPIChain
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.TrUAPIHostRuntimeProvider
 import io.paritytech.polkadotapp.feature_products_impl.domain.webView.ChatWebViewProvider
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWorkerRefCounter
-import io.paritytech.polkadotapp.test_shared.any
 import io.paritytech.polkadotapp.test_shared.testDispatchers
-import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -35,19 +29,6 @@ class TrUAPIWorkerSupervisorFailureTest {
     private class FailingScriptResolver(private val error: Throwable) : ProductScriptResolver {
         override suspend fun resolveWorker(productId: ProductId): Result<ProductExecutable.Worker> =
             Result.failure(error)
-    }
-
-    private class FixedScriptResolver : ProductScriptResolver {
-        override suspend fun resolveWorker(productId: ProductId): Result<ProductExecutable.Worker> =
-            Result.success(
-                ProductExecutable.Worker(
-                    scriptUrl = "https://chat.dot/worker.js",
-                    appVersion = SemVer.ZERO,
-                    includesChat = true,
-                    includesPocket = false,
-                    pocketCards = emptyList(),
-                ),
-            )
     }
 
     private class FailOnceThenGateScriptResolver(
@@ -128,5 +109,4 @@ class TrUAPIWorkerSupervisorFailureTest {
 
         assertNull(supervisor.executionState(productId).first())
     }
-
 }

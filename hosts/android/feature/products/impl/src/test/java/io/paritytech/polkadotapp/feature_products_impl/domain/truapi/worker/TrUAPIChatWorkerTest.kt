@@ -47,9 +47,9 @@ import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostRendererActionSubscribeItem
 import uniffi.truapi.ProductRendererRenderRequest
+import uniffi.truapi.ProductRuntimeException
 import uniffi.truapi.RenderContext
 import uniffi.truapi.RendererNode
-import uniffi.truapi.ProductRuntimeException
 import kotlin.time.Duration.Companion.milliseconds
 
 class TrUAPIChatWorkerTest {

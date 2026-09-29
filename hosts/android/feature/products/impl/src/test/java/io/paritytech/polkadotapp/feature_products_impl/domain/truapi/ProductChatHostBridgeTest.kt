@@ -15,14 +15,13 @@ import org.junit.Test
 import uniffi.truapi.ChatMessageContent
 import uniffi.truapi.ChatReaction
 import uniffi.truapi.ChatRoomParticipation
-import uniffi.truapi.HostRejection
 import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi.HostRejection
 
 private const val MESSAGING_NOT_SUPPORTED_CODE = "messaging_not_supported"
 private const val ROOM = "jollity"
 
 class ProductChatHostBridgeTest {
-
     private val productId = ProductId.fromStoredValue("dim2.dot")
 
     @Test

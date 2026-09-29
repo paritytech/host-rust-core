@@ -9,7 +9,11 @@ import io.paritytech.polkadotapp.feature_usernames_api.domain.model.StoredUserna
 import io.paritytech.polkadotapp.feature_usernames_api.domain.model.Username
 import io.paritytech.polkadotapp.feature_usernames_api.domain.usecase.UsernameOfAccountUseCase
 import io.paritytech.polkadotapp.test_shared.whenever
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -17,10 +21,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito.mock
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.test.runTest
 
 class TrUAPILocalSessionSourceTest {
     private val accountRepository: AccountRepository = mock()
