@@ -162,16 +162,16 @@ NOTES:
 ## Dependencies
 
 Key external packages (via SPM):
-- **substrate-sdk-ios** (5.7.1) — Polkadot/Substrate blockchain SDK
-- **ExtrinsicService** (1.7.8) — Extrinsic construction and submission
-- **Firebase SDK** (12.5.0) — Remote Config
-- **SnapKit** (5.7.1) — Auto Layout DSL
-- **Kingfisher** (8.2.0) — Image loading and caching
-- **Lottie** (4.5.2) — Animations
-- **WebRTC** (149.0.0) — Real-time communication
-- **SVGKit** (3.0.0) — SVG rendering
-- **SwiftyBeaver** (2.1.1) — Logging
-- **QRCode** (26.1.0) — QR code generation
+- **substrate-sdk-ios** — Polkadot/Substrate blockchain SDK
+- **ExtrinsicService** — Extrinsic construction and submission
+- **Firebase SDK** — Remote Config
+- **SnapKit** — Auto Layout DSL
+- **Kingfisher** — Image loading and caching
+- **Lottie** — Animations
+- **WebRTC** — Real-time communication
+- **SVGKit** — SVG rendering
+- **SwiftyBeaver** — Logging
+- **QRCode** — QR code generation
 
 NOTES:
 
@@ -219,4 +219,7 @@ Rules:
 - Do not guess Apple APIs when documentation is needed
 - After meaningful code changes, validate through xcode-tools/Xcode-native flow
 - Always check whether xcstrings-crud available via mcp or command line to edit .xcstrings. It can do it safely and efficiently. Check that extractionState is set to manual for each added string.
+- Xcode writes `.xcstrings` JSON with space before every colon (`"key" : "value"`, 2-space indent).
+  Any tool editing catalogs must match this format; `json.dump`/`JSONEncoder` bloats diffs.
+  Verify the diff after editing.
 - Always check whether figma mcp server is available in local settings. Prefer figma mcp to undertand layers and styles when a user asks for layout implementation from Figma mockups.

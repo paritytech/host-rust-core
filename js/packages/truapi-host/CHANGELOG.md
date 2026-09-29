@@ -1,5 +1,49 @@
 # @parity/truapi-host
 
+## 0.23.0
+
+### Minor Changes
+
+- 7663ece: `create_transaction` and `create_transaction_with_legacy_account` read `txExtVersion` as the version of the
+  transaction extensions in `extensions`, as the runtime numbers them. With `0` the host builds a V5 general transaction
+  when transaction extension version 0 includes `VerifyMultiSignature`, and a signed V4 transaction otherwise. A
+  non-zero value builds V5 with that version. A version the runtime does not declare returns `NotSupported` naming the
+  declared versions.
+
+### Patch Changes
+
+- ca44c7f: Native host storage and Pocket card removal are asynchronous. The core awaits `core_storage_read`,
+  `core_storage_write`, `core_storage_clear`, `local_storage_read`, `local_storage_write`, `local_storage_clear` and
+  `NativePocketCallbacks::remove_card`, so a host backend that waits on disk, a keystore or a database no longer holds a
+  core thread. On Android, `HostStorage`, `HostCoreStorage` and `PocketHostBridge.removeCard` are `suspend` functions,
+  which is a breaking change for `@parity/android-host` implementers. On iOS the protocols are unchanged, since
+  synchronous implementations satisfy the async requirements. `chain_send` and `chain_close` stay synchronous so
+  requests keep their order, and must only enqueue work.
+- 57475ce: Native hosts run the whole core on one process-wide tokio runtime. Subscriptions and background loops spawned
+  by the core and the localhost WebSocket bridge's connections share its workers, so a bridged product's request and the
+  subscriptions it opens run on the same executor. The runtime constructor fails with `RuntimeUnavailable` when that
+  runtime cannot start.
+- Updated dependencies [7663ece]
+  - @parity/truapi@0.23.0
+
+## 0.22.0
+
+### Patch Changes
+
+- d3d3312: Every native build of the core includes the localhost WebSocket bridge and the debug sink. There are no
+  `ws-bridge` or `debug-sink` Cargo features: native targets compile both with the default `runtime` feature, and wasm32
+  builds never include them.
+- 336be6e: The shared Rust core asks blessed products only for device permissions and legacy-account signing. Other
+  product operations bypass permission prompts and recorded decisions.
+- 4ef4efc: Build the core WASM without wasm-opt's one-caller inlining, which merges functions into bodies that compress
+  poorly. The `web` core is 719.5 KiB brotli and 952.5 KiB gzip, down from 775.4 KiB and 1.02 MiB; the raw size is
+  unchanged at 2.66 MiB.
+- Updated dependencies [a285523]
+- Updated dependencies [60940ff]
+- Updated dependencies [de343d4]
+- Updated dependencies [3ef2191]
+  - @parity/truapi@0.22.0
+
 ## 0.21.0
 
 ### Minor Changes
