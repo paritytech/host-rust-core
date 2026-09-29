@@ -96,6 +96,9 @@ enum AllocatableResource {
     /// `ApAllocatedResource::AutoSigning` below for the exact shape of the
     /// transferred material.
     AutoSigning,
+    /// Consent for `preimage.submit` to upload without a per-upload prompt.
+    /// Held by the Host alone; see [Automatic upload](#automatic-upload).
+    AutomaticUpload,
 }
 
 enum AllocationOutcome {
@@ -334,6 +337,44 @@ sequenceDiagram
   H->>H: derive productAccount/N from cached product subtree key + secret
   H->>H: sign locally
   H-->>P: signature
+```
+
+#### Automatic upload
+
+`preimage.submit` asks the user to confirm every upload, even when the product
+holds the `PreimageSubmit` permission, because the permission says the product
+may upload and the confirmation says this upload is wanted. A product that
+uploads on its own schedule, such as a periodic encrypted backup, needs the user
+to agree once to uploads they did not start.
+
+`AutomaticUpload` is that agreement. The Host shows it in the same
+resource-allocation review as the other resources and, once approved, stores it
+as a permission for the granting product and the session's root account. It is
+not sent to the Account Holder: no key material moves, and the per-upload
+confirmation it waives is the Host's own.
+
+While the consent holds, `preimage.submit` skips the confirmation for uploads of
+at most 256 KiB, up to 4 per product and account in any hour. An upload over
+either limit asks the user as before. A Host revokes the consent by setting
+`PermissionAuthorizationRequest::AutomaticUpload { root_public_key }` back to
+`NotDetermined`. An AutoSigning grant does not imply it.
+
+```mermaid
+sequenceDiagram
+  participant P as Product
+  participant H as Host
+  participant U as User
+
+  P->>H: host_request_resource_allocation([AutomaticUpload])
+  H->>U: review resource allocation
+  U-->>H: approve
+  H->>H: store consent for (product, account)
+
+  Note over P,H: Later, a background upload within the limits
+
+  P->>H: preimage.submit(value)
+  H->>H: PreimageSubmit granted, consent held, within limits
+  H-->>P: preimage key, no prompt
 ```
 
 ### Design decisions

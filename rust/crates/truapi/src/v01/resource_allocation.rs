@@ -24,6 +24,11 @@ pub enum AllocatableResource {
     SmartContractAllowance(DerivationIndex),
     /// Permission to sign on the product's behalf without per-call user prompts.
     AutoSigning,
+    /// Consent for `preimage.submit` to upload without a per-upload user
+    /// prompt, for the granting product and account only and within host
+    /// limits on upload size and frequency. Granted and held by the product's
+    /// own host; it is never forwarded to a signing host.
+    AutomaticUpload,
 }
 
 /// Outcome of allocating a single resource (RFC 0010).

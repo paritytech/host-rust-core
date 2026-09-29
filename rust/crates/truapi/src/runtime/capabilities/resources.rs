@@ -62,24 +62,59 @@ impl ResourceAllocation for ProductRuntimeHost {
                 },
             )));
         }
-        let cx = remote_authority_context_with_default(
-            cx,
-            RESOURCE_ALLOCATION_REMOTE_AUTHORITY_RESPONSE_TIMEOUT,
-        );
-        remote_authority_call(
-            &cx,
-            self.authority
-                .allocate_resources(&cx, &session, self.product_id(), inner),
-        )
-        .await
-        .map(HostRequestResourceAllocationResponse::V1)
-        .map_err(|err| {
-            CallError::Domain(HostRequestResourceAllocationError::V1(
-                v01::ResourceAllocationError::Unknown {
-                    reason: err.to_string(),
-                },
-            ))
-        })
+        let requested = inner.resources;
+        let forwarded: Vec<_> = requested
+            .iter()
+            .filter(|resource| **resource != v01::AllocatableResource::AutomaticUpload)
+            .cloned()
+            .collect();
+        let mut forwarded_outcomes = if forwarded.is_empty() {
+            Vec::new()
+        } else {
+            let cx = remote_authority_context_with_default(
+                cx,
+                RESOURCE_ALLOCATION_REMOTE_AUTHORITY_RESPONSE_TIMEOUT,
+            );
+            remote_authority_call(
+                &cx,
+                self.authority.allocate_resources(
+                    &cx,
+                    &session,
+                    self.product_id(),
+                    v01::HostRequestResourceAllocationRequest {
+                        resources: forwarded,
+                    },
+                ),
+            )
+            .await
+            .map_err(|err| {
+                CallError::Domain(HostRequestResourceAllocationError::V1(
+                    v01::ResourceAllocationError::Unknown {
+                        reason: err.to_string(),
+                    },
+                ))
+            })?
+            .outcomes
+        }
+        .into_iter();
+        let automatic_upload_outcome =
+            if requested.contains(&v01::AllocatableResource::AutomaticUpload) {
+                self.grant_automatic_upload(&session).await
+            } else {
+                v01::AllocationOutcome::NotAvailable
+            };
+        let outcomes = requested
+            .iter()
+            .map(|resource| match resource {
+                v01::AllocatableResource::AutomaticUpload => automatic_upload_outcome,
+                _ => forwarded_outcomes
+                    .next()
+                    .unwrap_or(v01::AllocationOutcome::NotAvailable),
+            })
+            .collect();
+        Ok(HostRequestResourceAllocationResponse::V1(
+            v01::HostRequestResourceAllocationResponse { outcomes },
+        ))
     }
 }
 

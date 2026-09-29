@@ -388,7 +388,13 @@ export type PermissionAuthorizationRequest =
   /**
    * Product-scoped permission to access another product's account context.
    */
-  | { tag: "AccountAccess"; value: { targetProductId: string } };
+  | { tag: "AccountAccess"; value: { targetProductId: string } }
+  /**
+   * Product- and account-scoped consent for `preimage.submit` to upload
+   * without a per-upload prompt, granted through the `AutomaticUpload`
+   * resource allocation.
+   */
+  | { tag: "AutomaticUpload"; value: { rootPublicKey: Uint8Array } };
 
 /**
  * Authorization status for a permission request.
@@ -898,6 +904,9 @@ export const PermissionAuthorizationRequest: S.Codec<PermissionAuthorizationRequ
         IdentityDisclosure: S._void,
         AccountAccess: S.Struct({ targetProductId: S.str }) as S.Codec<{
           targetProductId: string;
+        }>,
+        AutomaticUpload: S.Struct({ rootPublicKey: S.Bytes(32) }) as S.Codec<{
+          rootPublicKey: Uint8Array;
         }>,
       }),
   );

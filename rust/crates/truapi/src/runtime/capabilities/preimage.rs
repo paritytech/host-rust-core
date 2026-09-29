@@ -107,17 +107,17 @@ impl Preimage for ProductRuntimeHost {
             }),
         )
         .await?;
-        let confirmed = until_cancelled(
-            cx,
-            self.confirm_product_action(UserConfirmationReview::PreimageSubmit(
-                PreimageSubmitReview {
-                    size: value.len() as u64,
-                },
-            )),
-        )
-        .await
-        .map_err(|err| preimage_submit_error(err.to_string()))?
-        .map_err(|err| preimage_submit_error(err.reason))?;
+        let size = value.len() as u64;
+        let confirmed = self.reserve_automatic_upload(&session, size).await
+            || until_cancelled(
+                cx,
+                self.confirm_product_action(UserConfirmationReview::PreimageSubmit(
+                    PreimageSubmitReview { size },
+                )),
+            )
+            .await
+            .map_err(|err| preimage_submit_error(err.to_string()))?
+            .map_err(|err| preimage_submit_error(err.reason))?;
         if !confirmed {
             return Err(preimage_submit_error(
                 "User rejected preimage submission".to_string(),

@@ -1199,6 +1199,13 @@ pub enum PermissionAuthorizationRequest {
         /// Product whose account context may be accessed.
         target_product_id: String,
     },
+    /// Product- and account-scoped consent for `preimage.submit` to upload
+    /// without a per-upload prompt, granted through the `AutomaticUpload`
+    /// resource allocation.
+    AutomaticUpload {
+        /// Root public key of the account the consent was granted for.
+        root_public_key: [u8; 32],
+    },
 }
 
 /// Authorization status for a permission request.
@@ -1567,6 +1574,15 @@ impl CoreStorageKey {
             request: PermissionAuthorizationRequest::AccountAccess {
                 target_product_id: target_product_id.to_string(),
             },
+        }
+    }
+
+    /// Persisted authorization key for one product's automatic-upload consent
+    /// on one account.
+    pub fn automatic_upload_authorization(product_id: &str, root_public_key: [u8; 32]) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::AutomaticUpload { root_public_key },
         }
     }
 }

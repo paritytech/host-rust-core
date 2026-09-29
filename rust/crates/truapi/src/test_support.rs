@@ -22,7 +22,8 @@ use crate::platform::{
     CoreStorage as PlatformCoreStorage, CoreStorageKey, CreateTransactionReview,
     Features as PlatformFeatures, HostInfo, JsonRpcConnection, LocaleHost,
     Navigation as PlatformNavigation, Notifications as PlatformNotifications, PairingHostConfig,
-    Permissions as PlatformPermissions, PlatformInfo, PreimageHost, ProductContext,
+    Permissions as PlatformPermissions, PlatformInfo, PreimageHost, PreimageSubmitReview,
+    ProductContext,
     ProductOperations as PlatformProductOperations, ProductStorage as PlatformProductStorage,
     ProductSubtreeReview, ProviderError, ResourceAllocationReview, SignPayloadReview,
     SignRawReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
@@ -135,6 +136,11 @@ pub struct StubPlatform {
         Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     /// Every `ResourceAllocation` review passed to `confirm_user_action`, in order.
     pub resource_allocation_reviews: Arc<Mutex<Vec<ResourceAllocationReview>>>,
+    /// Inverted so the derived default (`false`) approves every upload.
+    pub preimage_submit_rejected: bool,
+    /// Every `PreimageSubmit` review passed to `confirm_user_action`, in order.
+    /// Empty proves an automatic-upload consent suppressed the prompt.
+    pub preimage_submit_reviews: Arc<Mutex<Vec<PreimageSubmitReview>>>,
     pub session_blob: Option<Vec<u8>>,
     pub session_error: Option<&'static str>,
     pub session_clears: Arc<Mutex<usize>>,
@@ -1927,7 +1933,13 @@ impl UserConfirmation for StubPlatform {
                     self.resource_allocation_confirmed,
                 )
             }
-            UserConfirmationReview::PreimageSubmit(_) => (None, true),
+            UserConfirmationReview::PreimageSubmit(review) => {
+                self.preimage_submit_reviews
+                    .lock()
+                    .expect("preimage submit review list mutex poisoned")
+                    .push(review);
+                (None, !self.preimage_submit_rejected)
+            }
             UserConfirmationReview::ProductSubtree(review) => {
                 self.product_subtree_reviews
                     .lock()

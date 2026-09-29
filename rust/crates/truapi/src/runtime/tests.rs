@@ -3938,6 +3938,203 @@ fn preimage_submit_requires_remote_permission_before_backend_call() {
     );
 }
 
+/// A product runtime on a pairing host whose user rejects every per-upload
+/// prompt, so a submit that gets past the prompt proves it was not asked.
+fn preimage_host_rejecting_prompts() -> (Arc<StubPlatform>, ProductRuntimeHost) {
+    let platform = Arc::new(StubPlatform {
+        resource_allocation_confirmed: true,
+        preimage_submit_rejected: true,
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("t3ams.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session_info());
+    (platform, host)
+}
+
+fn request_automatic_upload(host: &ProductRuntimeHost) -> Vec<v01::AllocationOutcome> {
+    let HostRequestResourceAllocationResponse::V1(response) =
+        futures::executor::block_on(ResourceAllocation::request(
+            host,
+            &CallContext::default(),
+            HostRequestResourceAllocationRequest::V1(v01::HostRequestResourceAllocationRequest {
+                resources: vec![v01::AllocatableResource::AutomaticUpload],
+            }),
+        ))
+        .expect("automatic upload allocation succeeds");
+    response.outcomes
+}
+
+/// Submit `size` bytes and report whether the user was asked and whether the
+/// upload was stopped at the prompt.
+fn submit_preimage(
+    platform: &StubPlatform,
+    host: &ProductRuntimeHost,
+    size: usize,
+) -> (usize, bool) {
+    let prompts_before = platform.preimage_submit_reviews.lock().unwrap().len();
+    let result = futures::executor::block_on(Preimage::submit(
+        host,
+        &CallContext::default(),
+        RemotePreimageSubmitRequest::V1(vec![0; size]),
+    ));
+    let stopped_at_prompt = matches!(
+        result,
+        Err(CallError::Domain(RemotePreimageSubmitError::V1(
+            v01::PreimageSubmitError::Unknown { ref reason },
+        ))) if reason == "User rejected preimage submission"
+    );
+    let prompts = platform.preimage_submit_reviews.lock().unwrap().len() - prompts_before;
+    (prompts, stopped_at_prompt)
+}
+
+#[test]
+fn preimage_submit_asks_for_every_upload_without_automatic_upload_consent() {
+    let (platform, host) = preimage_host_rejecting_prompts();
+
+    assert_eq!(
+        [submit_preimage(&platform, &host, 3), submit_preimage(&platform, &host, 3)],
+        [(1, true), (1, true)]
+    );
+}
+
+/// t3ams backs up in the background every 15 minutes; with the consent those
+/// uploads must not prompt, or the user either approves a task they did not
+/// start or dismisses it and the backups silently stop.
+#[test]
+fn automatic_upload_consent_lets_preimage_submit_skip_the_prompt() {
+    let (platform, host) = preimage_host_rejecting_prompts();
+
+    assert_eq!(request_automatic_upload(&host), [v01::AllocationOutcome::Allocated]);
+
+    assert_eq!(submit_preimage(&platform, &host, 78_487), (0, false));
+}
+
+#[test]
+fn automatic_upload_consent_never_reaches_the_signing_host() {
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        resource_allocation_confirmed: true,
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("t3ams.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session.clone());
+
+    assert_eq!(
+        (
+            request_automatic_upload(&host),
+            submitted_remote_messages(&platform, &session).len()
+        ),
+        (vec![v01::AllocationOutcome::Allocated], 0)
+    );
+}
+
+#[test]
+fn automatic_upload_consent_keeps_forwarded_outcomes_in_request_order() {
+    let session = sso_session_info();
+    let platform = Arc::new(StubPlatform {
+        resource_allocation_confirmed: true,
+        sso_response_script: Some(sso_success_response_script(
+            &session,
+            crate::host_internal::sso_messages::RemoteMessage {
+                message_id: "wallet-alloc-1".to_string(),
+                data: crate::host_internal::sso_messages::RemoteMessageData::V1(
+                    crate::host_internal::sso_messages::v1::RemoteMessage::ResourceAllocationResponse(
+                        crate::host_internal::sso_messages::Response {
+                            responding_to: "alloc-1".to_string(),
+                            payload: Ok(vec![
+                                crate::host_internal::sso_messages::SsoAllocationOutcome::Rejected,
+                            ]),
+                        },
+                    ),
+                ),
+            },
+        )),
+        ..Default::default()
+    });
+    let host = ProductRuntimeHost::new(
+        platform.clone(),
+        runtime_config("t3ams.dot"),
+        test_spawner(),
+    );
+    install_pairing_session(&host, session.clone());
+
+    let HostRequestResourceAllocationResponse::V1(response) =
+        futures::executor::block_on(ResourceAllocation::request(
+            &host,
+            &CallContext::with_request_id("alloc-1".to_string()),
+            HostRequestResourceAllocationRequest::V1(v01::HostRequestResourceAllocationRequest {
+                resources: vec![
+                    v01::AllocatableResource::AutomaticUpload,
+                    v01::AllocatableResource::BulletinAllowance,
+                ],
+            }),
+        ))
+        .unwrap();
+    let forwarded = match submitted_remote_message(&platform, &session).data {
+        crate::host_internal::sso_messages::RemoteMessageData::V1(
+            crate::host_internal::sso_messages::v1::RemoteMessage::ResourceAllocationRequest(
+                request,
+            ),
+        ) => request.resources,
+        other => panic!("expected a resource allocation request, got {other:?}"),
+    };
+
+    assert_eq!(
+        (response.outcomes, forwarded),
+        (
+            vec![
+                v01::AllocationOutcome::Allocated,
+                v01::AllocationOutcome::Rejected,
+            ],
+            vec![v01::AllocatableResource::BulletinAllowance],
+        )
+    );
+}
+
+#[test]
+fn revoking_automatic_upload_consent_brings_the_prompt_back() {
+    let (platform, host) = preimage_host_rejecting_prompts();
+    request_automatic_upload(&host);
+
+    futures::executor::block_on(host.set_permission_authorization_status(
+        PermissionAuthorizationRequest::AutomaticUpload {
+            root_public_key: session_info().public_key,
+        },
+        PermissionAuthorizationStatus::NotDetermined,
+    ))
+    .unwrap();
+
+    assert_eq!(submit_preimage(&platform, &host, 3), (1, true));
+}
+
+#[test]
+fn automatic_upload_consent_does_not_cover_uploads_over_the_size_limit() {
+    let (platform, host) = preimage_host_rejecting_prompts();
+    request_automatic_upload(&host);
+
+    assert_eq!(submit_preimage(&platform, &host, 256 * 1024 + 1), (1, true));
+}
+
+#[test]
+fn automatic_upload_consent_is_scoped_to_the_granting_account() {
+    let (platform, host) = preimage_host_rejecting_prompts();
+    request_automatic_upload(&host);
+
+    let mut other_account = session_info();
+    other_account.public_key = [9; 32];
+    install_pairing_session(&host, other_account);
+
+    assert_eq!(submit_preimage(&platform, &host, 3), (1, true));
+}
+
 fn broadcast_request() -> RemoteChainTransactionBroadcastRequest {
     RemoteChainTransactionBroadcastRequest::V1(v01::RemoteChainTransactionBroadcastRequest {
         genesis_hash: vec![0; 32],
@@ -5082,7 +5279,13 @@ fn resource_allocation_accepts_confirmation_then_returns_sso_response() {
     let response = futures::executor::block_on(ResourceAllocation::request(
         &host,
         &cx,
-        resource_allocation_request(),
+        HostRequestResourceAllocationRequest::V1(v01::HostRequestResourceAllocationRequest {
+            resources: vec![
+                v01::AllocatableResource::StatementStoreAllowance,
+                v01::AllocatableResource::AutoSigning,
+                v01::AllocatableResource::BulletinAllowance,
+            ],
+        }),
     ))
     .unwrap();
     let HostRequestResourceAllocationResponse::V1(inner) = response;

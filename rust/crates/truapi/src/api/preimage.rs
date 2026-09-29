@@ -42,6 +42,10 @@ pub trait Preimage: Send + Sync {
 
     /// Submit a preimage. Returns the preimage key (hash) on success.
     ///
+    /// Requires the `PreimageSubmit` permission, and the user confirms each
+    /// upload unless the product holds an `AutomaticUpload` resource
+    /// allocation that covers it.
+    ///
     /// ```ts
     /// const value = `0x${crypto.getRandomValues(new Uint8Array(4)).toHex()}` as `0x${string}`;
     /// const result = await truapi.preimage.submit(value);

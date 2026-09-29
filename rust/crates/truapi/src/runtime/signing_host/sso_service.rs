@@ -295,6 +295,8 @@ impl SigningHostSsoService {
                     },
                 ))
             }
+            // The consent lives on the product's own host, which never sends it here.
+            api::AllocatableResource::AutomaticUpload => Ok(SsoAllocationOutcome::NotAvailable),
         }
     }
 }
