@@ -21,8 +21,12 @@ final class PocketService {
 
     private let logger: LoggerProtocol
     private var drawing: Drawing?
-    private var supervisorHeld: (any TrUAPIWorkerSupervising)?
     private var installations = 0
+
+    /// Read without isolation, because bot discovery asks for it from whatever
+    /// executor it resumed on. Hopping to the main actor to answer would mean
+    /// asserting an isolation that discovery does not have.
+    private let supervisorHeld = OSAllocatedUnfairLock<(any TrUAPIWorkerSupervising)?>(initialState: nil)
 
     /// What the cards are drawn through, once a session has started the Pocket.
     private struct Drawing {
@@ -63,7 +67,7 @@ final class PocketService {
 
     /// What runs every product's worker. Nil until the session has started the
     /// Pocket, which is when a chat bot falls back to the native runtime.
-    var supervisor: (any TrUAPIWorkerSupervising)? { supervisorHeld }
+    nonisolated var supervisor: (any TrUAPIWorkerSupervising)? { supervisorHeld.withLock { $0 } }
 
     /// How many times this process has started a Pocket. A sign-out and back in
     /// starts another, and everything read from the one before it is finished:
@@ -76,8 +80,13 @@ final class PocketService {
     func images(of productId: ProductId) -> PocketImageResolver? {
         guard let drawing else { return nil }
 
+        let name = PocketWorkerArchiveName(
+            productId: productId,
+            published: { try? await drawing.products.resolve(productId).contentId(for: .worker) }
+        )
+
         return PocketImageResolver(
-            contentId: { try? await drawing.products.resolve(productId).contentId(for: .worker) },
+            contentId: { await name.resolve() },
             archive: ProductWorkerArchive(dotNsResolver: drawing.dotNsResolver),
             ipfsUrl: drawing.ipfsUrl
         )
@@ -115,7 +124,7 @@ final class PocketService {
         )
 
         runtimeProvider.attach(workerSupervisor: supervisor)
-        replace(supervisorHeld, with: supervisor)
+        replace(with: supervisor)
 
         let converter = HexToCIDConverter(ipfsBaseURL: AppConfig.KnownIPFS.main)
         drawing = Drawing(
@@ -143,18 +152,19 @@ final class PocketService {
     /// Stops the workers and gives up the product behind an opened card. Both
     /// belong to the session's runtime provider, so neither may outlive it.
     func stop() {
-        replace(supervisorHeld, with: nil)
+        replace(with: nil)
         drawing = nil
         cardHosts.release()
     }
 
     /// Nothing else holds a way back to the workers a replaced supervisor is
     /// still running, so it is shut down here.
-    private func replace(
-        _ previous: (any TrUAPIWorkerSupervising)?,
-        with supervisor: (any TrUAPIWorkerSupervising)?
-    ) {
-        supervisorHeld = supervisor
+    private func replace(with supervisor: (any TrUAPIWorkerSupervising)?) {
+        let previous = supervisorHeld.withLock { held -> (any TrUAPIWorkerSupervising)? in
+            let previous = held
+            held = supervisor
+            return previous
+        }
 
         guard let previous else { return }
 

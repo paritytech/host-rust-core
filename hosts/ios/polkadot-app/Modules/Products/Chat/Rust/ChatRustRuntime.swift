@@ -9,7 +9,7 @@ import UIKitExt
 /// The worker itself belongs to ``TrUAPIWorkerSupervisor``. The core keeps one
 /// Worker execution per product and the reference ledger decides when it runs,
 /// so a chat session takes one reference for as long as it is open rather than
-/// opening an execution of its own — the same worker also draws the product's
+/// opening an execution of its own. The same worker also draws the product's
 /// Pocket cards.
 ///
 /// Chat-environment seams route through that execution: user messages and
@@ -183,8 +183,9 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
         roomsForwardingTask = nil
 
         // The core keeps the bridge, and the bridge keeps the surface: unbinding
-        // is what releases the chat context.
-        seams.chat.unbind()
+        // is what releases the chat context. Only this runtime's own binding,
+        // because the surface is the product's and another runtime may hold it.
+        seams.chat.unbind(owner: self)
 
         // A release, not a close. The product's cards may still hold the same
         // worker, and the core stops it once the last reference goes.
@@ -201,7 +202,7 @@ private extension ChatRustRuntime {
     ) async throws {
         // Bound before the reference is taken, so the core can never reach a
         // surface with no binding.
-        seams.chat.bind(messagingSupport)
+        seams.chat.bind(messagingSupport, owner: self)
 
         let reference = try references()
         reference.acquireWorker(productId: productId)
@@ -215,7 +216,7 @@ private extension ChatRustRuntime {
     }
 
     /// `start` returns once the worker is up, because everything the bot does
-    /// next — its welcome message first of all — is published through the
+    /// next, its welcome message first of all, is published through the
     /// execution.
     func awaitWorker() async throws {
         try await withTimeout(workerStartupWindow) { [workers, productId] in

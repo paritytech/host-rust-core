@@ -330,17 +330,19 @@ extension ServiceCoordinator {
         // one worker per product, and hanging the Pocket off chat's assembly
         // would let any chat service failing take every live card face with it,
         // silently.
+        var pocket: PocketService?
         #if FEATURE_PRODUCTS
-            MainActor.assumeIsolated {
-                guard let pocket = PocketService.make() else { return }
+            pocket = MainActor.assumeIsolated {
+                guard let service = PocketService.make() else { return nil }
 
-                RootDependencyLocator.setDependency(pocket)
-                pocket.start(
+                RootDependencyLocator.setDependency(service)
+                service.start(
                     runtimeProvider: truapiRuntimeProvider,
                     flowState: spaFlowState,
                     productFileProvider: productFileProvider,
                     chainRegistry: ChainRegistryFacade.sharedRegistry
                 )
+                return service
             }
         #endif
 
@@ -402,7 +404,8 @@ extension ServiceCoordinator {
             personhoodRegistrationService: personhoodServices.registrationService,
             audioSessionManager: audioSessionManager,
             spaFlowState: spaFlowState,
-            productFileProvider: productFileProvider
+            productFileProvider: productFileProvider,
+            pocket: pocket
         )
         // Registered so the SPA screen, opened outside this assembly, resolves the
         // same facade.

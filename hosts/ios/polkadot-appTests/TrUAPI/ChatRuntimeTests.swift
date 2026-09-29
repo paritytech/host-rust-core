@@ -73,8 +73,17 @@ private func makeRustRuntime(
     )
 }
 
+/// Whether a start has returned, so a test can tell waiting from finishing.
+private actor StartCompletion {
+    private(set) var happened = false
+
+    func mark() {
+        happened = true
+    }
+}
+
 /// A supervisor whose worker is already up, which is what chat finds whenever
-/// something else — a card on screen — got there first.
+/// something else, a card on screen, got there first.
 private func workersRunning(_ execution: MockProductExecution) -> StubWorkerSupervisor {
     let workers = StubWorkerSupervisor()
     workers.publish([chatProduct: execution])
@@ -155,6 +164,24 @@ struct ChatRuntimeTests {
         #expect(references.released.isEmpty)
     }
 
+    /// Every product repository emission builds fresh bots, and the store keeps
+    /// the existing one and drops the duplicate. The duplicate's runtime never
+    /// started, but its dispose runs, and the chat surface it would clear is the
+    /// one the live bot is bound to: the product stops receiving chat while its
+    /// bot looks healthy.
+    @Test func rustRuntimeDisposeLeavesAnotherRuntimesBindingAlone() async throws {
+        let workers = workersRunning(MockProductExecution())
+        let live = makeRustRuntime(workers: workers)
+        let duplicate = makeRustRuntime(workers: workers)
+
+        try await live.start(messagingSupport: .init(bot: nil, context: nil))
+        await duplicate.dispose()
+
+        #expect(workers.seams(of: chatProduct).chat.currentMessaging != nil)
+
+        await live.dispose()
+    }
+
     /// The bot posts its welcome message the moment `start` returns, so `start`
     /// has to wait for the worker rather than return onto an execution that is
     /// not there yet.
@@ -163,12 +190,20 @@ struct ChatRuntimeTests {
         let execution = MockProductExecution()
         let runtime = makeRustRuntime(workers: workers)
 
-        let start = Task { try await runtime.start(messagingSupport: .init(bot: nil, context: nil)) }
+        // Completion is observed rather than inferred from cancellation: a
+        // start that returned at once is not cancelled either, so a runtime
+        // that stopped waiting would pass that test.
+        let returned = StartCompletion()
+        let start = Task {
+            try await runtime.start(messagingSupport: .init(bot: nil, context: nil))
+            await returned.mark()
+        }
         try await Task.sleep(for: .milliseconds(60))
-        #expect(!start.isCancelled)
+        #expect(await returned.happened == false)
 
         workers.publish([chatProduct: execution])
         try await start.value
+        #expect(await returned.happened)
 
         try await runtime.onUserMessage(text: "hi", roomId: "room")
         #expect(execution.publishedChatActions.count == 1)

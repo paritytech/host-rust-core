@@ -18,7 +18,8 @@ extension ServiceCoordinator {
         personhoodRegistrationService: PersonhoodRegistrationServicing,
         audioSessionManager: AudioSessionManaging,
         spaFlowState: SPAFlowState,
-        productFileProvider: any ChatProductFileProviding
+        productFileProvider: any ChatProductFileProviding,
+        pocket: PocketService?
     ) -> (registry: ChatExtensionsRegistering, workerFacade: ProductWorkerFacade) {
         let productRepositoryFactory = ProductRepositoryFactory()
 
@@ -40,7 +41,7 @@ extension ServiceCoordinator {
         let botFactory = ProductBotFactory(
             productFileProvider: productFileProvider,
             runtimeProvider: truapiRuntimeProvider,
-            workers: { MainActor.assumeIsolated { PocketService.current?.supervisor } },
+            workers: { pocket?.supervisor },
             workerManager: workerFacade.manager
         )
 
