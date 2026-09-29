@@ -78,6 +78,10 @@ use pairing_host::PairingHost;
 pub use pairing_host::PairingHost as PairingHostRole;
 pub use renderer::renderer_access_for;
 pub use services::RuntimeServices;
+#[cfg(any(test, not(target_arch = "wasm32")))]
+pub use signing_host::StatementRenewalTarget;
+#[cfg(not(target_arch = "wasm32"))]
+pub use signing_host::TrackedStatementRenewalTarget;
 pub use signing_host::{
     AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
     PairingProposal, PairingProposalMetadata, ResponderExit,
@@ -88,10 +92,6 @@ pub use signing_host::{
     respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{LocalIdentity, LocalIdentityContext, WalletAllowanceSnapshot};
-#[cfg(any(test, not(target_arch = "wasm32")))]
-pub use signing_host::StatementRenewalTarget;
-#[cfg(not(target_arch = "wasm32"))]
-pub use signing_host::TrackedStatementRenewalTarget;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use tracing::Instrument;
 use tracing::{instrument, warn};
