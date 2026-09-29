@@ -139,6 +139,33 @@ describe("the in-page statement store", () => {
     // Still delivered, so this is about the record and not a dropped statement.
     expect(frames.length).toBe(afterSubscribe + 1);
   });
+
+  it("replays an injection to a subscription opened after it", () => {
+    // What retaining is for: a suite that injects before its product subscribes
+    // would otherwise see nothing, with no way to tell that from a delivery
+    // the filter dropped.
+    const store = createLoopbackStatements();
+    store.inject(statement([TOPIC_A]));
+    const { frames } = subscribe(store, { matchAll: [TOPIC_A] });
+    expect(delivered(frames)).toBe(1);
+  });
+
+  it("does not replay the product's own submission back to it", () => {
+    // A store hands a new subscriber what someone else published. Replaying
+    // the submitter's own backlog lets a suite waiting for a peer's statement
+    // pass on the echo of the one it sent.
+    const store = createLoopbackStatements();
+    store.handle(
+      JSON.stringify({
+        id: 9,
+        method: "statement_submit",
+        params: [statement([TOPIC_A])],
+      }),
+      () => {},
+    );
+    const { frames } = subscribe(store, { matchAll: [TOPIC_A] });
+    expect(delivered(frames)).toBe(0);
+  });
 });
 
 describe("the statement encoding the store actually sees", () => {

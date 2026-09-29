@@ -274,10 +274,13 @@ export function createLoopbackStatements(): LoopbackStatements {
           };
           subscriptions.add(subscription);
           reply(id);
-          // Replayed after the id is answered, because the core keys an
-          // incoming notification by the subscription it has not been told
-          // about yet and would drop what arrived first.
+          // Injections only: a store hands a new subscriber what someone else
+          // published, never that subscriber's own backlog. Replayed after the
+          // id is answered, because the core keys an incoming notification by
+          // the subscription it has not been told about yet and would drop
+          // what arrived first.
           for (const statement of retained) {
+            if (statement.fromProduct) continue;
             if (matches(subscription, topicsOf(statement.encoded))) {
               notify(subscription, statement.encoded);
             }
