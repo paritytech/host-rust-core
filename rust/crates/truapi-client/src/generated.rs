@@ -5,7 +5,7 @@
 use super::*;
 
 /// Fingerprint of the generated wire contract.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "4562662cc9dd55ae";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "474f1270d1b5ac35";
 
 /// `account_connection_status_subscribe` method marker.
 pub struct AccountConnectionStatusSubscribe;

@@ -1753,8 +1753,7 @@ impl Profile for ProductRuntimeHost {
             .ok()
             .flatten()
             .map_or(0, |disclosure| disclosure.revision);
-        let now = crate::host_logic::statement_store::current_unix_secs()
-            .saturating_mul(1000);
+        let now = crate::unix_time::current_unix_secs().saturating_mul(1000);
         let disclosure = profile::Disclosure {
             product_id: self.product_id(),
             reference: request.reference,
