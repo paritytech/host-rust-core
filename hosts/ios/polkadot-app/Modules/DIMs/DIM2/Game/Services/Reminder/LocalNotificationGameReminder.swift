@@ -79,9 +79,9 @@ private extension LocalNotificationGameReminder {
             localized: .Notification.gameNotificationGameStartTitle(String(timingSeconds))
         )
         content.body = String(localized: .Notification.gameNotificationGameStartBody)
-        content.sound = UNNotificationSound(named: .init("game_alarm.caf"))
         switch target {
         case let .game(gameIndex):
+            content.sound = UNNotificationSound(named: .init("game_alarm.caf"))
             content.userInfo = [
                 PushNotificationKeys.chatExtensionId: DIM2ChatExtension.identifier,
                 PushNotificationKeys.pushSource: PushNotificationSource.chat.rawValue,
@@ -89,6 +89,8 @@ private extension LocalNotificationGameReminder {
                 PushNotificationKeys.gameIndex: Int(gameIndex)
             ]
         case let .product(productId):
+            // An ordinary notification: the core asks for this one when no alarm may ring.
+            content.sound = .default
             // PushRouteBuilder opens a scheme-less product deeplink as https://<productId>.
             content.userInfo = [
                 PushNotificationKeys.pushSource: PushNotificationSource.products.rawValue,
