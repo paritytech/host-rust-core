@@ -61,7 +61,7 @@ import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.PocketScreenState
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.MutableStateFlow
 import io.paritytech.polkadotapp.common.R as RCommon
 
 private val CollectiblesSketchbookPeek = 80.dp
@@ -363,7 +363,7 @@ private fun PocketScreenPreview() {
                 expandedProductSession = null,
                 bindingsOf = { card ->
                     ProductFaceBindings(
-                        face = flowOf(JsWidget.Text(text = card.title)),
+                        face = MutableStateFlow(JsWidget.Text(text = card.title)),
                         onFaceAction = { _, _ -> },
                         imageResolver = JsImageResolver { null },
                     )
