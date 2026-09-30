@@ -525,6 +525,8 @@ jobs:
         with:
           components: rustfmt
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
       - uses: ./.github/actions/rust-cache
         with:
           shared-key: android-bindings-gate
@@ -676,6 +678,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
       - uses: ./.github/actions/rust-cache
         with:
           shared-key: provider-android-bindings-gate

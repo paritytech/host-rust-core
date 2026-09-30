@@ -7,7 +7,7 @@
 
 CARGO ?= cargo
 # The dated nightly CI runs; see nightly-toolchain.
-NIGHTLY_TOOLCHAIN ?= $(shell head -n1 nightly-toolchain)
+NIGHTLY_TOOLCHAIN ?= $(or $(TRUAPI_NIGHTLY_TOOLCHAIN),$(shell head -n1 nightly-toolchain))
 TRUAPI_PKG := js/packages/truapi
 PLAYGROUND := playground
 JS_PACKAGES := js/packages

@@ -46,6 +46,7 @@ jobs:
           components: rustfmt
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
+          toolchain: stable
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - uses: ./.github/actions/rust-cache

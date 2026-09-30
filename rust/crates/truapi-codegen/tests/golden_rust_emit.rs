@@ -106,9 +106,10 @@ fn run_rustdoc_json(
     package: &str,
     cargo_args: &[&str],
 ) -> PathBuf {
+    let toolchain = nightly_toolchain();
     let mut command = Command::new("cargo");
     command
-        .arg(format!("+{}", nightly_toolchain()))
+        .arg(format!("+{toolchain}"))
         .args(["rustdoc", "-p", package])
         .args(cargo_args)
         .arg("--target-dir")
@@ -116,12 +117,11 @@ fn run_rustdoc_json(
         .args(["--", "-Z", "unstable-options", "--output-format", "json"])
         .current_dir(workspace_root);
     let output = command.output().expect(
-        "failed to spawn nightly rustdoc; install the selected nightly toolchain via rustup",
+        "failed to spawn rustdoc; install the pinned nightly named in nightly-toolchain via rustup",
     );
     assert!(
         output.status.success(),
-        "`cargo +{} rustdoc -p {package}` failed (status {}); that nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
-        nightly_toolchain(),
+        "`cargo +{toolchain} rustdoc -p {package}` failed (status {}); that nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
@@ -164,9 +164,10 @@ fn rustfmt_generated(files: &[PathBuf]) {
     let config_path = config_dir.path().join("rustfmt.toml");
     fs::write(&config_path, "edition = \"2024\"\n").expect("write rustfmt config");
 
+    let toolchain = nightly_toolchain();
     let mut command = Command::new("rustfmt");
     command
-        .arg(format!("+{}", nightly_toolchain()))
+        .arg(format!("+{toolchain}"))
         .args(["--edition", "2024", "--config-path"])
         .arg(config_path);
     for file in files {
@@ -174,7 +175,7 @@ fn rustfmt_generated(files: &[PathBuf]) {
     }
     let output = command
         .output()
-        .expect("failed to spawn rustfmt; install nightly rustfmt via rustup");
+        .expect("failed to spawn rustfmt; install rustfmt for the pinned nightly via rustup");
     assert!(
         output.status.success(),
         "rustfmt failed (status {}).\nstdout:\n{}\nstderr:\n{}",

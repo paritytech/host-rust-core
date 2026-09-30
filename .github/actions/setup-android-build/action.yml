@@ -61,8 +61,6 @@ runs:
     - name: Install the pinned nightly
       id: nightly
       uses: ./.github/actions/rust-nightly
-      with:
-        components: rustfmt
 
     # The Gradle build runs codegen under the nightly the app tree names in
     # truapi.rustNightly, not under the one installed above. The two have to be
@@ -76,7 +74,7 @@ runs:
         set -euo pipefail
         app="$(sed -n 's/^truapi\.rustNightly=//p' hosts/android/gradle.properties | head -n1)"
         if [ "${app}" != "${PINNED}" ]; then
-          echo "::error::hosts/android/gradle.properties names truapi.rustNightly=${app}, but nightly-toolchain pins ${PINNED}. Set them to the same toolchain."
+          echo "::error::hosts/android/gradle.properties names truapi.rustNightly=${app}, but nightly-toolchain pins ${PINNED}. Change truapi.rustNightly in hosts/android/gradle.properties to ${PINNED}."
           exit 1
         fi
 
@@ -84,6 +82,7 @@ runs:
     # builds four, and only the truapi-host module narrows to three.
     - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
       with:
+        toolchain: stable
         targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
     - uses: ./.github/actions/rust-cache
