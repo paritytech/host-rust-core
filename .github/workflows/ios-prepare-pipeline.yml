@@ -334,8 +334,8 @@ jobs:
             <!-- RELEASE_METADATA: increment_step=${incrementStep} -->`;
 
             const prTitle = nightlyBuild
-              ? `Release ${newVersion} (nightly)`
-              : `Release ${newVersion}`;
+              ? `release(ios): ${newVersion} (nightly)`
+              : `release(ios): ${newVersion}`;
             const mainBranch = process.env.MAIN_BRANCH;
 
             try {
