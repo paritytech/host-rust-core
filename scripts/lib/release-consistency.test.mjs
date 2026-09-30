@@ -135,6 +135,7 @@ for (const path of [
   "rust/crates/truapi-codegen/src/emitter.rs",
   "rust/crates/truapi-host-cli/src/main.rs",
   "scripts/codegen.sh",
+  "nightly-toolchain",
   "scripts/bundle-truapi-dts.mjs",
   "scripts/regen-explorer-versions.mjs",
   "Cargo.toml",
