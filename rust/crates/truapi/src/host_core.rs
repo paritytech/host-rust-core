@@ -1037,6 +1037,13 @@ impl SigningHostRuntime {
             .await
     }
 
+    /// Read authenticated native Chat contacts for host-owned UI, never products.
+    pub async fn get_native_chat_contacts(
+        &self,
+    ) -> Result<crate::runtime::NativeChatContactsSnapshot, v01::GenericError> {
+        self.signing_host.get_native_chat_contacts().await
+    }
+
     /// Answer a pairing host's handshake deeplink and serve the resulting SSO
     /// session until it ends.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.respond_to_pairing"))]
@@ -1248,6 +1255,8 @@ impl SigningHostRuntime {
 pub struct ConnectionAdapters {
     pub platform: Arc<dyn Platform>,
     pub chat_platform: Option<Arc<dyn ChatPlatform>>,
+    /// Connection-owned picker UI; absence inherits the host's contacts adapter.
+    pub contacts_platform: Option<Arc<dyn ContactsPlatform>>,
     /// Live OS permission state for this connection. It travels here rather
     /// than on the host runtime because a native host builds one platform per
     /// product execution, so the object that reports OS state has to be the
@@ -1267,6 +1276,7 @@ impl ConnectionAdapters {
         Self {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
+            contacts_platform: services.contacts_platform(),
             permission_status: services.permission_status_host(),
             permission_grants: Arc::default(),
             chat: Arc::new(ActionChannel::chat()),
