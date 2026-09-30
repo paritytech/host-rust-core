@@ -48,6 +48,7 @@ fun PolkadotSearchField(
     imeAction: ImeAction = ImeAction.Search,
     focusRequester: FocusRequester? = null,
     onClick: (() -> Unit)? = null,
+    showClear: Boolean = value.isNotEmpty(),
 ) {
     val placeholderContent: (@Composable () -> Unit)? = placeholder?.let { text ->
         {
@@ -112,7 +113,7 @@ fun PolkadotSearchField(
                 ),
             )
 
-            if (value.isNotEmpty()) {
+            if (showClear) {
                 PolkadotIconButton(
                     icon = NovaIcons.Close,
                     onClick = onClear,

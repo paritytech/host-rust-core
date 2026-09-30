@@ -147,7 +147,7 @@ A new host call is a public protocol surface. New host calls **require an RFC** 
 
 If an RFC doesn't exist or doesn't address the permission model: **stop and ask the user**. Do not invent a permission policy on the fly.
 
-On the native runtime the call is implemented as a `HostCallHandlerGroup` (register in `HostCallGroupFactory.createShared`, or `createChatGroup` if chat-only, and add the matching `ProductsBotApi` method). On TrUAPI the call is implemented in `truapi-server`; the Android side only implements any new `HostBridge` platform callback it needs.
+On the native runtime the call is implemented as a `HostCallHandlerGroup` (register in `HostCallGroupFactory.createShared`, or `createChatGroup` if chat-only, and add the matching `ProductsBotApi` method). On TrUAPI the call is implemented in the `truapi` runtime; the Android side only implements any new `HostBridge` platform callback it needs.
 
 ### `CallingProductIdProvider`
 
@@ -167,7 +167,7 @@ Always inject the provider; never let the handler reach into a global "current p
 ## TrUAPI — the Rust-core runtime
 
 The product's `@parity/truapi` client talks to the shared Rust core
-(`libtruapi_server`, via `:bindings:truapi-host`) over an authenticated
+(`libtruapi`, via `:bindings:truapi-host`) over an authenticated
 loopback WebSocket. The core owns wire framing, dispatch, subscriptions, and
 orchestration; the Android side implements only native platform callbacks.
 
@@ -366,7 +366,7 @@ draws its face live and gives it up on its Remove button.
 | Concept | Goes in |
 |---|---|
 | New host call (native runtime) | `feature/products/impl/.../hostApi/handlerGroups/<Name>HostCalls.kt` + `ProductsBotApi` method |
-| New host call (TrUAPI) | RFC + implementation in `paritytech/host-rust-core` (`truapi-server`); a `HostBridge` callback here only if a new native capability is needed |
+| New host call (TrUAPI) | RFC + implementation in `paritytech/host-rust-core` (the `truapi` runtime); a `HostBridge` callback here only if a new native capability is needed |
 | New `HostBridge` callback wiring | `feature/products/impl/.../domain/truapi/ProductTrUAPIHostBridge.kt`, delegating to `HostApiInteractor` |
 | New review-variant mapping | `feature/products/impl/.../domain/truapi/ConfirmationReviewMapping.kt` + `ConfirmationReviewMappingTest` |
 | New `NavigationPolicy` variant | `feature/products/impl/.../hostApi/navigation/NavigationPolicy.kt` |
