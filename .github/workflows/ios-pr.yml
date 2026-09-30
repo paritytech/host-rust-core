@@ -41,12 +41,10 @@ on:
       - ".github/workflows/ios-pr.yml"
       - ".github/actions/bootstrap-ios-core/**"
       - ".github/actions/upsert-pr-comment/**"
-  # Also on the default branch, which is the only way the SPM cache becomes
-  # useful. A cache written during a pull request is scoped to that pull
-  # request's ref, so nothing else can read it. Only a run on the default
-  # branch writes one every later pull request restores from, and this
-  # workflow never ran there, so every run resolved 27 local packages and the
-  # remote graph from cold.
+  # Also on the default branch, which is the only run that saves the in-tree
+  # core's Rust cache. A cache written during a pull request is scoped to that
+  # pull request's ref, so nothing else can read it, and one written on main is
+  # what every later pull request restores.
   push:
     branches: [main]
     paths:
@@ -135,6 +133,8 @@ jobs:
 
       - name: Bootstrap the in-tree core
         uses: ./.github/actions/bootstrap-ios-core
+        with:
+          save: "true"
 
       # Through tar rather than the raw paths, so the xcframework keeps its
       # layout and executable bits, which upload-artifact does not preserve.

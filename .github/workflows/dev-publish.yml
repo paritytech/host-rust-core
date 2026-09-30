@@ -47,6 +47,8 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: ./.github/actions/rust-cache
+        with:
+          save: "false"
 
       - run: cargo +"$TRUAPI_NIGHTLY_TOOLCHAIN" fmt -p truapi-provider --check
 
@@ -76,6 +78,8 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - uses: ./.github/actions/rust-cache
+        with:
+          save: "false"
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.14.0 --locked
