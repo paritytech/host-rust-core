@@ -35,7 +35,7 @@ final class TransferAmountViewLayout: UIView, AdaptiveDesignable {
     }
 
     let cashLabel: PolkadotUI.Label = .create {
-        $0.typography = .titleExtraLarge
+        $0.typography = .smallCapsHeadlineMedium
         $0.textColor = .fgSecondary
     }
 
@@ -132,7 +132,7 @@ final class TransferAmountViewLayout: UIView, AdaptiveDesignable {
         addSubview(cashLabel)
         cashLabel.snp.makeConstraints { make in
             make.centerX.equalToSuperview()
-            make.top.equalTo(amountInputView.snp.bottom).offset(DSSpacings.small)
+            make.top.equalTo(amountInputView.snp.bottom).offset(DSSpacings.tiny)
         }
 
         let bottomView = UIView.vStack(spacing: 12 * heightScaleMultiplier, [feeView, confirmView])

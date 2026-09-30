@@ -267,8 +267,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/paritytech/polkadot-app-design-system-ios",
       "state" : {
-        "revision" : "6e5b2da49d753a1b5f137a4c836608f94967eeb0",
-        "version" : "0.0.21"
+        "revision" : "43e152caf88a1959fa0481089561741cdff24440",
+        "version" : "0.0.24"
       }
     },
     {
