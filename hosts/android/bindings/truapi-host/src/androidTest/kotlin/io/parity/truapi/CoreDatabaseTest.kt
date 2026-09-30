@@ -13,9 +13,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.NativeRuntimeConfigException
+import uniffi.truapi.PermissionDecision
+import uniffi.truapi.ProductExecutionConfig
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_platform.PermissionDecision
-import uniffi.truapi_server.NativeRuntimeConfigException
 
 /**
  * The core database on a real device: the bundled SQLite in the shipped `.so`
@@ -47,7 +49,7 @@ class CoreDatabaseTest {
 
     @Test
     fun aMissingDirectoryStopsTheRuntimeFromStarting() {
-        assertThrows(NativeRuntimeConfigException.InvalidDatabaseDirectory::class.java) {
+        assertThrows(NativeRuntimeConfigException.Invalid::class.java) {
             TrUAPIHostRuntime(InertBridge(), config(directory.absolutePath))
         }
     }

@@ -400,8 +400,10 @@ class RealIncomingChatRequestProcessor @Inject constructor(
     ) {
         val ourPAppDevice = buildPAppDevice()
 
+        // We use a fresh message id here: this will duplicate "Chat accepted" upon reinstall and it is expected for now
+        // NB: Using deterministic id is not trivial since it would count as "already present" on recipient side
+        // and wont trigger save message processors
         val chatMessage = ChatMessage.new(
-            messageId = "$ACCEPTED_MESSAGE_ID_PREFIX$requestId",
             chatId = ChatId.fromContact(peerAccountId),
             content = ChatMessage.Content.DeviceChatAccepted(requestId, ourPAppDevice),
             origin = ChatMessageOrigin.User,

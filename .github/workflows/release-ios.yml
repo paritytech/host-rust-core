@@ -110,11 +110,11 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: ./.github/actions/rust-cache
         with:
           shared-key: ios-host-release
 
-      # truapi-server declares its generated modules unconditionally and they are
+      # The truapi runtime declares its generated modules unconditionally and they are
       # gitignored, so the crate does not compile until codegen has run.
       - name: Generate the Rust codegen output
         run: |

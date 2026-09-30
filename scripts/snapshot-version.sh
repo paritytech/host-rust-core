@@ -69,7 +69,7 @@ fi
 TMP_DIR="$(mktemp -d -t truapi-snapshot.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-cargo +nightly rustdoc -p truapi -- -Z unstable-options --output-format json >/dev/null
+cargo +nightly rustdoc -p truapi --no-default-features -- -Z unstable-options --output-format json >/dev/null
 
 codegen_args=(
   --input target/doc/truapi.json

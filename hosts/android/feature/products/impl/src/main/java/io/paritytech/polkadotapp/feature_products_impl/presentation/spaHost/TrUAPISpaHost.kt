@@ -22,7 +22,6 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.webView.BrowserWeb
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -72,7 +71,7 @@ class TrUAPISpaHost @Inject constructor(
             }
         }
 
-        val webViewFlow: StateFlow<WebView?> = flow { emit(webViewProvider.getWebView()) }
+        val webViewFlow: StateFlow<WebView?> = webViewProvider.webViews()
             .stateIn(scope, SharingStarted.Eagerly, null)
 
         val loadProgressFlow: StateFlow<DotNsLoadProgress> = webViewProvider.loadProgress
