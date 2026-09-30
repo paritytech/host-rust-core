@@ -441,6 +441,7 @@ impl SigningHost {
             .lock()
             .expect("local AutoSigning grant mutex poisoned");
         state.advance_activation();
+        self.services.contact_handles.clear();
         *self
             .root_entropy
             .lock()
@@ -461,6 +462,7 @@ impl SigningHost {
             .lock()
             .expect("local AutoSigning grant mutex poisoned");
         state.advance_activation();
+        self.services.contact_handles.clear();
         self.root_entropy
             .lock()
             .expect("signing host entropy mutex poisoned")
@@ -539,6 +541,34 @@ impl SigningHost {
             genesis_hash: self.services.people_chain_genesis_hash,
             coinage_instance_id: self.coinage_instance_id,
         })
+    }
+
+    /// Read the current wallet's authenticated native Chat roster for the host shell.
+    pub async fn get_native_chat_contacts(
+        &self,
+    ) -> Result<super::NativeChatContactsSnapshot, v01::GenericError> {
+        let session = self
+            .current_local_session()
+            .ok_or_else(|| v01::GenericError {
+                reason: "native Chat contacts require a local signing session".into(),
+            })?;
+        let context = self
+            .native_chat_context(&session)
+            .map_err(|error| v01::GenericError {
+                reason: format!("native Chat contacts unavailable: {error:?}"),
+            })?;
+        let snapshot =
+            self.native_chat
+                .contacts(&context)
+                .await
+                .map_err(|error| v01::GenericError {
+                    reason: format!("native Chat contacts unavailable: {error:?}"),
+                })?;
+        self.require_current_session(&session)
+            .map_err(|error| v01::GenericError {
+                reason: error.to_string(),
+            })?;
+        Ok(snapshot)
     }
 
     fn ring_vrf_entropy(

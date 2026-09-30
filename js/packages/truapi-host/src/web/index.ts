@@ -17,6 +17,10 @@ export type {
   LocalIdentity,
   LocalIdentityProgress,
 } from "../worker-protocol.js";
+export type {
+  NativeChatContact,
+  NativeChatContactsSnapshot,
+} from "../runtime.js";
 export { createBrowserNativeChatFilesHost } from "./native-chat-files.js";
 export type {
   BrowserNativeChatFilesHost,

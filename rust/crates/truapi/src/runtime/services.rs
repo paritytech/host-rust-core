@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::chain_runtime::{ChainRuntime, RuntimeChainProvider, RuntimeFailure};
 use crate::host_logic::worker::WorkerLedger;
-use crate::platform::{CoinageWalletHost, HostInfo, JsonRpcConnection, PermissionStatusHost, Platform};
+use crate::platform::{
+    CoinageWalletHost, HostInfo, JsonRpcConnection, PermissionStatusHost, Platform,
+};
 use crate::runtime::bulletin_rpc::BulletinRpc;
 use crate::runtime::signing_host::DevicePairingObserver;
 use crate::runtime::statement_store_rpc::StatementStoreRpc;
@@ -52,7 +54,7 @@ pub struct RuntimeServices {
     contacts_platform: OnceLock<Arc<dyn crate::platform::ContactsPlatform>>,
     /// Contact handles already resolved, shared by every product runtime of
     /// this host and emptied when the host says its contacts changed.
-    pub contact_handles: crate::runtime::contacts::ContactHandleCache,
+    pub contact_handles: Arc<crate::runtime::contacts::ContactHandleCache>,
     /// Host observer told when a device finishes pairing with this signing
     /// host. Unset leaves a paired device unannounced.
     device_pairing_observer: OnceLock<Arc<dyn DevicePairingObserver>>,

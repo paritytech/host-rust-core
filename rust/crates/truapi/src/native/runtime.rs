@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::platform::{
-    CoinageWalletHost, CoreAdmin, PermissionAuthorizationRequest, PermissionAuthorizationStatus, ProductContext,
-    ProductExecutionKind,
+    CoinageWalletHost, CoreAdmin, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
+    ProductContext, ProductExecutionKind,
 };
 use parity_scale_codec::Encode;
 use truapi::{Bytes32, v01};
@@ -24,22 +24,24 @@ use crate::subscription::Spawner;
 use crate::{PairedSsoPeer, ResponderExit, SigningHostRuntime};
 
 use super::callbacks::{
-    HostCallbacks, NativeChatCallbacks, NativeCoinageCallbacks, NativeContactsCallbacks, NativePocketCallbacks,
+    HostCallbacks, NativeChatCallbacks, NativeCoinageCallbacks, NativeContactsCallbacks,
+    NativePocketCallbacks,
 };
 use super::config::{
     HostRuntimeConfig, NativeResolvedHostRuntimeConfig, NativeRuntimeConfigError,
     ProductExecutionConfig,
 };
 use super::errors::HostRejection;
-use super::executor::shared_native_executor;
 use super::events::NativeEventBus;
+use super::executor::shared_native_executor;
+#[cfg(doc)]
+use super::parse_pairing_deeplink;
 use super::platform::{
-    CallbackPlatform, ChatCallbackPlatform, ContactsCallbackPlatform, NativeCoinageCallbackPlatform, PocketCallbackPlatform,
+    CallbackPlatform, ChatCallbackPlatform, ContactsCallbackPlatform,
+    NativeCoinageCallbackPlatform, PocketCallbackPlatform,
 };
 #[cfg(doc)]
 use crate::WorkerTransition;
-#[cfg(doc)]
-use super::parse_pairing_deeplink;
 
 /// Process-owned native TrUAPI runtime shared by all executable connections.
 #[derive(uniffi::Object)]
@@ -271,6 +273,16 @@ impl NativeTrUApiHostRuntime {
     /// is removed or blocked, so a handle the core cached stops resolving.
     pub fn notify_contacts_changed(&self) {
         self.runtime.notify_contacts_changed();
+    }
+
+    /// Read the active signing wallet's authenticated directory for host-owned UI.
+    pub async fn get_native_chat_contacts(
+        &self,
+    ) -> Result<crate::runtime::NativeChatContactsSnapshot, HostRejection> {
+        self.runtime
+            .get_native_chat_contacts()
+            .await
+            .map_err(HostRejection::from)
     }
 
     /// Open a connection-scoped execution with immutable trusted context.
@@ -618,6 +630,7 @@ impl NativeProductExecution {
         crate::host_core::ConnectionAdapters {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
+            contacts_platform: None,
             permission_status: Some(self.permission_status.clone()),
             permission_grants: self.permission_grants.clone(),
             chat: self.chat_connection.clone(),
@@ -945,15 +958,15 @@ mod tests {
     use truapi::v01;
     #[test]
     fn native_wallet_dependency_survives_failure_and_product_replacement() {
-        use parking_lot::Mutex;
-        use std::sync::atomic::AtomicU8;
-        use truapi::api::Payment;
-        use truapi::versioned::payment::{HostPaymentTopUpError, HostPaymentTopUpRequest};
+        use crate::native::NativeCoinageCallbackResult;
         use crate::platform::{
             NativeCoinageFailure, NativeCoinageOperation, NativeCoinageRequest,
             NativeCoinageResponse, NativeCoinageTopUpOutcome,
         };
-        use crate::native::NativeCoinageCallbackResult;
+        use parking_lot::Mutex;
+        use std::sync::atomic::AtomicU8;
+        use truapi::api::Payment;
+        use truapi::versioned::payment::{HostPaymentTopUpError, HostPaymentTopUpRequest};
 
         struct Wallet {
             state: AtomicU8,
@@ -1150,7 +1163,11 @@ mod tests {
             fn device_paired(&self, _device: PairedSsoPeer) {}
         }
 
-        let host = NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), native_host_runtime_config(), None)
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+            None,
+        )
         .expect("host runtime config should be valid");
 
         assert!(!host.runtime.set_device_pairing_observer(Arc::new(Inert)));
@@ -1158,7 +1175,11 @@ mod tests {
 
     #[test]
     fn process_runtime_shares_authority_and_replaces_one_chat_execution_per_product() {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), native_host_runtime_config(), None)
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+            None,
+        )
         .expect("host runtime config should be valid");
         let app = host
             .open_product_execution(
@@ -1208,7 +1229,11 @@ mod tests {
     fn a_renderer_action_reaches_the_product_that_rendered_it() {
         // The channel is execution-scoped, so the admin handle built from this
         // execution reads what the execution published.
-        let host = NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), native_host_runtime_config(), None)
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+            None,
+        )
         .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
@@ -1254,7 +1279,11 @@ mod tests {
 
     #[test]
     fn product_execution_routes_chain_events_to_shared_and_scoped_services() {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), native_host_runtime_config(), None)
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+            None,
+        )
         .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
@@ -1292,7 +1321,11 @@ mod tests {
             remote_permission_result: Ok(PermissionDecision::AllowOnce),
             ..EventCallbacks::new()
         });
-        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), native_host_runtime_config(), None)
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            native_host_runtime_config(),
+            None,
+        )
         .unwrap();
         let open = || {
             host.open_product_execution(
