@@ -24,7 +24,8 @@ use super::{
     store::ChatStateStore,
 };
 use crate::host_logic::statement_store::{
-    decode_signed_statement, sign_statement_fields, signed_statement_to_scale, statement_fields_from_v01,
+    decode_signed_statement, sign_statement_fields, signed_statement_to_scale,
+    statement_fields_from_v01,
 };
 use crate::host_logic::{product_account::*, sso::pairing::derive_identity_chat_private_key};
 use crate::runtime::{
@@ -374,7 +375,23 @@ impl NativeChatActor {
         context: &NativeChatContext,
         product: &str,
     ) -> Result<Arc<Self>, Error> {
-        let store = ChatStateStore::open(context, product, State::initial).await?;
+        Self::open_with(context, product, State::initial).await
+    }
+
+    /// Restore only an authenticated existing actor; inspection never creates a device.
+    pub async fn open_existing(
+        context: &NativeChatContext,
+        product: &str,
+    ) -> Result<Arc<Self>, Error> {
+        Self::open_with(context, product, || Err(Error::StorageUnavailable)).await
+    }
+
+    async fn open_with(
+        context: &NativeChatContext,
+        product: &str,
+        initial: fn() -> Result<State, Error>,
+    ) -> Result<Arc<Self>, Error> {
+        let store = ChatStateStore::open(context, product, initial).await?;
         let (index, secret) = store
             .read(|state| (state.index, Zeroizing::new(state.secret.0)))
             .await?;
@@ -423,6 +440,30 @@ impl NativeChatActor {
             .read(|state| actor.validate_state(state))
             .await??;
         Ok(actor)
+    }
+
+    /// Project only ready authenticated peers, never outstanding invitations.
+    pub async fn append_contacts(
+        &self,
+        contacts: &mut std::collections::HashMap<[u8; 32], Option<String>>,
+    ) -> Result<(), Error> {
+        self.store
+            .read(|state| {
+                for peer in state.peers.iter().filter(|peer| peer.ready()) {
+                    use std::collections::hash_map::Entry;
+                    match contacts.entry(peer.identity) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(peer.username.clone());
+                        }
+                        Entry::Occupied(mut entry) => {
+                            if entry.get() != &peer.username {
+                                *entry.get_mut() = None;
+                            }
+                        }
+                    }
+                }
+            })
+            .await
     }
 
     fn validate_state(&self, state: &State) -> Result<(), Error> {

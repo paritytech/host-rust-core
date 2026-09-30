@@ -2,10 +2,12 @@
 //! Native signed/encrypted packets against the real actor and encrypted stores.
 #![cfg(not(target_arch = "wasm32"))]
 
+mod contacts;
 mod hop_history;
 mod native_wallet;
 
 use super::*;
+use crate::platform::CoreStorageKey;
 use crate::{
     host_logic::statement_store::decode_verified_statement_data,
     runtime::{authority::AuthoritySession, services::RuntimeServices},
@@ -18,7 +20,6 @@ use futures::{
 };
 use parking_lot::Mutex;
 use truapi_coinage::{MemoEntry, TransferMemo};
-use crate::platform::CoreStorageKey;
 
 const PRODUCT: &str = "chat.dot";
 
