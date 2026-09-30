@@ -307,7 +307,7 @@ pub enum AutoSigningGrant {
 }
 
 /// Statement-store allowance signing material held by the authority layer.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct StatementStoreAllowanceKey {
     /// sr25519 secret used to sign allowance statements.
     pub secret: [u8; 64],
