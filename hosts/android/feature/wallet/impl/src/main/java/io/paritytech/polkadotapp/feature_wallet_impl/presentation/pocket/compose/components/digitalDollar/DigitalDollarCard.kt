@@ -19,9 +19,12 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
-import io.paritytech.polkadotapp.common.utils.CurrencyConfig
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetLogoVariant
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.compose.PaymentAssetLogoImage
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.compose.aspectRatio
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.Refreshing
@@ -37,7 +40,6 @@ import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.Token
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.RoundPrecision
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.TokenAmountModel
 import io.paritytech.polkadotapp.feature_wallet_impl.R
-import io.paritytech.polkadotapp.feature_wallet_impl.presentation.compose.components.icons.DigitalDollarIcon
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.animation.LocalCardTilt
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.animation.MotionShineParameters
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.animation.maskedMotionShine
@@ -117,18 +119,11 @@ fun DigitalDollarCard(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    NovaIcon(
-                        imageVector = DigitalDollarIcon,
-                        tint = PocketCardColors.Primary
-                    )
-
-                    HorizontalSpacer { extraSmall }
-
-                    NovaText(
-                        text = stringResource(RCommon.string.pocket_digital_dollar_card_title, CurrencyConfig.symbol)
-                            .withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
-                        style = PolkadotTheme.typography.title.large,
-                        color = PocketCardColors.Primary
+                    PaymentAssetLogoImage(
+                        modifier = Modifier
+                            .height(WideLogoHeight)
+                            .aspectRatio(PaymentAssetLogoVariant.Wide.aspectRatio),
+                        variant = PaymentAssetLogoVariant.Wide
                     )
                 }
 
@@ -287,6 +282,8 @@ private object AmountShimmerSizes {
     val HEIGHT = 28.dp
 }
 
+private val WideLogoHeight = 36.dp
+
 @Preview
 @Composable
 private fun DigitalDollarCardPreview() {
@@ -375,7 +372,8 @@ private fun DigitalDollarCardPreviewContainer(
 ) {
     PolkadotTheme {
         CompositionLocalProvider(
-            LocalTokenAmountFormatter provides TokenAmountFormatter.mocked
+            LocalTokenAmountFormatter provides TokenAmountFormatter.mocked,
+            LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
         ) {
             DigitalDollarCard(
                 card = PocketCardUiModel.DigitalDollar(

@@ -3,9 +3,8 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.EncryptedPreferences
-import uniffi.truapi.HostLocalStorageReadError
-import uniffi.truapi_server.HostRejection
-import uniffi.truapi_server.HostStorageException
+import uniffi.truapi.HostRejection
+import uniffi.truapi.HostLocalStorageReadException
 import java.text.Normalizer
 
 /**
@@ -21,14 +20,14 @@ class EncryptedHostStorage(
 ) : HostStorage {
     private val normalizedProductId = normalizeProductId(productId)
 
-    override fun read(key: String): ByteArray? = readValue(preferences, "${productStorageNamespace(ownerOf(key))}/$key")
+    override suspend fun read(key: String): ByteArray? = readValue(preferences, "${productStorageNamespace(ownerOf(key))}/$key")
 
-    override fun write(key: String, value: ByteArray) {
+    override suspend fun write(key: String, value: ByteArray) {
         writeValue(preferences, qualify(key), value)
             ?.let { throw storageFailure("product storage: $it") }
     }
 
-    override fun clear(key: String) {
+    override suspend fun clear(key: String) {
         runCatching { preferences.removeKey(qualify(key)) }
             .getOrElse { throw storageFailure("failed to clear product storage key: ${it.message}") }
     }
@@ -51,14 +50,14 @@ class EncryptedHostStorage(
 class EncryptedHostCoreStorage(
     private val preferences: EncryptedPreferences,
 ) : HostCoreStorage {
-    override fun read(key: ByteArray): ByteArray? = readValue(preferences, qualify(key))
+    override suspend fun read(key: ByteArray): ByteArray? = readValue(preferences, qualify(key))
 
-    override fun write(key: ByteArray, value: ByteArray) {
+    override suspend fun write(key: ByteArray, value: ByteArray) {
         writeValue(preferences, qualify(key), value)
             ?.let { throw HostRejection.Rejected("core storage: $it") }
     }
 
-    override fun clear(key: ByteArray) {
+    override suspend fun clear(key: ByteArray) {
         runCatching { preferences.removeKey(qualify(key)) }
             .getOrElse { throw HostRejection.Rejected("failed to clear core storage key: ${it.message}") }
     }
@@ -75,7 +74,7 @@ fun productStorageNamespace(productId: String): String = "truapi/product/$produc
 
 private const val PRODUCT_STORAGE_KEY_PREFIX = "truapi:product-storage:v1:"
 
-/** Mirrors `ProductStorageKey::decode` in truapi-platform: `truapi:product-storage:v1:<byte length>:<product id>:<key>`. */
+/** Mirrors `ProductStorageKey::decode` in truapi: `truapi:product-storage:v1:<byte length>:<product id>:<key>`. */
 internal fun productStorageKeyOwner(key: String): String? {
     if (!key.startsWith(PRODUCT_STORAGE_KEY_PREFIX)) return null
     val rest = key.removePrefix(PRODUCT_STORAGE_KEY_PREFIX).encodeToByteArray()
@@ -117,8 +116,8 @@ private fun writeValue(preferences: EncryptedPreferences, key: String, value: By
     return if (preferences.getDecryptedString(key) == tagged) null else "failed to persist $key"
 }
 
-private fun storageFailure(reason: String): HostStorageException =
-    HostStorageException.Storage(HostLocalStorageReadError.Unknown(reason))
+private fun storageFailure(reason: String): HostLocalStorageReadException =
+    HostLocalStorageReadException.Unknown(reason)
 
 @OptIn(ExperimentalStdlibApi::class)
 private fun ByteArray.toHex(): String = toHexString()

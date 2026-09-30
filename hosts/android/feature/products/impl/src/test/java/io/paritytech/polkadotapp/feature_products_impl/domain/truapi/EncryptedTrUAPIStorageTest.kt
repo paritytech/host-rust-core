@@ -3,19 +3,20 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.EncryptedPreferences
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
-import uniffi.truapi_server.HostStorageException
+import uniffi.truapi.HostLocalStorageReadException
 
 class EncryptedTrUAPIStorageTest {
     private val prefs = FakeEncryptedPreferences()
 
     @Test
-    fun `an empty value is a value, not a miss`() {
+    fun `an empty value is a value, not a miss`() = runTest {
         val storage = EncryptedHostStorage(prefs, "a.dot")
 
         storage.write("k", ByteArray(0))
@@ -26,14 +27,16 @@ class EncryptedTrUAPIStorageTest {
 
     /** `EncryptionUtil` returns "" instead of throwing when encryption fails. */
     @Test
-    fun `a silently failed write is reported`() {
+    fun `a silently failed write is reported`() = runTest {
         val storage = EncryptedHostStorage(prefs.swallowingWrites(), "a.dot")
 
-        assertThrows(HostStorageException::class.java) { storage.write("k", byteArrayOf(9)) }
+        val failure = runCatching { storage.write("k", byteArrayOf(9)) }.exceptionOrNull()
+
+        assertTrue("expected HostLocalStorageReadException, got $failure", failure is HostLocalStorageReadException)
     }
 
     @Test
-    fun `an undecryptable value reads as a miss, not empty bytes`() {
+    fun `an undecryptable value reads as a miss, not empty bytes`() = runTest {
         val storage = EncryptedHostStorage(prefs, "a.dot")
         storage.write("k", byteArrayOf(9))
         prefs.corrupt()
@@ -42,7 +45,7 @@ class EncryptedTrUAPIStorageTest {
     }
 
     @Test
-    fun `products cannot read each other's keys`() {
+    fun `products cannot read each other's keys`() = runTest {
         EncryptedHostStorage(prefs, "a.dot").write("shared", byteArrayOf(7))
 
         assertNull(EncryptedHostStorage(prefs, "b.dot").read("shared"))
@@ -50,7 +53,7 @@ class EncryptedTrUAPIStorageTest {
 
     /** The core addresses a granted foreign read with the owner's key. */
     @Test
-    fun `a foreign read reaches the owner's storage`() {
+    fun `a foreign read reaches the owner's storage`() = runTest {
         val key = "truapi:product-storage:v1:13:counter.paseo:count"
         EncryptedHostStorage(prefs, "counter.paseo").write(key, byteArrayOf(7))
 
@@ -59,7 +62,7 @@ class EncryptedTrUAPIStorageTest {
 
     /** Only reads follow the owner in the key, so another product's store can never be written or cleared. */
     @Test
-    fun `writes and clears stay in the caller's namespace`() {
+    fun `writes and clears stay in the caller's namespace`() = runTest {
         val key = "truapi:product-storage:v1:13:counter.paseo:count"
         val owner = EncryptedHostStorage(prefs, "counter.paseo")
         val other = EncryptedHostStorage(prefs, "oracle.paseo")
@@ -72,7 +75,7 @@ class EncryptedTrUAPIStorageTest {
     }
 
     @Test
-    fun `own keys keep their physical key`() {
+    fun `own keys keep their physical key`() = runTest {
         val key = "truapi:product-storage:v1:13:counter.paseo:count"
         EncryptedHostStorage(prefs, "counter.paseo").write(key, byteArrayOf(1))
 
@@ -94,7 +97,7 @@ class EncryptedTrUAPIStorageTest {
     }
 
     @Test
-    fun `core storage is shared across products by design`() {
+    fun `core storage is shared across products by design`() = runTest {
         val first = EncryptedHostCoreStorage(prefs)
         first.write(byteArrayOf(1), byteArrayOf(42))
 

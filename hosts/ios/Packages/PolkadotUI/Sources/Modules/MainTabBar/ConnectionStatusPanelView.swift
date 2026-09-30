@@ -11,19 +11,19 @@ public struct ConnectionStatusPanelView: View, Hashable {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: DSSpacings.extraMedium) {
+        VStack(alignment: .leading, spacing: DSSpacings.mediumIncreased) {
             Text(.Common.connectionStatusPanelTitle)
                 .typography(.titleLarge)
                 .foregroundStyle(Color.fgPrimary)
                 .lineLimit(1)
-                .padding(.bottom, DSSpacings.extraMedium)
+                .padding(.bottom, DSSpacings.small)
 
             ForEach(rows) { row in
                 rowView(row)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding([.top, .horizontal], DSSpacings.large)
+        .padding(DSSpacings.mediumIncreased)
     }
 }
 
@@ -51,11 +51,13 @@ private extension ConnectionStatusPanelView {
                 HStack(spacing: 0) {
                     Text(verbatim: row.stateTitle)
 
-                    Text(verbatim: "\(Self.separator)\(livenessText(row))")
-                        .contentTransition(.numericText())
+                    if row.showsChainMetrics, row.state != .offline {
+                        Text(verbatim: "\(Self.separator)\(livenessText(row))")
+                            .contentTransition(.numericText())
 
-                    Text(verbatim: "\(Self.separator)\(blockIntervalText(row))")
-                        .contentTransition(.numericText())
+                        Text(verbatim: "\(Self.separator)\(blockIntervalText(row))")
+                            .contentTransition(.numericText())
+                    }
                 }
                 .typography(.bodySmall)
                 .monospacedDigit()
