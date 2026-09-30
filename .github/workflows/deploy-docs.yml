@@ -92,9 +92,8 @@ jobs:
         id: pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: ./.github/actions/rust-nightly
         with:
-          toolchain: nightly
           components: rustfmt
 
       # codegen.sh is the same work as ci.yml's codegen job, which owns the
