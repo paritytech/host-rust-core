@@ -183,8 +183,9 @@ nightly-toolchain          the dated nightly for rustfmt, CI clippy and rustdoc 
   `.github/registry-drift-exceptions.json`. Rust jobs cache through
   `.github/actions/rust-cache`, which saves only on main so every ref restores
   main's entries; release and publish jobs restore without saving. A composite
-  action calls rust-cache directly under the same rule, because a post step two
-  composites deep loses its inputs and never saves. See `docs/RELEASE_PROCESS.md` for
+  action that needs a Rust cache calls Swatinem/rust-cache directly with the
+  same main-only `save-if`, because a post step two composites deep loses its
+  inputs and never saves. See `docs/RELEASE_PROCESS.md` for
   label setup and release recovery.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
