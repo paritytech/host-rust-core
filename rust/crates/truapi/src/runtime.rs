@@ -366,14 +366,11 @@ impl ProductRuntimeHost {
         product: ProductContext,
     ) -> Self {
         let core_instance = services.next_core_instance();
-        let contacts_platform = adapters
-            .contacts_platform
-            .or_else(|| services.contacts_platform());
         Self {
             services,
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
-            contacts_platform,
+            contacts_platform: adapters.contacts_platform,
             permission_status: adapters.permission_status,
             temporary_permissions: adapters.permission_grants,
             authority,
@@ -501,7 +498,7 @@ impl ProductRuntimeHost {
         let chat = Arc::new(ActionChannel::chat());
         let renderer = Arc::new(ActionChannel::renderer());
         let host = Self {
-            contacts_platform: services.contacts_platform(),
+            contacts_platform: None,
             services,
             platform,
             chat_platform: None,
@@ -1417,6 +1414,7 @@ impl ProductRuntimeHost {
         let platform = self
             .contacts_platform
             .clone()
+            .or_else(|| self.services.contacts_platform())
             .ok_or(CallError::Unsupported)?;
         let session = self
             .authority
