@@ -20,6 +20,7 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
     private var available = false
     private var generation: UInt64 = 0
     private var leases: [UUID: NativeCoinageLease] = [:]
+    private var reviews: [Data: PaymentReview] = [:]
 
     convenience init(
         service: any CoinageServicing,
@@ -49,12 +50,14 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
 
     /// Synchronous invalidation closes the gate before teardown starts, including callers suspended in UI/IO.
     func setAvailable(_ value: Bool) {
-        let pending: [NativeCoinageLease] = lock.withLock {
+        let (pending, prompts): ([NativeCoinageLease], [PaymentReview]) = lock.withLock {
             available = value
             generation &+= 1
-            return Array(leases.values)
+            defer { reviews.removeAll() }
+            return (Array(leases.values), Array(reviews.values))
         }
         pending.forEach { $0.cancel() }
+        prompts.forEach { $0.task.cancel() }
     }
 
     func nativeCoinage(request: NativeCoinageRequest) async throws -> NativeCoinageResponse {
@@ -70,11 +73,18 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
         }
         return try await withTaskCancellationHandler {
             do {
-                return try await queue.run { [self] in
-                    let operation = Task { try await perform(request, lease: lease) }
-                    lease.onCancel { operation.cancel() }
-                    return try await operation.value
+                var step = try await queued(lease) { [self] in try await perform(request, lease: lease) }
+                // The user reviews outside the queue, so an open payment sheet never blocks other operations.
+                while case let .review(pending) = step {
+                    guard let approved = await decision(for: pending, lease: lease) else {
+                        throw Refusal(reason: .unavailable)
+                    }
+                    step = try await queued(lease) { [self] in
+                        try await completeReview(pending, approved: approved, lease: lease)
+                    }
                 }
+                guard case let .done(response) = step else { throw Refusal(reason: .unavailable) }
+                return response
             } catch let error as Refusal {
                 return .failed(reason: error.reason)
             } catch is CancellationError {
@@ -101,16 +111,19 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
     private func perform(
         _ request: NativeCoinageRequest,
         lease: NativeCoinageLease
-    ) async throws -> NativeCoinageResponse {
+    ) async throws -> Step {
         let binding = NativeCoinageBinding(request.scope)
         guard binding.root.count == 32, binding.genesis.count == 32 else { throw Refusal(reason: .invalidRequest) }
         try check(binding, lease)
         if case .denomination = request.operation {
-            return try await denomination(binding: binding, lease: lease)
+            return try await .done(denomination(binding: binding, lease: lease))
         }
         let records = try await store.records(binding: binding)
         try check(binding, lease)
-        return try await dispatch(request.operation, binding: binding, records: records, lease: lease)
+        if case let .preparePayment(intent) = request.operation {
+            return try await prepare(intent, binding: binding, records: records, lease: lease)
+        }
+        return try await .done(dispatch(request.operation, binding: binding, records: records, lease: lease))
     }
 
     private func dispatch(
@@ -120,10 +133,8 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
         lease: NativeCoinageLease
     ) async throws -> NativeCoinageResponse {
         switch operation {
-        case .denomination:
+        case .denomination, .preparePayment:
             throw Refusal(reason: .invalidRequest)
-        case let .preparePayment(intent):
-            return try await prepare(intent, binding: binding, records: records, lease: lease)
         case let .commitHandoff(productId, operationId):
             return try await markAccepted(
                 records, product: productId, operation: operationId, delivered: false, binding: binding, lease: lease
@@ -236,7 +247,7 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
         return try await payments(pending, product: product, lease: lease, onlyPending: true)
     }
 
-    private func outgoing(
+    func outgoing(
         _ records: [NativeCoinageRecord],
         product: String,
         operation: Data
@@ -252,108 +263,69 @@ final class TrUAPINativeCoinage: NativeCoinageHost, @unchecked Sendable {
 }
 
 extension TrUAPINativeCoinage {
-    private func prepare(
-        _ intent: NativeCoinagePaymentIntent,
-        binding: NativeCoinageBinding,
-        records: [NativeCoinageRecord],
-        lease: NativeCoinageLease
-    ) async throws -> NativeCoinageResponse {
-        try Self.validate(intent)
-        let immutable = NativeCoinageIntent(intent)
-        let record = try existingOutgoing(for: intent, immutable: immutable, records: records)
-        if let record, let memo = try await wallet.retained(record.custodyId) {
-            try check(binding, lease)
-            guard record.approval == .approved else { throw Refusal(reason: .operationConflict) }
-            return try await prepared(record, memo: memo, lease: lease)
-        }
-        try check(binding, lease)
-        let context = try await wallet.denomination()
-        try check(binding, lease)
-        let unit = context.valueInPlanks(for: 0)
-        let amount = unit * BigUInt(intent.amountCents)
-        guard unit > 0, amount.bitWidth <= 128 else { throw Refusal(reason: .invalidRequest) }
-        if let record, record.centsUnit != String(unit) { throw Refusal(reason: .operationConflict) }
-        let preview: TransferPreview
-        do {
-            preview = try await wallet.preview(amount)
-        } catch CoinSelectionError.insufficientFunds, CoinSelectionError.emptyWallet {
-            throw Refusal(reason: .insufficientBalance)
-        }
-        try check(binding, lease)
-        guard
-            preview.fullAmount == amount,
-            Self.recipientAmount(preview.selectionResult, context: context) == amount
-        else {
-            throw Refusal(reason: .operationConflict)
-        }
-        var value = record ?? NativeCoinageOutgoing(
-            binding: binding,
-            intent: immutable,
-            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
-            centsUnit: String(unit),
-            approval: .reviewing,
-            privacyApproved: false,
-            accepted: false,
-            delivered: false
-        )
-        let privacy = preview.scope == .withConfirmation
-        if value.approval != .approved || (privacy && !value.privacyApproved) {
-            try await store.save(.outgoing(value)) { [self] in try check(binding, lease) }
-            try check(binding, lease)
-            let approved = await confirmationPresenter.confirmNativeCoinage(
-                review: MainPurseChatPaymentReview(
-                    callingProductId: intent.productId,
-                    recipientIdentity: intent.peerIdentity,
-                    recipientUsername: intent.recipientUsername,
-                    amountCents: intent.amountCents,
-                    maxDebitCents: intent.amountCents,
-                    genesisHash: binding.genesis,
-                    coinageInstanceId: binding.instance,
-                    operationId: intent.operationId
-                ),
-                requiresPrivacyConfirmation: privacy
-            )
-            try check(binding, lease)
-            value.approval = approved ? .approved : .rejected
-            value.privacyApproved = approved && privacy
-            try await store.save(.outgoing(value)) { [self] in try check(binding, lease) }
-            try check(binding, lease)
-            guard approved else { throw Refusal(reason: .userRejected) }
-        }
-        // Native registration + retention is one transaction. No memo is persisted by this adapter.
-        let memo = try await wallet.prepare(preview.selectionResult, value.custodyId) { [self] in
-            try check(binding, lease)
-        }
-        try check(binding, lease)
-        return try await prepared(value, memo: memo, lease: lease)
-    }
-
-    private static func validate(_ intent: NativeCoinagePaymentIntent) throws {
-        guard
-            intent.operationId.count == 32,
-            intent.peerIdentity.count == 32,
-            !intent.productId.isEmpty,
-            !intent.requestId.isEmpty,
-            intent.amountCents > 0
-        else {
-            throw Refusal(reason: .invalidRequest)
+    private func queued(
+        _ lease: NativeCoinageLease,
+        _ body: @escaping @Sendable () async throws -> Step
+    ) async throws -> Step {
+        try await queue.run {
+            let operation = Task { try await body() }
+            lease.onCancel { operation.cancel() }
+            return try await operation.value
         }
     }
 
-    private func existingOutgoing(
-        for intent: NativeCoinagePaymentIntent,
-        immutable: NativeCoinageIntent,
-        records: [NativeCoinageRecord]
-    ) throws -> NativeCoinageOutgoing? {
-        for case let .outgoing(existing) in records
-            where existing.intent.product == intent.productId && existing.intent.request == intent.requestId {
-            guard existing.intent == immutable else { throw Refusal(reason: .operationConflict) }
+    /// Join the operation's single prompt, opening it if none is pending. Called from the queued step,
+    /// so it is ordered with `completeReview`: a retry either joins the decision or sees it saved.
+    func joinReview(
+        _ operation: Data,
+        review: MainPurseChatPaymentReview,
+        privacy: Bool
+    ) -> PaymentReview {
+        lock.withLock {
+            let prompt = reviews[operation] ?? PaymentReview(task: Task { [confirmationPresenter] () -> Bool? in
+                let approved = await confirmationPresenter.confirmNativeCoinage(
+                    review: review,
+                    requiresPrivacyConfirmation: privacy
+                )
+                return Task.isCancelled ? nil : approved
+            })
+            reviews[operation] = prompt
+            prompt.waiters += 1
+            return prompt
         }
-        guard records.contains(where: { $0.operation == intent.operationId }) else { return nil }
-        let record = try outgoing(records, product: intent.productId, operation: intent.operationId)
-        guard record.intent == immutable else { throw Refusal(reason: .operationConflict) }
-        guard record.approval != .rejected else { throw Refusal(reason: .userRejected) }
-        return record
+    }
+
+    /// The shared decision; `nil` when this waiter was cancelled or the prompt was dismissed.
+    private func decision(for pending: PendingReview, lease: NativeCoinageLease) async -> Bool? {
+        let operation = pending.record.intent.operation
+        let review = pending.prompt
+        // A cancelled waiter detaches alone; the prompt stays open while another waiter needs it.
+        let answer: Bool?? = await withCheckedContinuation { continuation in
+            let resume = ResumeOnce<Bool??>(continuation)
+            Task { resume(.some(await review.task.value)) }
+            lease.onCancel { resume(.none) }
+        }
+        lock.withLock {
+            review.waiters -= 1
+            guard reviews[operation] === review else { return }
+            switch answer {
+            case .some(.some):
+                break
+            case .some(.none):
+                reviews[operation] = nil
+            case .none:
+                if review.waiters == 0 {
+                    reviews[operation] = nil
+                    review.task.cancel()
+                }
+            }
+        }
+        return answer ?? nil
+    }
+
+    /// Release the shared decision for `operation` once it is durably saved.
+    func finishReview(_ operation: Data) {
+        lock.withLock { reviews[operation] = nil }
     }
 
     static func recipientAmount(_ selection: CoinSelectionResult, context: DenominationBreakdownContext) -> BigUInt {
@@ -369,7 +341,7 @@ extension TrUAPINativeCoinage {
         }
     }
 
-    private func prepared(
+    func prepared(
         _ record: NativeCoinageOutgoing, memo: TransferMemo, lease: NativeCoinageLease, requireHandoff: Bool = false
     ) async throws -> NativeCoinageResponse {
         guard let unit = BigUInt(record.centsUnit), memo.totalValue == unit * BigUInt(record.intent.cents),
@@ -467,6 +439,29 @@ extension TrUAPINativeCoinage {
         case .notClaimed: .notClaimed
         case .detecting, .claiming, .claimed(finalized: false): .pending
         }
+    }
+}
+
+/// A payment prompt shared by every retry of one operation. `waiters` is guarded by the adapter's lock.
+final class PaymentReview: @unchecked Sendable {
+    let task: Task<Bool?, Never>
+    var waiters = 0
+
+    init(task: Task<Bool?, Never>) { self.task = task }
+}
+
+/// Resumes a continuation once, from whichever of the decision or a cancellation arrives first.
+private final class ResumeOnce<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Never>?
+
+    init(_ continuation: CheckedContinuation<Value, Never>) { self.continuation = continuation }
+    func callAsFunction(_ value: Value) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Value, Never>? in
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: value)
     }
 }
 

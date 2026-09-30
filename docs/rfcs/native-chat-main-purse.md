@@ -109,6 +109,11 @@ Native identifiers, content, recipients, storage and nested history remain bound
 than treated as an opaque signing/decryption tunnel. Capacity exhaustion must not evict live custody or idempotency
 commitments.
 
+Rich messages, attachments and imported history are bounded per peer as well as in total, so one contact cannot exhaust
+capacity for the others. A peer at its bound has further rich content and history imports refused with
+`StorageUnavailable`; records are never evicted, since they carry custody and replay protection. Releasing records the
+product has durably persisted is a planned extension.
+
 ### Responses and paging
 
 Responses contain public `device` and authenticated `peers`, optional `binding`, authenticated `opened` frames,
@@ -153,9 +158,11 @@ at the signing Host would need per-product attestation across all SSO methods an
 Device state is scoped to wallet, network, product and installation; the allocator and imported source identity are
 wallet/network-wide. Handles and continuation IDs must not cross these boundaries.
 
-Chat authority is distinct from username disclosure. Pure `Bind`, `Prepare`, and `Open` do not require Host
-`StatementSubmit`; the product separately requests submission permission and the device's allowance. Uploads require
-`PreimageSubmit` and the existing Bulletin allowance. None is a spend grant.
+Chat authority is distinct from username disclosure. An "allow once" answer grants Chat authority for the rest of the
+wallet session, including the Host's own background file and history work for that product, and stores nothing; a stored
+denial or revocation ends it immediately. Pure `Bind`, `Prepare`, and `Open` do not require Host `StatementSubmit`; the
+product separately requests submission permission and the device's allowance. Uploads require `PreimageSubmit` and the
+existing Bulletin allowance. None is a spend grant.
 
 The Host verifies native invitations, peer identity proofs and device membership. Outgoing payments additionally require
 an active keyed peer device to acknowledge the legacy-device revocation update. Only eligible devices enter the payment
@@ -194,6 +201,13 @@ for a memo advertising a definite amount. A changed minimum on retry inspects th
 second claim. `PartialPayment { credited }` carries proven raw credited units after a definitively finished import below
 the requested minimum. Missing/not-yet-funded or ambiguously spent sources remain unresolved, with custody retained; a
 cleared prefix alone must not become a false success or definitive partial result.
+
+A source proven on chain when its claim was planned, then absent at finalized state from both source and destination
+without this installation having submitted its transfer, was spent elsewhere: it is forfeited and never credited, and
+the import finishes. A source already absent before any plan exists stays unresolved, since that state cannot separate
+an unfunded coin from a spent one; settling it needs historical evidence that the coin existed. Settlement is judged per
+installation: when two installations of one wallet import the same sources, the one that loses the race sees a spend
+elsewhere and reports it, although the coins reached the wallet. Wallet balances come from inventory and are unaffected.
 
 The selected wallet service keeps durable import records, canonical source identity, claim plans and finalized receipts.
 Reordered keys reuse the same custody; conflicting overlaps and cross-product rebinding are rejected. The Rust backend
