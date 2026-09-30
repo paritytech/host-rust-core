@@ -72,7 +72,7 @@ private extension TrUAPILocalStorage {
     }
 }
 
-/// Mirrors `ProductStorageKey::decode` in truapi-platform:
+/// Mirrors `ProductStorageKey::decode` in truapi:
 /// `truapi:product-storage:v1:<byte length>:<product id>:<key>`.
 enum ProductStorageKey {
     private static let prefix = "truapi:product-storage:v1:"
