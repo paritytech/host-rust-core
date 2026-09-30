@@ -390,6 +390,7 @@ async fn serve_tcp_connection(
     if !is_websocket_upgrade(request.head()) {
         return serve_http(
             &mut stream,
+            peer,
             request.head(),
             endpoint,
             container,
@@ -530,17 +531,35 @@ fn header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a str> {
 /// Answer a plain HTTP request with the bridge script, the chat surface's
 /// assets when a `surface` is configured, or a 404.
 ///
-/// Products load the bridge from a development-only `<script>` tag, which is a
-/// cross-origin request no CORS header can gate, so the script carries no
-/// secret. What keeps another page from using the endpoint it names is the
-/// origin check on the WebSocket handshake.
+/// Every plain route is for a browser on this machine, so a peer that is not
+/// loopback gets a 403 before any route is looked at. The bridge script is
+/// loaded from a development-only `<script>` tag, a cross-origin request no
+/// CORS header can gate, so it carries no secret either way; what keeps
+/// another page from using the endpoint it names is the origin check on the
+/// WebSocket handshake. The chat page and the worker bundle come off the
+/// developer's disk, and the peer check is what keeps them off the network.
 async fn serve_http(
     stream: &mut TcpStream,
+    peer: ConnectionPeer,
     head: &[u8],
     endpoint: &str,
     container: &Path,
     surface: Option<&ChatSurface>,
 ) -> Result<()> {
+    if !connection_allowed(peer, None) {
+        warn!(
+            ?peer,
+            "refused a plain HTTP request from a non-loopback peer"
+        );
+        let response = http_response(
+            "403 Forbidden",
+            "text/plain; charset=utf-8",
+            "forbidden; truapi-host serves this machine only\n",
+        );
+        stream.write_all(response.as_bytes()).await?;
+        stream.flush().await?;
+        return Ok(());
+    }
     let response = match (request_path(head).as_deref(), surface) {
         (Some(bootstrap::PATH), _) => bridge_script_response(endpoint, container),
         (Some(chat_surface::WORKER_BOOTSTRAP_PATH), Some(_)) => bridge_script_response(
@@ -980,7 +999,12 @@ mod tests {
     async fn the_bridge_script_is_served_beside_the_frame_socket() -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        async fn fetch(target: &str, endpoint: &str, asset_present: bool) -> Result<String> {
+        async fn fetch_as(
+            peer: ConnectionPeer,
+            target: &str,
+            endpoint: &str,
+            asset_present: bool,
+        ) -> Result<String> {
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let address = listener.local_addr()?;
             let endpoint = endpoint.to_string();
@@ -995,6 +1019,7 @@ mod tests {
                 assert!(!is_websocket_upgrade(request.head()));
                 serve_http(
                     &mut stream,
+                    peer,
                     request.head(),
                     &endpoint,
                     container.path(),
@@ -1013,7 +1038,19 @@ mod tests {
             Ok(response)
         }
 
+        // The listener is loopback, so the peer a route sees is what the
+        // server was told, which is the one line of policy under test here.
+        async fn fetch(target: &str, endpoint: &str, asset_present: bool) -> Result<String> {
+            let loopback = ConnectionPeer::Tcp("127.0.0.1:3000".parse()?);
+            fetch_as(loopback, target, endpoint, asset_present).await
+        }
+
         let endpoint = "ws://127.0.0.1:9955";
+        let remote = ConnectionPeer::Tcp("192.0.2.1:3000".parse()?);
+        let refused = fetch_as(remote, bootstrap::PATH, endpoint, true).await?;
+        assert!(refused.starts_with("HTTP/1.1 403 Forbidden"), "{refused}");
+        assert!(!refused.contains("installSandbox"), "{refused}");
+
         let script = fetch(bootstrap::PATH, endpoint, true).await?;
         assert!(script.starts_with("HTTP/1.1 200 OK"), "{script}");
         assert!(script.contains("application/javascript"));
