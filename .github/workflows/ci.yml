@@ -606,6 +606,7 @@ jobs:
           APPLICATION_ID: io.parity.polkadotapp
           APPLICATION_NAME: Polkadot
           CURRENCY_SYMBOL: DOT
+          FIAT_SYMBOL: "$"
           FIRESTORE_DATABASE_ID: ci
           GOOGLE_OAUTH_ID: ci
           # Typed as a long, so a non-numeric placeholder is a compile error.
@@ -650,6 +651,7 @@ jobs:
           APPLICATION_NAME: Polkadot
           CONTACT_EMAIL: ci@example.invalid
           CURRENCY_SYMBOL: DOT
+          FIAT_SYMBOL: "$"
           FIRESTORE_DATABASE_ID: ci
           GOOGLE_OAUTH_ID: ci
           GOOGLE_PROJECT_ID: "0"
