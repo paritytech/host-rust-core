@@ -22,6 +22,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetBrand
 import io.paritytech.polkadotapp.common.presentation.validation.compose.rememberValidationActionHandle
 import io.paritytech.polkadotapp.common.utils.progressStallReport.StallReportContent
 import io.paritytech.polkadotapp.common.utils.progressStallReport.previewStallReportOperations
@@ -244,7 +246,8 @@ private fun PreviewStallReport() {
 @Composable
 private fun SendEnterAmountScreenAllWidgetPreview() {
     CompositionLocalProvider(
-        LocalTokenAmountFormatter provides TokenAmountFormatter.mocked
+        LocalTokenAmountFormatter provides TokenAmountFormatter.mocked,
+        LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
     ) {
         PolkadotTheme {
             SendEnterAmountScreenInternal(

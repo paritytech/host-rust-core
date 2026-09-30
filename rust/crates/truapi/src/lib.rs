@@ -583,6 +583,7 @@ runtime_items! {
         ChannelId, DebugEvent, DebugSink, FrameDirection, FrameSink, HostAdmin, PairingHostRuntime,
         ProductRuntime, ProductRuntimeControl, ProductRuntimeError, SigningHostRuntime,
     };
+    pub use host_internal::bulletin::{preimage_cid, preimage_key};
     pub use host_logic::session::{
         ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
     };
