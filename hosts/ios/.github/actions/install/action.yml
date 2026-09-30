@@ -1,9 +1,10 @@
 name: "Setup iOS Environment"
 description: >-
   Installs Xcode, Ruby and Python. The Swift package graph is resolved on
-  every run rather than cached: cloned, it is about 2.7 GB, over a quarter of
-  the repository's 10 GB cache, and restoring and saving it costs most of the
-  minute a warm resolve saves.
+  every run rather than cached. A warm resolve saves about 90 seconds per job,
+  but cloned the graph is about 2.6 GB, over a quarter of the repository's
+  10 GB cache, and holding it evicts the Rust caches every pull request
+  restores.
 inputs:
   xcode-version:
     description: "The Xcode version to install"
