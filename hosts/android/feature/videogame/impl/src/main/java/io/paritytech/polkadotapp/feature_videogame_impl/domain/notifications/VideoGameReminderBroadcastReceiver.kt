@@ -6,6 +6,7 @@ import android.content.Intent
 import dagger.hilt.android.AndroidEntryPoint
 import io.paritytech.polkadotapp.common.data.app.AppLifecycleState
 import io.paritytech.polkadotapp.common.presentation.AppLifecycleObserver
+import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameNotificationPublisher
 import io.paritytech.polkadotapp.feature_videogame_impl.service.VideoGameStateReader
 import io.paritytech.polkadotapp.feature_videogame_impl.service.isInWaitingRoom
@@ -54,12 +55,15 @@ class VideoGameReminderBroadcastReceiver : BroadcastReceiver() {
                         }
                     }
 
-                    VideoGameNotificationType.ProductGameStartsSoon -> {
+                    is VideoGameNotificationType.ProductGameStartsSoon -> {
                         // In the foreground the pill and the auto-open take over. An inexact alarm may fire
-                        // well after the start.
-                        val slot = productGameReminder.slotStartingNow()
+                        // late; a held slot still wants its notification then.
+                        val slot = productGameReminder.currentSlot(ProductId.fromStoredValue(type.productId))
                         if (slot != null && appLifecycleObserver.getCurrentState() != AppLifecycleState.FOREGROUND) {
-                            notificationPublisher.publishProductGameStartsSoonNotification(slot.ringAlarm)
+                            notificationPublisher.publishProductGameStartsSoonNotification(
+                                slot.product(),
+                                slot.ringAlarm,
+                            )
                         }
                     }
 

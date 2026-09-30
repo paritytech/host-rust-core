@@ -13,6 +13,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.data.notifications.Video
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.Serializable
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.hours
@@ -20,7 +21,8 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import io.paritytech.polkadotapp.common.R as RCommon
 
-data class ProductGameSlot(val productId: ProductId, val startsAtMillis: Long, val ringAlarm: Boolean)
+@Serializable
+data class ProductGameSlot(val productId: String, val startsAtMillis: Long, val ringAlarm: Boolean)
 
 private val PRODUCT_GAME_START_GRACE = 30.seconds
 
@@ -28,7 +30,6 @@ private val PRODUCT_GAME_START_GRACE = 30.seconds
 internal fun ProductGameSlot.isLiveAt(nowMillis: Long) =
     nowMillis - startsAtMillis < PRODUCT_GAME_START_GRACE.inWholeMilliseconds
 
-// One slot for the whole host, kept past its start for the notification tap, whose link names no product.
 @Singleton
 class RealProductGameReminder @Inject constructor(
     private val preferences: VideoGameSettingsPreferences,
@@ -39,40 +40,47 @@ class RealProductGameReminder @Inject constructor(
     private val timeProvider: TimeProvider,
 ) : ProductGameReminder {
     private val lock = Mutex()
+    // Serialises the calendar dedupe and insert, apart from the slot lock so a cancel never waits on the provider.
+    private val calendarLock = Mutex()
 
-    val slot: Flow<ProductGameSlot?> get() = preferences.productGameSlotFlow()
+    val slots: Flow<List<ProductGameSlot>> get() = preferences.productGameSlotsFlow()
 
-    fun currentSlot(): ProductGameSlot? = preferences.getProductGameSlot()
+    fun currentSlots(): List<ProductGameSlot> = preferences.getProductGameSlots()
 
-    fun slotStartingNow(): ProductGameSlot? = currentSlot()?.takeIf { !it.isStale() }
+    fun currentSlot(productId: ProductId): ProductGameSlot? =
+        currentSlots().firstOrNull { it.productId == productId.value }
 
     override suspend fun schedule(
         productId: ProductId,
         startsAtMillis: Long,
         ringAlarm: Boolean,
         addCalendarEvent: Boolean,
-    ): Boolean = lock.withLock {
+    ) {
         val now = timeProvider.now().toEpochMilliseconds()
-        val held = currentSlot()
-        if (held != null && held.productId != productId && held.startsAtMillis > now) return@withLock false
-
-        preferences.setProductGameSlot(ProductGameSlot(productId, startsAtMillis, ringAlarm))
-        notificationPublisher.cancelProductGameStartsSoonNotification()
-        scheduler.scheduleProductGameStart(startsAtMillis)
+        val slot = ProductGameSlot(productId.value, startsAtMillis, ringAlarm)
+        lock.withLock {
+            store(currentSlots().filter { it.productId != productId.value } + slot)
+            notificationPublisher.cancelProductGameStartsSoonNotification(productId)
+            scheduler.scheduleProductGameStart(productId, startsAtMillis)
+        }
         if (addCalendarEvent && startsAtMillis - now >= CALENDAR_MIN_LEAD.inWholeMilliseconds) {
             addCalendarEvent(startsAtMillis)
         }
-        true
     }
 
     override suspend fun cancel(productId: ProductId) {
-        lock.withLock { currentSlot()?.takeIf { it.productId == productId }?.let(::drop) }
+        lock.withLock { currentSlot(productId)?.let(::drop) }
     }
 
-    suspend fun restore() {
+    override suspend fun restore() {
         lock.withLock {
-            val held = currentSlot() ?: return
-            if (held.isStale()) drop(held) else scheduler.scheduleProductGameStart(held.startsAtMillis)
+            for (slot in currentSlots()) {
+                if (slot.isStale()) {
+                    drop(slot)
+                } else {
+                    scheduler.scheduleProductGameStart(slot.product(), slot.startsAtMillis)
+                }
+            }
         }
     }
 
@@ -82,11 +90,14 @@ class RealProductGameReminder @Inject constructor(
     }
 
     private fun drop(slot: ProductGameSlot) {
-        if (currentSlot() != slot) return
-        preferences.setProductGameSlot(null)
-        scheduler.cancelProductGameStart()
-        notificationPublisher.cancelProductGameStartsSoonNotification()
+        if (slot !in currentSlots()) return
+        store(currentSlots() - slot)
+        scheduler.cancelProductGameStart(slot.product())
+        notificationPublisher.cancelProductGameStartsSoonNotification(slot.product())
     }
+
+    private fun store(slots: List<ProductGameSlot>) =
+        preferences.setProductGameSlots(slots.sortedBy { it.startsAtMillis })
 
     private fun ProductGameSlot.isStale() = !isLiveAt(timeProvider.now().toEpochMilliseconds())
 
@@ -96,7 +107,10 @@ class RealProductGameReminder @Inject constructor(
             duration = CALENDAR_EVENT_DURATION,
             title = context.getString(RCommon.string.video_game_calendar_event_title),
         )
-        calendarEventsMixin.addEventIfPermitted(event, CALENDAR_ALERT_BEFORE).logFailure("product game calendar event")
+        calendarLock.withLock {
+            calendarEventsMixin.addEventIfPermitted(event, CALENDAR_ALERT_BEFORE)
+                .logFailure("product game calendar event")
+        }
     }
 
     private companion object {
@@ -105,3 +119,5 @@ class RealProductGameReminder @Inject constructor(
         val CALENDAR_ALERT_BEFORE = 5.minutes
     }
 }
+
+fun ProductGameSlot.product(): ProductId = ProductId.fromStoredValue(productId)

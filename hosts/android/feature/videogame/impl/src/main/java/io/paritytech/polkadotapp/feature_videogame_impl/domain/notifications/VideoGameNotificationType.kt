@@ -10,5 +10,5 @@ sealed interface VideoGameNotificationType : Parcelable {
     data object WaitingRoomAvailable : VideoGameNotificationType
     data object GameAboutToStart : VideoGameNotificationType
     data object GameStartsSoon : VideoGameNotificationType
-    data object ProductGameStartsSoon : VideoGameNotificationType
+    data class ProductGameStartsSoon(val productId: String) : VideoGameNotificationType
 }

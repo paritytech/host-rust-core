@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -25,7 +24,6 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
-import org.mockito.Mockito.verifyNoInteractions
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
@@ -53,40 +51,32 @@ class RealProductGameReminderTest {
     fun `schedule holds the slot, arms its alarm and drops a posted notification`() = runTest {
         reminder.schedule(game, START, true, false)
 
-        assertEquals(ProductGameSlot(game, START, true), reminder.currentSlot())
-        verify(scheduler).scheduleProductGameStart(START)
-        verify(publisher).cancelProductGameStartsSoonNotification()
+        assertEquals(listOf(ProductGameSlot(game.value, START, true)), reminder.currentSlots())
+        verify(scheduler).scheduleProductGameStart(game, START)
+        verify(publisher).cancelProductGameStartsSoonNotification(game)
         assertTrue(calendar.added.isEmpty())
     }
 
     @Test
-    fun `another product is refused while the held start is ahead`() = runTest {
-        reminder.schedule(game, START, true, false)
-        clearInvocations(scheduler, publisher)
+    fun `each product holds its own slot, soonest first`() = runTest {
+        reminder.schedule(game, START + 1, true, false)
+        reminder.schedule(other, START, false, false)
 
-        assertFalse(reminder.schedule(other, START + 1, true, true))
-
-        assertEquals(ProductGameSlot(game, START, true), reminder.currentSlot())
-        verifyNoInteractions(scheduler, publisher)
-        assertTrue(calendar.added.isEmpty())
+        assertEquals(
+            listOf(ProductGameSlot(other.value, START, false), ProductGameSlot(game.value, START + 1, true)),
+            reminder.currentSlots(),
+        )
+        verify(scheduler).scheduleProductGameStart(game, START + 1)
+        verify(scheduler).scheduleProductGameStart(other, START)
     }
 
     @Test
-    fun `the holder replaces its own slot`() = runTest {
+    fun `a product replaces its own slot`() = runTest {
         reminder.schedule(game, START, true, false)
 
-        assertTrue(reminder.schedule(game, START + 1, false, false))
+        reminder.schedule(game, START + 1, false, false)
 
-        assertEquals(ProductGameSlot(game, START + 1, false), reminder.currentSlot())
-    }
-
-    @Test
-    fun `a slot whose start has passed is free for another product`() = runTest {
-        reminder.schedule(game, NOW - 1_000, true, false)
-
-        assertTrue(reminder.schedule(other, START, true, false))
-
-        assertEquals(ProductGameSlot(other, START, true), reminder.currentSlot())
+        assertEquals(listOf(ProductGameSlot(game.value, START + 1, false)), reminder.currentSlots())
     }
 
     @Test
@@ -124,54 +114,53 @@ class RealProductGameReminderTest {
     }
 
     @Test
-    fun `only the holder's cancel drops the slot, its alarm and its notification`() = runTest {
+    fun `a cancel drops only that product's slot, alarm and notification`() = runTest {
         reminder.schedule(game, START, true, false)
+        reminder.schedule(other, START + 1, true, false)
 
         reminder.cancel(other)
-        assertEquals(ProductGameSlot(game, START, true), reminder.currentSlot())
-        verify(scheduler, never()).cancelProductGameStart()
+        assertEquals(listOf(ProductGameSlot(game.value, START, true)), reminder.currentSlots())
+        verify(scheduler).cancelProductGameStart(other)
+        verify(publisher, times(2)).cancelProductGameStartsSoonNotification(other)
+        verify(scheduler, never()).cancelProductGameStart(game)
+        verify(publisher, times(1)).cancelProductGameStartsSoonNotification(game)
 
         reminder.cancel(game)
 
-        assertNull(reminder.currentSlot())
-        verify(scheduler).cancelProductGameStart()
-        verify(publisher, times(2)).cancelProductGameStartsSoonNotification()
+        assertTrue(reminder.currentSlots().isEmpty())
+        verify(scheduler).cancelProductGameStart(game)
+        verify(publisher, times(2)).cancelProductGameStartsSoonNotification(game)
     }
 
     @Test
     fun `clear leaves a newer schedule alone`() = runTest {
         reminder.schedule(game, START, true, false)
-        val opened = ProductGameSlot(game, START, true)
+        val opened = ProductGameSlot(game.value, START, true)
         reminder.schedule(game, START + 1, true, false)
 
         reminder.clear(opened)
 
-        assertEquals(ProductGameSlot(game, START + 1, true), reminder.currentSlot())
+        assertEquals(listOf(ProductGameSlot(game.value, START + 1, true)), reminder.currentSlots())
     }
 
     @Test
-    fun `restore re-arms a slot whose start is ahead`() = runTest {
+    fun `restore re-arms slots whose start is ahead and drops those past the grace`() = runTest {
         reminder.schedule(game, START, true, false)
+        reminder.schedule(other, NOW - 30_000, true, false)
         clearInvocations(scheduler)
 
         reminder.restore()
 
-        verify(scheduler).scheduleProductGameStart(START)
-        assertEquals(ProductGameSlot(game, START, true), reminder.currentSlot())
+        verify(scheduler).scheduleProductGameStart(game, START)
+        verify(scheduler).cancelProductGameStart(other)
+        assertEquals(listOf(ProductGameSlot(game.value, START, true)), reminder.currentSlots())
+        assertNull(reminder.currentSlot(other))
     }
 
     @Test
-    fun `a slot is withheld and dropped on restore once the grace after its start has run out`() = runTest {
-        reminder.schedule(game, NOW - 29_999, true, false)
-        assertEquals(ProductGameSlot(game, NOW - 29_999, true), reminder.slotStartingNow())
-
-        reminder.schedule(game, NOW - 30_000, true, false)
-        assertNull(reminder.slotStartingNow())
-
-        reminder.restore()
-
-        assertNull(reminder.currentSlot())
-        verify(scheduler).cancelProductGameStart()
+    fun `a slot stays live until the grace after its start has run out`() = runTest {
+        assertTrue(ProductGameSlot(game.value, NOW - 29_999, true).isLiveAt(NOW))
+        assertTrue(!ProductGameSlot(game.value, NOW - 30_000, true).isLiveAt(NOW))
     }
 
     private companion object {

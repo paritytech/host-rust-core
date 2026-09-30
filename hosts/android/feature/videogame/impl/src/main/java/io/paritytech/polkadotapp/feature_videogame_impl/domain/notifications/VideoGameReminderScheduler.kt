@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import io.paritytech.polkadotapp.common.domain.model.Timestamp
 import io.paritytech.polkadotapp.common.presentation.resources.ContextManager
+import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_videogame_impl.data.notifications.VideoGameSettingsPreferences
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.minutes
@@ -17,8 +18,8 @@ interface VideoGameReminderScheduler {
     fun scheduleWaitingRoom(gameStartMillis: Timestamp)
     fun scheduleGameAboutToStart(gameStartMillis: Timestamp)
     fun scheduleGameStart(gameStartMillis: Timestamp)
-    fun scheduleProductGameStart(gameStartMillis: Timestamp)
-    fun cancelProductGameStart()
+    fun scheduleProductGameStart(productId: ProductId, gameStartMillis: Timestamp)
+    fun cancelProductGameStart(productId: ProductId)
 }
 
 class RealVideoGameReminderScheduler @Inject constructor(
@@ -28,6 +29,7 @@ class RealVideoGameReminderScheduler @Inject constructor(
     private companion object {
         val WAITING_ROOM_SCHEDULE_OFFSET_MILLIS = 5.minutes.inWholeMilliseconds
         val ABOUT_TO_START_SCHEDULE_OFFSET_MILLIS = 1.minutes.inWholeMilliseconds
+        const val PRODUCT_GAME_REQUEST_CODE_BASE = 1000
     }
 
     private val alarmManager = contextManager.applicationContext.getSystemService(AlarmManager::class.java)
@@ -53,10 +55,14 @@ class RealVideoGameReminderScheduler @Inject constructor(
     override fun scheduleGameStart(gameStartMillis: Timestamp) =
         scheduleStartAlarm(VideoGameNotificationType.GameStartsSoon, gameStartMillis)
 
-    override fun scheduleProductGameStart(gameStartMillis: Timestamp) =
-        scheduleStartAlarm(VideoGameNotificationType.ProductGameStartsSoon, gameStartMillis, inexactFallback = true)
+    override fun scheduleProductGameStart(productId: ProductId, gameStartMillis: Timestamp) = scheduleStartAlarm(
+        VideoGameNotificationType.ProductGameStartsSoon(productId.value),
+        gameStartMillis,
+        inexactFallback = true,
+    )
 
-    override fun cancelProductGameStart() = cancelAlarm(VideoGameNotificationType.ProductGameStartsSoon)
+    override fun cancelProductGameStart(productId: ProductId) =
+        cancelAlarm(VideoGameNotificationType.ProductGameStartsSoon(productId.value))
 
     private fun scheduleStartAlarm(
         notificationType: VideoGameNotificationType,
@@ -124,6 +130,7 @@ class RealVideoGameReminderScheduler @Inject constructor(
         VideoGameNotificationType.WaitingRoomAvailable -> 2
         VideoGameNotificationType.GameAboutToStart -> 3
         VideoGameNotificationType.GameStartsSoon -> 4
-        VideoGameNotificationType.ProductGameStartsSoon -> 5
+        // One pending intent per product, apart from the native game's codes above.
+        is VideoGameNotificationType.ProductGameStartsSoon -> PRODUCT_GAME_REQUEST_CODE_BASE + productId.hashCode()
     }
 }

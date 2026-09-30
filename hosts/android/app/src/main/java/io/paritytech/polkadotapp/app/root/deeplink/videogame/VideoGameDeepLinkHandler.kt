@@ -8,6 +8,7 @@ import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.runCancellableCatching
 import io.paritytech.polkadotapp.feature_account_api.data.repository.AccountRepository
 import io.paritytech.polkadotapp.feature_account_api.data.repository.awaitAccountsInitialized
+import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameRouter
 import io.paritytech.polkadotapp.feature_videogame_impl.deeplink.PRODUCT_GAME_PATH
 import io.paritytech.polkadotapp.feature_videogame_impl.deeplink.WAITING_ROOM_PATH
@@ -39,7 +40,8 @@ class VideoGameDeepLinkHandler @Inject constructor(
             val path = data.pathSegments.firstOrNull()
 
             when (path) {
-                PRODUCT_GAME_PATH -> openHeldProductGame()
+                PRODUCT_GAME_PATH -> data.pathSegments.getOrNull(1)
+                    ?.let { openHeldProductGame(ProductId.fromStoredValue(it)) }
                 WAITING_ROOM_PATH -> withContext(coroutineDispatchers.main) {
                     videoGameRouter.openWeeklyGameBot()
                     videoGameLaunchCoordinator.launchGame()

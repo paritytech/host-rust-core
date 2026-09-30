@@ -4,6 +4,7 @@ import android.net.Uri
 import io.paritytech.polkadotapp.common.presentation.deeplink.DeepLinkHandler
 import io.paritytech.polkadotapp.common.utils.FeatureOption
 import io.paritytech.polkadotapp.common.utils.isEnabled
+import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import javax.inject.Inject
 
 const val WEEKLY_GAME_HOST = "weeklygame"
@@ -30,11 +31,12 @@ class VideoGameDeeplinkMapper @Inject constructor() {
             .build()
     }
 
-    fun toProductGameDeeplink(): Uri {
+    fun toProductGameDeeplink(productId: ProductId): Uri {
         return Uri.Builder()
             .scheme(DeepLinkHandler.APP_SCHEME)
             .authority(WEEKLY_GAME_HOST)
             .appendPath(PRODUCT_GAME_PATH)
+            .appendPath(productId.value)
             .build()
     }
 }

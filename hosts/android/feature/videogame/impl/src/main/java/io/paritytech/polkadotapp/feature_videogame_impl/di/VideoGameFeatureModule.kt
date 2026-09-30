@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.feature_videogame_impl.di
 
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import dagger.Binds
 import dagger.Lazy
 import dagger.Module
@@ -118,7 +119,8 @@ import io.paritytech.polkadotapp.feature_videogame_impl.domain.usecase.VideoGame
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.usecase.VideoGameOffboardingOptionUseCase
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.usecase.VideoGameRegistrationStageUseCase
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.usecase.VideoGameReportSubmittedUseCase
-import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.ProductGamePillOverlayRenderer
+import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.GamePillOverlayRenderer
+import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.ProductGamePillOverlayViewModel
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.RealWeeklyGamePillVisibilityHolder
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.WeeklyGamePillVisibilityHolder
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.renderer.GameChatHeaderRenderer
@@ -309,7 +311,7 @@ internal interface VideoGameFeatureModule {
         @Provides
         @IntoSet
         fun provideProductGamePill(@SpaBrowserFragmentClass spaBrowserFragmentClass: String): ChatOverlay = ChatOverlay(
-            renderer = ProductGamePillOverlayRenderer(),
+            renderer = GamePillOverlayRenderer { hiltViewModel<ProductGamePillOverlayViewModel>() },
             ownedFragmentClasses = setOf(spaBrowserFragmentClass),
         )
 

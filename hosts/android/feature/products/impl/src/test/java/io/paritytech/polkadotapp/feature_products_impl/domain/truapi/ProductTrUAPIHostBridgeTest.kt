@@ -1,6 +1,5 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 
-import uniffi.truapi.HostRemindNextGameException
 import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.EncryptedPreferences
@@ -11,7 +10,6 @@ import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.HostApiInteractor
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.navigation.NavigationPolicy
 import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.PocketCardStore
-import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -59,16 +57,13 @@ class ProductTrUAPIHostBridgeTest {
     }
 
     @Test
-    fun `an accepted reminder returns and a refused one throws Busy`() = runTest {
+    fun `the game bridge schedules and cancels for the calling product`() = runTest {
         val gameBridge = bridge().gameBridge(game)
-        whenever(gameReminder.schedule(game, 1_000, false, true)).thenReturn(true)
-        whenever(gameReminder.schedule(game, 1_000, true, false)).thenReturn(false)
 
         gameBridge.scheduleReminder(1_000u, false, true)
+        gameBridge.cancelReminder()
+
         verify(gameReminder).schedule(game, 1_000, false, true)
-
-        val error = runCatching { gameBridge.scheduleReminder(1_000u, true, false) }.exceptionOrNull()
-
-        assertTrue(error is HostRemindNextGameException.Busy)
+        verify(gameReminder).cancel(game)
     }
 }

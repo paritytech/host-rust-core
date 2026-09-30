@@ -39,6 +39,7 @@ interface CalendarEventsMixin {
 
     suspend fun addEvent(event: CalendarEvent): Result<Unit>
 
+    /** Adds [event] with an alert [alertBefore] its start, without prompting; a held event is left alone. */
     suspend fun addEventIfPermitted(event: CalendarEvent, alertBefore: Duration): Result<Unit>
 }
 
@@ -84,12 +85,13 @@ class RealCalendarEventsMixin @Inject constructor(
         }
     }
 
+    private fun readPermissionsAreGranted() = permissionAsker.getPermissionState(Manifest.permission.READ_CALENDAR).isGranted()
+
     override suspend fun addEventIfPermitted(event: CalendarEvent, alertBefore: Duration): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val granted = listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
                     .all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-                // A failed dedupe query aborts rather than risking a duplicate.
                 if (!granted || findEventId(event) != null) return@runCatching
 
                 val calendarId = getMostRelevantCalendarId() ?: return@runCatching
@@ -107,8 +109,6 @@ class RealCalendarEventsMixin @Inject constructor(
                 manualRefresh.tryEmit(Unit)
             }
         }
-
-    private fun readPermissionsAreGranted() = permissionAsker.getPermissionState(Manifest.permission.READ_CALENDAR).isGranted()
 
     private fun addEventToCalendarDirectly(calendarId: Long, event: CalendarEvent) {
         context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, eventValues(calendarId, event))
@@ -194,9 +194,7 @@ class RealCalendarEventsMixin @Inject constructor(
     }
 
     private fun isEventAddedToCalendar(event: CalendarEvent): Boolean {
-        val eventId = runCatching { findEventId(event) }
-            .onFailure { Timber.e(it, "Failed to find event in calendar") }
-            .getOrNull()
+        val eventId = runCatching { findEventId(event) }.getOrNull()
         return eventId != null
     }
 
@@ -208,17 +206,21 @@ class RealCalendarEventsMixin @Inject constructor(
         val selection = "${CalendarContract.Events.DTSTART} = ? AND ${CalendarContract.Events.TITLE} = ?"
         val selectionArgs = arrayOf(event.timeStart.toString(), event.title)
 
-        context.contentResolver.query(
-            CalendarContract.Events.CONTENT_URI,
-            arrayOf(CalendarContract.Events._ID),
-            selection,
-            selectionArgs,
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val id = cursor.getLong(0)
-                return id
+        try {
+            context.contentResolver.query(
+                CalendarContract.Events.CONTENT_URI,
+                arrayOf(CalendarContract.Events._ID),
+                selection,
+                selectionArgs,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(0)
+                    return id
+                }
             }
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to find event in calendar")
         }
 
         return null

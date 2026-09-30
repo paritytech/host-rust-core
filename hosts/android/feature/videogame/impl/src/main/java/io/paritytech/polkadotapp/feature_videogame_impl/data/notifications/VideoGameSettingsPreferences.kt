@@ -1,18 +1,17 @@
 package io.paritytech.polkadotapp.feature_videogame_impl.data.notifications
 
 import io.paritytech.polkadotapp.common.data.storage.preferences.Preferences
-import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.GameStartAlarmOffset
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.ProductGameSlot
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val KEY_ALARM_OFFSET_SECONDS = "video_game_alarm_offset_seconds"
-private const val KEY_PRODUCT_GAME_SLOT = "video_game_product_game_slot"
-private const val SLOT_SEPARATOR = '|'
+private const val KEY_PRODUCT_GAME_SLOTS = "video_game_product_game_slots"
 
 @Singleton
 class VideoGameSettingsPreferences @Inject constructor(
@@ -27,23 +26,16 @@ class VideoGameSettingsPreferences @Inject constructor(
         preferences.putInt(KEY_ALARM_OFFSET_SECONDS, offset.seconds)
     }
 
-    fun getProductGameSlot(): ProductGameSlot? =
-        preferences.getString(KEY_PRODUCT_GAME_SLOT)?.toProductGameSlot()
+    fun getProductGameSlots(): List<ProductGameSlot> = preferences.getString(KEY_PRODUCT_GAME_SLOTS).toSlots()
 
-    fun productGameSlotFlow(): Flow<ProductGameSlot?> = preferences.stringFlow(KEY_PRODUCT_GAME_SLOT)
-        .map { it?.toProductGameSlot() }
+    fun productGameSlotsFlow(): Flow<List<ProductGameSlot>> = preferences.stringFlow(KEY_PRODUCT_GAME_SLOTS)
+        .map { it.toSlots() }
         .distinctUntilChanged()
 
-    fun setProductGameSlot(slot: ProductGameSlot?) {
-        val encoded = slot?.let { "${it.productId.value}$SLOT_SEPARATOR${it.startsAtMillis}$SLOT_SEPARATOR${it.ringAlarm}" }
-        preferences.putString(KEY_PRODUCT_GAME_SLOT, encoded)
+    fun setProductGameSlots(slots: List<ProductGameSlot>) {
+        preferences.putString(KEY_PRODUCT_GAME_SLOTS, slots.takeIf { it.isNotEmpty() }?.let(Json::encodeToString))
     }
 
-    private fun String.toProductGameSlot(): ProductGameSlot? {
-        val ringAlarm = substringAfterLast(SLOT_SEPARATOR).toBooleanStrictOrNull() ?: return null
-        val idAndStart = substringBeforeLast(SLOT_SEPARATOR)
-        val startsAtMillis = idAndStart.substringAfterLast(SLOT_SEPARATOR).toLongOrNull() ?: return null
-        val productId = ProductId.fromStoredValue(idAndStart.substringBeforeLast(SLOT_SEPARATOR))
-        return ProductGameSlot(productId, startsAtMillis, ringAlarm)
-    }
+    private fun String?.toSlots(): List<ProductGameSlot> =
+        this?.let { runCatching { Json.decodeFromString<List<ProductGameSlot>>(it) }.getOrNull() } ?: emptyList()
 }

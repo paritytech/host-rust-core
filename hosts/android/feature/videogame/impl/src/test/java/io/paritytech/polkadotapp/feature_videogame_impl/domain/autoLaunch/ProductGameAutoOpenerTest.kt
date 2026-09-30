@@ -27,43 +27,47 @@ class ProductGameAutoOpenerTest {
     private val lifecycle: AppLifecycleObserver = mock()
     private val lifecycleState = MutableStateFlow(AppLifecycleState.FOREGROUND)
 
-    private val slot = ProductGameSlot(ProductId.fromStoredValue("game.dot"), startsAtMillis = 60_000, ringAlarm = true)
+    private val game = ProductId.fromStoredValue("game.dot")
+    private val other = ProductId.fromStoredValue("acme.dot")
+    private val slot = ProductGameSlot(game.value, startsAtMillis = 60_000, ringAlarm = true)
+    private val laterSlot = ProductGameSlot(other.value, startsAtMillis = 120_000, ringAlarm = true)
 
     @Test
-    fun `opens the product at its start while in the foreground and drops the slot`() = runTest {
-        startOpener()
+    fun `opens the soonest product at its start while in the foreground and drops its slot`() = runTest {
+        startOpener(laterSlot, slot)
 
         advanceTimeBy(59_999)
         runCurrent()
-        verify(router, never()).openGameProduct(slot.productId)
+        verify(router, never()).openGameProduct(game)
 
         advanceTimeBy(1)
         runCurrent()
-        verify(router).openGameProduct(slot.productId)
+        verify(router).openGameProduct(game)
         verify(reminder).clear(slot)
+        verify(router, never()).openGameProduct(other)
     }
 
     @Test
     fun `opens a slot whose start passed within the grace`() = runTest {
         advanceTimeBy(slot.startsAtMillis + 29_999)
 
-        startOpener()
+        startOpener(slot)
 
-        verify(router).openGameProduct(slot.productId)
+        verify(router).openGameProduct(game)
     }
 
     @Test
     fun `does not open a slot whose start passed beyond the grace`() = runTest {
         advanceTimeBy(slot.startsAtMillis + 30_000)
 
-        startOpener()
+        startOpener(slot)
 
-        verify(router, never()).openGameProduct(slot.productId)
+        verify(router, never()).openGameProduct(game)
     }
 
     @Test
     fun `leaving the foreground mid-countdown neither opens nor drops the slot`() = runTest {
-        startOpener()
+        startOpener(slot)
 
         advanceTimeBy(30_000)
         lifecycleState.value = AppLifecycleState.BACKGROUND
@@ -71,12 +75,12 @@ class ProductGameAutoOpenerTest {
         advanceTimeBy(31_000)
         runCurrent()
 
-        verify(router, never()).openGameProduct(slot.productId)
+        verify(router, never()).openGameProduct(game)
         verify(reminder, never()).clear(slot)
     }
 
-    private fun TestScope.startOpener() {
-        whenever(reminder.slot).thenReturn(MutableStateFlow(slot))
+    private fun TestScope.startOpener(vararg slots: ProductGameSlot) {
+        whenever(reminder.slots).thenReturn(MutableStateFlow(slots.toList()))
         whenever(lifecycle.subscribe()).thenReturn(lifecycleState)
         val opener = ProductGameAutoOpener(reminder, lifecycle, router, FakeTimeProvider { testScheduler.currentTime })
 

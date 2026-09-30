@@ -10,6 +10,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameRouter
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.ProductGameSlot
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealProductGameReminder
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.isLiveAt
+import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.product
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
@@ -26,19 +27,21 @@ class ProductGameAutoOpener @Inject constructor(
 ) : AppInitializer {
     context(scope: ComputationalScope)
     override fun initialize(): Result<Unit> = runCancellableCatching {
-        combine(reminder.slot, appLifecycleObserver.subscribeIsForeground()) { slot, foreground ->
-            slot.takeIf { foreground }
+        combine(reminder.slots, appLifecycleObserver.subscribeIsForeground()) { slots, foreground ->
+            slots.takeIf { foreground }.orEmpty()
         }
-            .mapLatest { slot -> slot?.let { openAtStart(it) } }
+            .mapLatest { slots -> nextLive(slots)?.let { openAtStart(it) } }
             .launchIn(scope)
     }
 
-    private suspend fun openAtStart(slot: ProductGameSlot) {
+    private fun nextLive(slots: List<ProductGameSlot>): ProductGameSlot? {
         val now = timeProvider.now().toEpochMilliseconds()
-        if (!slot.isLiveAt(now)) return
+        return slots.filter { it.isLiveAt(now) }.minByOrNull { it.startsAtMillis }
+    }
 
-        delay(slot.startsAtMillis - now)
-        router.openGameProduct(slot.productId)
+    private suspend fun openAtStart(slot: ProductGameSlot) {
+        delay(slot.startsAtMillis - timeProvider.now().toEpochMilliseconds())
+        router.openGameProduct(slot.product())
         reminder.clear(slot)
     }
 }

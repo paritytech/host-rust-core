@@ -11,6 +11,7 @@ import io.paritytech.polkadotapp.common.presentation.ActivityIntentProvider
 import io.paritytech.polkadotapp.common.presentation.formatters.time.TimeFormatter
 import io.paritytech.polkadotapp.common.presentation.notifications.NotificationPublisher
 import io.paritytech.polkadotapp.common.presentation.notifications.PolkadotNotificationChannel
+import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameNotificationPublisher
 import io.paritytech.polkadotapp.feature_videogame_impl.deeplink.VideoGameDeeplinkMapper
 import javax.inject.Inject
@@ -25,6 +26,7 @@ class RealVideoGameNotificationPublisher @Inject constructor(
     private companion object {
         const val REGISTERED_GAME_NOTIFICATION_ID = 128
         const val PRODUCT_GAME_NOTIFICATION_ID = 129
+        const val PRODUCT_GAME_TAG_PREFIX = "product-game:"
     }
 
     override fun publishRegistrationOpenedNotification(timestamp: Timestamp) {
@@ -75,20 +77,28 @@ class RealVideoGameNotificationPublisher @Inject constructor(
         publishGameStartsSoon(videoGameDeeplinkMapper.toWaitingRoomDeeplink(), REGISTERED_GAME_NOTIFICATION_ID, ringAlarm = true)
     }
 
-    override fun publishProductGameStartsSoonNotification(ringAlarm: Boolean) {
-        publishGameStartsSoon(videoGameDeeplinkMapper.toProductGameDeeplink(), PRODUCT_GAME_NOTIFICATION_ID, ringAlarm)
+    // One notification per product, told apart by tag.
+    override fun publishProductGameStartsSoonNotification(productId: ProductId, ringAlarm: Boolean) {
+        publishGameStartsSoon(
+            videoGameDeeplinkMapper.toProductGameDeeplink(productId),
+            PRODUCT_GAME_NOTIFICATION_ID,
+            ringAlarm,
+            tag = PRODUCT_GAME_TAG_PREFIX + productId.value,
+        )
     }
 
-    override fun cancelProductGameStartsSoonNotification() {
-        cancel(PRODUCT_GAME_NOTIFICATION_ID)
+    override fun cancelProductGameStartsSoonNotification(productId: ProductId) {
+        cancel(PRODUCT_GAME_NOTIFICATION_ID, tag = PRODUCT_GAME_TAG_PREFIX + productId.value)
     }
 
     override fun cancelGameStartNotifications() {
         cancel(REGISTERED_GAME_NOTIFICATION_ID)
-        cancel(PRODUCT_GAME_NOTIFICATION_ID)
+        activeNotifications
+            .filter { it.tag?.startsWith(PRODUCT_GAME_TAG_PREFIX) == true }
+            .forEach { cancel(it.id, tag = it.tag) }
     }
 
-    private fun publishGameStartsSoon(deeplink: Uri, notificationId: Int, ringAlarm: Boolean) {
+    private fun publishGameStartsSoon(deeplink: Uri, notificationId: Int, ringAlarm: Boolean, tag: String? = null) {
         val channel = if (ringAlarm) PolkadotNotificationChannel.VIDEO_GAME_ALARM else PolkadotNotificationChannel.VIDEO_GAME
 
         val builder = NotificationCompat.Builder(appContext, channel.id)
@@ -110,7 +120,8 @@ class RealVideoGameNotificationPublisher @Inject constructor(
         publish(
             notificationId = notificationId,
             channel = channel,
-            notification = notification
+            notification = notification,
+            tag = tag,
         )
     }
 
