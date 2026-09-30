@@ -121,7 +121,7 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         navigation: NavigationPolicy,
     ) = object : HostBridge {
         override val storage: HostStorage =
-            EncryptedHostStorage(encryptedPreferences, productStorageNamespace(callingProductId.value))
+            EncryptedHostStorage(encryptedPreferences, callingProductId.value)
 
         override val coreStorage: HostCoreStorage = EncryptedHostCoreStorage(encryptedPreferences)
 
@@ -241,7 +241,7 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         chains: TrUAPIChains,
         navigationPolicy: NavigationPolicy,
         kind: ProductExecutionKind,
-        onReadyToInject: (bootstrap: String) -> Unit,
+        onReadyToInject: suspend (bootstrap: String) -> Unit,
     ): Result<TrUAPIProductExecution> {
         execution?.let {
             Timber.w("truapi.attach: already attached to %s, ignoring", productId.value)

@@ -8,6 +8,7 @@ import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsLoadProgress
 import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCard
 import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCardId
 import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCardKey
+import io.paritytech.polkadotapp.feature_products_api.model.JsWidget
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_api.presentation.spaHost.SpaHost
 import io.paritytech.polkadotapp.feature_products_api.presentation.spaHost.SpaHostSession
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -233,5 +235,24 @@ class PocketViewModelTest {
         advanceUntilIdle()
 
         verify(interactor).warmUpProduct(privileged.key)
+    }
+
+    // Expanding a card draws a second copy of it, and that copy's first frame shows whatever face it
+    // can read the moment it is composed. A face the list copy already holds but the new copy has to
+    // wait for draws the expanded card empty for the frames the wait takes.
+    @Test
+    fun `a card drawn again can read the face the first copy already holds`() = runTest(testDispatcher) {
+        val card = productCard("loyalty")
+        val face = JsWidget.Text(text = "Loyalty")
+        whenever(interactor.observeProductCards()).thenReturn(flowOf(listOf(card)))
+        whenever(interactor.observeFace(card.key)).thenReturn(flowOf(face))
+
+        val viewModel = createViewModel()
+        val uiCard = settledCards(viewModel).filterIsInstance<PocketCardUiModel.ProductCard>().single()
+        val listCopy = launch { viewModel.bindingsOf(uiCard).face.collect {} }
+        advanceUntilIdle()
+
+        assertEquals(face, viewModel.bindingsOf(uiCard).face.value)
+        listCopy.cancel()
     }
 }

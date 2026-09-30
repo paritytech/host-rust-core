@@ -5423,7 +5423,7 @@ dependencies = [
 
 [[package]]
 name = "truapi"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -5493,7 +5493,7 @@ dependencies = [
 
 [[package]]
 name = "truapi-host-cli"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "arboard",

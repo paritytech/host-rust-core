@@ -19,11 +19,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetLogoVariant
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.compose.PaymentAssetLogoImage
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.ArrowDownward
@@ -143,42 +147,28 @@ private fun PaymentMessageContent(
             shape = PolkadotTheme.shapes.medium,
             color = amountBoxColor
         ) {
-            val formatter = LocalTokenAmountFormatter.current
-
             Column(
                 modifier = Modifier
                     .widthIn(min = 154.dp)
                     .padding(PolkadotTheme.spacings.mediumIncreased),
-                horizontalAlignment = Alignment.CenterHorizontally
+                horizontalAlignment = Alignment.Start
             ) {
-                if (differingAmount != null) {
-                    NovaText(
-                        text = formatter.formatTokenAmount(message.amount, RoundPrecision.DEFAULT, withSymbol = false),
-                        style = PolkadotTheme.typography.body.medium.copy(textDecoration = TextDecoration.LineThrough),
-                        color = secondaryTextColor,
-                        textAlign = TextAlign.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(PolkadotTheme.spacings.small)
+                ) {
+                    PaymentAssetLogoImage(
+                        modifier = Modifier.size(PaymentAssetLogoSize),
+                        variant = PaymentAssetLogoVariant.Square
                     )
-                    NovaText(
-                        text = formatter.formatTokenAmount(differingAmount, RoundPrecision.DEFAULT, withSymbol = false),
-                        style = PolkadotTheme.typography.headline.large,
-                        color = primaryTextColor,
-                        textAlign = TextAlign.Center
-                    )
-                } else {
-                    NovaText(
-                        text = formatter.formatTokenAmount(message.amount, RoundPrecision.DEFAULT, withSymbol = false),
-                        style = PolkadotTheme.typography.headline.large,
-                        color = primaryTextColor,
-                        textAlign = TextAlign.Center
+
+                    PaymentAmounts(
+                        amount = message.amount,
+                        differingAmount = differingAmount,
+                        primaryTextColor = primaryTextColor,
+                        secondaryTextColor = secondaryTextColor
                     )
                 }
-
-                NovaText(
-                    text = formatter.formatToSymbol(message.amount).withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
-                    style = PolkadotTheme.typography.title.large,
-                    color = secondaryTextColor,
-                    textAlign = TextAlign.Center
-                )
             }
         }
 
@@ -208,6 +198,37 @@ private fun PaymentMessageContent(
         }
 
         VerticalSpacer { small }
+    }
+}
+
+@Composable
+private fun PaymentAmounts(
+    amount: TokenAmountModel,
+    differingAmount: TokenAmountModel?,
+    primaryTextColor: Color,
+    secondaryTextColor: Color
+) {
+    val formatter = LocalTokenAmountFormatter.current
+
+    Column(horizontalAlignment = Alignment.Start) {
+        if (differingAmount != null) {
+            NovaText(
+                text = formatter.formatTokenAmount(amount, RoundPrecision.DEFAULT, withSymbol = false),
+                style = PolkadotTheme.typography.body.medium.copy(textDecoration = TextDecoration.LineThrough),
+                color = secondaryTextColor
+            )
+            NovaText(
+                text = formatter.formatTokenAmount(differingAmount, RoundPrecision.DEFAULT, withSymbol = false),
+                style = PolkadotTheme.typography.headline.large,
+                color = primaryTextColor
+            )
+        } else {
+            NovaText(
+                text = formatter.formatTokenAmount(amount, RoundPrecision.DEFAULT, withSymbol = false),
+                style = PolkadotTheme.typography.headline.large,
+                color = primaryTextColor
+            )
+        }
     }
 }
 
@@ -328,7 +349,8 @@ private fun MessagesPreview(direction: ChatMessageUiModel.Direction) {
     PolkadotTheme {
         CompositionLocalProvider(
             LocalChatMessageTimeFormatter provides ChatMessageTimeFormatter.mocked(),
-            LocalTokenAmountFormatter provides TokenAmountFormatter.mocked
+            LocalTokenAmountFormatter provides TokenAmountFormatter.mocked,
+            LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
         ) {
             Column(
                 modifier = Modifier
@@ -404,6 +426,8 @@ private fun PaymentMessagePreview(
         onLongPress = {}
     )
 }
+
+private val PaymentAssetLogoSize = DpSize(20.dp, 22.dp)
 
 /** Tall enough for the whole status gallery; the scroll is for the interactive preview. */
 private const val PREVIEW_HEIGHT = 1400

@@ -41,7 +41,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.job
 import timber.log.Timber
@@ -176,7 +175,7 @@ class PocketViewModel @Inject constructor(
             scope = scope,
             bindings = ProductFaceBindings(
                 face = interactor.observeFace(card.key)
-                    .shareIn(scope, SharingStarted.WhileSubscribed(WORKER_KEEP_ALIVE_MILLIS), replay = 1),
+                    .stateIn(scope, SharingStarted.WhileSubscribed(WORKER_KEEP_ALIVE_MILLIS), initialValue = null),
                 onFaceAction = { actionId, type -> onFaceAction(card, actionId, type) },
                 imageResolver = object : JsImageResolver {
                     override suspend fun resolve(source: JsImageSource) = resolveFaceImage(card, source)
