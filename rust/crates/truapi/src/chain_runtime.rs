@@ -198,7 +198,7 @@ impl RuntimeFailure {
 
     /// Failure classification.
     #[cfg(test)]
-    fn kind(&self) -> RuntimeFailureKind {
+    pub fn kind(&self) -> RuntimeFailureKind {
         self.kind
     }
 
@@ -1860,10 +1860,10 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{ScriptedProvider, extract_id, notification_sender, wait_for_sent};
     use async_trait::async_trait;
     use futures::stream;
     use parking_lot::{Condvar, Mutex as ParkingMutex};
-    use crate::test_support::{ScriptedProvider, extract_id, notification_sender, wait_for_sent};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn spawner_for_tests() -> Spawner {

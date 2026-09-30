@@ -12,14 +12,14 @@ use serde_json::Value;
 use crate::chain_runtime::{RuntimeChainProvider, RuntimeFailure};
 use crate::platform::JsonRpcConnection;
 
+type Responder = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
+
 /// Provider that echoes a canned response for every request it sees,
 /// driven by a `respond` closure. The closure receives each json-rpc
-/// request string and returns the response string the test wants the
+/// request string and returns the response frames the test wants the
 /// server to deliver. Keeps the response loop synchronized with the
 /// request stream so there is no race between `send` and the response
 /// loop draining frames before pending requests have registered.
-type Responder = Arc<dyn Fn(&str) -> Vec<String> + Send + Sync>;
-
 pub struct ScriptedProvider {
     respond: Responder,
     /// Every request frame the core sent, in order.
@@ -141,4 +141,3 @@ pub fn wait_for_sent(
     }
     provider.sent.lock().unwrap().clone()
 }
-

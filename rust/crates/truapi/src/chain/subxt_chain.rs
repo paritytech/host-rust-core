@@ -1,15 +1,16 @@
 //! [`SubxtChain`]: the chain capabilities over subxt clients.
 
-use core::fmt::Display;
+use core::error::Error;
 use core::future::ready;
 
 use futures::stream::{self, BoxStream, StreamExt};
 use sp_crypto_hashing::blake2_256;
 use subxt::backend::Backend;
-use subxt::config::Header;
+use subxt::config::{Hasher, Header};
 use subxt::events::Phase;
 use subxt::tx::{TransactionStatus, ValidationResult};
 use subxt::utils::H256;
+use subxt_rpcs::Error as RpcError;
 
 use super::{
     BlockBackend, ChainHeads, DispatchOutcome, Extrinsic, HashAndNumber, HeadEvent, Heads,
@@ -18,8 +19,8 @@ use super::{
 use crate::chain_runtime::{ChainRuntime, LegacyConnection, RuntimeFailure};
 
 /// The chain capabilities over [`ChainRuntime`]'s per-chain subxt clients:
-/// the legacy client for reads, the shared chainHead client for validation
-/// and submission.
+/// the legacy client for reads and validation, the shared chainHead client
+/// for submission.
 #[derive(Clone)]
 pub struct SubxtChain {
     chains: ChainRuntime,
@@ -34,23 +35,83 @@ impl SubxtChain {
     async fn legacy(&self, genesis: H256) -> Result<LegacyConnection, RuntimeFailure> {
         self.chains.legacy_connection(genesis.as_bytes()).await
     }
+}
 
-    async fn numbered(
-        legacy: &LegacyConnection,
-        hash: H256,
-        method: &'static str,
-    ) -> Result<HashAndNumber, RuntimeFailure> {
-        let header = legacy
-            .backend
-            .block_header(hash)
-            .await
-            .map_err(|error| failure(method, error))?
-            .ok_or_else(|| RuntimeFailure::host_failure(method, format!("unknown block {hash:?}")))?;
-        Ok(HashAndNumber {
-            hash,
-            number: header.number(),
-        })
+/// Number of the block with `hash`, which the node must know.
+async fn numbered(
+    legacy: &LegacyConnection,
+    hash: H256,
+    method: &'static str,
+) -> Result<HashAndNumber, RuntimeFailure> {
+    let header = legacy
+        .backend
+        .block_header(hash)
+        .await
+        .map_err(|error| failure(method, error))?
+        .ok_or_else(|| RuntimeFailure::host_failure(method, format!("unknown block {hash:?}")))?;
+    Ok(HashAndNumber {
+        hash,
+        number: header.number(),
+    })
+}
+
+/// The best block, as the node sees it now.
+async fn best_block(
+    legacy: &LegacyConnection,
+    method: &'static str,
+) -> Result<HashAndNumber, RuntimeFailure> {
+    let best = legacy
+        .methods
+        .chain_get_block_hash(None)
+        .await
+        .map_err(|error| failure(method, error))?
+        .ok_or_else(|| RuntimeFailure::host_failure(method, "node reported no best block"))?;
+    numbered(legacy, best, method).await
+}
+
+/// The latest finalized block.
+async fn finalized_block(
+    legacy: &LegacyConnection,
+    method: &'static str,
+) -> Result<HashAndNumber, RuntimeFailure> {
+    let finalized = legacy
+        .backend
+        .latest_finalized_block_ref()
+        .await
+        .map_err(|error| failure(method, error))?
+        .hash();
+    numbered(legacy, finalized, method).await
+}
+
+/// The body of block `at`, or `None` when the node does not know the block.
+/// A node that knows the header but not the body cannot prove what the block
+/// contains, so that is an error.
+async fn body(
+    legacy: &LegacyConnection,
+    at: H256,
+    method: &'static str,
+) -> Result<Option<Vec<Vec<u8>>>, RuntimeFailure> {
+    if let Some(body) = legacy
+        .backend
+        .block_body(at)
+        .await
+        .map_err(|error| failure(method, error))?
+    {
+        return Ok(Some(body));
     }
+    let known = legacy
+        .backend
+        .block_header(at)
+        .await
+        .map_err(|error| failure(method, error))?
+        .is_some();
+    if known {
+        return Err(RuntimeFailure::host_failure(
+            method,
+            format!("node cannot serve the body of block {at:?}"),
+        ));
+    }
+    Ok(None)
 }
 
 #[async_trait::async_trait]
@@ -58,21 +119,9 @@ impl ChainHeads for SubxtChain {
     async fn heads(&self, genesis: H256) -> Result<Heads, RuntimeFailure> {
         const METHOD: &str = "chain_heads";
         let legacy = self.legacy(genesis).await?;
-        let finalized = legacy
-            .backend
-            .latest_finalized_block_ref()
-            .await
-            .map_err(|error| failure(METHOD, error))?
-            .hash();
-        let best = legacy
-            .methods
-            .chain_get_block_hash(None)
-            .await
-            .map_err(|error| failure(METHOD, error))?
-            .ok_or_else(|| RuntimeFailure::host_failure(METHOD, "node reported no best block"))?;
         Ok(Heads {
-            finalized: Self::numbered(&legacy, finalized, METHOD).await?,
-            best: Self::numbered(&legacy, best, METHOD).await?,
+            finalized: finalized_block(&legacy, METHOD).await?,
+            best: best_block(&legacy, METHOD).await?,
         })
     }
 
@@ -82,38 +131,50 @@ impl ChainHeads for SubxtChain {
     ) -> Result<BoxStream<'static, Result<HeadEvent, RuntimeFailure>>, RuntimeFailure> {
         const METHOD: &str = "chain_head_events";
         let legacy = self.legacy(genesis).await?;
-        // Header streams hash each header with the chain's hasher, which comes
-        // from metadata.
+        // Blocks are hashed with the chain's hasher, which comes from metadata.
         let hasher = *legacy
             .client
             .at_current_block()
             .await
             .map_err(|error| failure(METHOD, error))?
             .hasher();
-        let head = |kind: fn(HashAndNumber) -> HeadEvent| {
-            move |item: Result<(<subxt::SubstrateConfig as subxt::Config>::Header, subxt::backend::BlockRef<H256>), subxt::error::BackendError>| {
-                item.map(|(header, block)| {
-                    kind(HashAndNumber {
-                        hash: block.hash(),
-                        number: header.number(),
-                    })
-                })
-                .map_err(|error| failure(METHOD, error))
-            }
-        };
+        // The raw subscriptions report only what the node announces. Filling
+        // gaps by height would ask for hashes a light client cannot give.
         let finalized = legacy
-            .backend
-            .stream_finalized_block_headers(hasher)
+            .methods
+            .chain_subscribe_finalized_heads()
             .await
             .map_err(|error| failure(METHOD, error))?
-            .map(head(HeadEvent::Finalized));
+            .map(move |header| {
+                header
+                    .map(|header| HeadEvent::Finalized(hashed(hasher, &header)))
+                    .map_err(|error| failure(METHOD, error))
+            });
         let best = legacy
-            .backend
-            .stream_best_block_headers(hasher)
+            .methods
+            .chain_subscribe_new_heads()
             .await
             .map_err(|error| failure(METHOD, error))?
-            .map(head(HeadEvent::Best));
-        Ok(stream::select(finalized, best).boxed())
+            .map(move |header| {
+                header
+                    .map(|header| HeadEvent::Best(hashed(hasher, &header)))
+                    .map_err(|error| failure(METHOD, error))
+            });
+        let events = stream::select(finalized, best).scan(false, |failed, event| {
+            if *failed {
+                return ready(None);
+            }
+            *failed = event.is_err();
+            ready(Some(event))
+        });
+        Ok(events.boxed())
+    }
+}
+
+fn hashed(hasher: impl Hasher<Hash = H256>, header: &impl Header) -> HashAndNumber {
+    HashAndNumber {
+        hash: hasher.hash(&header.encode()),
+        number: header.number(),
     }
 }
 
@@ -121,14 +182,24 @@ impl ChainHeads for SubxtChain {
 impl BlockBackend for SubxtChain {
     async fn block_hash(&self, genesis: H256, number: u64) -> Result<Option<H256>, RuntimeFailure> {
         const METHOD: &str = "block_hash";
-        let block = self
-            .legacy(genesis)
-            .await?
+        let legacy = self.legacy(genesis).await?;
+        if let Some(block) = legacy
             .backend
             .block_number_to_hash(number)
             .await
-            .map_err(|error| failure(METHOD, error))?;
-        Ok(block.map(|block| block.hash()))
+            .map_err(|error| failure(METHOD, error))?
+        {
+            return Ok(Some(block.hash()));
+        }
+        // Every height up to the finalized one has a block, so a missing hash
+        // there is one the node cannot serve, not one that does not exist.
+        if number <= finalized_block(&legacy, METHOD).await?.number {
+            return Err(RuntimeFailure::host_failure(
+                METHOD,
+                format!("node cannot serve the hash of finalized block {number}"),
+            ));
+        }
+        Ok(None)
     }
 
     async fn block_number(&self, genesis: H256, hash: H256) -> Result<Option<u64>, RuntimeFailure> {
@@ -149,13 +220,7 @@ impl BlockBackend for SubxtChain {
         at: H256,
     ) -> Result<Option<Vec<H256>>, RuntimeFailure> {
         const METHOD: &str = "extrinsic_hashes";
-        let body = self
-            .legacy(genesis)
-            .await?
-            .backend
-            .block_body(at)
-            .await
-            .map_err(|error| failure(METHOD, error))?;
+        let body = body(&self.legacy(genesis).await?, at, METHOD).await?;
         Ok(body.map(|extrinsics| {
             extrinsics
                 .iter()
@@ -172,12 +237,7 @@ impl BlockBackend for SubxtChain {
     ) -> Result<Option<DispatchOutcome>, RuntimeFailure> {
         const METHOD: &str = "dispatch_outcome";
         let legacy = self.legacy(genesis).await?;
-        let Some(body) = legacy
-            .backend
-            .block_body(at.hash)
-            .await
-            .map_err(|error| failure(METHOD, error))?
-        else {
+        let Some(body) = body(&legacy, at.hash, METHOD).await? else {
             return Ok(None);
         };
         let Some(index) = body
@@ -186,9 +246,8 @@ impl BlockBackend for SubxtChain {
         else {
             return Ok(None);
         };
-        let phase = Phase::ApplyExtrinsic(
-            u32::try_from(index).map_err(|error| failure(METHOD, error))?,
-        );
+        let phase =
+            Phase::ApplyExtrinsic(u32::try_from(index).map_err(|error| failure(METHOD, error))?);
         let at_block = legacy
             .client
             .at_block_hash_and_number(at.hash, at.number)
@@ -212,7 +271,10 @@ impl BlockBackend for SubxtChain {
         }
         Err(RuntimeFailure::host_failure(
             METHOD,
-            format!("no dispatch event for extrinsic {index} of block {:?}", at.hash),
+            format!(
+                "no dispatch event for extrinsic {index} of block {:?}",
+                at.hash
+            ),
         ))
     }
 }
@@ -225,12 +287,14 @@ impl TxValidator for SubxtChain {
         extrinsic: &Extrinsic,
     ) -> Result<ValidationResult, RuntimeFailure> {
         const METHOD: &str = "validate";
-        self.chains
-            .online_client(genesis.as_bytes())
-            .await?
-            .tx()
+        let legacy = self.legacy(genesis).await?;
+        let best = best_block(&legacy, METHOD).await?;
+        legacy
+            .client
+            .at_block_hash_and_number(best.hash, best.number)
             .await
             .map_err(|error| failure(METHOD, error))?
+            .tx()
             .from_bytes(extrinsic.bytes().to_vec())
             .validate()
             .await
@@ -257,36 +321,44 @@ impl TxSubmitter for SubxtChain {
             .submit_and_watch()
             .await
             .map_err(|error| failure(METHOD, error))?;
-        let events = progress
-            .filter_map(|status| {
-                ready(match status {
-                    Ok(TransactionStatus::Validated | TransactionStatus::Broadcasted) => None,
-                    Ok(TransactionStatus::NoLongerInBestBlock) => {
-                        Some(WatchEvent::NoLongerInBestBlock)
-                    }
+        // The watch is dropped with its terminal event, so the subscription
+        // does not outlive it.
+        let events = stream::unfold(Some(progress), |progress| async move {
+            let mut progress = progress?;
+            loop {
+                let event = match progress.next().await? {
+                    Ok(TransactionStatus::Validated | TransactionStatus::Broadcasted) => continue,
+                    Ok(TransactionStatus::NoLongerInBestBlock) => WatchEvent::NoLongerInBestBlock,
                     Ok(TransactionStatus::InBestBlock(block)) => {
-                        Some(WatchEvent::InBestBlock(block.block_hash()))
+                        WatchEvent::InBestBlock(block.block_hash())
                     }
                     Ok(TransactionStatus::InFinalizedBlock(block)) => {
-                        Some(WatchEvent::InFinalizedBlock(block.block_hash()))
+                        WatchEvent::InFinalizedBlock(block.block_hash())
                     }
-                    Ok(TransactionStatus::Invalid { message }) => Some(WatchEvent::Invalid(message)),
-                    Ok(TransactionStatus::Dropped { message }) => Some(WatchEvent::Dropped(message)),
-                    Ok(TransactionStatus::Error { message }) => Some(WatchEvent::Error(message)),
-                    Err(error) => Some(WatchEvent::Error(error.to_string())),
-                })
-            })
-            .scan(false, |ended, event| {
-                if *ended {
-                    return ready(None);
-                }
-                *ended = event.is_terminal();
-                ready(Some(event))
-            });
+                    Ok(TransactionStatus::Invalid { message }) => WatchEvent::Invalid(message),
+                    Ok(TransactionStatus::Dropped { message }) => WatchEvent::Dropped(message),
+                    Ok(TransactionStatus::Error { message }) => WatchEvent::Error(message),
+                    Err(error) => WatchEvent::Error(error.to_string()),
+                };
+                let next = (!event.is_terminal()).then_some(progress);
+                return Some((event, next));
+            }
+        });
         Ok(events.boxed())
     }
 }
 
-fn failure(method: &'static str, error: impl Display) -> RuntimeFailure {
+/// A transport that failed or closed means the chain is unavailable for now;
+/// anything else is a failure of the node or of decoding its answer.
+fn failure(method: &'static str, error: impl Error + 'static) -> RuntimeFailure {
+    let mut source: Option<&(dyn Error + 'static)> = Some(&error);
+    while let Some(cause) = source {
+        if let Some(RpcError::Client(_) | RpcError::DisconnectedWillReconnect(_)) =
+            cause.downcast_ref()
+        {
+            return RuntimeFailure::unavailable_with_reason(method, error.to_string());
+        }
+        source = cause.source();
+    }
     RuntimeFailure::host_failure(method, error.to_string())
 }

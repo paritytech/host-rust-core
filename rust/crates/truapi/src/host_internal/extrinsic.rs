@@ -651,12 +651,12 @@ pub mod tests {
     use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use parity_scale_codec::{Compact, Decode, Encode};
     use scale_info::{PortableRegistry, TypeDef, TypeDefPrimitive};
-    use subxt::events::Phase;
-    use subxt::ext::scale_encode::{EncodeAsFields, Field};
-    use subxt::ext::scale_value::{Primitive, Value as ScaleValue};
     use subxt::client::{OfflineClient, OfflineClientAtBlock};
     use subxt::config::substrate::{SpecVersionForRange, SubstrateConfigBuilder};
+    use subxt::events::Phase;
     use subxt::ext::frame_metadata::{RuntimeMetadata, RuntimeMetadataPrefixed};
+    use subxt::ext::scale_encode::{EncodeAsFields, Field};
+    use subxt::ext::scale_value::{Primitive, Value as ScaleValue};
     use subxt::metadata::{ArcMetadata, Metadata};
     use subxt::utils::H256;
 

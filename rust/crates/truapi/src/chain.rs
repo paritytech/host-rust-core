@@ -4,13 +4,15 @@
 //! Each capability is its own trait, and a consumer takes only the ones it
 //! uses as `Arc<dyn …>`. Every method names the chain by its genesis hash, so
 //! one implementation serves every chain. [`SubxtChain`] implements all four
-//! over [`crate::chain_runtime::ChainRuntime`]: reads go through the legacy
-//! JSON-RPC methods, which reach any block the node still keeps, and
-//! validation and submission go through the shared chainHead client.
+//! over [`crate::chain_runtime::ChainRuntime`]: reads and validation go
+//! through the legacy JSON-RPC methods, which reach any block the node still
+//! keeps, and submission goes through the shared chainHead client.
 //!
-//! `Ok(None)` means the block, or the extrinsic in it, is unknown to the node.
-//! A read the node cannot serve, for example events of a block whose state it
-//! has pruned, is an `Err`.
+//! `Ok(None)` means the node knows the block, or the extrinsic in it, does
+//! not exist. A read the node cannot serve, such as the body or events of a
+//! block it has pruned, or any read over a closed connection, is an `Err`.
+//! Extrinsics are hashed with Blake2-256, the hasher of every chain the core
+//! talks to.
 
 use futures::stream::BoxStream;
 use sp_crypto_hashing::blake2_256;
@@ -26,8 +28,8 @@ pub use subxt_chain::SubxtChain;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-/// An encoded extrinsic, ready to submit, with its hash as the chain computes
-/// it.
+/// An encoded extrinsic, ready to submit, with its Blake2-256 hash as the
+/// chain reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Extrinsic {
     bytes: Vec<u8>,
@@ -35,7 +37,7 @@ pub struct Extrinsic {
 }
 
 impl Extrinsic {
-    /// Wrap a fully encoded extrinsic, including its length prefix.
+    /// Wrap a fully encoded extrinsic, including its compact length prefix.
     pub fn new(bytes: Vec<u8>) -> Self {
         let hash = H256(blake2_256(&bytes));
         Self { bytes, hash }
@@ -99,9 +101,12 @@ pub enum WatchEvent {
     InFinalizedBlock(H256),
     /// Rejected as invalid. Terminal.
     Invalid(String),
-    /// Dropped from the pool. Terminal.
+    /// The node stopped watching it. Terminal, but the extrinsic may still
+    /// be included.
     Dropped(String),
-    /// The node failed to track it. Terminal.
+    /// Watching failed, on the node or in the client, which gives up after
+    /// four minutes without finality. Terminal, but the extrinsic may still
+    /// be included.
     Error(String),
 }
 
@@ -118,8 +123,9 @@ pub trait ChainHeads: Send + Sync {
     /// The current finalized and best blocks.
     async fn heads(&self, genesis: H256) -> Result<Heads, RuntimeFailure>;
 
-    /// A fresh stream of new finalized and best blocks. It ends when the
-    /// node's subscriptions end.
+    /// A fresh stream of the finalized and best blocks the node announces,
+    /// starting with the current ones. Finalized blocks it skips are not
+    /// filled in. The stream ends after its first error.
     async fn head_events(
         &self,
         genesis: H256,
@@ -129,12 +135,12 @@ pub trait ChainHeads: Send + Sync {
 /// Block data at any block the node still keeps.
 #[async_trait::async_trait]
 pub trait BlockBackend: Send + Sync {
-    /// Hash of the canonical block at `number`.
+    /// Hash of the block at `number`: canonical up to the finalized height,
+    /// on the current best chain above it, where a reorg can replace it.
     async fn block_hash(&self, genesis: H256, number: u64) -> Result<Option<H256>, RuntimeFailure>;
 
     /// Number of the block with `hash`.
-    async fn block_number(&self, genesis: H256, hash: H256)
-    -> Result<Option<u64>, RuntimeFailure>;
+    async fn block_number(&self, genesis: H256, hash: H256) -> Result<Option<u64>, RuntimeFailure>;
 
     /// Hashes of the extrinsics in the block with hash `at`, in block order.
     async fn extrinsic_hashes(
@@ -156,7 +162,8 @@ pub trait BlockBackend: Send + Sync {
 /// Checks an extrinsic against the chain's transaction pool rules.
 #[async_trait::async_trait]
 pub trait TxValidator: Send + Sync {
-    /// Validate `extrinsic` at the latest finalized block.
+    /// Validate `extrinsic` against the best block, as the transaction pool
+    /// does.
     async fn validate(
         &self,
         genesis: H256,
@@ -168,7 +175,8 @@ pub trait TxValidator: Send + Sync {
 #[async_trait::async_trait]
 pub trait TxSubmitter: Send + Sync {
     /// Send `extrinsic` once and watch it. Nothing resubmits it: a dropped or
-    /// invalid extrinsic is reported and left to the caller.
+    /// invalid extrinsic is reported and left to the caller. An `Err` does not
+    /// prove the node never received it.
     async fn submit_and_watch(
         &self,
         genesis: H256,

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -14,7 +14,7 @@ use super::{
     BlockBackend, ChainHeads, DispatchOutcome, Extrinsic, HashAndNumber, HeadEvent, Heads,
     SubxtChain, TxSubmitter, TxValidator, WatchEvent,
 };
-use crate::chain_runtime::ChainRuntime;
+use crate::chain_runtime::{ChainRuntime, RuntimeFailureKind};
 use crate::host_internal::extrinsic::tests::{
     bulletin_chain_state, bulletin_runtime_call, system_events,
 };
@@ -33,7 +33,13 @@ struct Node {
     best: u64,
     bodies: HashMap<H256, Vec<Vec<u8>>>,
     events: HashMap<H256, Vec<u8>>,
-    valid: bool,
+    /// Heights `chain_getBlockHash` answers `null` for although they exist,
+    /// as a light client does for every height it cannot verify.
+    unservable_heights: HashSet<u64>,
+    /// Blocks whose header the node serves but whose body it answers `null`
+    /// for, as a pruned or light node does.
+    unservable_bodies: HashSet<H256>,
+    validation: Validation,
     /// Follow events announcing the blocks the submitted extrinsic lands in;
     /// the chainHead backend reports an inclusion only once it saw the block.
     follow_events: Vec<Value>,
@@ -55,7 +61,9 @@ impl Node {
             best,
             bodies: HashMap::new(),
             events: HashMap::new(),
-            valid: true,
+            unservable_heights: HashSet::new(),
+            unservable_bodies: HashSet::new(),
+            validation: Validation::Valid,
             follow_events: Vec::new(),
             watch_events: Vec::new(),
             next_operation: 0,
@@ -76,21 +84,38 @@ impl Node {
             .find(|header| header_hash(header) == hash)
     }
 
+    fn runtime_call(&self, method: &str, at: &Value) -> Vec<u8> {
+        if method != "TaggedTransactionQueue_validate_transaction" {
+            return bulletin_runtime_call(method).unwrap();
+        }
+        let valid = match self.validation {
+            Validation::Valid => true,
+            Validation::Invalid => false,
+            Validation::ValidOnlyAtBest => parse_hash(at) == Some(self.block(self.best).hash),
+        };
+        validation_output(valid)
+    }
+
     fn respond(&mut self, request: &str) -> Vec<String> {
         let request: Value = serde_json::from_str(request).unwrap();
         let id = request["id"].clone();
         let params = &request["params"];
-        let response = |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+        let response =
+            |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
         match request["method"].as_str().unwrap() {
             "chain_getBlockHash" => {
                 let number = match &params[0] {
                     Value::Null => Some(self.best),
                     Value::Number(number) => number.as_u64(),
-                    Value::String(hex) => u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok(),
+                    Value::String(hex) => {
+                        u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok()
+                    }
                     other => panic!("unexpected block number {other}"),
                 };
                 let hash = number
-                    .filter(|number| *number <= self.best)
+                    .filter(|number| {
+                        *number <= self.best && !self.unservable_heights.contains(number)
+                    })
                     .map(|number| json!(self.block(number).hash));
                 vec![response(hash.unwrap_or(Value::Null))]
             }
@@ -102,7 +127,10 @@ impl Node {
                 vec![response(json!(header))]
             }
             "chain_getBlock" => {
-                let block = self.header_at(&params[0]).map(|header| {
+                let block = self
+                    .header_at(&params[0])
+                    .filter(|header| !self.unservable_bodies.contains(&header_hash(header)))
+                    .map(|header| {
                     let extrinsics: Vec<String> = self
                         .bodies
                         .get(&header_hash(header))
@@ -116,7 +144,7 @@ impl Node {
             }
             "chain_getFinalizedHead" => vec![response(json!(self.block(self.finalized).hash))],
             "state_call" => {
-                let output = bulletin_runtime_call(params[0].as_str().unwrap()).unwrap();
+                let output = self.runtime_call(params[0].as_str().unwrap(), &params[2]);
                 vec![response(json!(format!("0x{}", hex::encode(output))))]
             }
             "state_getStorage" => {
@@ -144,11 +172,7 @@ impl Node {
             "chainHead_v1_call" => {
                 self.next_operation += 1;
                 let operation_id = format!("call-{}", self.next_operation);
-                let method = params[2].as_str().unwrap();
-                let output = match method {
-                    "TaggedTransactionQueue_validate_transaction" => validation_output(self.valid),
-                    method => bulletin_runtime_call(method).unwrap(),
-                };
+                let output = self.runtime_call(params[2].as_str().unwrap(), &params[1]);
                 vec![
                     response(json!({"result": "started", "operationId": operation_id})),
                     follow_event(json!({
@@ -186,6 +210,16 @@ impl Node {
             ],
         }
     }
+}
+
+/// What `TaggedTransactionQueue_validate_transaction` answers.
+#[derive(Clone, Copy)]
+enum Validation {
+    Valid,
+    Invalid,
+    /// Valid against the best block's state only, like a transaction whose
+    /// mortality is anchored above the finalized block.
+    ValidOnlyAtBest,
 }
 
 fn header(number: u64, parent_hash: H256) -> SubstrateHeader<H256> {
@@ -262,6 +296,45 @@ fn method_count(provider: &ScriptedProvider, method: &str) -> usize {
         .count()
 }
 
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Poll `events` on a thread, since the node only announces heads after the
+/// subscriptions are open, and hand back the first `count` of them.
+fn collect_in_background(
+    mut events: futures::stream::BoxStream<
+        'static,
+        Result<HeadEvent, crate::chain_runtime::RuntimeFailure>,
+    >,
+    count: usize,
+) -> std::sync::mpsc::Receiver<Vec<HeadEvent>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let received = block_on(async {
+            let mut received = Vec::new();
+            while received.len() < count {
+                received.push(events.next().await.unwrap().unwrap());
+            }
+            received
+        });
+        let _ = sender.send(received);
+    });
+    receiver
+}
+
+fn wait_for_subscriptions(provider: &ScriptedProvider) {
+    let subscribed = |sent: &[String]| {
+        sent.iter()
+            .any(|request| request.contains("chain_subscribeFinalizedHeads"))
+            && sent
+                .iter()
+                .any(|request| request.contains("chain_subscribeNewHeads"))
+    };
+    assert!(
+        subscribed(&wait_for_sent(provider, subscribed)),
+        "head subscriptions not opened"
+    );
+}
+
 fn extrinsic(tag: u8) -> Extrinsic {
     Extrinsic::new(vec![0x10, tag, tag, tag, tag])
 }
@@ -305,22 +378,34 @@ fn block_number_is_read_from_the_header_and_none_for_an_unknown_block() {
     let (node, _, chain) = serve(Node::new(3, 5));
     let fourth = node.lock().unwrap().block(4).hash;
 
-    assert_eq!(block_on(chain.block_number(GENESIS, fourth)).unwrap(), Some(4));
-    assert_eq!(block_on(chain.block_number(GENESIS, H256([7; 32]))).unwrap(), None);
+    assert_eq!(
+        block_on(chain.block_number(GENESIS, fourth)).unwrap(),
+        Some(4)
+    );
+    assert_eq!(
+        block_on(chain.block_number(GENESIS, H256([7; 32]))).unwrap(),
+        None
+    );
 }
 
 #[test]
 fn extrinsic_hashes_follow_block_order_and_are_none_for_an_unknown_block() {
     let mut node = Node::new(3, 5);
     let at = node.block(2).hash;
-    node.bodies.insert(at, vec![extrinsic(1).bytes().to_vec(), extrinsic(2).bytes().to_vec()]);
+    node.bodies.insert(
+        at,
+        vec![extrinsic(1).bytes().to_vec(), extrinsic(2).bytes().to_vec()],
+    );
     let (_, _, chain) = serve(node);
 
     assert_eq!(
         block_on(chain.extrinsic_hashes(GENESIS, at)).unwrap(),
         Some(vec![extrinsic(1).hash(), extrinsic(2).hash()]),
     );
-    assert_eq!(block_on(chain.extrinsic_hashes(GENESIS, H256([7; 32]))).unwrap(), None);
+    assert_eq!(
+        block_on(chain.extrinsic_hashes(GENESIS, H256([7; 32]))).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -329,7 +414,10 @@ fn dispatch_outcome_reads_the_events_of_that_extrinsics_index() {
     // extrinsic's event would report the wrong outcome.
     let mut node = Node::new(3, 5);
     let at = node.block(2);
-    node.bodies.insert(at.hash, vec![extrinsic(1).bytes().to_vec(), extrinsic(2).bytes().to_vec()]);
+    node.bodies.insert(
+        at.hash,
+        vec![extrinsic(1).bytes().to_vec(), extrinsic(2).bytes().to_vec()],
+    );
     node.events.insert(
         at.hash,
         system_events(&[(0, "ExtrinsicSuccess"), (1, "ExtrinsicFailed")]),
@@ -341,7 +429,11 @@ fn dispatch_outcome_reads_the_events_of_that_extrinsics_index() {
 
     assert_eq!(
         outcomes,
-        [Some(DispatchOutcome::Succeeded), Some(DispatchOutcome::Failed), None],
+        [
+            Some(DispatchOutcome::Succeeded),
+            Some(DispatchOutcome::Failed),
+            None
+        ],
     );
 }
 
@@ -351,7 +443,8 @@ fn dispatch_outcome_without_a_dispatch_event_is_an_error() {
     // Missing both means the events can't be trusted, not that it failed.
     let mut node = Node::new(3, 5);
     let at = node.block(2);
-    node.bodies.insert(at.hash, vec![extrinsic(1).bytes().to_vec()]);
+    node.bodies
+        .insert(at.hash, vec![extrinsic(1).bytes().to_vec()]);
     let (_, _, chain) = serve(node);
 
     assert!(block_on(chain.dispatch_outcome(GENESIS, at, extrinsic(1).hash())).is_err());
@@ -360,21 +453,11 @@ fn dispatch_outcome_without_a_dispatch_event_is_an_error() {
 #[test]
 fn head_events_report_finalized_and_best_blocks() {
     let (node, provider, chain) = serve(Node::new(3, 5));
-    let mut events = block_on(chain.head_events(GENESIS)).unwrap();
+    let events = block_on(chain.head_events(GENESIS)).unwrap();
     // The streams subscribe when first polled, so poll them before the node
     // announces anything.
-    let collector = std::thread::spawn(move || {
-        block_on(async {
-            vec![
-                events.next().await.unwrap().unwrap(),
-                events.next().await.unwrap().unwrap(),
-            ]
-        })
-    });
-    wait_for_sent(&provider, |sent| {
-        sent.iter().any(|request| request.contains("chain_subscribeFinalizedHeads"))
-            && sent.iter().any(|request| request.contains("chain_subscribeNewHeads"))
-    });
+    let received = collect_in_background(events, 2);
+    wait_for_subscriptions(&provider);
     let (finalized, best) = {
         let node = node.lock().unwrap();
         (node.headers[4].clone(), node.headers[5].clone())
@@ -387,13 +470,16 @@ fn head_events_report_finalized_and_best_blocks() {
         .unbounded_send(head_notification(BEST_SUBSCRIPTION, &best))
         .unwrap();
 
-    let mut received = collector.join().unwrap();
+    let mut received = received.recv_timeout(TIMEOUT).expect("two head events");
     received.sort_by_key(|event| matches!(event, HeadEvent::Best(_)));
     let node = node.lock().unwrap();
 
     assert_eq!(
         received,
-        vec![HeadEvent::Finalized(node.block(4)), HeadEvent::Best(node.block(5))],
+        vec![
+            HeadEvent::Finalized(node.block(4)),
+            HeadEvent::Best(node.block(5))
+        ],
     );
 }
 
@@ -401,11 +487,14 @@ fn head_events_report_finalized_and_best_blocks() {
 fn validate_reports_the_pool_verdict() {
     let (node, _, chain) = serve(Node::new(3, 5));
     let valid = block_on(chain.validate(GENESIS, &extrinsic(1))).unwrap();
-    node.lock().unwrap().valid = false;
+    node.lock().unwrap().validation = Validation::Invalid;
     let invalid = block_on(chain.validate(GENESIS, &extrinsic(1))).unwrap();
 
     assert!(valid.is_valid());
-    assert_eq!(invalid, ValidationResult::Invalid(TransactionInvalid::Payment));
+    assert_eq!(
+        invalid,
+        ValidationResult::Invalid(TransactionInvalid::Payment)
+    );
 }
 
 #[test]
@@ -427,8 +516,11 @@ fn submit_and_watch_sends_the_bytes_once_and_ends_after_finalization() {
     ];
     let (_, provider, chain) = serve(node);
 
-    let events: Vec<WatchEvent> =
-        block_on(block_on(chain.submit_and_watch(GENESIS, &extrinsic(1))).unwrap().collect());
+    let events: Vec<WatchEvent> = block_on(
+        block_on(chain.submit_and_watch(GENESIS, &extrinsic(1)))
+            .unwrap()
+            .collect(),
+    );
 
     assert_eq!(
         events,
@@ -456,8 +548,11 @@ fn submit_and_watch_ends_when_the_pool_rejects_the_extrinsic() {
     node.watch_events = vec![json!({"event": "invalid", "error": "scripted invalid"})];
     let (_, _, chain) = serve(node);
 
-    let events: Vec<WatchEvent> =
-        block_on(block_on(chain.submit_and_watch(GENESIS, &extrinsic(1))).unwrap().collect());
+    let events: Vec<WatchEvent> = block_on(
+        block_on(chain.submit_and_watch(GENESIS, &extrinsic(1)))
+            .unwrap()
+            .collect(),
+    );
 
     assert_eq!(events, vec![WatchEvent::Invalid("scripted invalid".into())]);
 }
@@ -468,12 +563,112 @@ fn reads_and_submission_share_one_metadata_download() {
     // legacy reads load is the metadata submission uses.
     let mut node = Node::new(3, 5);
     let at = node.block(2);
-    node.bodies.insert(at.hash, vec![extrinsic(1).bytes().to_vec()]);
-    node.events.insert(at.hash, system_events(&[(0, "ExtrinsicSuccess")]));
+    node.bodies
+        .insert(at.hash, vec![extrinsic(1).bytes().to_vec()]);
+    node.events
+        .insert(at.hash, system_events(&[(0, "ExtrinsicSuccess")]));
+    node.watch_events = vec![json!({"event": "invalid", "error": "scripted invalid"})];
     let (_, provider, chain) = serve(node);
 
     block_on(chain.dispatch_outcome(GENESIS, at, extrinsic(1).hash())).unwrap();
-    block_on(chain.validate(GENESIS, &extrinsic(1))).unwrap();
+    let _: Vec<WatchEvent> = block_on(
+        block_on(chain.submit_and_watch(GENESIS, &extrinsic(1)))
+            .unwrap()
+            .collect(),
+    );
 
     assert_eq!(method_count(&provider, "Metadata_metadata_at_version"), 1);
+}
+
+#[test]
+fn block_hash_is_an_error_when_the_node_cannot_serve_a_finalized_height() {
+    // A light client answers null for every height it cannot verify. Taking
+    // that as "no such block" would make every recorded inclusion look
+    // reorged out.
+    let mut node = Node::new(8, 9);
+    node.unservable_heights.insert(2);
+    let (_, _, chain) = serve(node);
+
+    assert!(block_on(chain.block_hash(GENESIS, 2)).is_err());
+}
+
+#[test]
+fn a_known_block_whose_body_the_node_cannot_serve_is_an_error() {
+    // A pruned or light node knows the header but answers null for the body;
+    // that does not prove the extrinsic is absent.
+    let mut node = Node::new(3, 5);
+    let at = node.block(2);
+    node.unservable_bodies.insert(at.hash);
+    let (_, _, chain) = serve(node);
+
+    assert!(block_on(chain.extrinsic_hashes(GENESIS, at.hash)).is_err());
+    assert!(block_on(chain.dispatch_outcome(GENESIS, at, extrinsic(1).hash())).is_err());
+}
+
+#[test]
+fn head_events_report_only_blocks_the_node_announced() {
+    // Filling a finality gap by height asks for hashes a light client cannot
+    // give; a null answer must never turn into the best block reported as
+    // finalized.
+    let mut node = Node::new(3, 7);
+    node.unservable_heights.extend([4, 5]);
+    let (node, provider, chain) = serve(node);
+    let events = block_on(chain.head_events(GENESIS)).unwrap();
+    let received = collect_in_background(events, 1);
+    wait_for_subscriptions(&provider);
+    let finalized = node.lock().unwrap().headers[6].clone();
+    notification_sender(&provider)
+        .unbounded_send(head_notification(FINALIZED_SUBSCRIPTION, &finalized))
+        .unwrap();
+
+    let received = received.recv_timeout(TIMEOUT).expect("a head event");
+
+    assert_eq!(
+        received,
+        vec![HeadEvent::Finalized(node.lock().unwrap().block(6))]
+    );
+}
+
+#[test]
+fn validate_checks_against_the_best_block() {
+    // The pool validates at best; checking at finalized rejects extrinsics
+    // whose mortality is anchored at an unfinalized best block.
+    let mut node = Node::new(3, 5);
+    node.validation = Validation::ValidOnlyAtBest;
+    let (_, _, chain) = serve(node);
+
+    assert!(
+        block_on(chain.validate(GENESIS, &extrinsic(1)))
+            .unwrap()
+            .is_valid()
+    );
+}
+
+#[test]
+fn a_closed_transport_is_unavailable_rather_than_a_node_failure() {
+    // Callers retry an unavailable chain later but give up on a node that
+    // answered; a dead connection is the former.
+    let (_, provider, chain) = serve(Node::new(3, 5));
+    provider.sender.lock().unwrap().take();
+
+    let failure = block_on(chain.block_hash(GENESIS, 1)).unwrap_err();
+
+    assert_eq!(failure.kind(), RuntimeFailureKind::Unavailable);
+}
+
+#[test]
+fn submit_and_watch_ends_when_the_node_stops_tracking() {
+    // A node that gives up on the watch reports it as an error; the extrinsic
+    // may still land, so the stream ends and leaves the outcome to recovery.
+    let mut node = Node::new(3, 5);
+    node.watch_events = vec![json!({"event": "error", "error": "scripted error"})];
+    let (_, _, chain) = serve(node);
+
+    let events: Vec<WatchEvent> = block_on(
+        block_on(chain.submit_and_watch(GENESIS, &extrinsic(1)))
+            .unwrap()
+            .collect(),
+    );
+
+    assert_eq!(events, vec![WatchEvent::Error("scripted error".into())]);
 }
