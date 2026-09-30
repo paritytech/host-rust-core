@@ -239,6 +239,8 @@ truapi-host dev --worker-bundle apps/worker/dist-dev/index.js -- yarn dev
 # Chat surface: http://127.0.0.1:9955/chat
 ```
 
+![The chat page: rooms on the left, the thread and composer in the middle, the worker's log on the right](docs/chat-surface.png)
+
 The frame port then also serves:
 
 | Route                      | What                                                                                                                      |
@@ -257,6 +259,14 @@ starting with `/` becomes a `Command`, and a button on an `Actions` message
 becomes an `ActionTriggered` naming that message. A person's message takes its
 id from the same sequence as the product's, so a trigger can never name the
 wrong one.
+
+The worker runs as a module script in the page, so its console is the page's.
+The **Logs** pane shows it: every line levelled from its `[INF]`/`[WRN]`/`[ERR]`
+tag, filtered by substring, following the tail unless paused. Rooms, chat and
+log are each a pane to show, hide or resize from the header, and the layout is
+remembered across reloads.
+
+![Toggling the rooms and log panes and dragging the log wider](docs/chat-panes.gif)
 
 On `/chat/ws` the host sends a `snapshot` of rooms, bots and messages first,
 then a `room`, `bot` or `message` event as each lands, and `workers` whenever a
