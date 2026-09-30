@@ -24,11 +24,12 @@ pub trait Contacts: Send + Sync {
     /// Resolves with the chosen contact's handle, or with why nothing was
     /// chosen. A host that serves no picker answers `Unsupported`.
     ///
-    /// The handle is not an address and cannot be turned into one. To pay the
-    /// person it names, put the handle where the recipient goes in the call and
-    /// list it in `contacts` on the transaction payload: the host replaces it
-    /// with their account before anything is signed or shown. A handle sent
-    /// anywhere else is 32 bytes that resolve to nobody.
+    /// The handle is not an address and cannot be turned into one by a product.
+    /// To pay the person, put the handle where the recipient goes in the call
+    /// and list it in `contacts` on the transaction payload: the host replaces
+    /// it with their account before anything is signed or shown. Profile also
+    /// accepts handles as disclosure recipients and as contacts to present or
+    /// draw avatars for, without returning accounts or profile contents.
     ///
     /// ```ts
     /// const result = await truapi.contacts.pick({});

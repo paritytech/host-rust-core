@@ -290,12 +290,14 @@ impl PairingHostRuntime {
         self.services.install_contacts_platform(platform)
     }
 
-    /// Tell the core the host's contacts changed, so no handle resolves from
-    /// what it cached before. Call it whenever a contact is removed or blocked;
-    /// the next transaction naming a contact reads the list again.
+    /// Invalidate cached contact handles and refresh host-drawn contact avatars.
+    /// Call whenever a contact is removed or blocked.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.notify_contacts_changed"))]
     pub fn notify_contacts_changed(&self) {
         self.services.contact_handles.clear();
+        self.services
+            .contact_avatars
+            .contacts_changed(&self.services.spawner);
     }
 
     /// Build a product-facing runtime from this pairing host.
@@ -737,12 +739,14 @@ impl SigningHostRuntime {
         self.services.install_contacts_platform(platform)
     }
 
-    /// Tell the core the host's contacts changed, so no handle resolves from
-    /// what it cached before. Call it whenever a contact is removed or blocked;
-    /// the next transaction naming a contact reads the list again.
+    /// Invalidate cached contact handles and refresh host-drawn contact avatars.
+    /// Call whenever a contact is removed or blocked.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.notify_contacts_changed"))]
     pub fn notify_contacts_changed(&self) {
         self.services.contact_handles.clear();
+        self.services
+            .contact_avatars
+            .contacts_changed(&self.services.spawner);
     }
 
     /// Install the host's [`DevicePairingObserver`], told whenever a device
@@ -1605,15 +1609,12 @@ impl Drop for WorkerReference {
 }
 
 impl ProductRuntime {
-    /// Tell the core the host's contacts changed, so no handle resolves from
-    /// what it cached before. For an embedder that holds only this runtime;
-    /// one holding the host runtime calls it there.
+    /// Invalidate contact handles and refresh avatars for this host's runtimes.
+    /// Embedders holding the host runtime may notify it instead.
     pub fn notify_contacts_changed(&self) {
-        self.admin
-            .product_runtime
-            .services()
-            .contact_handles
-            .clear();
+        let services = self.admin.product_runtime.services();
+        services.contact_handles.clear();
+        services.contact_avatars.contacts_changed(&services.spawner);
     }
 
     /// Build a product-facing host core around a platform implementation and

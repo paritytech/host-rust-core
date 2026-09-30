@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::chain_runtime::{ChainRuntime, RuntimeChainProvider, RuntimeFailure};
 use crate::host_logic::worker::WorkerLedger;
-use crate::platform::{CoinageWalletHost, HostInfo, JsonRpcConnection, PermissionStatusHost, Platform};
+use crate::platform::{
+    CoinageWalletHost, HostInfo, JsonRpcConnection, PermissionStatusHost, Platform,
+};
 use crate::runtime::bulletin_rpc::BulletinRpc;
 use crate::runtime::signing_host::DevicePairingObserver;
 use crate::runtime::statement_store_rpc::StatementStoreRpc;
@@ -50,6 +52,8 @@ pub struct RuntimeServices {
     /// Where each live product connection draws contact avatars, so they can
     /// be redrawn when what a contact shared changes.
     pub(crate) contact_avatars: crate::runtime::profile::avatars::ContactAvatarPlacements,
+    /// Serializes profile audience updates, relay publication and received grants.
+    pub(crate) profile_state_gate: futures::lock::Mutex<()>,
     /// Optional native authenticated username index; only supplies candidates.
     identity_backend: OnceLock<Arc<dyn crate::platform::IdentityBackendHost>>,
     pocket_platform: OnceLock<Arc<dyn crate::platform::PocketPlatform>>,
@@ -149,6 +153,7 @@ impl RuntimeServices {
             pocket_platform: OnceLock::new(),
             profile_platform: OnceLock::new(),
             contact_avatars: Default::default(),
+            profile_state_gate: Default::default(),
             identity_backend: OnceLock::new(),
             contacts_platform: OnceLock::new(),
             contact_handles: Default::default(),

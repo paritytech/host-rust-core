@@ -1428,6 +1428,19 @@ impl ProductRuntimeHost {
         if declared.is_empty() {
             return Ok(call_data);
         }
+        let resolved = self.resolve_contact_handles(&declared_bytes).await?;
+        crate::host_logic::contact_substitution::substitute(&call_data, &resolved)
+            .map_err(|_| ContactResolutionError::UnknownContact)
+    }
+
+    async fn resolve_contact_handles(
+        &self,
+        requested: &[[u8; 32]],
+    ) -> Result<Vec<([u8; 32], Option<[u8; 32]>)>, ContactResolutionError> {
+        if requested.is_empty() {
+            return Ok(Vec::new());
+        }
+        let session = self.authority.current_session();
         let (platform, handles) = self.contacts_picker().map_err(|error| match error {
             CallError::Unsupported => ContactResolutionError::Unsupported,
             CallError::Domain(v01::HostContactsPickError::NotConnected) => {
@@ -1438,48 +1451,13 @@ impl ProductRuntimeHost {
             }
             other => ContactResolutionError::Host(format!("{other:?}")),
         })?;
-        let mut resolved: Vec<([u8; 32], Option<[u8; 32]>)> = declared_bytes
-            .iter()
-            .map(|handle| (*handle, cache.get(handle, &handles)))
-            .collect();
-        // The host is asked only about handles the cache cannot answer, all
-        // of them in one lookup.
-        let misses: Vec<[u8; 32]> = resolved
-            .iter()
-            .filter(|(_, account)| account.is_none())
-            .map(|(handle, _)| *handle)
-            .collect();
-        if !misses.is_empty() {
-            let generation = cache.generation();
-            let lookup = crate::platform::HostContactLookup {
-                handle_key: handles.handle_key(),
-                handles: misses,
-            };
-            let matches = platform
-                .contacts(&lookup)
-                .await
-                .map_err(|error| ContactResolutionError::Host(error.reason))?;
-            // One answer per handle, or the answers cannot be paired up.
-            if matches.accounts.len() != lookup.handles.len() {
-                return Err(ContactResolutionError::Host(format!(
-                    "contacts lookup answered {} of {} handles",
-                    matches.accounts.len(),
-                    lookup.handles.len()
-                )));
-            }
-            let mut answers = matches.accounts.into_iter();
-            for (handle, account) in resolved.iter_mut().filter(|(_, account)| account.is_none()) {
-                let answer = answers.next().expect("one answer per miss; qed");
-                // A host answer is checked, not trusted: an account that does
-                // not hash to its handle is treated as no contact at all.
-                *account = answer.filter(|account| handles.names(handle, account));
-                if let Some(account) = account {
-                    cache.insert(*handle, *account, generation);
-                }
-            }
+        let resolved =
+            resolve_contact_accounts(&self.services, platform.as_ref(), &handles, requested)
+                .await?;
+        if self.authority.current_session() != session {
+            return Err(ContactResolutionError::NotConnected);
         }
-        crate::host_logic::contact_substitution::substitute(&call_data, &resolved)
-            .map_err(|_| ContactResolutionError::UnknownContact)
+        Ok(resolved)
     }
 
     /// The contact picker for this connection, plus the key its handles are
@@ -1515,6 +1493,56 @@ impl ProductRuntimeHost {
             crate::runtime::contacts::ContactHandles::from_handle_key(handle_key),
         ))
     }
+}
+
+async fn resolve_contact_accounts(
+    services: &RuntimeServices,
+    platform: &dyn crate::platform::ContactsPlatform,
+    handles: &contacts::ContactHandles,
+    requested: &[[u8; 32]],
+) -> Result<Vec<([u8; 32], Option<[u8; 32]>)>, ContactResolutionError> {
+    let cache = &services.contact_handles;
+    let generation = cache.generation();
+    let mut resolved: Vec<([u8; 32], Option<[u8; 32]>)> = requested
+        .iter()
+        .map(|handle| (*handle, cache.get(handle, handles)))
+        .collect();
+    let misses: Vec<[u8; 32]> = resolved
+        .iter()
+        .filter(|(_, account)| account.is_none())
+        .map(|(handle, _)| *handle)
+        .collect();
+    if !misses.is_empty() {
+        let lookup = crate::platform::HostContactLookup {
+            handle_key: handles.handle_key(),
+            handles: misses,
+        };
+        let matches = platform
+            .contacts(&lookup)
+            .await
+            .map_err(|error| ContactResolutionError::Host(error.reason))?;
+        if matches.accounts.len() != lookup.handles.len() {
+            return Err(ContactResolutionError::Host(format!(
+                "contacts lookup answered {} of {} handles",
+                matches.accounts.len(),
+                lookup.handles.len()
+            )));
+        }
+        let mut answers = matches.accounts.into_iter();
+        for (handle, account) in resolved.iter_mut().filter(|(_, account)| account.is_none()) {
+            let answer = answers.next().expect("one answer per miss; qed");
+            *account = answer.filter(|account| handles.names(handle, account));
+            if let Some(account) = account {
+                cache.insert(*handle, *account, generation);
+            }
+        }
+    }
+    if cache.generation() != generation {
+        for (_, account) in &mut resolved {
+            *account = None;
+        }
+    }
+    Ok(resolved)
 }
 
 #[crate::platform::async_trait]
@@ -1797,16 +1825,51 @@ impl Profile for ProductRuntimeHost {
         if self.product.execution_kind != crate::platform::ProductExecutionKind::App {
             return Err(CallError::Denied);
         }
-        let domain = |error| CallError::Domain(HostProfileDiscloseError::V1(error));
-        let HostProfileDiscloseRequest::V1(request) = request;
+        use truapi::latest::ProfileAudience;
+        use truapi::versioned::{FromLatest, IntoLatest, Versioned};
+        let version = request.version();
+        let domain =
+            |error| CallError::Domain(HostProfileDiscloseError::from_latest(error, version));
+        let request = request.into_latest();
         if !is_screened_profile_reference(&request.reference) {
             return Err(domain(v01::HostProfileDiscloseError::InvalidReference));
         }
         let owner = self
             .profile_owner()
             .ok_or_else(|| domain(v01::HostProfileDiscloseError::NotConnected))?;
-        // Every contact receives the reference, so the user decides once per
-        // product whether it may hand one over.
+        if request.audiences.len() > 64 {
+            return Err(domain(v01::HostProfileDiscloseError::Unknown {
+                reason: "too many profile audiences".to_string(),
+            }));
+        }
+        let mut all_chat_apps = false;
+        let mut app_products = Vec::new();
+        let mut requested_handles = Vec::new();
+        for audience in request.audiences {
+            match audience {
+                ProfileAudience::ChatApps => all_chat_apps = true,
+                ProfileAudience::App { product_id } => {
+                    let product_id = normalize_product_identifier(&product_id).map_err(|_| {
+                        domain(v01::HostProfileDiscloseError::Unknown {
+                            reason: "invalid profile audience".to_string(),
+                        })
+                    })?;
+                    app_products.push(product_id);
+                }
+                ProfileAudience::Contacts { handles } => {
+                    if handles.len() > 4096usize.saturating_sub(requested_handles.len()) {
+                        return Err(domain(v01::HostProfileDiscloseError::Unknown {
+                            reason: "too many profile contacts".to_string(),
+                        }));
+                    }
+                    requested_handles.extend(handles.into_iter().map(|handle| handle.bytes));
+                }
+            }
+        }
+        app_products.sort_unstable();
+        app_products.dedup();
+        requested_handles.sort_unstable();
+        requested_handles.dedup();
         match self.profile_disclosure_authorization().await {
             Ok(PermissionAuthorizationStatus::Authorized) => {}
             Ok(
@@ -1817,28 +1880,53 @@ impl Profile for ProductRuntimeHost {
             }
             Err(reason) => return Err(domain(v01::HostProfileDiscloseError::Unknown { reason })),
         }
-        let storage = self.platform.as_ref();
-        // A later revision than the stored one even when the reference is the
-        // same: the record behind it changed, and contacts are sent it again.
-        let previous = profile::read_disclosure(storage, owner)
+        let guard = self.services.profile_state_gate.lock().await;
+        let generation = self.services.contact_handles.generation();
+        let mut contacts = self
+            .resolve_contact_handles(&requested_handles)
             .await
-            .ok()
-            .flatten()
-            .map_or(0, |disclosure| disclosure.revision);
+            .map_err(|_| {
+                domain(v01::HostProfileDiscloseError::Unknown {
+                    reason: "profile contacts unavailable".to_string(),
+                })
+            })?
+            .into_iter()
+            .map(|(_, account)| account)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                domain(v01::HostProfileDiscloseError::Unknown {
+                    reason: "invalid profile audience".to_string(),
+                })
+            })?;
+        contacts.sort_unstable();
+        contacts.dedup();
+        if self.profile_owner() != Some(owner) {
+            return Err(domain(v01::HostProfileDiscloseError::NotConnected));
+        }
+        let storage = self.platform.as_ref();
+        if self.services.contact_handles.generation() != generation && !contacts.is_empty() {
+            return Err(domain(v01::HostProfileDiscloseError::Unknown {
+                reason: "profile contacts changed".to_string(),
+            }));
+        }
         let now = crate::unix_time::current_unix_secs().saturating_mul(1000);
         let disclosure = profile::Disclosure {
             product_id: self.product_id(),
             reference: request.reference,
-            revision: now.max(previous.saturating_add(1)),
+            revision: now,
+            all_chat_apps,
+            app_products,
+            contacts,
         };
         profile::write_disclosure(storage, owner, &disclosure)
             .await
             .map_err(|reason| domain(v01::HostProfileDiscloseError::Unknown { reason }))?;
+        drop(guard);
         self.profile_disclosure_changed();
         self.services
             .contact_avatars
             .redraw_owner(owner, &self.services.spawner);
-        Ok(HostProfileDiscloseResponse::V1)
+        Ok(HostProfileDiscloseResponse::from_latest((), version))
     }
 
     #[instrument(skip_all, fields(runtime.method = "profile.retract"))]
@@ -1856,6 +1944,7 @@ impl Profile for ProductRuntimeHost {
             .profile_owner()
             .ok_or_else(|| domain(v01::HostProfileRetractError::NotConnected))?;
         let storage = self.platform.as_ref();
+        let guard = self.services.profile_state_gate.lock().await;
         match profile::read_disclosure(storage, owner)
             .await
             .map_err(unknown)?
@@ -1869,6 +1958,7 @@ impl Profile for ProductRuntimeHost {
                 profile::clear_disclosure(storage, owner)
                     .await
                     .map_err(unknown)?;
+                drop(guard);
                 self.profile_disclosure_changed();
                 self.services
                     .contact_avatars
@@ -1885,59 +1975,109 @@ impl Profile for ProductRuntimeHost {
         request: HostProfilePresentContactRequest,
     ) -> Result<HostProfilePresentContactResponse, CallError<HostProfilePresentContactError>> {
         let platform = self.profile_platform()?;
-        let HostProfilePresentContactRequest::V1(request) = request;
-        let domain = |error| CallError::Domain(HostProfilePresentContactError::V1(error));
+        use truapi::latest::ProfileContact;
+        use truapi::versioned::{FromLatest, IntoLatest, Versioned};
+        let version = request.version();
+        let domain =
+            |error| CallError::Domain(HostProfilePresentContactError::from_latest(error, version));
+        let success = || HostProfilePresentContactResponse::from_latest((), version);
+        let generation = self.services.contact_handles.generation();
+        let contact = request.into_latest().contact;
         let owner = self
             .profile_owner()
             .ok_or_else(|| domain(v01::HostProfilePresentContactError::NotConnected))?;
-        // Stored only when it arrived over the authenticated Chat channel from
-        // this peer, so the peer is who shared it.
-        let (reference, shared_at) = profile::received_reference(
-            self.platform.as_ref(),
-            owner,
-            &self.product_id(),
-            &request.peer_identity,
-        )
-        .await
-        .map_err(|reason| domain(v01::HostProfilePresentContactError::Unknown { reason }))?
-        .and_then(|received| {
+        let peer_identity = match contact {
+            ProfileContact::Peer { peer_identity } => peer_identity,
+            ProfileContact::Handle { handle } => {
+                let resolved = self.resolve_contact_handles(&[handle.bytes]).await;
+                let Some(account) = resolved
+                    .ok()
+                    .and_then(|mut resolved| resolved.pop())
+                    .and_then(|(_, account)| account)
+                else {
+                    return Ok(success());
+                };
+                account
+            }
+        };
+        let received = if version == 1 {
+            profile::received_app_reference(
+                self.platform.as_ref(),
+                owner,
+                &self.product_id(),
+                &peer_identity,
+            )
+            .await
+        } else {
+            profile::received_reference(
+                self.platform.as_ref(),
+                owner,
+                &self.product_id(),
+                &peer_identity,
+            )
+            .await
+        };
+        let received = match received {
+            Ok(received) => received,
+            Err(_) if version >= 2 => return Ok(success()),
+            Err(reason) => {
+                return Err(domain(v01::HostProfilePresentContactError::Unknown {
+                    reason,
+                }));
+            }
+        };
+        let Some((reference, shared_at)) = received.and_then(|received| {
             received
                 .reference
                 .map(|reference| (reference, received.timestamp))
-        })
-        .ok_or_else(|| domain(v01::HostProfilePresentContactError::NotShared))?;
+        }) else {
+            return if version >= 2 {
+                Ok(success())
+            } else {
+                Err(domain(v01::HostProfilePresentContactError::NotShared))
+            };
+        };
         // A stored reference passed the same screen when it arrived; check
         // again rather than trust storage.
         if !is_screened_profile_reference(&reference) {
+            if version >= 2 {
+                return Ok(success());
+            }
             return Err(domain(
                 v01::HostProfilePresentContactError::InvalidReference,
             ));
         }
-        // The name comes from the host, never from the request: the product
-        // names only the peer identity.
-        let username = self.contact_username(&request.peer_identity).await;
-        platform
+        let username = self.contact_username(&peer_identity).await;
+        if self.profile_owner() != Some(owner)
+            || (matches!(contact, ProfileContact::Handle { .. })
+                && self.services.contact_handles.generation() != generation)
+        {
+            return Ok(success());
+        }
+        let result = platform
             .present_contact_profile(
                 &self.product,
                 crate::platform::PresentedContactProfile {
                     reference,
-                    peer_identity: request.peer_identity,
+                    peer_identity,
                     shared_at,
                     username,
                 },
             )
-            .await
-            .map(|()| HostProfilePresentContactResponse::V1)
-            .map_err(|error| {
-                domain(match error {
-                    v01::HostProfilePresentError::InvalidReference => {
-                        v01::HostProfilePresentContactError::InvalidReference
-                    }
-                    v01::HostProfilePresentError::Unknown { reason } => {
-                        v01::HostProfilePresentContactError::Unknown { reason }
-                    }
-                })
+            .await;
+        if version >= 2 {
+            return Ok(success());
+        }
+        result.map(|()| success()).map_err(|error| {
+            domain(match error {
+                v01::HostProfilePresentError::InvalidReference => {
+                    v01::HostProfilePresentContactError::InvalidReference
+                }
+                v01::HostProfilePresentError::Unknown { reason } => {
+                    v01::HostProfilePresentContactError::Unknown { reason }
+                }
             })
+        })
     }
 
     #[instrument(skip_all, fields(runtime.method = "profile.place_contact_avatars"))]
@@ -1955,9 +2095,14 @@ impl Profile for ProductRuntimeHost {
             return Err(CallError::Denied);
         }
         let platform = self.profile_platform()?;
-        // A v0.1 placement is a v0.2 one with no own slot.
-        let request = truapi::versioned::IntoLatest::into_latest(request);
-        let domain = |error| CallError::Domain(HostProfilePlaceContactAvatarsError::V2(error));
+        use truapi::versioned::{FromLatest, IntoLatest, Versioned};
+        let version = request.version();
+        let request = request.into_latest();
+        let domain = |error| {
+            CallError::Domain(HostProfilePlaceContactAvatarsError::from_latest(
+                error, version,
+            ))
+        };
         profile::avatars::validate(&request).map_err(|reason| {
             domain(v01::HostProfilePlaceContactAvatarsError::Unknown { reason })
         })?;
@@ -1969,6 +2114,7 @@ impl Profile for ProductRuntimeHost {
                     platform,
                     self.platform.clone(),
                     self.product.clone(),
+                    Arc::downgrade(&self.services),
                 )
             });
         let Some(owner) = self.profile_owner() else {
@@ -1978,10 +2124,15 @@ impl Profile for ProductRuntimeHost {
                 v01::HostProfilePlaceContactAvatarsError::NotConnected,
             ));
         };
+        let authority = request
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.contact, truapi::latest::ProfileContact::Handle { .. }))
+            .then(|| Arc::downgrade(&self.authority));
         placement
-            .place(owner, request)
+            .place(owner, request, authority)
             .await
-            .map(|()| HostProfilePlaceContactAvatarsResponse::V2)
+            .map(|()| HostProfilePlaceContactAvatarsResponse::from_latest((), version))
             .map_err(domain)
     }
 

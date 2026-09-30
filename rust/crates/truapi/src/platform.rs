@@ -1952,6 +1952,15 @@ pub enum CoreStorageKey {
         /// Chat product whose contacts sent the references.
         product_id: String,
     },
+    /// Wallet-wide personal profile grants, including replay tombstones.
+    /// These bearer capabilities are independent of the receiving product.
+    #[codec(index = 19)]
+    ProfilePersonalReferencesReceived {
+        /// Wallet whose authenticated peers sent the references.
+        root_public_key: [u8; 32],
+        /// Host-selected Chat network.
+        genesis_hash: [u8; 32],
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -2011,6 +2020,9 @@ pub fn describe_core_storage_key(
         CoreStorageKey::ProfileDisclosure { .. } => ("ProfileDisclosure", None),
         CoreStorageKey::ProfileReferencesReceived { product_id, .. } => {
             ("ProfileReferencesReceived", Some(product_id))
+        }
+        CoreStorageKey::ProfilePersonalReferencesReceived { .. } => {
+            ("ProfilePersonalReferencesReceived", None)
         }
         CoreStorageKey::NativeChatFileChunk { product_id, .. } => {
             ("NativeChatFileChunk", Some(product_id))
@@ -4014,8 +4026,8 @@ pub struct PresentedContactProfile {
     /// The contact whose authenticated Chat device delivered the reference:
     /// who shared it, not necessarily whose profile it is.
     pub peer_identity: [u8; 32],
-    /// When the contact's host sent the share, in Unix milliseconds, as in
-    /// [`PlacedAvatar::shared_at`].
+    /// The share's freshness timestamp, as in [`PlacedAvatar::shared_at`].
+    /// Personal grants advance it monotonically across relay actors.
     pub shared_at: u64,
     /// The contact's username, when the core knows one: the name its Chat
     /// roster holds for `peer_identity`, verified when the contact was bound
@@ -4069,10 +4081,11 @@ pub struct PlacedAvatar {
     /// The profile reference the contact disclosed. A bearer capability, as
     /// in [`ProfilePlatform::present_profile`].
     pub reference: String,
-    /// When the contact's host sent the share this reflects, in Unix
-    /// milliseconds. A contact re-shares the same reference when the record
-    /// behind it changes; a larger `shared_at` for the same reference means
-    /// any cached copy of that profile is stale.
+    /// Freshness token for this reference. Contact shares use Unix
+    /// milliseconds, advanced monotonically for personal revisions even
+    /// across relay actors with different clocks. The own avatar uses the
+    /// disclosure revision. A changed token invalidates cached contents;
+    /// do not interpret an own-profile token as a wall-clock date.
     pub shared_at: u64,
 }
 

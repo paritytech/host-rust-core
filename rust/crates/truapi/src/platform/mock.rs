@@ -41,7 +41,8 @@ use crate::platform::{
     HopProvider, JsonRpcConnection, LocaleHost, NativeChatFileExportRequest,
     NativeChatFilePickRequest, NativeChatFilesHost, NativeChatPickedFile, Navigation,
     Notifications, PermissionDecision, Permissions, PreimageHost, ProductContext,
-    ProductOperations, ProductStorage, ProviderError, ThemeHost, UserConfirmation, UserConfirmationReview,
+    ProductOperations, ProductStorage, ProviderError, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 
 /// How the mock answers a permission prompt for one capability.
@@ -844,6 +845,14 @@ fn core_key(key: &CoreStorageKey) -> String {
             product_id,
         } => format!(
             "core:profile-references-received:{}:{}:{product_id}",
+            hex_key(root_public_key),
+            hex_key(genesis_hash)
+        ),
+        CoreStorageKey::ProfilePersonalReferencesReceived {
+            root_public_key,
+            genesis_hash,
+        } => format!(
+            "core:profile-personal-references-received:{}:{}",
             hex_key(root_public_key),
             hex_key(genesis_hash)
         ),
