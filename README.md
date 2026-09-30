@@ -314,7 +314,7 @@ in the same battery pass as everything else, backed by an in-memory
 `CliGameHost` that never rings anything. dot.li serves no `Game` surface, so the
 playground's Diagnosis skips the `Game` service. The `truapi` runtime tests
 cover the consent and start-time checks, the `Notifications` fallback when
-`Alarm` is denied, the optional `Calendar` grant, and a host's `Busy` refusal.
+`Alarm` is denied, and the optional `Calendar` grant.
 
 To run the playground locally in a plain browser tab, against a signing host on
 your own machine:

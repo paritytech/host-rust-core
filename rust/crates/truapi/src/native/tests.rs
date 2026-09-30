@@ -1001,7 +1001,6 @@ fn native_pocket_removal_outcomes_are_decided_by_the_host() {
 #[derive(Default)]
 struct RecordingGameCallbacks {
     calls: Mutex<Vec<Option<(u64, bool, bool)>>>,
-    busy: bool,
 }
 
 #[async_trait::async_trait]
@@ -1016,11 +1015,7 @@ impl NativeGameCallbacks for RecordingGameCallbacks {
             .lock()
             .expect("game calls mutex poisoned")
             .push(Some((starts_at, ring_alarm, add_calendar_event)));
-        if self.busy {
-            Err(v01::HostRemindNextGameError::Busy)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     async fn cancel_reminder(&self) -> Result<(), HostRejection> {
@@ -1033,7 +1028,7 @@ impl NativeGameCallbacks for RecordingGameCallbacks {
 }
 
 #[test]
-fn game_callbacks_receive_the_start_time_the_cancel_and_a_busy_refusal() {
+fn game_callbacks_receive_the_start_time_and_the_cancel() {
     let callbacks = Arc::new(RecordingGameCallbacks::default());
     let platform = GameCallbackPlatform {
         game: callbacks.clone(),
@@ -1052,19 +1047,6 @@ fn game_callbacks_receive_the_start_time_the_cancel_and_a_busy_refusal() {
     assert_eq!(
         *callbacks.calls.lock().expect("game calls mutex poisoned"),
         vec![Some((42, false, true)), None]
-    );
-
-    let busy = GameCallbackPlatform {
-        game: Arc::new(RecordingGameCallbacks {
-            busy: true,
-            ..Default::default()
-        }),
-    };
-    assert_eq!(
-        futures::executor::block_on(crate::platform::GamePlatform::schedule_game_reminder(
-            &busy, &product, 42, true, false,
-        )),
-        Err(v01::HostRemindNextGameError::Busy)
     );
 }
 

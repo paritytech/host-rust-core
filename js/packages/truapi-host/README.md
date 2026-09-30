@@ -141,8 +141,7 @@ product's held reminder, and `cancelGameReminder` drops it. Its `ringAlarm`
 argument is false when `Alarm` is denied and `Notifications` granted, so the
 host delivers an ordinary notification instead of an alarm, and its
 `addCalendarEvent` argument is true when the product also holds the optional
-`Calendar` grant. A native host holds one reminder for the whole host and
-refuses another product's schedule with `Busy`. The mock test host
+`Calendar` grant. A host keeps one reminder per product. The mock test host
 (`@parity/truapi-host/testing`) accepts every reminder and cancel without
 holding them.
 

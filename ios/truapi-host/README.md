@@ -299,13 +299,7 @@ final class MyGameBridge: GameHostBridge, @unchecked Sendable {
     init(reminders: ReminderStore) { self.reminders = reminders }
 
     func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
-        guard reminders.hold(
-            startsAt: startsAt,
-            ringAlarm: ringAlarm,
-            addCalendarEvent: addCalendarEvent
-        ) else {
-            throw HostRemindNextGameError.Busy
-        }
+        reminders.hold(startsAt: startsAt, ringAlarm: ringAlarm, addCalendarEvent: addCalendarEvent)
     }
 
     func cancelReminder() async throws {
@@ -320,13 +314,10 @@ let execution = try runtime.openProductExecution(
 )
 ```
 
-The host holds one reminder for the whole host. The product holding it replaces
-it with every `scheduleReminder`; another product gets
-`HostRemindNextGameError.Busy` until the holder cancels or the held start
-passes. The host decides `Busy` and takes the reminder in one step. The
-reminder is kept across app kill and device reboot, rung as an alarm or
-delivered as an ordinary notification when the OS refuses alarms, and dropped
-once the game has started.
+The host holds one reminder per product: a `scheduleReminder` replaces the
+reminder the same product already holds. The reminder is kept across app kill
+and device reboot, rung as an alarm or delivered as an ordinary notification
+when the OS refuses alarms, and dropped once the game has started.
 `ringAlarm` is false when Alarm is denied and Notifications granted, so the host
 delivers an ordinary notification instead of an alarm.
 `addCalendarEvent` is true when the product also holds the optional Calendar

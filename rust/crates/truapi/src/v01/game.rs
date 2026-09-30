@@ -22,10 +22,6 @@ pub enum HostRemindNextGameError {
     /// neither.
     #[display("reminders are not authorized")]
     PermissionDenied,
-    /// Another product holds the host's reminder; retry after it is cancelled
-    /// or its game starts.
-    #[display("another product holds the host's reminder")]
-    Busy,
     /// Catch-all.
     #[display("{reason}")]
     Unknown {

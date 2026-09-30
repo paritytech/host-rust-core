@@ -259,22 +259,17 @@ public protocol PocketHostBridge: AnyObject, Sendable {
 /// calls are async, so an implementation may hop to the main actor to answer;
 /// implementations must be safe to enter concurrently.
 ///
-/// The host holds one reminder for the whole host: the product holding it
-/// replaces it with every schedule, and another product gets `.Busy` until the
-/// holder cancels or the held start passes. Decide `.Busy` and take the
-/// reminder together, so two products scheduling at once cannot both hold
-/// it. The reminder is kept across app kill and reboot, rung as an alarm or
-/// delivered as a notification when the OS refuses alarms, and dropped once
-/// the game starts. Temporary: will be replaced by generic reminder and pill
-/// APIs.
+/// The host holds one reminder per product: a schedule replaces the reminder
+/// the same product already holds. The reminder is kept across app kill and
+/// reboot, rung as an alarm or delivered as a notification when the OS
+/// refuses alarms, and dropped once the game starts.
 ///
 /// `scheduleReminder` throws ``HostRemindNextGameError``; any other error
 /// reaches the product as `.Unknown`. `cancelReminder` throws
 /// ``HostRejection`` (or an error conforming to `LocalizedError`) to decline.
 public protocol GameHostBridge: AnyObject, Sendable {
     /// Hold `startsAt` (Unix milliseconds, UTC) as this product's reminder,
-    /// replacing any it holds, or throw `.Busy` while another product holds
-    /// the host's reminder. `ringAlarm` false: deliver an ordinary
+    /// replacing any it holds. `ringAlarm` false: deliver an ordinary
     /// notification, not an alarm. `addCalendarEvent` says the product holds
     /// the Calendar grant, so the host may also add the game to the calendar.
     func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws

@@ -2622,7 +2622,7 @@ fn cancel_next_game_delegates_without_prompting() {
 #[test]
 fn game_host_failures_reach_the_product_with_their_reason() {
     for error in [
-        truapi::latest::HostRemindNextGameError::Busy,
+        truapi::latest::HostRemindNextGameError::PermissionDenied,
         truapi::latest::HostRemindNextGameError::Unknown {
             reason: "alarm store unavailable".to_string(),
         },

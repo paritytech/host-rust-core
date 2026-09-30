@@ -1395,20 +1395,15 @@ export interface Features {
  *
  * The core refuses a start that is not in the future and settles the `Alarm`,
  * `Notifications` and optional `Calendar` grants before it calls here. A host
- * keeps one reminder per product, or one for the whole host that refuses
- * other products with `Busy` until the holder cancels or its start passes.
- * Such a host decides `Busy` and takes the reminder in one step, so two
- * products scheduling at once cannot both hold it. The host keeps the
- * reminder across app kill and device reboot, delivers it as an alarm or an
- * ordinary notification, and drops it once the game has started. A host that
- * reports OS status reports `Alarm` as OS-`Denied` only when the OS allows
- * neither alarms nor notifications.
+ * keeps one reminder per product: a schedule replaces the reminder the same
+ * product already holds and leaves other products' reminders alone. The host
+ * keeps each reminder across app kill and device reboot, delivers it as an
+ * alarm or an ordinary notification, and drops it once its game has started.
  */
 export interface GamePlatform {
   /**
    * Hold `starts_at` (Unix milliseconds, UTC) as the product's reminder,
-   * replacing any it holds, or refuse with `Busy` when this host keeps a
-   * single reminder and another product holds a start still in the future.
+   * replacing any it holds.
    * `ring_alarm` false: deliver an ordinary notification, not an alarm.
    * `add_calendar_event` says the product holds the `Calendar` grant, so
    * the host may also add the game to the user's calendar.

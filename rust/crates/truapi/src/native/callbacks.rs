@@ -284,13 +284,12 @@ pub enum NativePocketRemoval {
 ///
 /// The execution is bound to one product, so neither call names it. The host
 /// owns the reminder: see [`crate::platform::GamePlatform`] for what it must
-/// do with one. Temporary: will be replaced by generic reminder and pill APIs.
+/// do with one.
 #[uniffi::export(rust, foreign)]
 #[async_trait::async_trait]
 pub trait NativeGameCallbacks: Send + Sync {
     /// Hold `starts_at` (Unix milliseconds, UTC) as this product's reminder,
-    /// replacing any it holds, or fail with `Busy` while another product holds
-    /// the host's reminder. `ring_alarm` false: deliver an ordinary
+    /// replacing any it holds. `ring_alarm` false: deliver an ordinary
     /// notification, not an alarm. `add_calendar_event` says the product holds
     /// the `Calendar` grant.
     async fn schedule_reminder(

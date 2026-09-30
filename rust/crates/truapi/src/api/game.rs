@@ -7,8 +7,7 @@ use crate::versioned::game::{
 use crate::{CallContext, CallError};
 use crate::{wire, wire_trait};
 
-/// Reminders for a product's next game. Temporary: will be replaced by
-/// generic reminder and pill APIs.
+/// Reminders for a product's next game.
 #[wire_trait(id = 21)]
 #[crate::async_trait]
 pub trait Game: Send + Sync {
@@ -18,8 +17,7 @@ pub trait Game: Send + Sync {
     /// permission is refused, the host asks for `Notifications` and reminds
     /// the user with an ordinary notification instead. The host may also ask
     /// for the optional `Calendar` permission to add the game to the user's
-    /// calendar. A host already holding another product's reminder answers
-    /// `Busy`, and one with no way to remind the user answers `Unsupported`.
+    /// calendar. A host with no way to remind the user answers `Unsupported`.
     ///
     /// ```ts
     /// const result = await truapi.game.remindNextGame({
