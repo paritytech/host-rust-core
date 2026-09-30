@@ -1514,7 +1514,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="splash_waiting_for_network_title">Waiting for network connection…</string>
     <string name="splash_waiting_for_network_message">Turn off Airplane Mode or check your internet</string>
 
-    <string name="pocket_digital_dollar_title">Balance Card</string>
+    <string name="pocket_digital_dollar_title">%1$s Card</string>
     <string name="pocket_digital_dollar_card_title">%1$s</string>
     <string name="pocket_digital_dollar_faucet_top_up">Faucet Top Up</string>
     <string name="pocket_collectibles_open_button">View collectibles</string>
@@ -1536,10 +1536,10 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="pocket_deeplink_unknown_card">This product doesn\'t publish that card.</string>
     <string name="pocket_deeplink_no_pocket">This product has no Pocket cards.</string>
     <string name="pocket_deeplink_malformed">That Pocket link is incomplete.</string>
-    <string name="pocket_coinage_balance_title">Balance</string>
+    <string name="pocket_coinage_balance_title">Total</string>
     <string name="pocket_coinage_ready">Ready</string>
     <string name="pocket_coinage_clearing">Clearing</string>
-    <string name="pocket_coinage_total_balance">Total Balance</string>
+    <string name="pocket_coinage_total_balance">Total</string>
     <string name="pocket_coinage_share_logs">Share Coinage Logs</string>
     <string name="pocket_debug_features_title">Debug features</string>
     <string name="pocket_debug_features_subtitle">Not visible in production</string>
@@ -1554,7 +1554,7 @@ I’m attaching PDF with more information and details regarding the Tattoo Stenc
     <string name="pocket_coinage_key_block">A single block means no past payments at all. The shorter it is, the more fungible the coin.</string>
     <string name="pocket_coinage_key_voucher">Coins that gain privacy. The solid block is how fungible they will be at best; the striped part is the current level.</string>
 
-    <string name="payment_privacy_mode_title">%1$s Privacy Mode</string>
+    <string name="payment_privacy_mode_title">Payments Privacy Mode</string>
     <string name="payment_privacy_mode_fastest_label">Fastest</string>
     <string name="payment_privacy_mode_fastest_description">Fastest payments, lower privacy</string>
     <string name="payment_privacy_mode_fastest_accessibility">Fastest. Fastest payments, lower privacy.</string>
