@@ -16,13 +16,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::platform::{
+    ChainProvider, ChatPlatform, ContactsPlatform, HopProvider, HostInfo, JsonRpcConnection,
+    PairingHostConfig, PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext,
+    ProductExecutionKind, ProfilePlatform, ProviderError, RuntimeConfigValidationError,
+};
 #[cfg(feature = "wasm-signing-host")]
 use crate::platform::{CoinageWalletHost, IdentityBackendHost, SigningHostConfig};
-use crate::platform::{
-    ChainProvider, ChatPlatform, ContactsPlatform, HopProvider, HostInfo, JsonRpcConnection, PairingHostConfig,
-    PermissionStatusHost, PlatformInfo, PocketPlatform, ProductContext, ProductExecutionKind,
-    ProfilePlatform, ProviderError, RuntimeConfigValidationError,
-};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable};
 use futures::stream::{self, BoxStream, Stream, StreamExt};
@@ -223,7 +223,9 @@ async fn open_js_rpc(
     let returned = call_js_function(&connect, &args).map_err(host_error)?;
     let resolved = await_optional_promise(returned).await.map_err(host_error)?;
     if resolved.is_null() || resolved.is_undefined() {
-        return Err(host_error("JSON-RPC provider returned no connection".into()));
+        return Err(host_error(
+            "JSON-RPC provider returned no connection".into(),
+        ));
     }
     let close_fn = Reflect::get(&resolved, &JsValue::from_str("close"))
         .map_err(|_| host_error("JSON-RPC connection must return { send, close }".into()))?
@@ -1015,6 +1017,7 @@ fn connection_adapters_from_js(
     let WasmPlatformAdapters {
         platform,
         chat_platform,
+        contacts_platform,
         status_host,
         pocket_platform,
         profile_platform,
@@ -1023,6 +1026,7 @@ fn connection_adapters_from_js(
     Ok(Some(crate::host_core::ConnectionAdapters {
         platform,
         chat_platform,
+        contacts_platform,
         permission_status: status_host,
         // One-use grants are per-connection and start empty, matching the
         // native adapter and `ConnectionAdapters`' own default.
@@ -1239,6 +1243,14 @@ impl WasmPairingHostRuntime {
     #[wasm_bindgen(js_name = notifyContactsChanged)]
     pub fn notify_contacts_changed(&self) {
         self.runtime.notify_contacts_changed();
+    }
+
+    /// Pairing hosts cannot expose the signing host's private Chat roster.
+    #[wasm_bindgen(js_name = getNativeChatContacts)]
+    pub async fn get_native_chat_contacts(&self) -> Result<JsValue, JsValue> {
+        Err(JsValue::from_str(
+            "native Chat contacts are unsupported on a pairing host",
+        ))
     }
 
     /// Read a permission authorization status for a product.
@@ -1644,6 +1656,19 @@ impl WasmSigningHostRuntime {
         let snapshot = self
             .runtime
             .get_wallet_allowance_snapshot(&activation_id, product_ids)
+            .await
+            .map_err(generic_error_to_js)?;
+        let json = serde_json::to_string(&snapshot)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        js_sys::JSON::parse(&json)
+    }
+
+    /// Read the active signing wallet's trusted native Chat directory for host UI.
+    #[wasm_bindgen(js_name = getNativeChatContacts)]
+    pub async fn get_native_chat_contacts(&self) -> Result<JsValue, JsValue> {
+        let snapshot = self
+            .runtime
+            .get_native_chat_contacts()
             .await
             .map_err(generic_error_to_js)?;
         let json = serde_json::to_string(&snapshot)

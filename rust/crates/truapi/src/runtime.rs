@@ -59,6 +59,7 @@ use authority::{AuthorityCancelError, AuthoritySession, ProductDeviceChatAuthori
 pub use authority::{AuthorityError, BulletinAllowanceKey, ProductAuthority};
 pub use chat::chat_platform_for;
 pub use contacts::ContactResolutionError;
+pub use native_chat::{NativeChatContact, NativeChatContactsSnapshot};
 
 /// The host's contact picker plus the key its handles are minted under:
 /// everything one `contacts.pick` call needs from the connection.
@@ -321,6 +322,7 @@ pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     chat_platform: Option<Arc<dyn crate::platform::ChatPlatform>>,
+    contacts_platform: Option<Arc<dyn crate::platform::ContactsPlatform>>,
     /// Live OS permission state for this connection, when the host serves it.
     permission_status: Option<Arc<dyn crate::platform::PermissionStatusHost>>,
     /// Permission requests and consuming operations can arrive on different connections.
@@ -375,6 +377,7 @@ impl ProductRuntimeHost {
             services,
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
+            contacts_platform: adapters.contacts_platform,
             permission_status: adapters.permission_status,
             temporary_permissions: adapters.permission_grants,
             authority,
@@ -504,6 +507,7 @@ impl ProductRuntimeHost {
         let chat = Arc::new(ActionChannel::chat());
         let renderer = Arc::new(ActionChannel::renderer());
         let host = Self {
+            contacts_platform: None,
             services,
             platform,
             chat_platform: None,
@@ -761,7 +765,15 @@ impl ProductRuntimeHost {
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
         let service = self.permissions_service();
-        service.set_authorization_status(&request, status).await
+        let contacts_changed = matches!(request, PermissionAuthorizationRequest::ChatAuthority);
+        if contacts_changed {
+            self.services.contact_handles.clear();
+        }
+        let result = service.set_authorization_status(&request, status).await;
+        if contacts_changed {
+            self.services.contact_handles.clear();
+        }
+        result
     }
 
     #[instrument(skip_all, fields(runtime.method = "permissions.remote_authorization"))]
@@ -1470,8 +1482,9 @@ impl ProductRuntimeHost {
         // A capability the host does not serve is a framework answer; a
         // missing session is one the product handles.
         let platform = self
-            .services
-            .contacts_platform()
+            .contacts_platform
+            .clone()
+            .or_else(|| self.services.contacts_platform())
             .ok_or(CallError::Unsupported)?;
         let session = self
             .authority

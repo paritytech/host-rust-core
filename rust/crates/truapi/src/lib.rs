@@ -682,7 +682,10 @@ runtime_items! {
         AnnouncedPairing, DevicePairingObserver, MAX_PAIRING_METADATA_CHARS, PairedSsoPeer,
         PairingProposal, PairingProposalMetadata, ResponderExit,
     };
-    pub use runtime::{LocalIdentity, LocalIdentityContext, WalletAllowanceSnapshot};
+    pub use runtime::{
+        LocalIdentity, LocalIdentityContext, NativeChatContact, NativeChatContactsSnapshot,
+        WalletAllowanceSnapshot,
+    };
 
     #[cfg(not(target_arch = "wasm32"))]
     pub use native::{

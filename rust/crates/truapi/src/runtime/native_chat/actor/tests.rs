@@ -2,6 +2,7 @@
 //! Native signed/encrypted packets against the real actor and encrypted stores.
 #![cfg(not(target_arch = "wasm32"))]
 
+mod contacts;
 mod hop_history;
 mod native_wallet;
 
