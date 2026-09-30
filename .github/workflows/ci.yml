@@ -36,9 +36,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: ./.github/actions/rust-nightly
         with:
-          toolchain: nightly
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
@@ -65,19 +64,19 @@ jobs:
       - name: cargo check wasm32
         run: cargo check --target wasm32-unknown-unknown -p truapi
 
-      - name: cargo +nightly clippy wasm32 (truapi-provider browser backends)
-        run: cargo +nightly clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
+      - name: cargo (pinned nightly) clippy wasm32 (truapi-provider browser backends)
+        run: cargo +"$TRUAPI_NIGHTLY_TOOLCHAIN" clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
 
       # The native-bindings build has no `ws` backend, which makes ChainSource a
       # single-variant enum; --all-features never exercises that shape.
-      - name: cargo +nightly clippy (truapi-provider native bindings)
-        run: cargo +nightly clippy -p truapi-provider --no-default-features --features uniffi --all-targets -- -D warnings
+      - name: cargo (pinned nightly) clippy (truapi-provider native bindings)
+        run: cargo +"$TRUAPI_NIGHTLY_TOOLCHAIN" clippy -p truapi-provider --no-default-features --features uniffi --all-targets -- -D warnings
 
-      - name: cargo +nightly fmt --check
-        run: cargo +nightly fmt --check
+      - name: cargo (pinned nightly) fmt --check
+        run: cargo +"$TRUAPI_NIGHTLY_TOOLCHAIN" fmt --check
 
-      - name: cargo +nightly clippy
-        run: cargo +nightly clippy --workspace --all-targets --all-features -- -D warnings
+      - name: cargo (pinned nightly) clippy
+        run: cargo +"$TRUAPI_NIGHTLY_TOOLCHAIN" clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: cargo test
         run: cargo test --workspace --all-features
@@ -101,9 +100,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: ./.github/actions/rust-nightly
         with:
-          toolchain: nightly
           components: rustfmt
 
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
@@ -196,9 +194,8 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: ./.github/actions/rust-nightly
         with:
-          toolchain: nightly
           components: rustfmt
 
       - uses: ./.github/actions/rust-cache
@@ -339,9 +336,9 @@ jobs:
             fi
           }
 
-          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_swift '^(ios/|Package\.swift$|Makefile$|nightly-toolchain$|Cargo\.toml$|Cargo\.lock$|js/container/|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/truapi-provider/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
           gate workflows '^(\.github/workflows/|\.github/actions/|\.github/labeler\.yml$|\.github/CODEOWNERS$|hosts/[a-z]+/\.github/|scripts/(lint-composite-shell|check-path-routing)\.py$)'
-          gate sdk_kotlin '^(android/|Makefile$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
+          gate sdk_kotlin '^(android/|Makefile$|nightly-toolchain$|Cargo\.toml$|Cargo\.lock$|build\.gradle\.kts$|settings\.gradle\.kts$|gradle\.properties$|package\.json$|package-lock\.json$|scripts/codegen\.sh$|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/uniffi-bindgen-cli/|\.github/workflows/ci\.yml$)'
 
           # The provider AAR is generated from its own cdylib and compiles
           # without codegen output, so it moves on a narrower set than the host
@@ -351,7 +348,7 @@ jobs:
           # The vendored Android host, plus the crates its bindings are
           # generated from. Nothing gated on this tree before, so a core change
           # that broke it reached a release with no gate in between.
-          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
+          gate host_android '^(hosts/android/|android/truapi-host/|rust/crates/truapi/|rust/crates/truapi-codegen/|rust/crates/truapi-macros/|rust/crates/uniffi-bindgen-cli/|scripts/(codegen\.sh|regen-explorer-versions\.mjs)$|Cargo\.toml$|nightly-toolchain$|Cargo\.lock$|package\.json$|package-lock\.json$|\.github/workflows/ci\.yml$)'
 
           # The packaging path has its own inputs: the archive layout in the
           # Makefile, the runner bundle, the generated sources cli-dist refuses
@@ -359,11 +356,11 @@ jobs:
           # survive. `@parity/truapi` is here because the runner inlines it from
           # source, and bundling it is a step no other job performs. A release
           # is the wrong place to find out one of them moved.
-          gate cli_package '^(rust/crates/(truapi-host-cli|truapi|truapi-codegen|truapi-macros)/|js/container/|js/packages/truapi/(src/|package\.json$|tsconfig[^/]*\.json$)|Makefile$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|scripts/(codegen\.sh|build-cli-runner\.ts|cli-runner-package\.test\.ts)$|\.github/workflows/(ci|cli-package|release-cli)\.yml$)'
+          gate cli_package '^(rust/crates/(truapi-host-cli|truapi|truapi-codegen|truapi-macros)/|js/container/|js/packages/truapi/(src/|package\.json$|tsconfig[^/]*\.json$)|Makefile$|nightly-toolchain$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|scripts/(codegen\.sh|build-cli-runner\.ts|cli-runner-package\.test\.ts)$|\.github/workflows/(ci|cli-package|release-cli)\.yml$)'
 
           # Include generators, dependency pins and package build configuration:
           # these can change a published artifact without touching its sources.
-          gate needs_changeset '^(rust/crates/truapi(-server|-provider|-macros|-host-cli|-codegen)?/|js/packages/[^/]+/(src/|scripts/|package\.json$|tsconfig[^/]*\.json$)|Cargo\.(toml|lock)$|package(-lock)?\.json$|rust-toolchain(\.toml)?$|\.cargo/|Makefile$|scripts/(codegen\.sh|bundle-truapi-dts\.mjs|regen-explorer-versions\.mjs)$)'
+          gate needs_changeset '^(rust/crates/truapi(-server|-provider|-macros|-host-cli|-codegen)?/|js/packages/[^/]+/(src/|scripts/|package\.json$|tsconfig[^/]*\.json$)|Cargo\.(toml|lock)$|package(-lock)?\.json$|rust-toolchain(\.toml)?$|nightly-toolchain$|\.cargo/|Makefile$|scripts/(codegen\.sh|bundle-truapi-dts\.mjs|regen-explorer-versions\.mjs)$)'
 
           # Deleting, editing or renaming an old changeset does not declare a
           # new change. README.md is Changesets' documentation, not a release.
@@ -523,10 +520,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # codegen.sh formats its generated Rust with `cargo +nightly fmt`.
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      # codegen.sh formats its generated Rust with the pinned nightly rustfmt.
+      - uses: ./.github/actions/rust-nightly
         with:
-          toolchain: nightly
           components: rustfmt
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
       - uses: ./.github/actions/rust-cache

@@ -83,6 +83,8 @@ scripts/build-cli-runner.ts
 scripts/cli-runner-package.test.ts
                            verifies the installed runner and development container
 .github/consumers.json     maps each released package to the repos notified by a bump issue
+nightly-toolchain          the dated nightly for rustfmt, CI clippy and rustdoc JSON; CI, the
+                           scripts and the Makefile all read it
 .github/registry-drift-exceptions.json
                            documents intentionally unpublished npm package versions
 ```
@@ -326,7 +328,7 @@ belongs to an existing type rather than adding another free-standing export.
 Preserve the local style. Do not add semicolons to `return`, `break` or
 `continue` where the file omits them, do not add braces to match arms or
 `if`/`else` written without them, and do not move operators between the end of
-one line and the start of the next. Format with `cargo +nightly fmt`, and keep
+one line and the start of the next. Format with `cargo +$(cat nightly-toolchain) fmt`, and keep
 it to the lines you touched.
 
 ## Rust style
@@ -401,9 +403,14 @@ After regenerating, rebuild the client and refresh the playground's link copy:
 
 ### Rust
 
+rustfmt and rustdoc JSON run on the dated nightly named in `nightly-toolchain`;
+install it once with `rustup toolchain install "$(cat nightly-toolchain)" --component rustfmt,clippy`.
+Move the date in that one file, and in `truapi.rustNightly` in
+`hosts/android/gradle.properties`, which the Android build checks against it.
+
 ```bash
 cargo build --workspace
-cargo +nightly fmt --check
+cargo +$(cat nightly-toolchain) fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```

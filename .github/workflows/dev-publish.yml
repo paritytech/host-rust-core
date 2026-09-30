@@ -41,20 +41,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: ./.github/actions/rust-nightly
         with:
-          toolchain: nightly
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
       - uses: ./.github/actions/rust-cache
 
-      - run: cargo +nightly fmt -p truapi-provider --check
+      - run: cargo +"$TRUAPI_NIGHTLY_TOOLCHAIN" fmt -p truapi-provider --check
 
-      - run: cargo +nightly clippy -p truapi-provider --all-targets --all-features -- -D warnings
+      - run: cargo +"$TRUAPI_NIGHTLY_TOOLCHAIN" clippy -p truapi-provider --all-targets --all-features -- -D warnings
 
       # The published artifact is the wasm build, so lint the target it ships as.
-      - run: cargo +nightly clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
+      - run: cargo +"$TRUAPI_NIGHTLY_TOOLCHAIN" clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
 
       - run: cargo test -p truapi-provider --all-features
 

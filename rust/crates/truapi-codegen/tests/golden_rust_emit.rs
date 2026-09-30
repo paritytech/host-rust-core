@@ -1,12 +1,13 @@
 //! Golden snapshot test for the Rust dispatcher emitter.
 //!
-//! `cargo +nightly rustdoc` runs once per package into a dedicated
+//! `cargo rustdoc` runs once per package, under the nightly named in the
+//! repository's `nightly-toolchain` file, into a dedicated
 //! `target/codegen-test-rustdoc/<package>` directory, off the shared
 //! `target/doc/<package>.json` path that a concurrent `cargo doc` would
 //! claim. Every test reads the same JSON, so the build is paid once per
-//! package per run. Nightly Rust is required; if it is not available the
-//! test panics rather than silently passing (set up rustup with
-//! `rustup toolchain install nightly`).
+//! package per run. That toolchain is required; if it is not installed the
+//! test panics rather than silently passing (`rustup toolchain install
+//! "$(cat nightly-toolchain)"`). `TRUAPI_NIGHTLY_TOOLCHAIN` overrides it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -14,8 +15,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+/// The dated nightly CI runs, unless `TRUAPI_NIGHTLY_TOOLCHAIN` names another.
 fn nightly_toolchain() -> String {
-    std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string())
+    std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| {
+        include_str!("../../../../nightly-toolchain")
+            .trim()
+            .to_string()
+    })
 }
 
 fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
@@ -92,7 +98,7 @@ fn produce_rustdoc_json_for_package(
     json
 }
 
-/// One `cargo +nightly rustdoc --output-format json` invocation, returning
+/// One `cargo rustdoc --output-format json` invocation on the pinned nightly, returning
 /// the path to the JSON it wrote.
 fn run_rustdoc_json(
     workspace_root: &Path,
@@ -114,7 +120,8 @@ fn run_rustdoc_json(
     );
     assert!(
         output.status.success(),
-        "`cargo +nightly rustdoc -p {package}` failed (status {}); nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
+        "`cargo +{} rustdoc -p {package}` failed (status {}); that nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
+        nightly_toolchain(),
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),

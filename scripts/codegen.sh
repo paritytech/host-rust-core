@@ -36,7 +36,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-nightly}"
+# The dated nightly CI runs, from nightly-toolchain; TRUAPI_NIGHTLY_TOOLCHAIN
+# overrides it.
+NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-$(head -n1 "$ROOT/nightly-toolchain")}"
 
 # Homebrew LLVM on DYLD_LIBRARY_PATH makes rustc and rustdoc load a mismatched
 # libLLVM, which dies with SIGSEGV in initialize_available_targets.

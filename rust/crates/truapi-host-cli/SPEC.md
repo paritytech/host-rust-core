@@ -2203,7 +2203,7 @@ refreshes on the next `make e2e-pairing-cli` run from such a signer.
 Recommended local verification after CLI changes:
 
 ```sh
-cargo +nightly fmt --check
+cargo +$(cat nightly-toolchain) fmt --check
 cargo clippy -p truapi-host-cli --all-targets -- -D warnings
 cargo test -p truapi-host-cli
 cargo test -p truapi-host-cli --bin truapi-host caller_configuration_cannot_execute_before_the_sandbox -- --include-ignored
