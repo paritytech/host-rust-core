@@ -1,0 +1,5 @@
+error: `:min` has no argument with that name
+ --> tests/ui/dao/fail/unbound_parameter.rs:5:13
+  |
+5 |     #[query("SELECT note FROM ledger WHERE amount >= :min")]
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

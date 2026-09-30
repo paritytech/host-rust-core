@@ -1,0 +1,5 @@
+error: a #[transaction] method needs a body; it runs as one write
+ --> tests/ui/dao/fail/transaction_without_body.rs:6:5
+  |
+6 |     fn transfer(&self, amount: i64) -> rusqlite::Result<()>;
+  |     ^^

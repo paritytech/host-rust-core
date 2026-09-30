@@ -123,13 +123,7 @@ impl Db {
                 conn.pragma_update(None, "foreign_keys", true)?;
                 conn.pragma_update(None, "temp_store", "MEMORY")?;
                 conn.busy_timeout(BUSY_TIMEOUT)?;
-                match migrations().to_latest(conn) {
-                    Ok(())
-                    | Err(rusqlite_migration::Error::MigrationDefinition(
-                        rusqlite_migration::MigrationDefinitionError::NoMigrationsDefined,
-                    )) => Ok(()),
-                    Err(error) => Err(DbError::Migration(error.to_string())),
-                }
+                apply_migrations(conn, migrations)
             })
             .await?;
 
@@ -207,6 +201,81 @@ impl Db {
     }
 }
 
+/// Brings `conn` to the latest schema. An empty migration list is a schema
+/// with no tables yet, not an error.
+fn apply_migrations(
+    conn: &mut rusqlite::Connection,
+    migrations: fn() -> Migrations<'static>,
+) -> Result<(), DbError> {
+    match migrations().to_latest(conn) {
+        Ok(())
+        | Err(rusqlite_migration::Error::MigrationDefinition(
+            rusqlite_migration::MigrationDefinitionError::NoMigrationsDefined,
+        )) => Ok(()),
+        Err(error) => Err(DbError::Migration(error.to_string())),
+    }
+}
+
+/// One statement a `#[dao]` runs, as listed in its `QUERIES`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaoStatement {
+    /// The SQL text.
+    pub sql: &'static str,
+    /// Whether it comes from a `#[query]`, which runs on a read-only
+    /// connection and so must not write.
+    pub read_only: bool,
+}
+
+/// Deserializes one row for code that `#[dao]` generates. A value that does
+/// not fit its field is reported with the column index and SQLite type it
+/// actually has.
+#[doc(hidden)]
+pub fn dao_row<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>) -> rusqlite::Result<T> {
+    serde_rusqlite::from_row(row).map_err(|error| match error {
+        serde_rusqlite::Error::Rusqlite(error) => error,
+        error => {
+            let column = match &error {
+                serde_rusqlite::Error::Deserialization {
+                    column: Some(name), ..
+                } => row.as_ref().column_index(name).unwrap_or(0),
+                _ => 0,
+            };
+            let found = row
+                .get_ref(column)
+                .map(|value| value.data_type())
+                .unwrap_or(rusqlite::types::Type::Null);
+            rusqlite::Error::FromSqlConversionFailure(column, found, Box::new(error))
+        }
+    })
+}
+
+/// Prepares every statement against an in-memory database migrated to the
+/// latest schema, and checks that each `#[query]` statement only reads.
+/// Returns the first statement that fails, with the reason.
+#[cfg(test)]
+pub(crate) fn prepare_all(
+    migrations: fn() -> Migrations<'static>,
+    statements: &[DaoStatement],
+) -> Result<(), (String, String)> {
+    let mut conn = rusqlite::Connection::open_in_memory()
+        .map_err(|error| (String::new(), error.to_string()))?;
+    apply_migrations(&mut conn, migrations).map_err(|error| (String::new(), error.to_string()))?;
+    for statement in statements {
+        let failure = |reason: String| (statement.sql.to_owned(), reason);
+        let prepared = conn
+            .prepare(statement.sql)
+            .map_err(|error| failure(error.to_string()))?;
+        if statement.read_only && !prepared.readonly() {
+            return Err(failure(
+                "a #[query] runs on a read-only connection but this statement writes; use \
+                 #[execute]"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 const BUSY_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(5);
 
 /// Opens a [`Db`] on first use and hands out the same handle afterwards.
@@ -236,6 +305,9 @@ impl LazyDb {
         Ok(db)
     }
 }
+
+#[cfg(test)]
+mod dao_tests;
 
 #[cfg(test)]
 mod tests {

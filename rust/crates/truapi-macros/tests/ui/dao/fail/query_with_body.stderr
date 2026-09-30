@@ -1,0 +1,8 @@
+error: a #[query] method has no body; #[dao] writes it from the SQL
+ --> tests/ui/dao/fail/query_with_body.rs:6:46
+  |
+6 |       fn count(&self) -> rusqlite::Result<i64> {
+  |  ______________________________________________^
+7 | |         Ok(0)
+8 | |     }
+  | |_____^

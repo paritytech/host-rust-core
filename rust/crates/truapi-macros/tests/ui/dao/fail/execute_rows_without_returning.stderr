@@ -1,0 +1,5 @@
+error: an #[execute] that returns rows needs a RETURNING clause; return `usize` for the number of rows changed
+ --> tests/ui/dao/fail/execute_rows_without_returning.rs:5:15
+  |
+5 |     #[execute("INSERT INTO ledger (note) VALUES (:note)")]
+  |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

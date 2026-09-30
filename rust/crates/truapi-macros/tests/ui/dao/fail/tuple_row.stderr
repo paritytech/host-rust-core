@@ -1,0 +1,5 @@
+error: read rows into a struct deriving `serde::Deserialize`, not a tuple or array
+ --> tests/ui/dao/fail/tuple_row.rs:6:45
+  |
+6 |     fn pairs(&self) -> rusqlite::Result<Vec<(i64, i64)>>;
+  |                                             ^^^^^^^^^^
