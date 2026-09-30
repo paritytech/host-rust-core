@@ -32,6 +32,7 @@ pub(super) fn context(platform: Arc<StubPlatform>) -> NativeChatContext {
         },
         entropy: Zeroizing::new(vec![0x44; 16]),
         session_valid: Arc::new(|| true),
+        chat_session_granted: Arc::new(|_| false),
         network_suffix: "test".into(),
         genesis_hash: [2; 32],
         coinage_instance_id: None,
@@ -842,5 +843,42 @@ fn actor_custody_cannot_override_missing_or_rejected_wallet_recovery_evidence() 
                     .is_empty()
             );
         }
+    });
+}
+
+#[test]
+fn a_finished_partial_incoming_claim_is_final() {
+    block_on(async {
+        let context = context(Arc::new(StubPlatform {
+            chain_connect_error: Some("offline"),
+            ..Default::default()
+        }));
+        let wallet = WalletCoinage::open(&context).await.unwrap();
+        let mut operation = accepted_outgoing("partial-incoming");
+        operation.phase = Phase::Incoming;
+        operation.card.direction = Direction::Incoming;
+        operation.card.state = State::PartiallyCleared { cleared_cents: 10 };
+        wallet.save(&operation).await.unwrap();
+        let mut plan = truapi_coinage::ClaimPlan {
+            memo_key: operation.memo_key.unwrap(),
+            message_id: None,
+            entries: Vec::new(),
+            outgoing_public_keys: Vec::new(),
+            detection_anchor: None,
+            status: ClaimPlanStatus::Processing,
+            claimed_amount: Some(250),
+            total_value: 250,
+            markers: Default::default(),
+        };
+        ClaimPlanStore::save(&*wallet.store, &plan).await.unwrap();
+        // Unsettled work needs the chain, which this context cannot reach.
+        assert_eq!(
+            wallet.reconcile(&context).await,
+            Err(Error::NetworkUnavailable)
+        );
+
+        plan.status = ClaimPlanStatus::Finished;
+        ClaimPlanStore::save(&*wallet.store, &plan).await.unwrap();
+        wallet.reconcile(&context).await.unwrap();
     });
 }

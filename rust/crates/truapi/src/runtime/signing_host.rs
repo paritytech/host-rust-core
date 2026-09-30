@@ -101,6 +101,8 @@ use zeroize::Zeroizing;
 struct LocalGrantState {
     activation_generation: u64,
     auto_signing_grants: HashSet<([u8; 32], String)>,
+    /// Chat authority the user allowed for this session only, by owner and product.
+    chat_session_grants: HashSet<([u8; 32], String)>,
 }
 
 impl LocalGrantState {
@@ -110,6 +112,7 @@ impl LocalGrantState {
             .checked_add(1)
             .expect("local activation generation exhausted");
         self.auto_signing_grants.clear();
+        self.chat_session_grants.clear();
     }
 
     fn revoke_product(&mut self, product_id: &str) {
@@ -118,6 +121,8 @@ impl LocalGrantState {
             .checked_add(1)
             .expect("local activation generation exhausted");
         self.auto_signing_grants
+            .retain(|(_, granted_product_id)| granted_product_id != product_id);
+        self.chat_session_grants
             .retain(|(_, granted_product_id)| granted_product_id != product_id);
     }
 }
@@ -517,11 +522,21 @@ impl SigningHost {
                 local_session_validation_id(&current, grants.activation_generation) == validation_id
             })
         });
+        let local_grants = self.local_grants.clone();
+        let owner = session.public_key;
+        let chat_session_granted = Arc::new(move |product: &str| {
+            local_grants
+                .lock()
+                .expect("local AutoSigning grant mutex poisoned")
+                .chat_session_grants
+                .contains(&(owner, product.to_owned()))
+        });
         Ok(NativeChatContext {
             services: self.services.clone(),
             session: session.clone(),
             entropy,
             session_valid,
+            chat_session_granted,
             network_suffix: self.network_suffix.clone(),
             genesis_hash: self.services.people_chain_genesis_hash,
             coinage_instance_id: self.coinage_instance_id,
@@ -911,6 +926,14 @@ impl SigningHost {
 
 #[async_trait::async_trait]
 impl ProductAuthority for SigningHost {
+    fn chat_session_granted(&self, session: &AuthoritySession, product_id: &str) -> bool {
+        self.local_grants
+            .lock()
+            .expect("local AutoSigning grant mutex poisoned")
+            .chat_session_grants
+            .contains(&(session.public_key, product_id.to_owned()))
+    }
+
     fn current_session(&self) -> Option<AuthoritySession> {
         self.current_local_session()
     }
@@ -1400,13 +1423,27 @@ impl ProductAuthority for SigningHost {
         request: ProductDeviceChatAuthorityRequest,
     ) -> Result<truapi::latest::HostProductDeviceChatResponse, ProductDeviceChatAuthorityError>
     {
-        self.require_current_session(session)?;
+        let (_, activation_generation) = self.require_current_session(session)?;
         let calling_product_id = normalize_product_identifier(&request.calling_product_id)
             .map_err(|_| {
                 ProductDeviceChatAuthorityError::Domain(
                     truapi::latest::HostProductDeviceChatError::InvalidRequest,
                 )
             })?;
+        if request.session_consent {
+            let mut state = self
+                .local_grants
+                .lock()
+                .expect("local AutoSigning grant mutex poisoned");
+            // A revocation or reactivation since the session check advanced the
+            // generation; the grant must not outlive it.
+            if state.activation_generation != activation_generation {
+                return Err(ProductDeviceChatAuthorityError::Disconnected);
+            }
+            state
+                .chat_session_grants
+                .insert((session.public_key, calling_product_id.clone()));
+        }
         let context = self.native_chat_context(session)?;
         self.native_chat
             .execute(context, calling_product_id, request.operation)
@@ -4560,6 +4597,7 @@ mod tests {
                         ProductDeviceChatAuthorityRequest {
                             calling_product_id: "myapp.dot".to_string(),
                             operation: truapi::latest::HostProductDeviceChatRequest::Initialize,
+                            session_consent: false,
                         },
                     )
                     .await,
@@ -4669,6 +4707,78 @@ mod tests {
                 )))
             ));
             assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+        });
+    }
+
+    #[test]
+    fn product_chat_allow_once_lasts_for_the_session_without_persisting() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                chat_authority_confirmed: true,
+                ..StubPlatform::default()
+            });
+            platform
+                .permission_confirmation_decisions
+                .lock()
+                .expect("permission confirmation mutex poisoned")
+                .push_back(crate::platform::PermissionDecision::AllowOnce);
+            let (services, activation) = signing_runtime_with_platform(platform.clone());
+            activation
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let runtime = product_runtime(services.clone(), activation.clone());
+            let cx = CallContext::default();
+            let chat =
+                |request| runtime.product_device_chat(&cx, HostProductDeviceChatRequest::V2(request));
+            chat(truapi::latest::HostProductDeviceChatRequest::Initialize)
+                .await
+                .unwrap();
+            // The in-actor re-check honours the session grant: the lookup, not
+            // authorization, is what fails for an unknown attachment.
+            let unknown = truapi::latest::HostProductDeviceChatRequest::OpenAttachment {
+                attachment_id: [0x77; 32],
+            };
+            assert!(!matches!(
+                chat(unknown.clone()).await,
+                Err(CallError::Domain(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::AccessNotGranted
+                )))
+            ));
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+            // A new execution of the same product reuses the session grant.
+            let next_execution = product_runtime(services, activation);
+            next_execution
+                .product_device_chat(
+                    &cx,
+                    HostProductDeviceChatRequest::V2(
+                        truapi::latest::HostProductDeviceChatRequest::Initialize,
+                    ),
+                )
+                .await
+                .unwrap();
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+            assert_eq!(
+                runtime
+                    .permission_authorization_status(PermissionAuthorizationRequest::ChatAuthority)
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined
+            );
+
+            runtime
+                .set_permission_authorization_status(
+                    PermissionAuthorizationRequest::ChatAuthority,
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                chat(unknown).await,
+                Err(CallError::Domain(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::AccessNotGranted
+                )))
+            ));
         });
     }
 
@@ -4854,6 +4964,72 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 sso_chat(&service, initialize).await,
+                Err(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::AccessNotGranted,
+                ))
+            );
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+        });
+    }
+
+    #[test]
+    fn sso_chat_allow_once_lasts_for_the_session_without_persisting() {
+        futures::executor::block_on(async {
+            let platform = Arc::new(StubPlatform {
+                chat_authority_confirmed: true,
+                ..StubPlatform::default()
+            });
+            platform
+                .permission_confirmation_decisions
+                .lock()
+                .expect("permission confirmation mutex poisoned")
+                .push_back(crate::platform::PermissionDecision::AllowOnce);
+            let (_, activation) = signing_runtime_with_platform(platform.clone());
+            activation
+                .activate_local_session(ENTROPY.to_vec())
+                .await
+                .unwrap();
+            let service = super::sso_service::SigningHostSsoService::new(activation);
+            let initialize = SsoProductDeviceChatOperation::V3(
+                truapi::latest::HostProductDeviceChatRequest::Initialize,
+            );
+            let unknown = SsoProductDeviceChatOperation::V3(
+                truapi::latest::HostProductDeviceChatRequest::OpenAttachment {
+                    attachment_id: [0x77; 32],
+                },
+            );
+            sso_chat(&service, initialize.clone()).await.unwrap();
+            sso_chat(&service, initialize).await.unwrap();
+            assert_ne!(
+                sso_chat(&service, unknown.clone()).await,
+                Err(HostProductDeviceChatError::V1(
+                    truapi::latest::HostProductDeviceChatError::AccessNotGranted,
+                ))
+            );
+            assert_eq!(platform.chat_authority_reviews.lock().len(), 1);
+
+            let product = crate::platform::ProductContext::new_with_execution(
+                "myapp.dot".to_owned(),
+                crate::platform::ProductExecutionKind::Worker,
+            )
+            .expect("test product id is valid");
+            let permissions = PermissionsService::new(platform.as_ref(), platform.as_ref(), &product);
+            assert_eq!(
+                permissions
+                    .authorization_status(&PermissionAuthorizationRequest::ChatAuthority)
+                    .await
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined
+            );
+            permissions
+                .set_authorization_status(
+                    &PermissionAuthorizationRequest::ChatAuthority,
+                    PermissionAuthorizationStatus::Denied,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                sso_chat(&service, unknown).await,
                 Err(HostProductDeviceChatError::V1(
                     truapi::latest::HostProductDeviceChatError::AccessNotGranted,
                 ))

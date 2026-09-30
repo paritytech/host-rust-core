@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use parity_scale_codec::{Decode, Encode, Output};
 use truapi_coinage::{
-    claim_plan::{ClaimPlan, ClaimPlanStatus, CodableClaimPlanEntry},
+    claim_plan::{ClaimMarkers, ClaimPlan, ClaimPlanStatus, CodableClaimPlanEntry},
     model::{Coin, CoinState, Voucher, VoucherLocalState, VoucherPrivacyLevel, VoucherRemoteState},
     wal::{CheckpointBlock, TransferWalEntry, WalCoinRef, WalOperation, WalPayload},
 };
@@ -176,6 +176,23 @@ pub(super) fn validate(state: &Snapshot) -> Result<(), StoreError> {
         if keys.len() != plan.outgoing_public_keys.len() {
             return Err(StoreError::Corrupt);
         }
+        let markers = &plan.markers;
+        bound(markers.submitted.len(), MAX_ITEMS)?;
+        bound(markers.forfeited.len(), MAX_ITEMS)?;
+        let submitted: BTreeSet<_> = markers.submitted.iter().collect();
+        let forfeited: BTreeSet<_> = markers.forfeited.iter().collect();
+        if submitted.len() != markers.submitted.len()
+            || forfeited.len() != markers.forfeited.len()
+            || !submitted.is_disjoint(&forfeited)
+            || !submitted
+                .iter()
+                .chain(&forfeited)
+                .all(|index| entry_ids.contains(*index))
+            || (forfeited.is_empty() != (markers.forfeited_value == 0))
+            || plan.credited_amount().is_none() && markers.forfeited_value != 0
+        {
+            return Err(StoreError::Corrupt);
+        }
     }
     for bytes in state.operations.values() {
         bound(bytes.len(), MAX_OPERATION_BYTES)?;
@@ -272,6 +289,19 @@ fn encode_to(state: &Snapshot, out: &mut impl Output) {
     for (id, value) in &state.operations {
         id.encode_to(out);
         bytes(out, value);
+    }
+    // Each plan's claim markers, in plan order.
+    for plan in state.plans.values() {
+        let markers = &plan.markers;
+        count(out, markers.submitted.len());
+        for index in &markers.submitted {
+            index.encode_to(out);
+        }
+        count(out, markers.forfeited.len());
+        for index in &markers.forfeited {
+            index.encode_to(out);
+        }
+        markers.forfeited_value.encode_to(out);
     }
 }
 
@@ -439,6 +469,7 @@ pub(super) fn decode(plaintext: &[u8]) -> Result<Snapshot, StoreError> {
             status: ClaimPlanStatus::from_raw(input.value()?).ok_or(StoreError::Corrupt)?,
             claimed_amount: input.value()?,
             total_value: input.value()?,
+            markers: ClaimMarkers::default(),
         };
         if state.plans.insert(memo_key, plan).is_some() {
             return Err(StoreError::Corrupt);
@@ -450,6 +481,21 @@ pub(super) fn decode(plaintext: &[u8]) -> Result<Snapshot, StoreError> {
         if state.operations.insert(id, bytes).is_some() {
             return Err(StoreError::Corrupt);
         }
+    }
+    for plan in state.plans.values_mut() {
+        let mut submitted = Vec::new();
+        for _ in 0..input.count(MAX_ITEMS)? {
+            submitted.push(input.value()?);
+        }
+        let mut forfeited = Vec::new();
+        for _ in 0..input.count(MAX_ITEMS)? {
+            forfeited.push(input.value()?);
+        }
+        plan.markers = ClaimMarkers {
+            submitted,
+            forfeited,
+            forfeited_value: input.value()?,
+        };
     }
     if !input.0.is_empty() {
         return Err(StoreError::Corrupt);

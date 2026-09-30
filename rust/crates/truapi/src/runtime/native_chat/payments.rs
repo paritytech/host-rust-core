@@ -512,6 +512,25 @@ impl WalletCoinage {
         rx.await.map_err(|_| Error::StorageUnavailable)?
     }
 
+    /// Whether a card has reached its final state. An incoming payment whose
+    /// claim finished is final even when part of it was spent elsewhere.
+    async fn settled(&self, operation: &Operation) -> Result<bool, Error> {
+        Ok(match operation.card.state {
+            State::Cleared | State::Failed { .. } => true,
+            State::PartiallyCleared { .. } if operation.phase == Phase::Incoming => {
+                let key = TransferMemo::from_scale_encoded(&operation.memo)
+                    .map_err(|_| Error::StorageUnavailable)?
+                    .identifier();
+                self.store
+                    .plan(&key)
+                    .await
+                    .map_err(|_| Error::StorageUnavailable)?
+                    .is_some_and(|plan| plan.status == ClaimPlanStatus::Finished)
+            }
+            _ => false,
+        })
+    }
+
     async fn reconcile_once(&self, context: &NativeChatContext) -> Result<(), Error> {
         let _gate = self.gate.lock().await;
         self.check(context)?;
@@ -519,20 +538,19 @@ impl WalletCoinage {
             .reauthenticate()
             .await
             .map_err(|_| Error::StorageUnavailable)?;
-        let operations = self.operations().await?;
-        if operations
-            .iter()
-            .all(|operation| matches!(operation.card.state, State::Cleared | State::Failed { .. }))
-        {
+        let mut operations = Vec::new();
+        for operation in self.operations().await? {
+            if !self.settled(&operation).await? {
+                operations.push(operation);
+            }
+        }
+        if operations.is_empty() {
             return Ok(());
         }
         let engine = Engine::new(context, self.store.clone()).await?;
         engine.synchronize(context, &self.store).await?;
         for mut operation in operations {
             self.check(context)?;
-            if matches!(operation.card.state, State::Cleared | State::Failed { .. }) {
-                continue;
-            }
             if operation.phase == Phase::Incoming {
                 if operation.denominations != Some(binding(&engine)) {
                     return Err(Error::NetworkUnavailable);
@@ -551,10 +569,15 @@ impl WalletCoinage {
                     .plan(&key)
                     .await
                     .map_err(|_| Error::StorageUnavailable)?;
-                let cleared = plan.as_ref().and_then(|p| p.claimed_amount).unwrap_or(0);
-                operation.card.state = if plan
+                // Forfeited entries were spent elsewhere and never clear.
+                let cleared = plan
                     .as_ref()
-                    .is_some_and(|p| p.status == ClaimPlanStatus::Finished)
+                    .and_then(|p| p.credited_amount())
+                    .unwrap_or(0);
+                let finished = plan
+                    .as_ref()
+                    .is_some_and(|p| p.status == ClaimPlanStatus::Finished);
+                operation.card.state = if finished
                     && Some(cleared)
                         == operation
                             .denominations
@@ -563,6 +586,10 @@ impl WalletCoinage {
                             .checked_mul(u128::from(operation.card.amount_cents))
                 {
                     State::Cleared
+                } else if finished && cleared == 0 {
+                    State::Failed {
+                        reason: Failure::AlreadySpent,
+                    }
                 } else if cleared > 0 {
                     State::PartiallyCleared {
                         cleared_cents: engine.partial_cents(cleared)?,

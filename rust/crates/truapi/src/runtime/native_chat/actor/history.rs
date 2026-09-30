@@ -11,6 +11,8 @@ use crate::runtime::native_chat::{
 };
 
 const MAX_HISTORY_IMPORTS: usize = 4096;
+// One contact cannot fill the shared bound.
+const MAX_PEER_HISTORY_IMPORTS: usize = 512;
 const MAX_EXPANDED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HISTORY_DEPTH: usize = 64;
 
@@ -96,6 +98,18 @@ pub(super) fn reference_digest(reference: &CompactedHistory) -> [u8; 32] {
     hash(&bytes)
 }
 
+/// Refuse one more import from `peer` once its quota or the shared bound is
+/// reached. Imports are never evicted: their digests stop a replayed history
+/// reference from being claimed again.
+fn check_import_capacity(imports: &[HistoryImport], peer: [u8; 32]) -> Result<(), Error> {
+    if imports.len() >= MAX_HISTORY_IMPORTS
+        || imports.iter().filter(|entry| entry.peer == peer).count() >= MAX_PEER_HISTORY_IMPORTS
+    {
+        return Err(Error::StorageUnavailable);
+    }
+    Ok(())
+}
+
 pub(super) fn validate_imports(imports: &[HistoryImport]) -> Result<(), Error> {
     if imports.len() > MAX_HISTORY_IMPORTS {
         return Err(Error::StorageUnavailable);
@@ -165,18 +179,17 @@ impl NativeChatActor {
             .rev()
             .map(|bytes| (Zeroizing::new(bytes), 0usize))
             .collect();
-        let (mut seen, existing_count) = self
+        let (mut seen, existing, peer_existing) = self
             .store
             .read(|state| {
-                (
-                    state
-                        .history_imports
-                        .iter()
-                        .filter(|entry| entry.peer == peer)
-                        .map(|entry| entry.digest)
-                        .collect::<BTreeSet<_>>(),
-                    state.history_imports.len(),
-                )
+                let peer_imports = state
+                    .history_imports
+                    .iter()
+                    .filter(|entry| entry.peer == peer)
+                    .map(|entry| entry.digest)
+                    .collect::<BTreeSet<_>>();
+                let peer_existing = peer_imports.len();
+                (peer_imports, state.history_imports.len(), peer_existing)
             })
             .await?;
         let mut expanded = Zeroizing::new(Vec::<Vec<u8>>::new());
@@ -184,6 +197,7 @@ impl NativeChatActor {
         let mut rich = Vec::new();
         let mut bytes_seen = 0usize;
         let mut had_history = false;
+        let mut had_rich = false;
         // Profile references are the Host's, not the product's: collected here,
         // stored after the open commits, and cut out of what the product sees.
         let mut profile_references = Vec::new();
@@ -212,7 +226,9 @@ impl NativeChatActor {
                     if !seen.insert(digest) {
                         continue;
                     }
-                    if existing_count + imports.len() >= MAX_HISTORY_IMPORTS {
+                    if existing + imports.len() >= MAX_HISTORY_IMPORTS
+                        || peer_existing + imports.len() >= MAX_PEER_HISTORY_IMPORTS
+                    {
                         return Err(Error::StorageUnavailable);
                     }
                     let rpc =
@@ -247,8 +263,10 @@ impl NativeChatActor {
                     {
                         return Err(Error::InvalidStatement);
                     }
+                    // Attachment tickets and identifiers stay Host-private; the
+                    // product receives this message only as public metadata.
                     rich.push(message);
-                    expanded.push(core::mem::take(&mut *bytes));
+                    had_rich = true;
                 }
                 OpenedDeviceMessage::Payment(memo) => {
                     if !super::receive::valid_peer_timestamp(memo.timestamp, current_unix_secs()) {
@@ -309,9 +327,9 @@ impl NativeChatActor {
                 .await?;
             self.record_profile_references(context, peer, profile_references)
                 .await?;
-            // Preserve the original canonical request when no HOP expansion was
-            // needed, except references already transferred by legacy migration.
-            let plaintext = if had_history || stripped {
+            // Preserve the original canonical request only when no history
+            // expansion or removal of private frames was needed.
+            let plaintext = if had_history || had_rich || stripped {
                 wire::encode_transport_request_plaintext(&request_id, &expanded)
                     .map_err(|_| Error::InvalidStatement)?
             } else {
@@ -507,6 +525,7 @@ impl NativeChatActor {
                         if !state.history_imports.iter().any(|entry| {
                             entry.peer == imported.peer && entry.digest == imported.digest
                         }) {
+                            check_import_capacity(&state.history_imports, imported.peer)?;
                             state.history_imports.push(imported.clone());
                         }
                     }
@@ -567,5 +586,43 @@ impl NativeChatActor {
                 .await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    fn import(peer: u8, index: u32) -> HistoryImport {
+        let mut digest = [0; 32];
+        digest[..4].copy_from_slice(&index.to_le_bytes());
+        HistoryImport {
+            peer: [peer; 32],
+            digest,
+            pending: None,
+        }
+    }
+
+    #[test]
+    fn a_full_contact_is_refused_without_blocking_others() {
+        let imports: Vec<_> = (0..MAX_PEER_HISTORY_IMPORTS as u32)
+            .map(|index| import(1, index))
+            .collect();
+        assert_eq!(
+            check_import_capacity(&imports, [1; 32]),
+            Err(Error::StorageUnavailable)
+        );
+        assert_eq!(check_import_capacity(&imports, [2; 32]), Ok(()));
+    }
+
+    #[test]
+    fn the_shared_bound_holds_across_contacts() {
+        let imports: Vec<_> = (0..MAX_HISTORY_IMPORTS as u32)
+            .map(|index| import((index / MAX_PEER_HISTORY_IMPORTS as u32) as u8, index))
+            .collect();
+        assert_eq!(
+            check_import_capacity(&imports, [0xFF; 32]),
+            Err(Error::StorageUnavailable)
+        );
     }
 }

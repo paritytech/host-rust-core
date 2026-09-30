@@ -296,6 +296,9 @@ pub struct ProductDeviceChatAuthorityRequest {
     pub calling_product_id: String,
     /// Authorized wallet-local Chat operation.
     pub operation: HostProductDeviceChatRequest,
+    /// The user allowed Chat for this session only. The authority honours
+    /// that grant for the product until its session ends; nothing is stored.
+    pub session_consent: bool,
 }
 
 /// Only trusted attachment preparation uploads preimages; products submit Chat statements.
@@ -616,6 +619,12 @@ pub trait ProductAuthority: Send + Sync {
         session: &AuthoritySession,
         request: ProductRequest<HostAccountRingVrfSignRequest>,
     ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
+
+    /// Whether the user allowed Chat for `product_id` for the rest of this
+    /// session. Authorities that do not keep session grants answer `false`.
+    fn chat_session_granted(&self, _session: &AuthoritySession, _product_id: &str) -> bool {
+        false
+    }
 
     /// Execute an authorized operation on the Host-owned native Chat device.
     async fn product_device_chat(
