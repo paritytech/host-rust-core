@@ -100,9 +100,23 @@ button {
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer;
 }
 button:hover { border-color: var(--accent); color: var(--accent); }
-main { display: grid; grid-template-columns: 260px 1fr; min-height: 0; }
-main.with-log { grid-template-columns: 260px 1fr minmax(360px, 34%); }
+button.on { border-color: var(--accent); color: var(--accent); }
+.panes { display: flex; gap: 2px; }
+.panes button { border-radius: 0; margin-left: -1px; }
+.panes button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.panes button:last-child { border-radius: 0 6px 6px 0; }
+main { display: grid; min-height: 0; }
+main.dragging { cursor: col-resize; user-select: none; }
+main.dragging * { pointer-events: none; }
+.gutter { position: relative; z-index: 1; }
+.gutter::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -4px; width: 8px;
+  cursor: col-resize; background: transparent; transition: background 120ms;
+}
+.gutter:hover::after, .gutter.active::after { background: var(--accent); }
+.gutter[hidden] { display: none; }
 nav { background: var(--rail); border-right: 1px solid var(--line); overflow-y: auto; padding: 10px 0; }
+nav[hidden] { display: none; }
 nav h2 { font: 600 11px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin: 6px 18px 10px; }
 .room {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -170,10 +184,10 @@ textarea:disabled { opacity: 0.5; }
 #status.warn { color: var(--warn); }
 #status.err { color: var(--err); }
 aside {
-  display: none; min-height: 0; border-left: 1px solid var(--line); background: var(--rail);
+  display: grid; min-height: 0; border-left: 1px solid var(--line); background: var(--rail);
   grid-template-rows: auto 1fr auto;
 }
-main.with-log aside { display: grid; }
+aside[hidden], section[hidden] { display: none; }
 .loghead { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .loghead h2 { font: 600 11px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin: 0; flex: 1; }
 .loghead input {
@@ -199,16 +213,21 @@ main.with-log aside { display: grid; }
   <span class="spacer"></span>
   <span id="link" class="pill off">socket closed</span>
   <span id="worker" class="pill">worker: unknown</span>
-  <button id="logtoggle" type="button">Logs</button>
+  <span class="panes">
+    <button id="toggle-rooms" type="button">Rooms</button>
+    <button id="toggle-chat" type="button">Chat</button>
+    <button id="toggle-log" type="button">Logs</button>
+  </span>
   <button id="restart" type="button">Restart worker</button>
 </header>
 <main id="main">
-  <nav>
+  <nav id="rooms-pane">
     <h2>Rooms</h2>
     <div id="rooms"></div>
     <div class="bots" id="botsBox" hidden><h2>Bots</h2><div id="bots"></div></div>
   </nav>
-  <section>
+  <div class="gutter" id="gutter-rooms" title="Drag to resize"></div>
+  <section id="chat-pane">
     <div class="roomhead" id="roomhead"></div>
     <div id="thread"></div>
     <footer>
@@ -219,6 +238,7 @@ main.with-log aside { display: grid; }
       <div class="hint"><span id="status"></span><span>Enter to send, Shift+Enter for newline</span></div>
     </footer>
   </section>
+  <div class="gutter" id="gutter-log" title="Drag to resize"></div>
   <aside id="logpane">
     <div class="loghead">
       <h2>Worker log</h2>
@@ -504,10 +524,82 @@ $("input").onkeydown = (event) => {
 };
 $("restart").onclick = () => location.reload();
 
+// Three panes, each shown or hidden and the two side ones sized by drag,
+// remembered across reloads. The chat pane takes the slack; with it hidden
+// the log does. The last visible pane cannot be hidden: a page with nothing
+// on it has no button left to bring anything back.
+const LAYOUT_KEY = "chat.layout";
+const LAYOUT_DEFAULT = { rooms: true, chat: true, log: false, roomsWidth: 260, logWidth: 420 };
+const layout = (() => {
+  try { return { ...LAYOUT_DEFAULT, ...JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}") }; }
+  catch (_) { return { ...LAYOUT_DEFAULT }; }
+})();
+const PANE_MIN = { rooms: 160, log: 280 };
+
+function saveLayout() { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); }
+
+// Five grid children in order: rooms, gutter, chat, gutter, log. A gutter
+// takes a 0px track and overhangs it with negative margins, so it costs no
+// width; a hidden child leaves its track empty at 0px.
+function renderLayout() {
+  const roomsGutter = layout.rooms && (layout.chat || layout.log);
+  const logGutter = layout.log && (layout.chat || layout.rooms);
+  $("rooms-pane").hidden = !layout.rooms;
+  $("chat-pane").hidden = !layout.chat;
+  $("logpane").hidden = !layout.log;
+  $("gutter-rooms").hidden = !roomsGutter;
+  $("gutter-log").hidden = !logGutter;
+  const columns = [
+    !layout.rooms ? "0px" : layout.chat || layout.log ? `${layout.roomsWidth}px` : "1fr",
+    "0px",
+    layout.chat ? "minmax(320px, 1fr)" : "0px",
+    "0px",
+    !layout.log ? "0px" : layout.chat ? `${layout.logWidth}px` : "1fr",
+  ];
+  $("main").style.gridTemplateColumns = columns.join(" ");
+  for (const pane of ["rooms", "chat", "log"]) $(`toggle-${pane}`).classList.toggle("on", layout[pane]);
+}
+
+function togglePane(pane) {
+  const visible = ["rooms", "chat", "log"].filter((p) => layout[p]);
+  if (layout[pane] && visible.length === 1) return;
+  layout[pane] = !layout[pane];
+  saveLayout();
+  renderLayout();
+  if (pane === "log" && layout.log) renderLog();
+}
+
+function dragGutter(gutter, pane, sign) {
+  gutter.onpointerdown = (event) => {
+    const startX = event.clientX;
+    const startWidth = layout[`${pane}Width`];
+    const main = $("main");
+    const max = main.clientWidth - 320 - (pane === "rooms" && layout.log ? layout.logWidth : 0) - (pane === "log" && layout.rooms ? layout.roomsWidth : 0);
+    gutter.setPointerCapture(event.pointerId);
+    gutter.classList.add("active");
+    main.classList.add("dragging");
+    gutter.onpointermove = (move) => {
+      const width = startWidth + sign * (move.clientX - startX);
+      layout[`${pane}Width`] = Math.round(Math.min(Math.max(width, PANE_MIN[pane]), Math.max(max, PANE_MIN[pane])));
+      renderLayout();
+    };
+    gutter.onpointerup = gutter.onpointercancel = () => {
+      gutter.onpointermove = null;
+      gutter.classList.remove("active");
+      main.classList.remove("dragging");
+      saveLayout();
+    };
+  };
+}
+
+for (const pane of ["rooms", "chat", "log"]) $(`toggle-${pane}`).onclick = () => togglePane(pane);
+dragGutter($("gutter-rooms"), "rooms", 1);
+dragGutter($("gutter-log"), "log", -1);
+
 // The log pane: every captured line, filtered by substring, following the
 // tail unless paused. Redrawn wholesale on filter and clear, appended to
 // otherwise, so a busy worker does not rebuild the list on every line.
-const logView = { open: localStorage.getItem("chat.logs") === "open", paused: false, filter: "", shown: 0 };
+const logView = { paused: false, filter: "", shown: 0 };
 const LOG_TIME = { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" };
 
 function logMatches(entry) {
@@ -542,13 +634,8 @@ function renderLog() {
   if (!logView.paused) box.scrollTop = box.scrollHeight;
 }
 
-function renderLogToggle() {
-  $("main").classList.toggle("with-log", logView.open);
-  $("logtoggle").classList.toggle("on", logView.open);
-}
-
 workerLog.onEntry = (entry) => {
-  if (!logView.open) return;
+  if (!layout.log) return;
   renderLogCount();
   if (!logMatches(entry)) return;
   const box = $("loglines");
@@ -558,12 +645,6 @@ workerLog.onEntry = (entry) => {
   while (box.childElementCount > workerLog.limit) { box.firstElementChild.remove(); logView.shown -= 1; }
   if (following) box.scrollTop = box.scrollHeight;
 };
-$("logtoggle").onclick = () => {
-  logView.open = !logView.open;
-  localStorage.setItem("chat.logs", logView.open ? "open" : "closed");
-  renderLogToggle();
-  if (logView.open) renderLog();
-};
 $("logfilter").oninput = (event) => { logView.filter = event.target.value.trim().toLowerCase(); renderLog(); };
 $("logpause").onclick = () => {
   logView.paused = !logView.paused;
@@ -572,8 +653,8 @@ $("logpause").onclick = () => {
   if (!logView.paused) $("loglines").scrollTop = $("loglines").scrollHeight;
 };
 $("logclear").onclick = () => { workerLog.entries.length = 0; workerLog.dropped = 0; renderLog(); };
-renderLogToggle();
-if (logView.open) renderLog();
+renderLayout();
+if (layout.log) renderLog();
 
 surface.onState = (open) => {
   const link = $("link");
