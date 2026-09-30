@@ -207,19 +207,12 @@ extension RustProductExecutionBridge: TrUAPIChainEventHandling {
 
 extension RustProductExecutionBridge: GameHostBridge {
     func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
-        guard let gameReminders = dependencies.gameReminders else {
-            throw HostRemindNextGameError.Unknown(reason: "game reminders unavailable")
-        }
-        let date = Date(timeIntervalSince1970: TimeInterval(startsAt) / 1000)
-        let outcome = await gameReminders.schedule(
+        await dependencies.gameReminders?.schedule(
             productId: dependencies.productId,
-            startsAt: date,
+            startsAt: Date(timeIntervalSince1970: TimeInterval(startsAt) / 1_000),
             ringAlarm: ringAlarm,
             addCalendarEvent: addCalendarEvent
         )
-        if outcome == .busy {
-            throw HostRemindNextGameError.Busy
-        }
     }
 
     func cancelReminder() async throws {

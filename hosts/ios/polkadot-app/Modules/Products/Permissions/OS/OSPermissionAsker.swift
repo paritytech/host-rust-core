@@ -6,22 +6,9 @@ import Products
 
 final class OSPermissionAsker: @unchecked Sendable {
     private let notificationService: UserNotificationServicing
-    /// AlarmKit's status, or nil below iOS 26.1.
-    private let alarmKitStatus: () -> OSPermissionStatus?
 
-    init(
-        notificationService: UserNotificationServicing = UserNotificationService.shared,
-        alarmKitStatus: @escaping () -> OSPermissionStatus? = OSPermissionAsker.currentAlarmKitStatus
-    ) {
+    init(notificationService: UserNotificationServicing = UserNotificationService.shared) {
         self.notificationService = notificationService
-        self.alarmKitStatus = alarmKitStatus
-    }
-
-    static func currentAlarmKitStatus() -> OSPermissionStatus? {
-        if #available(iOS 26.1, *) {
-            return alarmAuthorizationStatus()
-        }
-        return nil
     }
 }
 
@@ -31,7 +18,7 @@ extension OSPermissionAsker: OSPermissionAsking {
         case .notifications:
             await checkNotificationStatus()
         case .alarm:
-            await checkAlarmStatus()
+            checkAlarmStatus()
         case .calendar:
             checkCalendarStatus()
         case .camera:
@@ -91,49 +78,30 @@ private extension OSPermissionAsker {
         }
     }
 
-    func checkAlarmStatus() async -> OSPermissionStatus {
-        let notificationStatus = await checkNotificationStatus()
-
-        guard let alarmKitStatus = alarmKitStatus() else {
-            return notificationStatus
+    /// AlarmKit alone: below iOS 26.1 there is no alarm to ring, so the core falls back to notifications.
+    func checkAlarmStatus() -> OSPermissionStatus {
+        if #available(iOS 26.1, *) {
+            return alarmAuthorizationStatus()
         }
-
-        switch (alarmKitStatus, notificationStatus) {
-        case (.allowed, _),
-             (.denied, .allowed):
-            return .allowed
-        case (.denied, .denied):
-            return .denied
-        case (.notDetermined, _),
-             (.denied, .notDetermined):
-            return .notDetermined
-        }
+        return .denied
     }
 
     func askAlarm() async -> Bool {
-        if #available(iOS 26.1, *) {
-            switch Self.alarmAuthorizationStatus() {
-            case .allowed:
-                return true
-            case .notDetermined:
-                let state = try? await AlarmManager.shared.requestAuthorization()
-                if state == .authorized {
-                    return true
-                }
-            case .denied:
-                break
-            }
+        guard #available(iOS 26.1, *) else {
+            return false
         }
-
-        if await checkNotificationStatus().isAllowed {
+        switch alarmAuthorizationStatus() {
+        case .allowed:
             return true
+        case .notDetermined:
+            return await (try? AlarmManager.shared.requestAuthorization()) == .authorized
+        case .denied:
+            return false
         }
-
-        return await askNotifications()
     }
 
     @available(iOS 26.1, *)
-    static func alarmAuthorizationStatus() -> OSPermissionStatus {
+    func alarmAuthorizationStatus() -> OSPermissionStatus {
         switch AlarmManager.shared.authorizationState {
         case .authorized:
             .allowed
@@ -162,7 +130,7 @@ private extension OSPermissionAsker {
     }
 
     func askCalendar() async -> Bool {
-        (try? await EKEventStore().requestWriteOnlyAccessToEvents()) ?? false
+        await (try? EKEventStore().requestWriteOnlyAccessToEvents()) ?? false
     }
 
     func askCaptureDevice(_ mediaType: AVMediaType) async -> Bool {

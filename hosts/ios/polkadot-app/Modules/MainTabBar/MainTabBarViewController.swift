@@ -6,7 +6,7 @@ import DesignSystem
 import UIKitExt
 import Products
 
-final class MainTabBarViewController: UIViewController, TopmostChildProviding {
+final class MainTabBarViewController: UIViewController {
     let presenter: MainTabBarPresenterProtocol
     let viewFactory: TabFactoryProtocol
     let browserCoordinator: SPABrowserCoordinating
@@ -59,6 +59,7 @@ final class MainTabBarViewController: UIViewController, TopmostChildProviding {
         view.backgroundColor = .bgSurfaceMain
 
         installStatusBar()
+
         installChromeController()
 
         chromeController.statusStripAnchorProvider = { [weak self] in self?.chainStatusAnchorGuide }
@@ -97,10 +98,6 @@ final class MainTabBarViewController: UIViewController, TopmostChildProviding {
         super.viewSafeAreaInsetsDidChange()
 
         chromeController.applyLayout(chromeContext(for: container.selectedController))
-    }
-
-    var topmostChild: UIViewController? {
-        container.selectedController
     }
 
     override var childForStatusBarStyle: UIViewController? {
@@ -296,11 +293,6 @@ extension MainTabBarViewController {
         mountSPA(for: tab)
         return true
     }
-
-    /// Opens the scan panel from outside the bar, as a tap on the `.scan` action would.
-    func openScanPanel() {
-        chromeController.setPanel(.content(.scan), animated: true)
-    }
 }
 
 // MARK: - MainTabBarViewProtocol
@@ -389,13 +381,14 @@ extension MainTabBarViewController: MainTabBarViewProtocol {
         let width = max(1, ChainConnectionStatusBarView.ringsWidth(count: models.count))
         chainStatusAnchorWidth?.update(offset: width)
     }
+}
 
-    func attachWidget(_ configuration: any HashableContentConfiguration, for id: AppWidgetID) {
-        chromeController.attachWidget(configuration, for: id)
-    }
+// MARK: - Scan panel
 
-    func detachWidget(for id: AppWidgetID) {
-        chromeController.detachWidget(for: id)
+extension MainTabBarViewController {
+    /// Opens the scan panel from outside the bar, as a tap on the `.scan` action would.
+    func openScanPanel() {
+        chromeController.setPanel(.content(.scan), animated: true)
     }
 }
 
@@ -420,6 +413,22 @@ extension MainTabBarViewController: AppNavigationControllerTransitionObserving {
             stack: navigationController.viewControllers,
             showing: viewController
         ))
+    }
+}
+
+extension MainTabBarViewController: TopmostChildProviding {
+    var topmostChild: UIViewController? {
+        container.selectedController
+    }
+}
+
+extension MainTabBarViewController {
+    func attachWidget(_ configuration: any HashableContentConfiguration, for id: AppWidgetID) {
+        chromeController.attachWidget(configuration, for: id)
+    }
+
+    func detachWidget(for id: AppWidgetID) {
+        chromeController.detachWidget(for: id)
     }
 }
 
@@ -495,6 +504,9 @@ private extension MainTabBarViewController {
     }
 
     var mountedSPATabId: UUID? {
-        if case let .spa(id) = container.selection { id } else { nil }
+        guard case let .spa(id) = container.selection else {
+            return nil
+        }
+        return id
     }
 }

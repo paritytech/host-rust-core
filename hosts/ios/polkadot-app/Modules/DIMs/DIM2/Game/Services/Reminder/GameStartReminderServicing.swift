@@ -7,26 +7,28 @@ enum GameReminderTarget: Equatable {
     case product(ProductId)
 }
 
-/// Separate keys let the native and product game reminders coexist without cancelling each other.
+/// Separate keys let the native game and each product's reminder coexist without cancelling each other.
 struct GameReminderStorageKeys {
-    let alarmId: SettingsKey
-    let alarmFireDate: SettingsKey
-    let notificationDate: SettingsKey
+    let alarmId: String
+    let alarmFireDate: String
+    let notificationDate: String
     let notificationIdentifier: String
 
     static let game = GameReminderStorageKeys(
-        alarmId: .gameAlarmId,
-        alarmFireDate: .gameAlarmFireDate,
-        notificationDate: .gameStartNotificationDate,
+        alarmId: SettingsKey.gameAlarmId.rawValue,
+        alarmFireDate: SettingsKey.gameAlarmFireDate.rawValue,
+        notificationDate: SettingsKey.gameStartNotificationDate.rawValue,
         notificationIdentifier: "game_start"
     )
 
-    static let product = GameReminderStorageKeys(
-        alarmId: .productGameAlarmId,
-        alarmFireDate: .productGameAlarmFireDate,
-        notificationDate: .productGameStartNotificationDate,
-        notificationIdentifier: "product_game_start"
-    )
+    static func product(_ productId: ProductId) -> GameReminderStorageKeys {
+        GameReminderStorageKeys(
+            alarmId: "productGameAlarmId.\(productId)",
+            alarmFireDate: "productGameAlarmFireDate.\(productId)",
+            notificationDate: "productGameStartNotificationDate.\(productId)",
+            notificationIdentifier: "product_game_start.\(productId)"
+        )
+    }
 }
 
 protocol GameStartReminderServicing {

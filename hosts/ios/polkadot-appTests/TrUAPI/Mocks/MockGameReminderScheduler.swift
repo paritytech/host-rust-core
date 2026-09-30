@@ -11,7 +11,6 @@ final class MockGameReminderScheduler: ProductGameReminderScheduling {
         let addCalendarEvent: Bool
     }
 
-    var outcome: ProductGameScheduleOutcome = .scheduled
     private(set) var scheduled: [Call] = []
 
     func schedule(
@@ -19,11 +18,10 @@ final class MockGameReminderScheduler: ProductGameReminderScheduling {
         startsAt: Date,
         ringAlarm: Bool,
         addCalendarEvent: Bool
-    ) async -> ProductGameScheduleOutcome {
+    ) async {
         scheduled.append(
             Call(productId: productId, startsAt: startsAt, ringAlarm: ringAlarm, addCalendarEvent: addCalendarEvent)
         )
-        return outcome
     }
 
     func cancel(productId _: ProductId) {}

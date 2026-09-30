@@ -5,9 +5,8 @@ import Keystore_iOS
 import Products
 import UIKit
 
-/// One game reminder slot for the whole host, driving the alarm, the countdown pill,
-/// the calendar event and opening the product at the start. The holder may replace its reminder;
-/// another product is busy until the holder cancels or the held start passes.
+/// One game reminder per product, driving its alarm, the countdown pill, the calendar event
+/// and opening the product at the start. A schedule replaces the reminder the same product holds.
 @MainActor
 final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductReminderHosting {
     struct Slot: Codable, Equatable {
@@ -15,16 +14,19 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         let startsAt: Date
         /// False delivers a notification even when AlarmKit is authorized.
         var ringAlarm = true
+        /// The start already in the calendar, so a repeat for it adds nothing.
+        var calendarStartsAt: Date?
     }
 
     static let shared = ProductGameReminderCenter(
-        alarm: makeAlarm(),
-        notification: LocalNotificationGameReminder(
-            localNotificationService: UserNotificationService.shared,
-            settingsManager: SettingsManager.shared,
-            keys: .product
-        ),
-        isAlarmAuthorized: { OSPermissionAsker.currentAlarmKitStatus() == .allowed },
+        makeAlarm: makeAlarm,
+        makeNotification: {
+            LocalNotificationGameReminder(
+                localNotificationService: UserNotificationService.shared,
+                settingsManager: SettingsManager.shared,
+                keys: .product($0)
+            )
+        },
         makeCalendar: { GameCalendarService(eventStore: EKEventStore()) },
         settingsManager: SettingsManager.shared,
         applicationState: { UIApplication.shared.applicationState },
@@ -42,9 +44,13 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
     private static let calendarEventDuration: TimeInterval = 30 * .secondsInMinute
     private static let calendarRemindBefore: TimeInterval = 5 * .secondsInMinute
 
-    private let alarm: (any GameStartReminderServicing)?
-    private let notification: any GameStartReminderServicing
-    private let isAlarmAuthorized: () -> Bool
+    fileprivate struct Reminders {
+        let alarm: (any GameStartReminderServicing)?
+        let notification: any GameStartReminderServicing
+    }
+
+    private let makeAlarm: (ProductId) -> (any GameStartReminderServicing)?
+    private let makeNotification: (ProductId) -> any GameStartReminderServicing
     /// Builds the calendar at add time, so its store sees the current grant.
     private let makeCalendar: () -> any GameCalendarServicing
     private let settingsManager: SettingsManagerProtocol
@@ -52,6 +58,8 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
     private let openProduct: (ProductId) -> Void
     private let now: () -> Date
 
+    /// One pair per product: AlarmKit serialises its calls per instance.
+    private var reminders: [ProductId: Reminders] = [:]
     private weak var widgets: AppWidgetManaging?
     private var wakeUp: Task<Void, Never>?
     private var activeObserver: NSObjectProtocol?
@@ -67,18 +75,16 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
     }
 
     init(
-        alarm: (any GameStartReminderServicing)?,
-        notification: any GameStartReminderServicing,
-        isAlarmAuthorized: @escaping () -> Bool,
+        makeAlarm: @escaping (ProductId) -> (any GameStartReminderServicing)?,
+        makeNotification: @escaping (ProductId) -> any GameStartReminderServicing,
         makeCalendar: @escaping () -> any GameCalendarServicing,
         settingsManager: SettingsManagerProtocol,
         applicationState: @escaping () -> UIApplication.State,
         openProduct: @escaping (ProductId) -> Void,
         now: @escaping () -> Date
     ) {
-        self.alarm = alarm
-        self.notification = notification
-        self.isAlarmAuthorized = isAlarmAuthorized
+        self.makeAlarm = makeAlarm
+        self.makeNotification = makeNotification
         self.makeCalendar = makeCalendar
         self.settingsManager = settingsManager
         self.applicationState = applicationState
@@ -86,11 +92,17 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         self.now = now
     }
 
-    var slot: Slot? {
-        guard let data = settingsManager.anyValue(for: SettingsKey.productGameReminder.rawValue) as? Data else {
-            return nil
+    /// Held reminders, soonest first.
+    var slots: [Slot] {
+        guard let data = settingsManager.anyValue(for: SettingsKey.productGameReminders.rawValue) as? Data,
+              let slots = try? JSONDecoder().decode([Slot].self, from: data) else {
+            return []
         }
-        return try? JSONDecoder().decode(Slot.self, from: data)
+        return slots.sorted { $0.startsAt < $1.startsAt }
+    }
+
+    func slot(for productId: ProductId) -> Slot? {
+        slots.first { $0.productId == productId }
     }
 
     func start(widgets: AppWidgetManaging) {
@@ -104,30 +116,26 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         startsAt: Date,
         ringAlarm: Bool,
         addCalendarEvent: Bool
-    ) async -> ProductGameScheduleOutcome {
-        if let current = slot, current.productId != productId, now() < current.startsAt {
-            return .busy
-        }
-
+    ) async {
         let next = Slot(
             productId: productId,
             startsAt: Date(timeIntervalSince1970: startsAt.timeIntervalSince1970.rounded(.down)),
-            ringAlarm: ringAlarm
+            ringAlarm: ringAlarm,
+            calendarStartsAt: slot(for: productId)?.calendarStartsAt
         )
         deliver(next)
         refresh()
 
         if addCalendarEvent {
-            await addCalendarEventIfNeeded(productId: productId, startsAt: next.startsAt)
+            await addCalendarEventIfNeeded(next)
         }
-        return .scheduled
     }
 
     func cancel(productId: ProductId) {
-        guard slot?.productId == productId else {
+        guard slot(for: productId) != nil else {
             return
         }
-        drop()
+        drop(productId)
         refresh()
     }
 
@@ -135,49 +143,70 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         wakeUp?.cancel()
         wakeUp = nil
 
-        guard let slot else {
-            showPill(for: nil)
-            return
-        }
-
         let now = now()
+        var pill: Slot?
+        var wakeAt: Date?
+        var opened = false
 
-        guard now < slot.startsAt else {
-            showPill(for: nil)
-            let isLate = now.timeIntervalSince(slot.startsAt) >= Self.openGrace
-            if applicationState() == .background, !isLate {
-                // Becoming active within the grace opens the product.
-                wake(at: slot.startsAt.addingTimeInterval(Self.openGrace), from: now)
-                return
+        for slot in slots {
+            guard now < slot.startsAt else {
+                let isLate = now.timeIntervalSince(slot.startsAt) >= Self.openGrace
+                if applicationState() == .background, !isLate {
+                    // Becoming active within the grace opens the product.
+                    wakeAt = earliest(wakeAt, slot.startsAt.addingTimeInterval(Self.openGrace))
+                    continue
+                }
+                drop(slot.productId)
+                if !isLate, !opened {
+                    opened = true
+                    openProduct(slot.productId)
+                }
+                continue
             }
-            drop()
-            if !isLate {
-                openProduct(slot.productId)
+
+            let pillAt = slot.startsAt.addingTimeInterval(-GameRoomPillState.Constants.startingPillLeadTime)
+            if pill == nil, now >= pillAt, slot.productId != mountedProductId {
+                pill = slot
             }
-            return
+            wakeAt = earliest(wakeAt, now < pillAt ? pillAt : slot.startsAt)
         }
 
-        let pillAt = slot.startsAt.addingTimeInterval(-GameRoomPillState.Constants.startingPillLeadTime)
-        showPill(for: now >= pillAt && slot.productId != mountedProductId ? slot : nil)
-        wake(at: now < pillAt ? pillAt : slot.startsAt, from: now)
+        showPill(for: pill)
+        if let wakeAt {
+            wake(at: wakeAt, from: now)
+        }
     }
 }
 
 private extension ProductGameReminderCenter {
-    static func makeAlarm() -> (any GameStartReminderServicing)? {
+    static func makeAlarm(for productId: ProductId) -> (any GameStartReminderServicing)? {
         if #available(iOS 26.1, *) {
-            return AlarmKitGameReminder(alarmManger: .shared, settingsManager: SettingsManager.shared, keys: .product)
+            return AlarmKitGameReminder(
+                alarmManger: .shared,
+                settingsManager: SettingsManager.shared,
+                keys: .product(productId)
+            )
         }
         return nil
     }
 
-    func deliver(_ next: Slot) {
-        let (delivery, unused): (any GameStartReminderServicing, (any GameStartReminderServicing)?) =
-            if next.ringAlarm, let alarm, isAlarmAuthorized() { (alarm, notification) } else { (notification, alarm) }
-        if let current = slot, current != next {
-            // The delivered alarm or notification opens the product it was scheduled for.
-            delivery.cancelReminder()
+    func reminders(for productId: ProductId) -> Reminders {
+        if let reminders = reminders[productId] {
+            return reminders
         }
+        let reminders = Reminders(alarm: makeAlarm(productId), notification: makeNotification(productId))
+        self.reminders[productId] = reminders
+        return reminders
+    }
+
+    func deliver(_ next: Slot) {
+        let reminders = reminders(for: next.productId)
+        let (delivery, unused): (any GameStartReminderServicing, (any GameStartReminderServicing)?) =
+            if next.ringAlarm, let alarm = reminders.alarm {
+                (alarm, reminders.notification)
+            } else {
+                (reminders.notification, reminders.alarm)
+            }
         unused?.cancelReminder()
         store(next)
 
@@ -189,25 +218,24 @@ private extension ProductGameReminderCenter {
     }
 
     /// Write-only: events are never removed, so a repeat for the same start adds nothing.
-    func addCalendarEventIfNeeded(productId: ProductId, startsAt: Date) async {
-        guard startsAt.timeIntervalSince(now()) >= Self.calendarLeadTime else {
+    func addCalendarEventIfNeeded(_ slot: Slot) async {
+        guard slot.startsAt.timeIntervalSince(now()) >= Self.calendarLeadTime,
+              slot.calendarStartsAt != slot.startsAt else {
             return
         }
-        let startSeconds = Int(startsAt.timeIntervalSince1970)
         let calendar = makeCalendar()
-        guard settingsManager.integer(for: .productGameCalendarStartsAt) != startSeconds,
-              await calendar.requestWriteAccess() else {
+        guard await calendar.requestWriteAccess() else {
             return
         }
         // The access prompt may outlive the reminder it was asked for.
-        guard let slot, slot.productId == productId, slot.startsAt == startsAt else {
+        guard var held = self.slot(for: slot.productId), held.startsAt == slot.startsAt else {
             return
         }
 
         let event = CalendarGameModel(
             title: String(localized: .Game.calendarEventGameTitle),
-            startDate: startsAt,
-            endDate: startsAt.addingTimeInterval(Self.calendarEventDuration),
+            startDate: slot.startsAt,
+            endDate: slot.startsAt.addingTimeInterval(Self.calendarEventDuration),
             notes: nil,
             remindBefore: Self.calendarRemindBefore
         )
@@ -217,21 +245,31 @@ private extension ProductGameReminderCenter {
             Logger.shared.error("Failed to add product game to calendar: \(error)")
             return
         }
-        settingsManager.set(value: startSeconds, for: .productGameCalendarStartsAt)
+        held.calendarStartsAt = slot.startsAt
+        store(held)
     }
 
-    func drop() {
-        store(nil)
-        alarm?.cancelReminder()
-        notification.cancelReminder()
+    func drop(_ productId: ProductId) {
+        store(slots.filter { $0.productId != productId })
+        let reminders = reminders(for: productId)
+        reminders.alarm?.cancelReminder()
+        reminders.notification.cancelReminder()
     }
 
-    func store(_ slot: Slot?) {
-        guard let slot, let data = try? JSONEncoder().encode(slot) else {
-            settingsManager.removeValue(for: .productGameReminder)
+    func store(_ slot: Slot) {
+        store(slots.filter { $0.productId != slot.productId } + [slot])
+    }
+
+    func store(_ slots: [Slot]) {
+        guard !slots.isEmpty, let data = try? JSONEncoder().encode(slots) else {
+            settingsManager.removeValue(for: .productGameReminders)
             return
         }
-        settingsManager.set(anyValue: data, for: SettingsKey.productGameReminder.rawValue)
+        settingsManager.set(anyValue: data, for: SettingsKey.productGameReminders.rawValue)
+    }
+
+    func earliest(_ current: Date?, _ candidate: Date) -> Date {
+        current.map { min($0, candidate) } ?? candidate
     }
 
     func showPill(for slot: Slot?) {
