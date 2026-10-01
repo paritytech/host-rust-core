@@ -40,7 +40,7 @@ extension IdentityDetailsPresenter: IdentityDetailsPresenterProtocol {
         guard let qrCode, let username else {
             return
         }
-        let items = interactor.shareAddress(username: username, image: qrCode)
+        let items = interactor.shareMessage(username: username, image: qrCode)
         wireframe.share(items: items, from: view, with: nil)
     }
 

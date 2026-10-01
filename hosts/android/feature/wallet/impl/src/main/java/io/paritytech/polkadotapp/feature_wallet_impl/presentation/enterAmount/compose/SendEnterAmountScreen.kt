@@ -22,6 +22,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetBrand
 import io.paritytech.polkadotapp.common.presentation.validation.compose.rememberValidationActionHandle
 import io.paritytech.polkadotapp.common.utils.progressStallReport.StallReportContent
 import io.paritytech.polkadotapp.common.utils.progressStallReport.previewStallReportOperations
@@ -40,6 +42,7 @@ import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_account_api.presentation.address.model.ExtractedAddress
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.LocalTokenAmountFormatter
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.TokenAmountFormatter
+import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.formatFiatSigned
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.RoundPrecision
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.TokenAmountModel
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.enterAmount.SendEnterAmountContract
@@ -114,7 +117,7 @@ private fun SendEnterAmountScreenInternal(
         formatter.formatToSymbol(state.available)
     }
     val amount = remember(state.spendable) {
-        formatter.formatTokenAmount(state.spendable, RoundPrecision.FIAT, withSymbol = false)
+        formatter.formatFiatSigned(state.spendable)
     }
     val gainingPrivacy = remember(state.gainingPrivacy) {
         state.gainingPrivacy?.let { formatter.formatTokenAmount(it, RoundPrecision.FIAT, withSymbol = false) }
@@ -244,7 +247,8 @@ private fun PreviewStallReport() {
 @Composable
 private fun SendEnterAmountScreenAllWidgetPreview() {
     CompositionLocalProvider(
-        LocalTokenAmountFormatter provides TokenAmountFormatter.mocked
+        LocalTokenAmountFormatter provides TokenAmountFormatter.mocked,
+        LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
     ) {
         PolkadotTheme {
             SendEnterAmountScreenInternal(
