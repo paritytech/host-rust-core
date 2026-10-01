@@ -16,7 +16,7 @@ mod heads;
 mod tx_submitter;
 mod tx_validator;
 
-/// The chain capabilities over [`ChainRuntime`]'s per-chain subxt clients:
+/// The chain capabilities over `ChainRuntime`'s per-chain subxt clients:
 /// the legacy client for reads and validation, the shared chainHead client
 /// for submission.
 #[derive(Clone)]

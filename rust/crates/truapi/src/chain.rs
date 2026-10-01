@@ -4,7 +4,7 @@
 //! Each capability is its own trait, and a consumer takes only the ones it
 //! uses as `Arc<dyn …>`. Every method names the chain by its genesis hash, so
 //! one implementation serves every chain. [`SubxtChain`] implements all four
-//! over [`crate::chain_runtime::ChainRuntime`]: reads and validation go
+//! over the runtime's `ChainRuntime`: reads and validation go
 //! through the legacy JSON-RPC methods, which reach any block the node still
 //! keeps, and submission goes through the shared chainHead client.
 //!
