@@ -2,9 +2,9 @@ name: Build label hint
 
 # The iOS app and the Android APK are built on a pull request only when a label
 # asks for them, which is easy to miss. The first time a pull request touches
-# either app, this says which label gets a build, once, and never again on that
-# pull request. A label already on it is left out, and a pull request that
-# already carries every relevant label gets no comment.
+# an app, this says which label builds it, once per app. A label already on the
+# pull request is left out, and one that already carries every relevant label
+# gets no comment.
 
 on:
   pull_request:
@@ -13,8 +13,8 @@ on:
       - "hosts/ios/**"
       - "ios/**"
       - "Package.swift"
-      - "Package.resolved"
       - "hosts/android/**"
+      - "android/truapi-host/**"
 
 permissions:
   contents: read
@@ -29,8 +29,10 @@ jobs:
   hint:
     name: Say which label builds the app
     # A fork's token cannot comment, and a fork cannot reach the signing and
-    # configuration secrets either build needs.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # configuration secrets either build needs. Release branches build neither.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && !startsWith(github.head_ref, 'release/')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -39,17 +41,15 @@ jobs:
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
-            const marker = '<!-- build-label-hint -->';
             const { owner, repo } = context.repo;
             const number = context.payload.pull_request.number;
+            // One marker per label, so a pull request that touches the second
+            // app in a later push is still told about its label.
+            const marker = label => `<!-- build-label-hint:${label} -->`;
 
-            const comments = await github.paginate(github.rest.issues.listComments, {
+            const hinted = (await github.paginate(github.rest.issues.listComments, {
               owner, repo, issue_number: number, per_page: 100,
-            });
-            if (comments.some(c => c.body && c.body.includes(marker))) {
-              core.info('Already hinted on this pull request.');
-              return;
-            }
+            })).map(c => c.body || '').join('\n');
 
             const files = (await github.paginate(github.rest.pulls.listFiles, {
               owner, repo, pull_number: number, per_page: 100,
@@ -61,24 +61,26 @@ jobs:
             const builds = [
               {
                 label: 'ios-simulator-build',
-                path: /^(hosts\/ios\/|ios\/|Package\.swift$|Package\.resolved$)/,
+                path: /^(hosts\/ios\/|ios\/|Package\.swift$)/,
                 what: 'builds the iOS app, runs its tests and attaches a simulator build',
               },
               {
                 label: 'android-device-build',
-                path: /^hosts\/android\//,
+                path: /^(hosts\/android\/|android\/truapi-host\/)/,
                 what: 'attaches an APK that installs on a phone or an emulator',
               },
-            ].filter(b => files.some(f => b.path.test(f)) && !labels.includes(b.label));
+            ].filter(b => files.some(f => b.path.test(f))
+              && !labels.includes(b.label)
+              && !hinted.includes(marker(b.label)));
 
             if (builds.length === 0) {
-              core.info('Nothing to hint: no app touched, or its label is already set.');
+              core.info('Nothing to hint: no app touched, its label is set, or it was already hinted.');
               return;
             }
 
             const lines = builds.map(b => `- \`${b.label}\` ${b.what}.`);
             const body = [
-              marker,
+              ...builds.map(b => marker(b.label)),
               'This pull request touches an app, which is not built by default. Add a label to get a build:',
               '',
               ...lines,

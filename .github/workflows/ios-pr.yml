@@ -109,9 +109,11 @@ jobs:
   # Whether this run builds the app. Every job below is macOS time, so on a
   # pull request they run only when the ios-simulator-build label asks for
   # them, the same way ios-device-build and android-device-build ask for their
-  # builds. CI's `iOS package (Swift + WebKit)` job still proves on every push
-  # that the Swift bindings compile against the core. Pushes to main and manual
-  # runs build everything, so a change that breaks the app is caught there.
+  # builds. CI's `iOS package (Swift + WebKit)` job still compiles the
+  # TrUAPIHost package against the core on a pull request touching `ios/` or
+  # the core crates. Nothing compiles the app itself on a pull request without
+  # the label, so a change that breaks it is caught by the push to main, where
+  # these jobs and manual runs build everything.
   #
   # The labels are read from the API rather than the event, so re-running a
   # push's run sees a label added since. A run started by another label stays
