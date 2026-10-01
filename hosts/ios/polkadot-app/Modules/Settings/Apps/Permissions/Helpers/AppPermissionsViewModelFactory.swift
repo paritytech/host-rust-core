@@ -85,7 +85,6 @@ private extension AppPermissionsViewModelFactory {
         }
     }
 
-    // swiftlint:disable:next cyclomatic_complexity
     func capabilityTitle(_ capability: DeviceCapabilityType) -> String {
         switch capability {
         case .notifications: String(localized: .Products.appPermissionCapabilityNotifications)
@@ -97,12 +96,9 @@ private extension AppPermissionsViewModelFactory {
         case .clipboard: String(localized: .Products.appPermissionCapabilityClipboard)
         case .openUrl: String(localized: .Products.appPermissionCapabilityOpenUrl)
         case .biometrics: String(localized: .Products.appPermissionCapabilityBiometrics)
-        case .alarm: String(localized: .Products.appPermissionCapabilityAlarm)
-        case .calendar: String(localized: .Products.appPermissionCapabilityCalendar)
         }
     }
 
-    // swiftlint:disable:next cyclomatic_complexity
     func capabilityDescription(_ capability: DeviceCapabilityType) -> String {
         switch capability {
         case .notifications: String(localized: .Products.permissionCapabilityDescriptionNotifications)
@@ -114,8 +110,6 @@ private extension AppPermissionsViewModelFactory {
         case .clipboard: String(localized: .Products.permissionCapabilityDescriptionClipboard)
         case .openUrl: String(localized: .Products.permissionCapabilityDescriptionOpenUrl)
         case .biometrics: String(localized: .Products.permissionCapabilityDescriptionBiometrics)
-        case .alarm: String(localized: .Products.permissionCapabilityDescriptionAlarm)
-        case .calendar: String(localized: .Products.permissionCapabilityDescriptionCalendar)
         }
     }
 }

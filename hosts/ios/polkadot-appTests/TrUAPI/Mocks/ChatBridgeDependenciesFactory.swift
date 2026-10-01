@@ -16,6 +16,7 @@ func makeChatBridgeDependencies(
         osPermissionAsker: MockOSPermissionAsker(),
         notificationScheduler: MockNotificationScheduler(),
         gameReminders: MockGameReminderScheduler(),
+        reminderPermissionAsker: MockReminderPermissionAsker(),
         navigationRouter: MockNavigationRouter(),
         chainRegistry: MockChainRegistry(),
         chainConnections: TrUAPIChainConnectionPool(

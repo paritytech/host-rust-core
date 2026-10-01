@@ -105,7 +105,7 @@ private extension RustRuntimeEnvironment {
         productId: ProductId,
         routers: ProductRoutersFacadeProtocol,
         chainConnections: TrUAPIChainConnecting,
-        osPermissionAsker: OSPermissionAsking
+        osPermissionAsker: OSPermissionAsker
     ) -> RustProductExecutionBridge.Dependencies {
         RustProductExecutionBridge.Dependencies(
             productId: productId,
@@ -117,6 +117,7 @@ private extension RustRuntimeEnvironment {
             osPermissionAsker: osPermissionAsker,
             notificationScheduler: notificationScheduler,
             gameReminders: gameReminders,
+            reminderPermissionAsker: osPermissionAsker,
             navigationRouter: routers.navigationRouter,
             chainRegistry: chainRegistry,
             chainConnections: chainConnections,

@@ -1,6 +1,5 @@
 import AlarmKit
 import AVFoundation
-import EventKit
 import Foundation
 import Products
 
@@ -17,10 +16,6 @@ extension OSPermissionAsker: OSPermissionAsking {
         switch capability {
         case .notifications:
             await checkNotificationStatus()
-        case .alarm:
-            checkAlarmStatus()
-        case .calendar:
-            checkCalendarStatus()
         case .camera:
             checkCaptureDeviceStatus(.video)
         case .microphone:
@@ -42,10 +37,6 @@ extension OSPermissionAsker: OSPermissionAsking {
         switch capability {
         case .notifications:
             await askNotifications()
-        case .alarm:
-            await askAlarm()
-        case .calendar:
-            await askCalendar()
         case .camera:
             await askCaptureDevice(.video)
         case .microphone:
@@ -64,26 +55,13 @@ extension OSPermissionAsker: OSPermissionAsking {
     }
 }
 
-private extension OSPermissionAsker {
-    func checkNotificationStatus() async -> OSPermissionStatus {
-        let notificationStatus = await notificationService.notificationAccessStatus()
-        return OSPermissionStatus(notificationStatus: notificationStatus)
-    }
-
+extension OSPermissionAsker: ReminderPermissionAsking {
     func askNotifications() async -> Bool {
         await withCheckedContinuation { continuation in
             notificationService.requestNotificationsAuthorization { granted in
                 continuation.resume(returning: granted)
             }
         }
-    }
-
-    /// AlarmKit alone: below iOS 26.1 there is no alarm to ring, so the core falls back to notifications.
-    func checkAlarmStatus() -> OSPermissionStatus {
-        if #available(iOS 26.1, *) {
-            return alarmAuthorizationStatus()
-        }
-        return .denied
     }
 
     func askAlarm() async -> Bool {
@@ -99,6 +77,13 @@ private extension OSPermissionAsker {
             return false
         }
     }
+}
+
+private extension OSPermissionAsker {
+    func checkNotificationStatus() async -> OSPermissionStatus {
+        let notificationStatus = await notificationService.notificationAccessStatus()
+        return OSPermissionStatus(notificationStatus: notificationStatus)
+    }
 
     @available(iOS 26.1, *)
     func alarmAuthorizationStatus() -> OSPermissionStatus {
@@ -112,25 +97,6 @@ private extension OSPermissionAsker {
         @unknown default:
             .notDetermined
         }
-    }
-
-    func checkCalendarStatus() -> OSPermissionStatus {
-        switch EKEventStore.authorizationStatus(for: .event) {
-        case .writeOnly,
-             .fullAccess:
-            .allowed
-        case .denied,
-             .restricted:
-            .denied
-        case .notDetermined:
-            .notDetermined
-        @unknown default:
-            .notDetermined
-        }
-    }
-
-    func askCalendar() async -> Bool {
-        await (try? EKEventStore().requestWriteOnlyAccessToEvents()) ?? false
     }
 
     func askCaptureDevice(_ mediaType: AVMediaType) async -> Bool {

@@ -227,8 +227,11 @@ private extension ProductGameReminderCenter {
         guard await calendar.requestWriteAccess() else {
             return
         }
-        // The access prompt may outlive the reminder it was asked for.
-        guard var held = self.slot(for: slot.productId), held.startsAt == slot.startsAt else {
+        // The access prompt may outlive the reminder it was asked for, or an overlapping schedule
+        // may have added the event meanwhile.
+        guard var held = self.slot(for: slot.productId),
+              held.startsAt == slot.startsAt,
+              held.calendarStartsAt != slot.startsAt else {
             return
         }
 

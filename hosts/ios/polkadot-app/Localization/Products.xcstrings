@@ -122,17 +122,6 @@
         }
       }
     },
-    "app.permission.capability.alarm": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Alarms"
-          }
-        }
-      }
-    },
     "app.permission.capability.biometrics": {
       "extractionState": "manual",
       "localizations": {
@@ -151,17 +140,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bluetooth"
-          }
-        }
-      }
-    },
-    "app.permission.capability.calendar": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Calendar"
           }
         }
       }
@@ -507,17 +485,6 @@
         }
       }
     },
-    "permission.capability.alarm": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Alarms"
-          }
-        }
-      }
-    },
     "permission.capability.biometrics": {
       "extractionState": "manual",
       "localizations": {
@@ -536,17 +503,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bluetooth"
-          }
-        }
-      }
-    },
-    "permission.capability.calendar": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Calendar"
           }
         }
       }
@@ -573,17 +529,6 @@
         }
       }
     },
-    "permission.capability.description.alarm": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Alarm access is required to ring alarms for scheduled events."
-          }
-        }
-      }
-    },
     "permission.capability.description.biometrics": {
       "extractionState": "manual",
       "localizations": {
@@ -602,17 +547,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Bluetooth access is required to connect to nearby devices."
-          }
-        }
-      }
-    },
-    "permission.capability.description.calendar": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Calendar access is required to add events to your calendar."
           }
         }
       }

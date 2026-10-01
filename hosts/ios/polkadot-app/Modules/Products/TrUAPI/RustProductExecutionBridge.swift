@@ -20,6 +20,7 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         let osPermissionAsker: OSPermissionAsking
         let notificationScheduler: ProductNotificationScheduling
         let gameReminders: ProductGameReminderScheduling?
+        let reminderPermissionAsker: ReminderPermissionAsking
         let navigationRouter: ProductsNavigationRouting
         let chainRegistry: ChainRegistryProtocol
         let chainConnections: TrUAPIChainConnecting
@@ -77,9 +78,7 @@ class RustProductExecutionBridge: HostBridge, @unchecked Sendable {
         switch request {
         case .camera,
              .microphone,
-             .notifications,
-             .alarm,
-             .calendar:
+             .notifications:
             switch await dependencies.osPermissionAsker.checkPermission(for: request.deviceCapabilityType) {
             case .allowed: .granted
             case .denied: .denied
@@ -206,12 +205,21 @@ extension RustProductExecutionBridge: TrUAPIChainEventHandling {
 // MARK: - Game reminders
 
 extension RustProductExecutionBridge: GameHostBridge {
-    func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
+    func scheduleReminder(startsAt: UInt64) async throws {
+        let asker = dependencies.reminderPermissionAsker
+        let ringAlarm: Bool
+        if await asker.askAlarm() {
+            ringAlarm = true
+        } else if await asker.askNotifications() {
+            ringAlarm = false
+        } else {
+            throw HostRejection.Rejected(reason: "alarms and notifications are both turned off")
+        }
         await dependencies.gameReminders?.schedule(
             productId: dependencies.productId,
             startsAt: Date(timeIntervalSince1970: TimeInterval(startsAt) / 1_000),
             ringAlarm: ringAlarm,
-            addCalendarEvent: addCalendarEvent
+            addCalendarEvent: true
         )
     }
 
@@ -245,8 +253,6 @@ extension HostDevicePermissionRequest {
         case .clipboard: .clipboard
         case .openUrl: .openUrl
         case .biometrics: .biometrics
-        case .alarm: .alarm
-        case .calendar: .calendar
         }
     }
 }
