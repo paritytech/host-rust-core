@@ -1,5 +1,69 @@
 # @parity/truapi
 
+## 0.23.0
+
+### Patch Changes
+
+- 7663ece: `create_transaction` and `create_transaction_with_legacy_account` read `txExtVersion` as the version of the
+  transaction extensions in `extensions`, as the runtime numbers them. With `0` the host builds a V5 general transaction
+  when transaction extension version 0 includes `VerifyMultiSignature`, and a signed V4 transaction otherwise. A
+  non-zero value builds V5 with that version. A version the runtime does not declare returns `NotSupported` naming the
+  declared versions.
+
+## 0.22.0
+
+### Minor Changes
+
+- a285523: A `Contacts` trait lets a product ask the host to open its contact picker. The user selects one person and
+  the product receives one opaque 32-byte handle: never the list, a name, or an account. The handle is the same value
+  for that contact in every product and on every host of this user, keyed on the user's own entropy, and the core
+  resolves it back to an account: a transaction payload declares the handles its call names, and the host replaces them
+  with those accounts before the call is shown or signed. Hosts serve it through the optional `ContactsPlatform`
+  capability, and a UniFFI host installs one with `setContactsCallbacks` on the runtime; a host that installs none
+  leaves `contacts.pick` answering `Unsupported`.
+
+  `ProductAccountTxPayload` carries `contacts` as a required field, so a call naming nobody declares an empty list. It
+  is on the wire as well as in the type: a product and the host it talks to have to agree on it.
+
+- 60940ff: `sign_payload`, `create_transaction`, `sign_raw` and the statement-store product proof accept another
+  product's account when that product's manifest grants the caller `context`, the same grant `create_account_proof` and
+  `ring_vrf_sign` already honour. Such a signature is always confirmed by the user, and the signing reviews carry the
+  calling product so a host can name it beside the account it is signing with.
+
+### Patch Changes
+
+- de343d4: The `truapi-host` CLI previewnet preset and truapi-provider's previewnet catalog carry the relay, Asset Hub,
+  Bulletin and People genesis hashes previewnet reports after its latest reset, and the bundled previewnet chain specs
+  match them.
+- 3ef2191: A visible page retries a failed host reconnect after 250 ms, 1 s and 4 s before it waits for its next call. A
+  page that returns to the foreground while the host is still rebinding its listener reconnects on its own instead of
+  staying offline until the product calls again.
+
+## 0.21.0
+
+### Minor Changes
+
+- ffdd9b4: `truapi-host` streams product frames to a wire debugger behind `--debugger <ws-url>` (or
+  `TRUAPI_DEBUGGER_URL`).
+
+  The commands that serve frames, `pairing-host`, `dev` and `signing-host`, resolve the switch before their frame
+  listener binds, so a non-loopback URL fails startup rather than at first dial. Each of those commands reports the
+  outcome once as a lifecycle event, naming the endpoint and the switch clap read it from, or saying the debugger is
+  off. Each accepted connection gets its own channel id, `<product-id>#<n>`, so concurrent peers under one host do not
+  share a trace key.
+
+- 5a9f4b9: The `Permissions` host callbacks name the product that asked: `devicePermission(product, request)` and
+  `remotePermission(product, request)` take the requesting `ProductContext` first, like the other product-scoped
+  callbacks, so a host can title the prompt with the product and key any grant it keeps itself by the product. Stored
+  decisions stay keyed by `productId` alone.
+
+  The `truapi-host` CLI names the requesting product in its permission approvals.
+
+### Patch Changes
+
+- cf1702f: Initialize built-in personhood ring keys when an authorized product lists the personhood owner's keys, so
+  full and lite handles are available without prior registration on the device.
+
 ## 0.20.0
 
 ### Minor Changes

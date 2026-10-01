@@ -51,4 +51,8 @@ final class StubProductHostProvider: ProductHostProviding, @unchecked Sendable {
     func resolveHost(rawString _: String) async throws -> ProductHost? {
         nil
     }
+
+    func resolvePage(destination _: String) async throws -> ProductPage? {
+        nil
+    }
 }

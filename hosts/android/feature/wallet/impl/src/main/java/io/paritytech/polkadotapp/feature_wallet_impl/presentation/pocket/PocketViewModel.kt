@@ -1,7 +1,9 @@
 package io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket
 
+import android.content.Context
 import android.net.Uri
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.paritytech.polkadotapp.common.presentation.loading.dataOrNull
 import io.paritytech.polkadotapp.common.presentation.screens.BaseViewModel
 import io.paritytech.polkadotapp.common.presentation.sharing.SharingManager
@@ -15,10 +17,10 @@ import io.paritytech.polkadotapp.feature_coinage_api.domain.model.BackupProgress
 import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCard
 import io.paritytech.polkadotapp.feature_products_api.model.JsImageSource
 import io.paritytech.polkadotapp.feature_products_api.model.JsUiEvent
+import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_api.presentation.spaHost.SpaHost
 import io.paritytech.polkadotapp.feature_products_api.presentation.widget.JsImageResolver
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.TokenAmountFormatter
-import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.formatFiat
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.mapper.TokenAmountMapper
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.RoundPrecision
 import io.paritytech.polkadotapp.feature_videogame_api.domain.collectibles.CollectiblesUrlResolver
@@ -41,12 +43,12 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.job
 import timber.log.Timber
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
+import io.paritytech.polkadotapp.common.R as RCommon
 
 @HiltViewModel
 class PocketViewModel @Inject constructor(
@@ -58,7 +60,8 @@ class PocketViewModel @Inject constructor(
     private val idShareImageRenderer: IdShareImageRenderer,
     private val sharingManager: SharingManager,
     private val dispatchers: CoroutineDispatchers,
-    spaHost: SpaHost
+    spaHost: SpaHost,
+    @param:ApplicationContext private val context: Context
 ) : BaseViewModel() {
     private val selectedCardId = MutableStateFlow<String?>(null)
     private val expandedProduct = ExpandedProductPage(this) { scope, url -> with(scope) { spaHost.createSession(url) } }
@@ -96,11 +99,14 @@ class PocketViewModel @Inject constructor(
         PocketCardUiModel.IdCard(username = username, address = address, rank = rank)
     }.onStart { emit(null) }
 
+    private val warmedPrivilegedProducts = ConcurrentHashMap.newKeySet<ProductId>()
+
     // Native cards keep their place; the product-backed collection follows, pinned cards first.
     // A collection the host cannot read costs the user their product cards, never the balance and
     // identity cards standing beside them.
     private val productCards = interactor.observeProductCards()
         .map { cards -> cards.map { it.toUiModel() } }
+        .onEach(::warmUpPrivilegedProducts)
         .catch { failure ->
             Timber.e(failure, "PocketViewModel: the product card collection is unavailable")
             emit(emptyList())
@@ -173,7 +179,7 @@ class PocketViewModel @Inject constructor(
             scope = scope,
             bindings = ProductFaceBindings(
                 face = interactor.observeFace(card.key)
-                    .shareIn(scope, SharingStarted.WhileSubscribed(WORKER_KEEP_ALIVE_MILLIS), replay = 1),
+                    .stateIn(scope, SharingStarted.WhileSubscribed(WORKER_KEEP_ALIVE_MILLIS), initialValue = null),
                 onFaceAction = { actionId, type -> onFaceAction(card, actionId, type) },
                 imageResolver = object : JsImageResolver {
                     override suspend fun resolve(source: JsImageSource) = resolveFaceImage(card, source)
@@ -192,7 +198,7 @@ class PocketViewModel @Inject constructor(
                 amounts?.let {
                     tokenAmountFormatter.formatTokenAmount(it.balance, RoundPrecision.FIAT, withSymbol = false)
                 },
-                amounts?.let { tokenAmountFormatter.formatFiat(it.ready) },
+                amounts?.let { tokenAmountFormatter.formatTokenAmount(it.ready, RoundPrecision.FIAT, withSymbol = false) },
                 card.syncInProgress,
                 card.accountBackupPending,
                 amounts?.notFullyReady
@@ -225,6 +231,16 @@ class PocketViewModel @Inject constructor(
      */
     private fun warmUpProduct(card: PocketCardUiModel.ProductCard) = launchUnit {
         interactor.warmUpProduct(card.key).logFailure("PocketViewModel: failed to warm up ${card.id}")
+    }
+
+    /**
+     * Only the host places a privileged card, so this set cannot grow with use. Fetching its pages
+     * when the collection arrives spends the time the user spends looking at the cards, rather than
+     * the half second [selectCard] has to offer.
+     */
+    private fun warmUpPrivilegedProducts(cards: List<PocketCardUiModel.ProductCard>) {
+        cards.filter { it.pinned && warmedPrivilegedProducts.add(it.key.productId) }
+            .forEach(::warmUpProduct)
     }
 
     fun dismissCard() {
@@ -312,9 +328,16 @@ class PocketViewModel @Inject constructor(
 
     fun onShareId() = launchUnit {
         val idCard = cards.value.filterIsInstance<PocketCardUiModel.IdCard>().firstOrNull() ?: return@launchUnit
-        val text = "${idCard.username}\n${idCard.address}"
 
-        idShareImageRenderer.render(idCard.username, idCard.address)
+        interactor.getAppSharingUrl()
+            .onSuccess { url -> shareId(idCard, url) }
+            .onFailure { showPresentationError(ShareIdFailedPresentationError(it)) }
+    }
+
+    private suspend fun shareId(idCard: PocketCardUiModel.IdCard, appSharingUrl: String) {
+        val text = context.getString(RCommon.string.pocket_id_share_message, appSharingUrl, idCard.username)
+
+        idShareImageRenderer.render(idCard.address)
             .logFailure("PocketViewModel: failed to render ID share image")
             .onSuccess { uri ->
                 sharingManager.shareContent(

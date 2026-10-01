@@ -105,11 +105,9 @@ final class BrowsePresenterTests {
         #expect(view.showLoadingCallCount == 0)
         #expect(interactor.resolveBrowseHostCallCount == 0)
 
+        // The closure enqueues a Task which executes asynchronously; calling it
+        // here only verifies the captured closure runs without crashing.
         retryClosureCaptured()
-
-        // The closure enqueues a Task which executes asynchronously.
-        // We just verify the closure was captured and can be called without crashing.
-        #expect(retryClosureCaptured != nil)
     }
 }
 

@@ -46,6 +46,9 @@ internal class RealDotNsResolver @Inject constructor(
             .requireNotNull { IllegalStateException("Domain $domainName is not registered or has no content") }
             .flatMap { contentHash -> resolveContentHash(domainName, contentHash) }
             .logFailure("failed to resolve $domainName")
+            // A domain with nothing registered behind it never reaches the download that reports its
+            // own failures, and a host screen reading progress would wait on it for good.
+            .onFailure { progressRegistry.markFailed(domainName, it) }
     }
 
     // TODO v1: Currently always fetches the latest content hash from chain for session. In the target solution,

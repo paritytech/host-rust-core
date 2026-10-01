@@ -120,6 +120,9 @@ enum TransferAmountViewFactory {
         let balanceViewModelFactory = BalanceViewModelFactory(
             targetAssetInfo: displayInfo
         )
+        let availableBalanceViewModelFactory = BalanceViewModelFactory(
+            targetAssetInfo: displayInfo.withFiatSymbol
+        )
 
         let inputStrategy = AmountInputTokenStrategy(
             chainAsset: displayInfo.withoutSymbol,
@@ -136,6 +139,7 @@ enum TransferAmountViewFactory {
             wireframe: wireframe,
             chainAsset: chainAsset,
             balanceViewModelFactory: balanceViewModelFactory,
+            availableBalanceViewModelFactory: availableBalanceViewModelFactory,
             amountInputStrategy: inputStrategy,
             dataValidationFactory: dataValidatorFactory,
             config: config
@@ -196,6 +200,7 @@ enum TransferAmountViewFactory {
             createMessageFactory: LocalMessageCreatingOperationFactory(
                 messagesStorageService: MessagesLocalStorageService()
             ),
+            messageStore: ChatMessageTransactionalStore(storageFacade: UserDataStorageFacade.shared),
             logger: Logger.shared
         )
     }

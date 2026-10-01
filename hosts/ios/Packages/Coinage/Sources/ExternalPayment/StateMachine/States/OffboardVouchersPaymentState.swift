@@ -34,6 +34,7 @@ struct OffboardVouchersPaymentState: StateMachineState {
             quotaTracker: factory.quotaTracker,
             blockNumberProvider: factory.blockNumberProvider,
             denominationContext: factory.context,
+            dateProvider: factory.dateProvider,
             logger: factory.logger
         )
 

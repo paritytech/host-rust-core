@@ -50,6 +50,7 @@ extension SceneDelegate {
     private func initializeApp(_ scene: UIWindowScene) {
         ThemeManager.shared.setup(scene: scene)
         TypographyManager.shared.setup(scene: scene)
+        applyThemeInterfaceStyle(to: scene)
 
         let rootWindow = RootWindow(windowScene: scene)
         window = rootWindow
@@ -98,6 +99,20 @@ extension SceneDelegate {
             self?.presenter = nil
 
             UserNotificationService.shared.activatePushNotificationsHandling()
+        }
+    }
+}
+
+private extension SceneDelegate {
+    /// The keyboard extension is hosted in its own window, so a window-level override never
+    /// reaches it. Overriding at scene level covers every window in the scene.
+    func applyThemeInterfaceStyle(to scene: UIWindowScene) {
+        let isLight = UIColor.bgSurfaceMain.resolvedColor(with: scene.traitCollection).isLight
+        scene.traitOverrides.userInterfaceStyle = isLight ? .light : .dark
+
+        scene.registerForTraitChanges([DSThemeTrait.self]) { (scene: UIWindowScene, _) in
+            let isLight = UIColor.bgSurfaceMain.resolvedColor(with: scene.traitCollection).isLight
+            scene.traitOverrides.userInterfaceStyle = isLight ? .light : .dark
         }
     }
 }

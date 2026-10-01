@@ -1,3 +1,4 @@
+import DurableTransactions
 import ExtrinsicService
 import Foundation
 
@@ -9,15 +10,21 @@ public struct CoinageTxRequest {
     public let builder: ExtrinsicBuilderClosure
     public let origin: any ExtrinsicOriginDefining
 
+    /// Builds this transaction again, with these same assets, once an attempt is proven unable to
+    /// land; `nil` for one whose failure is final.
+    public let policy: SubmissionPolicy?
+
     public init(
         inputs: [CoinageTxInput],
         outputs: [OwnAsset],
         builder: @escaping ExtrinsicBuilderClosure,
-        origin: any ExtrinsicOriginDefining
+        origin: any ExtrinsicOriginDefining,
+        policy: SubmissionPolicy? = nil
     ) {
         self.inputs = inputs
         self.outputs = outputs
         self.builder = builder
         self.origin = origin
+        self.policy = policy
     }
 }

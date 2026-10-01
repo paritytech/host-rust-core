@@ -7,19 +7,39 @@ import Testing
 /// ``DurableTxOwnershipSet``, and the repository's compare-and-set / field-write guards.
 @Suite("Submission Watcher")
 struct SubmissionWatcherTests {
-    @Test("Ownership taken once and released exactly once")
+    @Test("Ownership taken once and released exactly once, per attempt")
     func ownershipOneShotRelease() async throws {
         let watched = DurableTxOwnershipSet()
         let id = UUID()
+        let attempt = Data(repeating: 0xAB, count: 32)
 
-        watched.take(id)
+        #expect(watched.take(id, txHash: attempt))
         #expect(watched.isOwned(id))
 
-        #expect(watched.release(id))
+        #expect(watched.release(id, txHash: attempt))
         #expect(!watched.isOwned(id))
 
         // Release is one-shot, so a caller can keep its release side effects one-shot too.
-        #expect(!watched.release(id))
+        #expect(!watched.release(id, txHash: attempt))
+
+        // And those bytes are never watched again — a verdict about them was already formed.
+        #expect(!watched.take(id, txHash: attempt))
+        #expect(!watched.isOwned(id))
+    }
+
+    @Test("A rebuilt transaction is owned afresh")
+    func rebuiltAttemptOwnedAgain() async throws {
+        let watched = DurableTxOwnershipSet()
+        let id = UUID()
+        let first = Data(repeating: 0xAB, count: 32)
+        let second = Data(repeating: 0xCD, count: 32)
+
+        #expect(watched.take(id, txHash: first))
+        #expect(watched.release(id, txHash: first))
+
+        // Same row, different bytes: the rebuild has its own watch.
+        #expect(watched.take(id, txHash: second))
+        #expect(watched.isOwned(id))
     }
 
     @Test("Releasing ownership does not itself change the entry")
@@ -30,8 +50,9 @@ struct SubmissionWatcherTests {
 
         try await store.register(.fixture(id: id, outputs: [.coin(1, testKey(1))]))
 
-        watched.take(id)
-        _ = watched.release(id)
+        let attempt = Data(repeating: 0xAB, count: 32)
+        watched.take(id, txHash: attempt)
+        _ = watched.release(id, txHash: attempt)
 
         let fetched = try await store.getEntry(id: id)
         #expect(fetched?.status == .pending)
@@ -50,6 +71,7 @@ struct SubmissionWatcherTests {
         let wrote = try await store.updateTxStatus(
             for: id,
             expectedCurrentStatus: .failure,
+            expectedTxHash: Data(repeating: 0xAB, count: 32),
             verdict: Verdict(status: .finalizedSuccess, successDetectedAt: nil)
         )
 

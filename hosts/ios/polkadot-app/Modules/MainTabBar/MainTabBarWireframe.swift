@@ -30,19 +30,25 @@ final class MainTabBarWireframe: MainTabBarWireframeProtocol {
         view?.controller.present(signInView.controller, animated: true)
     }
 
-    func showSearchContact(from view: MainTabBarViewProtocol?) {
-        let searchModel = SearchContactModel { [moduleNavigator] openModel in
-            moduleNavigator.openChat(openModel)
+    #if FEATURE_INPUT
+        func openChat(_ model: ChatOpenModel) {
+            moduleNavigator.openChat(model)
         }
+    #else
+        func showSearchContact(from view: MainTabBarViewProtocol?) {
+            guard let search = SearchContactViewFactory.createView(
+                onChatFound: { [moduleNavigator] model in
+                    moduleNavigator.openChat(model)
+                }
+            ) else {
+                return
+            }
 
-        guard let search = SearchContactViewFactory.createView(with: searchModel) else {
-            return
+            search.controller.modalPresentationStyle = .fullScreen
+            search.controller.modalTransitionStyle = .crossDissolve
+            view?.controller.present(search.controller, animated: true)
         }
-
-        search.controller.modalPresentationStyle = .fullScreen
-        search.controller.modalTransitionStyle = .crossDissolve
-        view?.controller.present(search.controller, animated: true)
-    }
+    #endif
 }
 
 private extension MainTabBarWireframe {

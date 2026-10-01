@@ -39,7 +39,7 @@ Application secrets come from GitHub Actions repository secrets and are passed o
 
 | Action | Purpose | Key Detail |
 |--------|---------|------------|
-| `install/` | Setup iOS build environment | Validates and configures Match authentication from a GitHub PAT when requested, installs Xcode and Ruby, restores SPM cache; does not load application secrets |
+| `install/` | Setup iOS build environment | Validates and configures Match authentication from a GitHub PAT when requested, installs Xcode, Ruby and Python; does not load application secrets |
 | `configure-google-services/` | Generate Firebase configuration | Decodes a Base64-encoded plist secret, validates it and its bundle ID, then writes the ignored `GoogleService-Info.plist` immediately before an Xcode build or test |
 | `distribute-testflight/` | Run tests, build, upload to TestFlight | Caller must run `install/` first and provide `build_number`, App Store Connect credentials, signing passwords, and both Google service plist secrets; the action generates Dev config for tests and Release config for the archive |
 | `read-build-version/` | Read Release `MARKETING_VERSION` + compute next TestFlight build number | Caller must run `install/` first and provide App Store Connect credentials; `increment_step` defaults to `1` |
@@ -127,7 +127,7 @@ Rules:
   `<!-- RELEASE_METADATA: increment_step=N -->`
   (direct builds from `main` have no PR — it is passed as a workflow input instead)
 - `_build_distribute.yml` reads the number once in `prepare_build_metadata` (via `read-build-version`)
-- The resulting `build_number` is passed to both matrix variants
+- The resulting `build_number` is passed to the build job
 - Build number is not committed to the repository
 
 ### Manual TestFlight builds
@@ -148,7 +148,6 @@ Rules:
 Fastlane configuration selection:
 - `FASTLANE_CONFIGURATION` controls `main_configuration` and defaults to `DevCI`
 - `distribute_testflight` always builds with `Release`
-- The no-auth release variant sets `FASTLANE_CONFIGURATION=Release` before calling `build_app_ci`
 
 ---
 
@@ -293,10 +292,9 @@ Signing notes:
 
 - Nightly and release share reusable workflows: `_prepare_pipeline.yml` (prepare) and `_build_distribute.yml` (build/distribute). The build mode (`Nightly`/`Release`, external group) is passed by the caller as inputs — do not reintroduce parsing it from PR metadata
 - Reusable workflows declare the secrets they read, and every caller passes exactly those; the prepare callers also need an explicit `permissions:` write block (env context is unavailable in a reusable-workflow `with:` block)
-- When editing the build flow, remember that shared build metadata lives in `prepare_build_metadata`; do not move build number calculation back into each matrix job unless you intentionally want variant divergence
+- When editing the build flow, remember that shared build metadata lives in `prepare_build_metadata`
 - When touching `distribute-testflight`, verify both callers still pass `build_number`
 - Every CI Xcode build/test entry point must run `configure-google-services` after its final checkout; the TestFlight composite action owns both its Dev test config and Release archive config
-- When changing Swift-flag injection, update both Firebase and release workflows together
 - When reviewing release logic, treat PR metadata in the release PR body as part of the contract:
   - `source_ref`
   - `nightly_build`

@@ -17,6 +17,7 @@ public actor DurableRecoveryPass {
     private let chainFactory: any PinnedChainViewFactoryProtocol
     private let owned: DurableTxOwnershipSet
     private let oracles: TxCompletionOracleRegistry
+    private let verdictWriter: DurableVerdictWriter
     private let ladder: CompletionLadder
     private let logger: SDKLoggerProtocol?
 
@@ -30,12 +31,14 @@ public actor DurableRecoveryPass {
         chainFactory: any PinnedChainViewFactoryProtocol,
         owned: DurableTxOwnershipSet,
         oracles: TxCompletionOracleRegistry,
+        verdictWriter: DurableVerdictWriter,
         logger: SDKLoggerProtocol?
     ) {
         self.store = store
         self.chainFactory = chainFactory
         self.owned = owned
         self.oracles = oracles
+        self.verdictWriter = verdictWriter
         ladder = CompletionLadder(logger: logger)
         self.logger = logger
     }
@@ -96,7 +99,7 @@ private extension DurableRecoveryPass {
     func decidableDomains() async throws -> [TxDomainId] {
         var seen: Set<TxDomainId> = []
         return try await store.getAllEntries()
-            .filter { $0.status.isLive && !owned.isOwned($0.id) }
+            .filter { $0.status.awaitsVerdict && !owned.isOwned($0.id) }
             .map(\.domainId)
             .filter { seen.insert($0).inserted }
     }
@@ -143,7 +146,7 @@ private extension DurableRecoveryPass {
         guard let oracle = oracles.oracle(for: domain) else { return 0 }
 
         let all = try await store.getAllEntries(domain: domain)
-        let decidable = all.filter { $0.status.isLive && !owned.isOwned($0.id) }
+        let decidable = all.filter { $0.status.awaitsVerdict && !owned.isOwned($0.id) }
         guard !decidable.isEmpty else { return 0 }
 
         logger?.debug("Decidable for domain=\(domain) count=\(decidable.count)")
@@ -214,11 +217,7 @@ private extension DurableRecoveryPass {
             return false
         }
         do {
-            return try await store.updateTxStatus(
-                for: transaction.id,
-                expectedCurrentStatus: transaction.status,
-                verdict: verdict
-            )
+            return try await verdictWriter.write(transaction, verdict)
         } catch {
             logger?.error("Verdict write failed for \(transaction.id): \(error)")
             return false

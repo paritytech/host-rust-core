@@ -39,15 +39,12 @@ public struct DurableTxEntry: Sendable, Equatable {
     /// A label only: no rule reads it. It lets an operation's transactions be found together.
     public let groupId: DurableTxGroupId?
 
-    /// Hash of the built extrinsic, fixed at registration. The body search looks block bodies up for it.
-    public let txHash: Data
-
-    /// The block the extrinsic's era is anchored to. The search window starts here, so no block below it
-    /// can contain this extrinsic.
-    public let checkpoint: BlockRef
-
-    /// Blocks after `checkpoint` during which the extrinsic can still be included.
-    public let mortality: UInt32
+    /// The bytes currently in flight and the window they can land in.
+    ///
+    /// `nil` for a transaction that has been scheduled but not built yet, and for a stored row whose
+    /// attempt columns cannot be read back. Nothing a rule needs is knowable without it, which is why
+    /// the ladder treats a missing attempt as undecided rather than guessing.
+    public let attempt: DurableTxAttempt?
 
     /// Block where execution was first observed. Only ever written where success is already proven, so
     /// Rule 0 need only re-check that the block is still canonical.
@@ -62,9 +59,7 @@ public struct DurableTxEntry: Sendable, Equatable {
         domainId: TxDomainId,
         sequence: Int64 = 0,
         groupId: DurableTxGroupId? = nil,
-        txHash: Data,
-        checkpoint: BlockRef,
-        mortality: UInt32,
+        attempt: DurableTxAttempt?,
         successDetectedAt: BlockRef? = nil,
         status: DurableTxStatus = .pending,
         createdAt: Date = Date()
@@ -73,12 +68,39 @@ public struct DurableTxEntry: Sendable, Equatable {
         self.domainId = domainId
         self.sequence = sequence
         self.groupId = groupId
-        self.txHash = txHash
-        self.checkpoint = checkpoint
-        self.mortality = mortality
+        self.attempt = attempt
         self.successDetectedAt = successDetectedAt
         self.status = status
         self.createdAt = createdAt
+    }
+
+    /// Convenience for a caller that already has the three parts of an attempt.
+    public init(
+        id: DurableTxId = UUID(),
+        domainId: TxDomainId,
+        sequence: Int64 = 0,
+        groupId: DurableTxGroupId? = nil,
+        txHash: Data,
+        checkpoint: BlockRef,
+        mortality: UInt32,
+        successDetectedAt: BlockRef? = nil,
+        status: DurableTxStatus = .pending,
+        createdAt: Date = Date()
+    ) {
+        self.init(
+            id: id,
+            domainId: domainId,
+            sequence: sequence,
+            groupId: groupId,
+            attempt: DurableTxAttempt(
+                txHash: txHash,
+                checkpoint: checkpoint,
+                mortalityBlocks: mortality
+            ),
+            successDetectedAt: successDetectedAt,
+            status: status,
+            createdAt: createdAt
+        )
     }
 }
 
@@ -89,17 +111,9 @@ extension DurableTxEntry: Operation_iOS.Identifiable {
 }
 
 public extension DurableTxEntry {
-    /// The last block this transaction can still execute in. Widened so a checkpoint near `UInt32.max`
-    /// cannot overflow.
-    var mortalityEnd: UInt64 {
-        UInt64(checkpoint.number) + UInt64(mortality)
-    }
-
-    /// True when the extrinsic can no longer be included: `finalizedNumber` is past the last block of
-    /// the mortality window.
-    func isWindowClosed(atFinalized finalizedNumber: UInt32) -> Bool {
-        UInt64(finalizedNumber) > mortalityEnd
-    }
+    var txHash: Data? { attempt?.txHash }
+    var checkpoint: BlockRef? { attempt?.checkpoint }
+    var mortality: UInt32? { attempt?.mortalityBlocks }
 
     /// A copy with `status` replaced — the entry is immutable, so a status write rebuilds it.
     func withStatus(_ status: DurableTxStatus) -> DurableTxEntry {
@@ -108,11 +122,25 @@ public extension DurableTxEntry {
             domainId: domainId,
             sequence: sequence,
             groupId: groupId,
-            txHash: txHash,
-            checkpoint: checkpoint,
-            mortality: mortality,
+            attempt: attempt,
             successDetectedAt: successDetectedAt,
             status: status,
+            createdAt: createdAt
+        )
+    }
+
+    /// Replaces the attempt in place and makes the row `pending`, clearing whatever the previous attempt
+    /// recorded — a new attempt has observed nothing yet. The id, sequence and group are kept, which is
+    /// what leaves the domain's locked inputs and outputs attached across a rebuild.
+    func withAttempt(_ attempt: DurableTxAttempt) -> DurableTxEntry {
+        DurableTxEntry(
+            id: id,
+            domainId: domainId,
+            sequence: sequence,
+            groupId: groupId,
+            attempt: attempt,
+            successDetectedAt: nil,
+            status: .pending,
             createdAt: createdAt
         )
     }
@@ -124,9 +152,7 @@ public extension DurableTxEntry {
             domainId: domainId,
             sequence: sequence,
             groupId: groupId,
-            txHash: txHash,
-            checkpoint: checkpoint,
-            mortality: mortality,
+            attempt: attempt,
             successDetectedAt: block,
             status: status,
             createdAt: createdAt
@@ -140,9 +166,7 @@ public extension DurableTxEntry {
             domainId: domainId,
             sequence: sequence,
             groupId: groupId,
-            txHash: txHash,
-            checkpoint: checkpoint,
-            mortality: mortality,
+            attempt: attempt,
             successDetectedAt: successDetectedAt,
             status: status,
             createdAt: createdAt
@@ -150,31 +174,55 @@ public extension DurableTxEntry {
     }
 }
 
-/// A transaction ready to be recorded: the hash of the already-built extrinsic and the window it can
-/// land in. Carries no id — the repository mints the ``DurableTxId`` inside the write transaction.
+/// A transaction ready to be recorded: its first attempt, and the policy that may build it again.
+/// Carries no id — the repository mints the ``DurableTxId`` inside the write transaction.
 public struct DurableTxRegistration: Sendable, Equatable {
     public let domainId: TxDomainId
     public let groupId: DurableTxGroupId?
-    public let txHash: Data
-    public let checkpoint: BlockRef
-    public let mortalityBlocks: UInt32
+    public let attempt: DurableTxAttempt
+
+    /// Builds this transaction again once an attempt is proven unable to land; `nil` for one whose
+    /// failure is final.
+    public let policy: SubmissionPolicy?
+
+    public init(
+        domainId: TxDomainId,
+        groupId: DurableTxGroupId?,
+        attempt: DurableTxAttempt,
+        policy: SubmissionPolicy? = nil
+    ) {
+        self.domainId = domainId
+        self.groupId = groupId
+        self.attempt = attempt
+        self.policy = policy
+    }
 
     public init(
         domainId: TxDomainId,
         groupId: DurableTxGroupId?,
         txHash: Data,
         checkpoint: BlockRef,
-        mortalityBlocks: UInt32
+        mortalityBlocks: UInt32,
+        policy: SubmissionPolicy? = nil
     ) {
-        self.domainId = domainId
-        self.groupId = groupId
-        self.txHash = txHash
-        self.checkpoint = checkpoint
-        self.mortalityBlocks = mortalityBlocks
+        self.init(
+            domainId: domainId,
+            groupId: groupId,
+            attempt: DurableTxAttempt(
+                txHash: txHash,
+                checkpoint: checkpoint,
+                mortalityBlocks: mortalityBlocks
+            ),
+            policy: policy
+        )
     }
 }
 
 public extension DurableTxRegistration {
+    var txHash: Data { attempt.txHash }
+    var checkpoint: BlockRef { attempt.checkpoint }
+    var mortalityBlocks: UInt32 { attempt.mortalityBlocks }
+
     /// Builds the entry the repository stores — `id` minted by the store, `sequence` the next in order,
     /// status `.pending`.
     func makeEntry(id: DurableTxId, sequence: Int64) -> DurableTxEntry {
@@ -183,10 +231,46 @@ public extension DurableTxRegistration {
             domainId: domainId,
             sequence: sequence,
             groupId: groupId,
-            txHash: txHash,
-            checkpoint: checkpoint,
-            mortality: mortalityBlocks,
+            attempt: attempt,
             status: .pending
+        )
+    }
+}
+
+/// A transaction to be recorded with no attempt yet: its policy builds and submits it afterwards.
+///
+/// What it will consume is locked from the moment this commits, so nothing else can select those
+/// assets while it waits to be built.
+public struct DurableTxSchedule: Sendable, Equatable {
+    public let domainId: TxDomainId
+    public let groupId: DurableTxGroupId?
+    public let policy: SubmissionPolicy
+
+    public init(domainId: TxDomainId, groupId: DurableTxGroupId?, policy: SubmissionPolicy) {
+        self.domainId = domainId
+        self.groupId = groupId
+        self.policy = policy
+    }
+}
+
+public extension DurableTxSchedule {
+    /// Builds the row the repository stores for a transaction that has not been built yet.
+    ///
+    /// It carries no attempt — a scheduled row has no bytes, no anchor and no window — until
+    /// ``DurableTxEntry/withAttempt(_:)`` gives it one. Nothing needs one while the status is
+    /// ``DurableTxStatus/pendingSubmission``: the recovery pass filters on
+    /// ``DurableTxStatus/awaitsVerdict``, and a store never returns such a row from
+    /// `getAllEntries(domain:)`. The row is still a ``DurableTxEntry`` so a caller watching its operation
+    /// group sees the transaction exist and waits for it, rather than reading an empty group as a
+    /// finished one.
+    func makeEntry(id: DurableTxId, sequence: Int64) -> DurableTxEntry {
+        DurableTxEntry(
+            id: id,
+            domainId: domainId,
+            sequence: sequence,
+            groupId: groupId,
+            attempt: nil,
+            status: .pendingSubmission
         )
     }
 }

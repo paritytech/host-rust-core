@@ -1,6 +1,7 @@
 import BigInt
 import ExtrinsicService
 import Foundation
+import FoundationExt
 import KeyDerivation
 import SDKLogger
 import SubstrateSdk
@@ -29,6 +30,7 @@ final class OffboardVouchersForPaymentService {
     private let quotaTracker: any UnloadQuotaTracking
     private let blockNumberProvider: BlockInfoProviding
     private let denominationContext: DenominationBreakdownContext
+    private let dateProvider: any DateProviding
     private let logger: SDKLoggerProtocol?
 
     init(
@@ -42,6 +44,7 @@ final class OffboardVouchersForPaymentService {
         quotaTracker: any UnloadQuotaTracking,
         blockNumberProvider: BlockInfoProviding,
         denominationContext: DenominationBreakdownContext,
+        dateProvider: any DateProviding,
         logger: SDKLoggerProtocol? = nil
     ) {
         self.instanceId = instanceId
@@ -54,6 +57,7 @@ final class OffboardVouchersForPaymentService {
         self.quotaTracker = quotaTracker
         self.blockNumberProvider = blockNumberProvider
         self.denominationContext = denominationContext
+        self.dateProvider = dateProvider
         self.logger = logger
     }
 
@@ -156,18 +160,20 @@ private extension OffboardVouchersForPaymentService {
         vouchers: [Voucher],
         surplus: Balance
     ) async throws -> [CoinageTxRequest] {
-        let details = try await buildGroupDetails(groups: groupVouchers(vouchers), surplus: surplus)
+        let details = try await buildGroupDetails(groups: unloadCalls(for: vouchers), surplus: surplus)
 
         let blockHash = try await blockNumberProvider.fetchCurrentHash()
 
         let origins = try await originFactory.createAsUnloadTokenOrigins(
             voucherGroups: details.map(\.group.vouchers),
-            currentDate: Date(),
+            currentDate: dateProvider.read(),
             blockHash: blockHash
         )
 
+        // Several calls can share a recycler, so the revision query is deduplicated.
+        var seenKeys = Set<RecyclerKey>()
         let revisions = try await recyclerLoader.fetchRevisions(
-            for: details.map(\.group.key),
+            for: details.map(\.group.key).filter { seenKeys.insert($0).inserted },
             blockHash: blockHash
         )
 
@@ -230,13 +236,8 @@ private extension OffboardVouchersForPaymentService {
 // MARK: - Models
 
 private extension OffboardVouchersForPaymentService {
-    struct VoucherGroup {
-        let key: RecyclerKey
-        let vouchers: [Voucher]
-    }
-
     struct GroupDetails {
-        let group: VoucherGroup
+        let group: RecyclerVoucherChunk
         let externalAssetAmount: Balance
         let surplusVouchers: [Voucher]
     }
@@ -248,9 +249,12 @@ private extension OffboardVouchersForPaymentService {
         let origin: any ExtrinsicOriginDefining
     }
 
-    /// The single group carrying the whole payment's surplus, and the change vouchers minted for it.
+    /// The single call carrying the whole payment's surplus, and the change vouchers minted for it.
+    ///
+    /// Identified by its position, not by its recycler: a recycler holding more vouchers than one
+    /// call may unload is split across several calls that all share the same `RecyclerKey`.
     struct SurplusHost {
-        let hostKey: RecyclerKey
+        let hostIndex: Int
         let surplusVouchers: [Voucher]
     }
 }
@@ -259,13 +263,13 @@ private extension OffboardVouchersForPaymentService {
 
 private extension OffboardVouchersForPaymentService {
     func buildGroupDetails(
-        groups: [VoucherGroup],
+        groups: [RecyclerVoucherChunk],
         surplus: Balance
     ) async throws -> [GroupDetails] {
         let host = try await resolveSurplusHost(groups: groups, surplus: surplus)
 
-        return groups.map { group in
-            let isHost = group.key == host?.hostKey
+        return groups.enumerated().map { index, group in
+            let isHost = index == host?.hostIndex
             return GroupDetails(
                 group: group,
                 externalAssetAmount: isHost ? groupInput(group) - surplus : groupInput(group),
@@ -274,23 +278,23 @@ private extension OffboardVouchersForPaymentService {
         }
     }
 
-    /// Picks the first group large enough to host the entire surplus and mints the change vouchers
-    /// for it. `nil` when there is no surplus; throws when no single group can carry it.
+    /// Picks the first call large enough to host the entire surplus and mints the change vouchers
+    /// for it. `nil` when there is no surplus; throws when no single call can carry it.
     func resolveSurplusHost(
-        groups: [VoucherGroup],
+        groups: [RecyclerVoucherChunk],
         surplus: Balance
     ) async throws -> SurplusHost? {
         guard surplus > 0 else { return nil }
 
-        guard let host = groups.first(where: { groupInput($0) >= surplus }) else {
+        guard let hostIndex = groups.firstIndex(where: { groupInput($0) >= surplus }) else {
             throw OffboardVouchersForPaymentError.noSurplusHost(surplus)
         }
 
         let surplusVouchers = try await allocateSurplusVouchers(surplus: surplus)
-        return SurplusHost(hostKey: host.key, surplusVouchers: surplusVouchers)
+        return SurplusHost(hostIndex: hostIndex, surplusVouchers: surplusVouchers)
     }
 
-    func groupInput(_ group: VoucherGroup) -> Balance {
+    func groupInput(_ group: RecyclerVoucherChunk) -> Balance {
         group.vouchers.reduce(Balance(0)) {
             $0 + denominationContext.valueInPlanks(for: $1.exponent)
         }
@@ -300,14 +304,11 @@ private extension OffboardVouchersForPaymentService {
 // MARK: - Grouping
 
 private extension OffboardVouchersForPaymentService {
-    func groupVouchers(_ vouchers: [Voucher]) -> [VoucherGroup] {
-        var grouped: [RecyclerKey: [Voucher]] = [:]
-        for voucher in vouchers {
-            guard let recycler = voucher.recycler else { continue }
-            let key = RecyclerKey(exponent: voucher.exponent, index: recycler.index)
-            grouped[key, default: []].append(voucher)
-        }
-        return grouped.map { VoucherGroup(key: $0.key, vouchers: $0.value) }
+    /// One call per recycler, split further when a recycler holds more vouchers than the pallet
+    /// accepts as aliases in a single call.
+    func unloadCalls(for vouchers: [Voucher]) async throws -> [RecyclerVoucherChunk] {
+        let maxPerCall = try await max(Int(recyclerLoader.maxConsolidation()), 1)
+        return try RecyclerVoucherChunker.chunk(vouchers, maxPerChunk: maxPerCall)
     }
 }
 
@@ -317,14 +318,10 @@ private extension OffboardVouchersForPaymentService {
     func allocateSurplusVouchers(surplus: Balance) async throws -> [Voucher] {
         guard surplus > 0 else { return [] }
 
-        guard let surplusDecimal = Decimal.fromSubstrateAmount(
-            surplus,
-            precision: denominationContext.precision
-        ) else {
-            return []
-        }
-
-        let denominations = denominationContext.breakdown(amount: surplusDecimal)
+        // Broken down in planks: the surplus is already one, and the round trip through `Decimal`
+        // does not survive `toSubstrateAmount` intact — $0.07 at precision 18 comes back ten planks
+        // heavy, which the breakdown then cannot place.
+        let denominations = try denominationContext.breakdown(amountInPlanks: surplus)
         return try await voucherMinter.mintVouchers(denominations.map(\.exponent))
     }
 }

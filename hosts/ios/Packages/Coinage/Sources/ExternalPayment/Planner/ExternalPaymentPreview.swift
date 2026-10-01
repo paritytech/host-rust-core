@@ -13,8 +13,7 @@ public struct VoucherOffboarding: Equatable {
     }
 }
 
-/// What an external payment would do, mirroring Android's `ExternalPaymentPlan`. Whether the plan
-/// costs privacy is a separate question (`canPayPrivately`), not encoded here.
+///  Whether the plan costs privacy is a separate question (`canPayPrivately`), not encoded here.
 public enum ExternalPaymentPreview: Equatable {
     /// Vouchers already in a recycler cover the amount; they are unloaded as picked.
     case unloadVouchers(VoucherOffboarding)

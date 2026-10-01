@@ -78,9 +78,7 @@ private extension SettingsViewModelFactory {
         case .linkedDevices: .iconLaptopMinimal
         case .apps: .iconGrid
         case .blockedUsers: .iconBlock
-        case .termsOfUse,
-             .privacy: .iconFile
-        case .contactUs: .iconCircleHelp
+        case .legalSupport: .iconFile
         }
     }
 
@@ -106,9 +104,7 @@ private extension SettingsViewModelFactory {
              .linkedDevices,
              .apps,
              .blockedUsers,
-             .termsOfUse,
-             .privacy,
-             .contactUs:
+             .legalSupport:
             .chevron
         }
     }

@@ -1,12 +1,13 @@
 //! Golden snapshot test for the Rust dispatcher emitter.
 //!
-//! `cargo +nightly rustdoc` runs once per package into a dedicated
+//! `cargo rustdoc` runs once per package, under the nightly named in the
+//! repository's `nightly-toolchain` file, into a dedicated
 //! `target/codegen-test-rustdoc/<package>` directory, off the shared
 //! `target/doc/<package>.json` path that a concurrent `cargo doc` would
 //! claim. Every test reads the same JSON, so the build is paid once per
-//! package per run. Nightly Rust is required; if it is not available the
-//! test panics rather than silently passing (set up rustup with
-//! `rustup toolchain install nightly`).
+//! package per run. That toolchain is required; if it is not installed the
+//! test panics rather than silently passing (`rustup toolchain install
+//! "$(cat nightly-toolchain)"`). `TRUAPI_NIGHTLY_TOOLCHAIN` overrides it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -14,8 +15,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+/// The dated nightly CI runs, unless `TRUAPI_NIGHTLY_TOOLCHAIN` names another.
 fn nightly_toolchain() -> String {
-    std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string())
+    std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| {
+        include_str!("../../../../nightly-toolchain")
+            .trim()
+            .to_string()
+    })
 }
 
 fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
@@ -53,15 +59,21 @@ fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
     strings
 }
 
-/// Path to `truapi`'s rustdoc JSON, building it on first use.
+/// Path to the rustdoc JSON of `truapi`'s protocol definitions alone, the
+/// input codegen reads the API from, building it on first use.
 fn produce_rustdoc_json(workspace_root: &Path) -> PathBuf {
-    produce_rustdoc_json_for_package(workspace_root, "truapi")
+    produce_rustdoc_json_for_package(workspace_root, "truapi", &["--no-default-features"])
 }
 
-/// Path to `package`'s rustdoc JSON, building it on first use and reusing
-/// that build for every later caller in this test binary. Panics with a
-/// clear message if nightly is unavailable so CI cannot pass vacuously.
-fn produce_rustdoc_json_for_package(workspace_root: &Path, package: &str) -> PathBuf {
+/// Path to `package`'s rustdoc JSON built with `cargo_args`, building it on
+/// first use and reusing that build for every later caller in this test
+/// binary. Panics with a clear message if nightly is unavailable so CI cannot
+/// pass vacuously.
+fn produce_rustdoc_json_for_package(
+    workspace_root: &Path,
+    package: &str,
+    cargo_args: &[&str],
+) -> PathBuf {
     static BUILT: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
     let built = BUILT.get_or_init(|| Mutex::new(HashMap::new()));
     // Held across the build so two tests asking for the same package queue
@@ -69,34 +81,47 @@ fn produce_rustdoc_json_for_package(workspace_root: &Path, package: &str) -> Pat
     let mut built = built
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(json) = built.get(package) {
+    let key = [package]
+        .into_iter()
+        .chain(cargo_args.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(json) = built.get(&key) {
         return json.clone();
     }
 
     let target_dir = workspace_root
         .join("target/codegen-test-rustdoc")
-        .join(package);
-    let json = run_rustdoc_json(workspace_root, &target_dir, package);
-    built.insert(package.to_owned(), json.clone());
+        .join(key.replace(' ', "_"));
+    let json = run_rustdoc_json(workspace_root, &target_dir, package, cargo_args);
+    built.insert(key, json.clone());
     json
 }
 
-/// One `cargo +nightly rustdoc --output-format json` invocation, returning
+/// One `cargo rustdoc --output-format json` invocation on the pinned nightly, returning
 /// the path to the JSON it wrote.
-fn run_rustdoc_json(workspace_root: &Path, target_dir: &Path, package: &str) -> PathBuf {
+fn run_rustdoc_json(
+    workspace_root: &Path,
+    target_dir: &Path,
+    package: &str,
+    cargo_args: &[&str],
+) -> PathBuf {
+    let toolchain = nightly_toolchain();
     let mut command = Command::new("cargo");
     command
-        .arg(format!("+{}", nightly_toolchain()))
-        .args(["rustdoc", "-p", package, "--target-dir"])
+        .arg(format!("+{toolchain}"))
+        .args(["rustdoc", "-p", package])
+        .args(cargo_args)
+        .arg("--target-dir")
         .arg(target_dir)
         .args(["--", "-Z", "unstable-options", "--output-format", "json"])
         .current_dir(workspace_root);
     let output = command.output().expect(
-        "failed to spawn nightly rustdoc; install the selected nightly toolchain via rustup",
+        "failed to spawn rustdoc; install the pinned nightly named in nightly-toolchain via rustup",
     );
     assert!(
         output.status.success(),
-        "`cargo +nightly rustdoc -p {package}` failed (status {}); nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
+        "`cargo +{toolchain} rustdoc -p {package}` failed (status {}); that nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
@@ -139,9 +164,10 @@ fn rustfmt_generated(files: &[PathBuf]) {
     let config_path = config_dir.path().join("rustfmt.toml");
     fs::write(&config_path, "edition = \"2024\"\n").expect("write rustfmt config");
 
+    let toolchain = nightly_toolchain();
     let mut command = Command::new("rustfmt");
     command
-        .arg(format!("+{}", nightly_toolchain()))
+        .arg(format!("+{toolchain}"))
         .args(["--edition", "2024", "--config-path"])
         .arg(config_path);
     for file in files {
@@ -149,7 +175,7 @@ fn rustfmt_generated(files: &[PathBuf]) {
     }
     let output = command
         .output()
-        .expect("failed to spawn rustfmt; install nightly rustfmt via rustup");
+        .expect("failed to spawn rustfmt; install rustfmt for the pinned nightly via rustup");
     assert!(
         output.status.success(),
         "rustfmt failed (status {}).\nstdout:\n{}\nstderr:\n{}",
@@ -222,9 +248,9 @@ fn golden_dispatcher_and_wire_table() {
 
     // Compare the emitted files against the goldens. We assert on
     // wire_table.rs first because it's small and the diff is easy to
-    // read when the wire ids drift. mod.rs is covered because
-    // truapi-server declares `pub mod generated;` unconditionally, so
-    // dropping it stops the crate parsing at all.
+    // read when the wire ids drift. mod.rs is covered because the
+    // runtime declares `pub mod generated;` unconditionally, so dropping
+    // it stops the crate parsing at all.
     let golden_dir = manifest_dir.join("tests/golden");
     let cases = [
         ("wire_table.rs", "wire_table.rs"),
@@ -339,7 +365,8 @@ fn golden_host_callbacks_ts() {
 
     let tempdir = workspace_tempdir(&workspace);
     let truapi_json = produce_rustdoc_json(&workspace);
-    let platform_json = produce_rustdoc_json_for_package(&workspace, "truapi-platform");
+    let runtime_json = produce_rustdoc_json_for_package(&workspace, "truapi", &[]);
+    let provider_json = produce_rustdoc_json_for_package(&workspace, "truapi-provider", &[]);
 
     let out = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
         .args([
@@ -348,7 +375,9 @@ fn golden_host_callbacks_ts() {
             "--output",
             tempdir.path().join("ts").to_str().unwrap(),
             "--platform-input",
-            platform_json.to_str().unwrap(),
+            runtime_json.to_str().unwrap(),
+            "--platform-input",
+            provider_json.to_str().unwrap(),
             "--platform-ts-output",
             tempdir.path().join("host").to_str().unwrap(),
             "--platform-wasm-adapter-output",

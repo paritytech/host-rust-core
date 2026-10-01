@@ -51,7 +51,7 @@ private extension FundingDomainProvider {
             throw FundingDomainError.unavailable
         }
 
-        guard let page = hostProvider.page(navigationDestination: destination) else {
+        guard let page = try await hostProvider.resolvePage(destination: destination) else {
             throw FundingDomainError.unavailable
         }
 

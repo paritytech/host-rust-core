@@ -11,6 +11,7 @@ import io.paritytech.polkadotapp.common.utils.childScope
 import io.paritytech.polkadotapp.feature_calls_api.domain.models.CallDirection
 import io.paritytech.polkadotapp.feature_calls_api.domain.models.CallStatus
 import io.paritytech.polkadotapp.feature_calls_impl.media.CallAlertManager
+import io.paritytech.polkadotapp.feature_calls_impl.media.CallAudioRouteController
 import io.paritytech.polkadotapp.feature_calls_impl.media.CallWakeLockManager
 import io.paritytech.polkadotapp.feature_calls_impl.media.toCallAlert
 import io.paritytech.polkadotapp.feature_calls_impl.models.CallParams
@@ -27,9 +28,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -118,6 +119,9 @@ class CallService : Service(), CoroutineScope {
     @Inject
     lateinit var callAlertManager: CallAlertManager
 
+    @Inject
+    lateinit var callAudioRouteController: CallAudioRouteController
+
     private var sessionRef: ContactChatSessionReference? = null
     private var acquireSessionRefJob: Job? = null
 
@@ -133,8 +137,10 @@ class CallService : Service(), CoroutineScope {
     }
 
     private fun observeCallSounds() {
-        callStateHolder.observeActiveCall()
-            .map { it.toCallAlert() }
+        combine(
+            callStateHolder.observeActiveCall(),
+            callAudioRouteController.audioDevices,
+        ) { call, audio -> call.toCallAlert(audio) }
             .distinctUntilChanged()
             .onEach(callAlertManager::setActiveAlert)
             .onCompletion { callAlertManager.release() }

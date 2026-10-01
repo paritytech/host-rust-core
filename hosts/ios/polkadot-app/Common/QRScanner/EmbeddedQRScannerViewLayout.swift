@@ -3,35 +3,22 @@ import UIKit_iOS
 import PolkadotUI
 import DesignSystem
 
-/// Bare camera preview for the tab bar panel: no dimmed cutout and no frame border, with the
-/// message label drawn straight over the preview. `fillColor` is what draws the dimming in
-/// `CameraFrameView`, so clearing it removes the window entirely and the preview fills the view.
+/// Bare camera preview that fills its host's bounds: no dimmed cutout and no frame border, with
+/// the message label drawn straight over the preview. `fillColor` is what draws the dimming in
+/// `CameraFrameView`, so clearing it removes the window entirely. The host view (`ScanPanelViewLayout`)
+/// owns the insets and placeholder.
 final class EmbeddedQRScannerViewLayout: QRScannerViewLayout {
     private enum Constants {
         static let previewFadeDuration: TimeInterval = 0.25
     }
 
-    /// Stands in for the camera while `AVCaptureSession` configures and starts, which takes
-    /// roughly a second and cannot be shortened from here.
-    private let placeholderView = UIView()
+    let previewView = CameraPreviewView()
+    private var previewSide: CGFloat = 0
 
     override func setupLayout() {
-        // The base init paints `bgSurfaceMain`; the panel's glass must show through the inset.
         backgroundColor = .clear
 
-        // The panel measures this view, so the square preview is declared here rather than by
-        // whatever hosts it.
         heightAnchor.constraint(equalTo: widthAnchor).isActive = true
-
-        addSubview(placeholderView)
-
-        placeholderView.backgroundColor = .bgSurfaceNested
-        placeholderView.layer.cornerRadius = DSRadii.large
-        placeholderView.layer.masksToBounds = true
-        placeholderView.snp.makeConstraints { make in
-            make.top.left.right.equalToSuperview().inset(DSSpacings.mediumIncreased)
-            make.bottom.equalToSuperview().inset(DSSpacings.small)
-        }
 
         addSubview(qrFrameView)
         qrFrameView.alpha = 0
@@ -39,8 +26,10 @@ final class EmbeddedQRScannerViewLayout: QRScannerViewLayout {
         qrFrameView.layer.masksToBounds = true
         qrFrameView.fillColor = .clear
         qrFrameView.snp.makeConstraints { make in
-            make.edges.equalTo(placeholderView)
+            make.edges.equalToSuperview()
         }
+
+        qrFrameView.addSubview(previewView)
 
         messageLabel.textColor = .fgPrimary
         addSubview(messageLabel)
@@ -54,5 +43,36 @@ final class EmbeddedQRScannerViewLayout: QRScannerViewLayout {
         UIView.animate(withDuration: Constants.previewFadeDuration) { [self] in
             qrFrameView.alpha = 1
         }
+    }
+
+    /// Drops the preview back to the placeholder while the session is stopped: a restarted session
+    /// renders black until its first frame, which would otherwise blink through the expand.
+    /// `didAttachPreview` fades it back when the presenter reports the restarted session.
+    func hidePreview() {
+        qrFrameView.alpha = 0
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutPreview()
+    }
+}
+
+private extension EmbeddedQRScannerViewLayout {
+    /// A resized `AVCaptureVideoPreviewLayer` lays its video out at the final size immediately, pinned to
+    /// the top-left, so the preview keeps the widest size it has had and is scaled around its center.
+    func layoutPreview() {
+        let side = qrFrameView.bounds.width
+
+        guard side > 0 else {
+            return
+        }
+
+        previewSide = max(previewSide, side)
+        previewView.bounds = CGRect(x: 0, y: 0, width: previewSide, height: previewSide)
+        previewView.center = CGPoint(x: qrFrameView.bounds.midX, y: qrFrameView.bounds.midY)
+
+        let scale = side / previewSide
+        previewView.transform = CGAffineTransform(scaleX: scale, y: scale)
     }
 }

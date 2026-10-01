@@ -128,7 +128,9 @@ private final class StubRemoteConfig: RemoteConfigManaging, @unchecked Sendable 
             coinageInstanceId: nil,
             fundingUrl: nil,
             offrampUrl: nil,
-            accountDataStoreContract: nil
+            accountDataStoreContract: nil,
+            paymentAsset: nil,
+            appSharingUrl: nil
         )
     }
 

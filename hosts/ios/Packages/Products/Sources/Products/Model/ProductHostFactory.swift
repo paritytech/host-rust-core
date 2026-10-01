@@ -17,6 +17,9 @@ public protocol ProductHostProviding: Sendable {
 
     /// Awaits the TLD, then constructs from an already-suffixed host string.
     func resolveHost(rawString: String) async throws -> ProductHost?
+
+    /// Awaits the TLD, then parses a product destination into a page.
+    func resolvePage(destination: String) async throws -> ProductPage?
 }
 
 public final class ProductHostFactory: ProductHostProviding {
@@ -58,5 +61,10 @@ public final class ProductHostFactory: ProductHostProviding {
     public func resolveHost(rawString: String) async throws -> ProductHost? {
         let tld = try await tldProvider.resolveTld()
         return ProductHost.parse(rawString, tld: tld)
+    }
+
+    public func resolvePage(destination: String) async throws -> ProductPage? {
+        let tld = try await tldProvider.resolveTld()
+        return ProductPage.fromNavigationDestination(destination, tld: tld)
     }
 }

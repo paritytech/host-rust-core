@@ -12,9 +12,8 @@ import UIKitExt
 protocol TransferAmountViewProtocol: ControllerBackedProtocol, ValidationResultPresentable {
     func didReceive(amountViewModel: AmountInputViewModelProtocol)
     func didReceive(assetViewModel: AssetAmountViewModel)
+    func didReceive(paymentAsset: PaymentAssetViewModelProtocol)
     func didReceive(availableBalance: String)
-    /// The "Extra … is spendable at the risk of reducing your privacy" hint, or nil to hide it.
-    func didReceive(privacyHint: String?)
     func didReceive(feeViewModel: BalanceViewModelProtocol?)
     func didReceive(recipient viewModel: TransferRecipientViewModel)
 
@@ -27,7 +26,7 @@ protocol TransferAmountViewProtocol: ControllerBackedProtocol, ValidationResultP
     func didStartLoading()
     func didStopLoading()
 
-    func didReceive(transferStatus: ClaimStatus)
+    func didReceive(transferState: OutgoingTransferState)
     func didUnlockNavigation()
 
     #if TESTNET_FEATURE
@@ -42,7 +41,6 @@ protocol TransferAmountPresenterProtocol: AnyObject {
     func setup()
     func confirm()
     func onBalance()
-    func onBalanceInfo()
     func changeAmount(_ newValue: Decimal?)
 }
 
@@ -55,7 +53,7 @@ protocol TransferAmountInteractorInputProtocol: AnyObject {
     func setup()
     func retrySetup()
 
-    func lifecycleStream() -> AnyAsyncSequence<ClaimStatus>
+    func lifecycleStream() -> AnyAsyncSequence<OutgoingTransferState>
     func previewTransfer(for amount: Decimal) async throws -> TransferPreviewValidation
     func confirmTransfer(validation: TransferPreviewValidation) async throws
     func saveRecentContact()
@@ -69,7 +67,6 @@ protocol TransferAmountInteractorInputProtocol: AnyObject {
 protocol TransferAmountInteractorOutputProtocol: AnyObject {
     func didReceive(error: TransferAmountInteractorError)
     func didReceive(spendableBreakdown: TransferSpendableBreakdown)
-    func didReceive(lockedBalance: Balance)
 
     #if TESTNET_FEATURE
         func didReceive(strategyDebugInfo: TransferStrategyDebugInfo?)
@@ -86,7 +83,6 @@ protocol TransferAmountWireframeProtocol: TransferValidationErrorPresentable,
     ChatNavigating,
     CoinagePrivacyPresenting {
     func hide(view: ControllerBackedProtocol?)
-    func showBalanceInfo(model: BalanceInfoModel, from view: (any ControllerBackedProtocol)?)
 }
 
 enum TransferAmountInteractorError: Error {

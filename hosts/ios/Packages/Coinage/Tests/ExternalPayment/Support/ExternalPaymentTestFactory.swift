@@ -1,6 +1,7 @@
 import BigInt
 import DurableTransactionsTestSupport
 import Foundation
+import FoundationExt
 import os
 import SubstrateSdk
 import Testing
@@ -130,13 +131,15 @@ enum ExternalPaymentTestFactory {
             originFactory: StubOriginFactory(),
             quotaTracker: StubUnloadQuotaTracker(),
             blockNumberProvider: StubBlockInfoProvider(),
+            dateProvider: StubDateProvider(Date()),
             logger: nil
         )
     }
 
     static func makeHarness(
         store: InMemoryExternalPaymentStore = InMemoryExternalPaymentStore(),
-        vouchers: [Voucher] = []
+        vouchers: [Voucher] = [],
+        maxConsolidation: UInt32 = 100
     ) -> ExternalPaymentHarness {
         let txService = StubGroupTxService()
         let recycler = StubCoinageRecyclingService()
@@ -151,12 +154,13 @@ enum ExternalPaymentTestFactory {
             recycler: recycler,
             voucherKeyFactory: StubVoucherKeyFactory(),
             voucherMinter: StubVoucherMinter(),
-            recyclerLoader: StubRecyclerReadinessLoader(),
+            recyclerLoader: StubRecyclerReadinessLoader(maxConsolidationValue: maxConsolidation),
             extrinsicMonitor: StubExtrinsicMonitorFactory(),
             durability: txService,
             originFactory: StubOriginFactory(),
             quotaTracker: StubUnloadQuotaTracker(),
             blockNumberProvider: StubBlockInfoProvider(),
+            dateProvider: StubDateProvider(Date()),
             logger: nil
         )
 

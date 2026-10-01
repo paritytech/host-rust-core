@@ -69,7 +69,7 @@ enum CoinageBreakdownFactory {
 
     /// Value-weighted split for the summary bar, bucketed exactly as the figures above it are:
     /// every holding lands in one bucket regardless of whether it is a coin or a voucher, so the
-    /// three shares account for the whole total balance.
+    /// two shares account for the available now and gaining privacy figures.
     static func composition(
         of holdings: CoinageHoldings,
         context: DenominationBreakdownContext
@@ -89,19 +89,17 @@ enum CoinageBreakdownFactory {
 
         return CoinageCompositionBar.Model(
             availableNowShare: share(planks.availableNow),
-            gainingPrivacyShare: share(planks.gainingPrivacy),
-            pendingShare: share(planks.pending)
+            gainingPrivacyShare: share(planks.gainingPrivacy)
         )
     }
 
-    /// Plank totals per bucket. A named type rather than a tuple, so the three stay labelled
+    /// Plank totals per bucket. A named type rather than a tuple, so the two stay labelled
     /// wherever they travel.
     private struct BucketPlanks {
         var availableNow = BigUInt(0)
         var gainingPrivacy = BigUInt(0)
-        var pending = BigUInt(0)
 
-        var total: BigUInt { availableNow + gainingPrivacy + pending }
+        var total: BigUInt { availableNow + gainingPrivacy }
     }
 
     private static func planksByAvailability(
@@ -114,7 +112,7 @@ enum CoinageBreakdownFactory {
             switch availability {
             case .availableNow: planks.availableNow += amount
             case .gainingPrivacy: planks.gainingPrivacy += amount
-            case .pending: planks.pending += amount
+            case .pending: break
             }
         }
 
@@ -140,8 +138,8 @@ enum CoinageBreakdownFactory {
     }
 }
 
-/// The figures shown above the summary bar. The last three partition ``total``, and are the
-/// three buckets the bar draws.
+/// The amounts shown above the summary bar. The bar draws two of them: available now and gaining
+/// privacy. Pending is money that has not arrived yet and cannot be spent.
 struct CoinageAmounts: Equatable {
     let total: Decimal
     let availableNow: Decimal
@@ -149,4 +147,8 @@ struct CoinageAmounts: Equatable {
     let pending: Decimal
 
     static let zero = CoinageAmounts(total: 0, availableNow: 0, gainingPrivacy: 0, pending: 0)
+
+    var hasFundsNotReady: Bool {
+        gainingPrivacy > 0 || pending > 0
+    }
 }

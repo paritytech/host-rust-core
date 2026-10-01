@@ -1,8 +1,8 @@
-import KeyDerivation
+@preconcurrency import KeyDerivation
 import SubstrateSdk
 import NovaCrypto
 
-public protocol VoucherKeyDeriving: VoucherKeypairFactoryProtocol {
+public protocol VoucherKeyDeriving: VoucherKeypairFactoryProtocol, Sendable {
     /// Creates a key manager for a voucher index to perform Bandersnatch operations (proofs, signing, aliases).
     func createKeyManager(index: CoinageKeyIndex) throws -> any BandersnatchKeyManaging
 }

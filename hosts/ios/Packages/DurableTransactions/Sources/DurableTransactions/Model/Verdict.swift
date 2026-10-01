@@ -10,9 +10,20 @@ public struct Verdict: Sendable, Equatable {
     public let status: DurableTxStatus
     public let successDetectedAt: BlockRef?
 
-    public init(status: DurableTxStatus, successDetectedAt: BlockRef?) {
+    /// Why a ``DurableTxStatus/failure`` was reached; `nil` for every other status.
+    ///
+    /// Carried so ``DurableVerdictWriter`` can offer the failure back to the transaction's policy
+    /// before it becomes terminal — what makes a rebuild possible is knowing *how* the attempt died.
+    public let failure: DurableFailureKind?
+
+    public init(
+        status: DurableTxStatus,
+        successDetectedAt: BlockRef?,
+        failure: DurableFailureKind? = nil
+    ) {
         self.status = status
         self.successDetectedAt = successDetectedAt
+        self.failure = failure
     }
 }
 

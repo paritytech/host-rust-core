@@ -27,7 +27,7 @@ struct RecoveryPassTests {
     func unregisteredDomainSkipped() async throws {
         let tx = DurableTxEntry.fixture(domainId: TxDomainId("orphan"))
         store.insert(tx)
-        view.setBodySearchResponse(tx.txHash, to: .foundSucceeded(.fixture(120)))
+        try view.setBodySearchResponse(#require(tx.txHash), to: .foundSucceeded(.fixture(120)))
 
         await pass().run()
 
@@ -40,7 +40,7 @@ struct RecoveryPassTests {
     func submissionOwnedSkipped() async throws {
         let tx = DurableTxEntry.fixture()
         store.insert(tx)
-        owned.take(tx.id)
+        try owned.take(tx.id, txHash: #require(tx.txHash))
         oracles.register(
             StubCompletionOracle { txs, _ in StubPassScope(completedAtFinalized: Set(txs.map(\.id))) },
             for: .test
@@ -122,7 +122,7 @@ struct RecoveryPassTests {
     func oracleFailureWritesNothing() async throws {
         let tx = DurableTxEntry.fixture()
         store.insert(tx)
-        view.setBodySearchResponse(tx.txHash, to: .foundSucceeded(.fixture(120)))
+        try view.setBodySearchResponse(#require(tx.txHash), to: .foundSucceeded(.fixture(120)))
         oracles.register(StubCompletionOracle { _, _ in throw ChainReadFailure(message: "down") }, for: .test)
 
         await pass().run()
@@ -158,6 +158,7 @@ struct RecoveryPassTests {
         let wrote = try await store.updateTxStatus(
             for: entry.id,
             expectedCurrentStatus: .pending,
+            expectedTxHash: #require(entry.txHash),
             verdict: Verdict(status: .finalizedSuccess, successDetectedAt: nil)
         )
 
@@ -174,6 +175,7 @@ struct RecoveryPassTests {
         let wrote = try await store.updateTxStatus(
             for: entry.id,
             expectedCurrentStatus: .finalizedSuccess,
+            expectedTxHash: #require(entry.txHash),
             verdict: Verdict(status: .failure, successDetectedAt: nil)
         )
 
@@ -185,6 +187,17 @@ struct RecoveryPassTests {
 
 private extension RecoveryPassTests {
     func pass() -> DurableRecoveryPass {
-        DurableRecoveryPass(store: store, chainFactory: view, owned: owned, oracles: oracles, logger: nil)
+        DurableRecoveryPass(
+            store: store,
+            chainFactory: view,
+            owned: owned,
+            oracles: oracles,
+            verdictWriter: DurableVerdictWriter(
+                store: store,
+                policies: DurableSubmissionPolicyRegistry(),
+                logger: nil
+            ),
+            logger: nil
+        )
     }
 }

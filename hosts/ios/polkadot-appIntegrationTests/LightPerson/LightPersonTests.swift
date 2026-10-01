@@ -56,16 +56,16 @@ final class LightPersonTests: XCTestCase {
                 reservedUsername: nil
             )
 
-            try logger.info("main: \(params.accountId.toAddress(using: .substrate(42)))")
+            let mainAddress = try params.accountId.toAddress(using: .substrate(42))
+            logger.info("main: \(mainAddress)")
             logger.info("main signature (SR25519): \(params.accountIdProofSignature.toHex(includePrefix: true))")
             logger.info("ringVrfKey: \(params.personMemberKey.toHex(includePrefix: true))")
             logger.info("proofOfOwnership: \(params.membershipProofSignature.toHex(includePrefix: true))")
             logger.info(
                 "consumerRegistration.signature (SR25519): \(params.resourcesSignature.toHex(includePrefix: true))"
             )
-            try logger.info(
-                "consumerRegistration.identifierKey: \(params.encryptionIdentifier.scaleEncoded().toHex(includePrefix: true))"
-            )
+            let identifierKey = try params.encryptionIdentifier.scaleEncoded().toHex(includePrefix: true)
+            logger.info("consumerRegistration.identifierKey: \(identifierKey)")
             logger.info("username: \(params.username)")
         } catch {
             logger.error("Unexpected error: \(error)")

@@ -107,6 +107,14 @@ class QRScannerPresenter: QRScannerPresenterProtocol {
     func viewWillDisappear() {
         stopServiceIfNeeded()
     }
+
+    func setCaptureActive(_ active: Bool) {
+        if active {
+            startServiceIfNeeded()
+        } else {
+            stopServiceIfNeeded()
+        }
+    }
 }
 
 extension QRScannerPresenter: @MainActor QRCaptureServiceDelegate {

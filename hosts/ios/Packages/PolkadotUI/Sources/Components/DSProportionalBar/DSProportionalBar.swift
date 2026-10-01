@@ -37,19 +37,22 @@ public struct DSProportionalBar: View {
     private let cornerStyle: CornerStyle
     private let outlineColor: Color
     private let outlineWidth: CGFloat
+    private let isAnimated: Bool
 
     public init(
         segments: [Segment],
         height: CGFloat,
         cornerStyle: CornerStyle = .capsule,
         outlineColor: Color,
-        outlineWidth: CGFloat
+        outlineWidth: CGFloat,
+        isAnimated: Bool = true
     ) {
         self.segments = segments
         self.height = height
         self.cornerStyle = cornerStyle
         self.outlineColor = outlineColor
         self.outlineWidth = outlineWidth
+        self.isAnimated = isAnimated
     }
 
     public var body: some View {
@@ -58,7 +61,7 @@ public struct DSProportionalBar: View {
 
             HStack(spacing: 0) {
                 ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
-                    Self.view(for: segment.fill)
+                    Self.view(for: segment.fill, isAnimated: isAnimated)
                         .frame(width: widths[index])
                 }
 
@@ -102,12 +105,12 @@ private extension DSProportionalBar {
     }
 
     @ViewBuilder
-    static func view(for fill: Segment.Fill) -> some View {
+    static func view(for fill: Segment.Fill, isAnimated: Bool) -> some View {
         switch fill {
         case let .solid(color):
             color
         case let .stripes(color, background):
-            DSBarberPole(stripeColor: color, backgroundColor: background)
+            DSBarberPole(stripeColor: color, backgroundColor: background, isAnimated: isAnimated)
         }
     }
 }

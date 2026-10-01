@@ -1,7 +1,6 @@
 import UIKit
 import Keystore_iOS
 import Operation_iOS
-import JailbreakDetection
 import KeyDerivation
 import SubstrateSdk
 import ChainRegistry
@@ -52,15 +51,7 @@ enum RootPresenterFactory: RootPresenterFactoryProtocol {
 
         let migrator = createLaunchMigrator()
 
-        let jailbreakDetector = JailbreakDetector(
-            device: UIDevice.current,
-            fileManager: FileManager.default,
-            urlOpener: UIApplication.shared,
-            processInfo: ProcessInfo.processInfo
-        )
-
         let resolver = SequentialDecisionResolver<RootDestination>(
-            preChecks: [RootGate.Jailbreak(detector: jailbreakDetector, logger: Logger.shared)],
             gates: [
                 RootGate.Theme(),
                 RootGate.Wallet(
@@ -74,8 +65,8 @@ enum RootPresenterFactory: RootPresenterFactoryProtocol {
 
         let chainRegistryClosure = { ChainRegistryFacade.sharedRegistry }
 
-        let browsePrewarmer = ProductContentPrewarmer(
-            makeLabel: { AppConfig.DotNs.dotNsBrowse },
+        let productPrewarmer = ProductContentPrewarmer(
+            makeLabels: { await createProductLabels(flowStateProvider: flowStateProvider) },
             chainRegistryClosure: chainRegistryClosure,
             flowStateProvider: flowStateProvider
         )
@@ -86,13 +77,16 @@ enum RootPresenterFactory: RootPresenterFactoryProtocol {
             logger: Logger.shared,
             resolver: resolver,
             tokenManager: JWTTokenManager.shared,
-            browsePrewarmer: browsePrewarmer
+            remoteConfigManager: FirebaseFacade.shared,
+            chainRegistryConfigurator: FirebaseFacade.shared,
+            productPrewarmer: productPrewarmer,
+            observer: RootSetupObserver(pathMonitor: NetworkPathMonitor())
         )
 
         let presenter = RootPresenter(
             wireframe: wireframe,
             interactor: interactor,
-            viewModelFactory: RootInitViewModelFactory()
+            viewModelFactory: RootViewModelFactory()
         )
 
         interactor.presenter = presenter
@@ -104,11 +98,31 @@ enum RootPresenterFactory: RootPresenterFactoryProtocol {
             )
         #endif
 
-        let initViewController = RootInitViewController()
+        let initViewController = RootViewController(presenter: presenter)
         presenter.view = initViewController
         window.rootViewController = initViewController
 
         return presenter
+    }
+
+    @MainActor
+    private static func createProductLabels(flowStateProvider: SPAFlowStateProviding) async -> [String] {
+        #if FEATURE_PRODUCTS
+            let staticProducts = [AppConfig.DotNs.dotNsBrowse]
+        #else
+            let staticProducts: [String] = []
+        #endif
+
+        let fundingProvider = FundingDomainProvider(
+            hostProvider: flowStateProvider.flowState().hostProvider
+        )
+
+        let fundingPages = await [
+            try? fundingProvider.fundingPage(),
+            try? fundingProvider.offrampPage()
+        ]
+
+        return staticProducts + fundingPages.compactMap { $0?.host.name }
     }
 
     /// Local launch steps in order: erase a cross-device backup restore before any store is opened, then

@@ -17,7 +17,7 @@ final class CoinageInstallationCoreDataRepository: CoinageInstallationRepository
         let previous = Set(installations)
         guard !previous.isEmpty else { return }
 
-        try await databaseService.perform { context in
+        try await databaseService.performWrite { context in
             for installation in previous {
                 let existing: CDCoinageInstallation? = try context.first(for: Self.predicate(for: installation))
                 guard existing == nil else { continue }
@@ -29,12 +29,11 @@ final class CoinageInstallationCoreDataRepository: CoinageInstallationRepository
                 row.initialScanCompleted = false
                 row.isUserConfirmedCompletion = false
             }
-            try context.save()
         }
     }
 
     func getPrevious() async throws -> [PreviousInstallation] {
-        try await databaseService.perform { context in
+        try await databaseService.performRead { context in
             let request = NSFetchRequest<CDCoinageInstallation>(entityName: Self.entityName)
             let byIdentifier = NSSortDescriptor(key: #keyPath(CDCoinageInstallation.identifier), ascending: true)
             request.sortDescriptors = [byIdentifier]
@@ -67,12 +66,11 @@ final class CoinageInstallationCoreDataRepository: CoinageInstallationRepository
     }
 
     func markAllUserConfirmed() async throws {
-        try await databaseService.perform { context in
+        try await databaseService.performWrite { context in
             let request = NSFetchRequest<CDCoinageInstallation>(entityName: Self.entityName)
             for row in try context.fetch(request) {
                 row.isUserConfirmedCompletion = true
             }
-            try context.save()
         }
     }
 }
@@ -95,12 +93,11 @@ private extension CoinageInstallationCoreDataRepository {
         _ installation: CoinageInstallationId,
         _ change: @escaping (CDCoinageInstallation) -> Void
     ) async throws {
-        try await databaseService.perform { context in
+        try await databaseService.performWrite { context in
             guard let row: CDCoinageInstallation = try context.first(for: Self.predicate(for: installation)) else {
                 throw CoinageInstallationRepositoryError.unknownInstallation(installation)
             }
             change(row)
-            try context.save()
         }
     }
 }

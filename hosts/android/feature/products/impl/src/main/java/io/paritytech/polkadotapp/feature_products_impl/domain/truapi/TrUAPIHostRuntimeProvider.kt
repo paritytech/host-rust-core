@@ -1,11 +1,13 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 
+import android.content.Context
 import dagger.Lazy
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
-import io.parity.truapi.HostRuntimeConfig
+import uniffi.truapi.HostRuntimeConfig
 import io.parity.truapi.HostStorage
-import io.parity.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionConfig
 import io.parity.truapi.TrUAPIHostRuntime
 import io.parity.truapi.WebSocketChainProvider
 import io.paritytech.polkadotapp.chains.multiNetwork.ChainRegistry
@@ -40,16 +42,14 @@ import okhttp3.OkHttpClient
 import timber.log.Timber
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
-import uniffi.truapi.HostLocalStorageReadError
-import uniffi.truapi.HostNavigateToError
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_platform.AuthState
-import uniffi.truapi_platform.HostChainSet
-import uniffi.truapi_platform.PermissionDecision
-import uniffi.truapi_platform.UserConfirmationReview
-import uniffi.truapi_server.HostNavigateRejection
-import uniffi.truapi_server.HostStorageException
-import uniffi.truapi_server.WorkerTransition
+import uniffi.truapi.AuthState
+import uniffi.truapi.HostChainSet
+import uniffi.truapi.PermissionDecision
+import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.HostNavigateToException
+import uniffi.truapi.HostLocalStorageReadException
+import uniffi.truapi.WorkerTransition
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -61,6 +61,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class TrUAPIHostRuntimeProvider @Inject constructor(
+    @param:ApplicationContext private val context: Context,
     private val chainRegistry: ChainRegistry,
     private val knownChains: KnownChains,
     private val chainDirectory: TrUAPIChainDirectory,
@@ -71,6 +72,7 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
     @param:TrUAPIChainHttpClient private val chainHttpClient: OkHttpClient,
     private val confirmationLauncher: TrUAPIConfirmationLauncher,
     private val appLifecycleObserver: AppLifecycleObserver,
+    private val contactsBridge: AppContactsHostBridge,
     // Lazy: the supervisor boots workers on this runtime, and reports back through this bridge.
     private val workerSupervisor: Lazy<TrUAPIWorkerSupervisor>,
     dispatchers: CoroutineDispatchers,
@@ -116,6 +118,10 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
     }
 
     private fun wire(runtime: TrUAPIHostRuntime) {
+        // Before any product execution opens, so a product never sees the
+        // window where the host lists no contacts.
+        runtime.setContacts(contactsBridge)
+        observeContactRemovals(runtime)
         chainProvider.attach(
             onResponse = runtime::notifyChainResponse,
             onClosed = runtime::notifyChainClosed,
@@ -151,7 +157,16 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
             networkSuffix = networkSuffix,
             localSessionSecret = localSession?.secret,
             localSessionLiteUsername = localSession?.liteUsername,
+            databaseDirectory = context.noBackupFilesDir.resolve(DATABASE_DIRECTORY).apply { mkdirs() }.absolutePath,
         )
+    }
+
+    // The core caches the contact handles it resolves; a removed or blocked
+    // contact has to reach it, or their handle keeps resolving.
+    private fun observeContactRemovals(runtime: TrUAPIHostRuntime) {
+        scope.launch {
+            contactsBridge.contactRemovals().collect { runtime.notifyContactsChanged() }
+        }
     }
 
     // The session is derived from the wallet's entropy, so a wallet switch
@@ -205,7 +220,7 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
         }
 
         override suspend fun navigateTo(url: String) {
-            throw HostNavigateRejection.Navigate(HostNavigateToError.Unknown("navigation unavailable at host level"))
+            throw HostNavigateToException.Unknown("navigation unavailable at host level")
         }
 
         override suspend fun devicePermission(
@@ -260,16 +275,23 @@ class TrUAPIHostRuntimeProvider @Inject constructor(
          * `getTldRetrying` polls until it succeeds, so the boot needs its own bound.
          */
         const val TLD_RESOLVE_TIMEOUT_MS = 30_000L
+
+        /**
+         * Core database directory, under `noBackupFilesDir`: a durable-transaction
+         * ledger restored onto another device would act on transactions that
+         * already settled.
+         */
+        const val DATABASE_DIRECTORY = "truapi"
     }
 }
 
 private object HostLevelStorage : HostStorage {
-    override fun read(key: String): ByteArray? = null
+    override suspend fun read(key: String): ByteArray? = null
 
-    override fun write(key: String, value: ByteArray) = throw noProductScope()
+    override suspend fun write(key: String, value: ByteArray) = throw noProductScope()
 
-    override fun clear(key: String) = throw noProductScope()
+    override suspend fun clear(key: String) = throw noProductScope()
 
     private fun noProductScope() =
-        HostStorageException.Storage(HostLocalStorageReadError.Unknown("no product scope at host level"))
+        HostLocalStorageReadException.Unknown("no product scope at host level")
 }

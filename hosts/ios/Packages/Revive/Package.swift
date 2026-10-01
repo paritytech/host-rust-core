@@ -19,7 +19,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/novasamatech/Operation-iOS",
-            from: "2.3.0"
+            from: "3.0.0"
         ),
         .package(
             url: "https://github.com/attaswift/BigInt",
@@ -27,7 +27,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/novasamatech/web3swift.git",
-            from: "3.3.0"
+            from: "3.3.2"
         ),
         .package(path: "../ChainStore"),
         .package(path: "../SubstrateOperation"),

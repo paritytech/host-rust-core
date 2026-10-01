@@ -9,15 +9,15 @@ use bip39::Mnemonic;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
-use truapi_server::host_logic::product_account::{
+use truapi::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_identity_keypair,
     derive_lite_person_ring_vrf_entropy, product_public_key_to_address,
 };
 
 use crate::attestation;
 use crate::network::NetworkConfig;
-use truapi_server::statement_allowance as alloc;
-use truapi_server::statement_allowance::collection::PersonhoodCollection;
+use truapi::statement_allowance as alloc;
+use truapi::statement_allowance::collection::PersonhoodCollection;
 use zeroize::ZeroizeOnDrop;
 
 const ACCOUNT_STORE_FILE: &str = "accounts.json";
@@ -28,7 +28,7 @@ const DEFAULT_USERNAME_PREFIX: &str = "headless";
 ///
 /// This is the judgement "a signer was provisioned here"; the store's filename
 /// stays private to this module.
-pub(crate) fn has_account_store(base_path: &std::path::Path) -> bool {
+pub fn has_account_store(base_path: &std::path::Path) -> bool {
     base_path.join(ACCOUNT_STORE_FILE).is_file()
 }
 
@@ -229,6 +229,24 @@ impl AccountStore {
             .accounts
             .iter()
             .find(|record| record.network == network_id && record.name == name)
+    }
+
+    /// Use the bound account's creation time, or the first identity stored for the network.
+    /// A missing bound account is an error rather than a reason to select another identity.
+    pub fn created_at(&self, network_id: &str, account_name: Option<&str>) -> Result<Option<u64>> {
+        if let Some(name) = account_name {
+            let record = self
+                .get(network_id, name)
+                .with_context(|| format!("account {name:?} not found for {network_id}"))?;
+            return Ok(Some(record.created_at_unix));
+        }
+        Ok(self
+            .data
+            .accounts
+            .iter()
+            .filter(|record| record.network == network_id)
+            .map(|record| record.created_at_unix)
+            .min())
     }
 
     fn upsert(&mut self, record: AccountRecord) {
@@ -546,7 +564,7 @@ async fn create_auto_account(
         .await
         .with_context(|| format!("check lite username {lite_username:?} availability"))?
     {
-        bail!("lite username {lite_username:?} is taken; pass a different --lite-username-prefix");
+        bail!("lite username {lite_username:?} is taken; choose a different session name");
     }
 
     let mut record = AccountRecord {
@@ -573,11 +591,12 @@ async fn create_auto_account(
     );
 
     record.lite_username = attest_record(network, &record, reserved_username).await?;
-    wait_for_ring_membership(network, &identity.entropy).await?;
-    record.attested = true;
-    store.upsert(record.clone());
-    store.save()?;
-    Ok(record)
+    finish_account_readiness(
+        store,
+        record,
+        wait_for_ring_membership(network, &identity.entropy),
+    )
+    .await
 }
 
 async fn ensure_record_ready(
@@ -594,20 +613,33 @@ async fn ensure_record_ready(
     let mut record = record.clone();
     if !record.attested {
         record.lite_username = attest_record(network, &record, reserved_username).await?;
-        record.attested = true;
     } else {
         record.lite_username = attestation::registered_lite_username(network, &identity.entropy)
             .await
             .with_context(|| format!("resolve Lite username for account {}", record.name))?;
     }
+    finish_account_readiness(
+        store,
+        record,
+        wait_for_ring_membership(network, &identity.entropy),
+    )
+    .await
+}
+
+async fn finish_account_readiness(
+    store: &mut AccountStore,
+    mut record: AccountRecord,
+    readiness: impl std::future::Future<Output = Result<()>>,
+) -> Result<AccountRecord> {
+    readiness.await?;
+    record.attested = true;
     if store
-        .get(network.id, &record.name)
+        .get(&record.network, &record.name)
         .is_none_or(|stored| stored.lite_username != record.lite_username || !stored.attested)
     {
         store.upsert(record.clone());
         store.save()?;
     }
-    wait_for_ring_membership(network, &identity.entropy).await?;
     Ok(record)
 }
 
@@ -646,7 +678,7 @@ fn resolved_lite_username(username: &str) -> bool {
 /// dotNS TLD is `network_suffix`, widest slot budget first.
 ///
 /// Both are always offered; membership is settled on chain, not from local state.
-pub(crate) fn collection_candidates(
+pub fn collection_candidates(
     entropy: &[u8],
     network_suffix: &str,
 ) -> Vec<alloc::CollectionCandidate> {
@@ -797,12 +829,12 @@ fn mnemonic_entropy(mnemonic: &str) -> Result<Vec<u8>> {
 fn lite_username_base(prefix: &str) -> Result<String> {
     if !prefix.bytes().all(|byte| byte.is_ascii_lowercase()) {
         bail!(
-            "--lite-username-prefix must be lowercase ASCII letters only; \
+            "lite username base must be lowercase ASCII letters only; \
              digits, hyphens and uppercase are not accepted"
         );
     }
     if prefix.len() < 6 {
-        bail!("--lite-username-prefix must contain at least 6 lowercase ASCII letters");
+        bail!("lite username base must contain at least 6 lowercase ASCII letters");
     }
     Ok(prefix.to_string())
 }
@@ -879,6 +911,75 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn interrupted_ring_readiness_keeps_the_same_account_pending() -> Result<()> {
+        let directory = tempdir()?;
+        let network_id = "paseo-next-v2";
+        let mut store = AccountStore::load(directory.path())?;
+        let mut pending = record("auto-1", network_id, false);
+        pending.lite_username = "pending".to_string();
+        store.upsert(pending.clone());
+        store.save()?;
+        let original_accounts = fs::read(&store.path)?;
+        let assert_pending = || -> Result<()> {
+            let reloaded = AccountStore::load(directory.path())?;
+            assert_eq!(
+                (
+                    fs::read(&reloaded.path)?,
+                    resolve_cached_signer(directory.path(), network_id, None)?
+                        .map(|signer| signer.entropy),
+                    serde_json::to_value(reloaded.pending_auto_candidate(network_id))?,
+                ),
+                (
+                    original_accounts.clone(),
+                    None,
+                    serde_json::to_value(&pending)?,
+                )
+            );
+            Ok(())
+        };
+        let mut registered = pending.clone();
+        registered.lite_username = "pending.01".to_string();
+
+        let mut cancelled = Box::pin(finish_account_readiness(
+            &mut store,
+            registered.clone(),
+            std::future::pending(),
+        ));
+        assert!(futures::poll!(cancelled.as_mut()).is_pending());
+        drop(cancelled);
+        assert_pending()?;
+
+        finish_account_readiness(&mut store, registered.clone(), async {
+            bail!("ring lookup failed");
+        })
+        .await
+        .expect_err("failed ring readiness must remain retryable");
+        assert_pending()?;
+
+        finish_account_readiness(&mut store, registered, async { Ok(()) }).await?;
+        let cached = resolve_cached_signer(directory.path(), network_id, None)?
+            .expect("completed ring readiness makes the original account usable");
+        let reloaded = AccountStore::load(directory.path())?;
+        assert_eq!(
+            (
+                reloaded.data.accounts.len(),
+                reloaded.pending_auto_candidate(network_id).is_none(),
+                cached.account_name,
+                cached.entropy,
+                cached.lite_username,
+            ),
+            (
+                1,
+                true,
+                Some("auto-1".to_string()),
+                vec![0; 16],
+                Some("pending.01".to_string()),
+            )
+        );
+        Ok(())
+    }
+
     #[test]
     fn debug_output_redacts_signer_secrets() {
         let signer = ResolvedSigner {
@@ -929,7 +1030,7 @@ mod tests {
     fn lite_username_prefix_requires_the_backend_minimum() {
         assert_eq!(
             lite_username_base("short").unwrap_err().to_string(),
-            "--lite-username-prefix must contain at least 6 lowercase ASCII letters"
+            "lite username base must contain at least 6 lowercase ASCII letters"
         );
     }
 

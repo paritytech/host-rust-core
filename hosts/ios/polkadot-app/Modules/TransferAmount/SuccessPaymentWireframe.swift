@@ -9,9 +9,4 @@ final class SuccessPaymentWireframe: TransferAmountWireframeProtocol {
             view?.controller.presentingViewController?.dismiss(animated: true)
         }
     }
-
-    func showBalanceInfo(model: BalanceInfoModel, from view: (any ControllerBackedProtocol)?) {
-        let sheet = BalanceInfoViewFactory.createView(from: model)
-        view?.controller.present(sheet, animated: true)
-    }
 }

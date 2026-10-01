@@ -1,5 +1,6 @@
 import Foundation
 import PolkadotUI
+import SubstrateSdk
 import UIKit.UIImage
 
 extension ChatMetadata {
@@ -31,21 +32,58 @@ extension ChatMetadata {
     }
 }
 
-extension Chat.LocalMessage.Content.Transfer.Status {
-    var viewStatus: ChatTransferMessageConfiguration.State {
+struct TransferBubbleProjection {
+    let displayedValue: Balance
+    let originalValue: Balance?
+}
+
+extension Chat.LocalMessage.Content.Transfer {
+    var bubbleProjection: TransferBubbleProjection {
+        let actualValue: Balance? =
+            switch state {
+            case let .incoming(incoming) where incoming.status == .claimed: incoming.actualValue
+            case let .outgoing(outgoing) where outgoing.status == .claimed: outgoing.actualValue
+            case .incoming,
+                 .outgoing,
+                 .none: nil
+            }
+
+        guard let actualValue, actualValue != totalValue else {
+            return TransferBubbleProjection(displayedValue: totalValue, originalValue: nil)
+        }
+        return TransferBubbleProjection(displayedValue: actualValue, originalValue: totalValue)
+    }
+
+    /// `nil` is the initial state: the monitor has not written a row yet.
+    var incomingViewState: ChatTransferMessageConfiguration.IncomingState {
+        guard case let .incoming(incoming) = state else { return .detecting }
+        return incoming.status.viewState
+    }
+
+    var outgoingViewState: ChatTransferMessageConfiguration.OutgoingState {
+        guard case let .outgoing(outgoing) = state else { return .sending }
+        return outgoing.status.viewState
+    }
+}
+
+private extension IncomingTransferState.Status {
+    var viewState: ChatTransferMessageConfiguration.IncomingState {
         switch self {
-        case .processing:
-            .processing
-        case .sent:
-            .sent
-        case .claiming:
-            .claiming
-        case .partiallyClaimed:
-            .partiallyClaimed
-        case .finished:
-            .finished
-        case .error:
-            .error
+        case .detecting: .detecting
+        case .claiming: .claiming
+        case .claimed: .claimed
+        case .failed: .failed
+        }
+    }
+}
+
+private extension OutgoingTransferState.Status {
+    var viewState: ChatTransferMessageConfiguration.OutgoingState {
+        switch self {
+        case .sending: .sending
+        case .sent: .sent
+        case .claimed: .claimed
+        case .failed: .failed
         }
     }
 }

@@ -432,36 +432,16 @@ private extension VoIPCallKitManager {
             throw InputError.blockedContact
         }
 
-        let message = try messageCoder.decodeMessage(messageHex, for: contact)
+        let payload = try messageCoder.decodeMessage(messageHex, for: contact)
 
-        switch message.versioned.ensureV1()?.content {
-        case let .dataChannelOffer(content):
-            return VoIPCallKitInput(
-                name: contact.username,
-                callType: .init(remoteType: content.purpose)
-            )
-        case .text,
-             .send,
-             .coinageSend,
-             .contactAdded,
-             .reply,
-             .reacted,
-             .reactionRemoved,
-             .edited,
-             .leftChat,
-             .chatAccepted,
-             .multiChatAccepted,
-             .token,
-             .dataChannelAnswer,
-             .dataChannelCandidates,
-             .dataChannelClosed,
-             .richText,
-             .compactedMessages,
-             .deviceAdded,
-             .deviceRemoved,
-             .none:
+        guard let offer = payload.dataChannelOffer else {
             throw InputError.unsupportedMessage
         }
+
+        return VoIPCallKitInput(
+            name: contact.username,
+            callType: .init(remoteType: offer.purpose)
+        )
     }
 
     func reportCallEnd(with reason: CXCallEndedReason) {

@@ -2,6 +2,7 @@ import AsyncExtensions
 import BigInt
 import ExtrinsicService
 import Foundation
+import FoundationExt
 import KeyDerivation
 import SDKLogger
 import StateMachine
@@ -24,6 +25,7 @@ struct ExternalPaymentDependency {
     let originFactory: OriginCreating
     let quotaTracker: any UnloadQuotaTracking
     let blockNumberProvider: BlockInfoProviding
+    let dateProvider: any DateProviding
 }
 
 /// Manages the lifecycle of external payments.
@@ -65,6 +67,7 @@ final class ExternalPaymentService: ExternalPaymentServicing, @unchecked Sendabl
             originFactory: dependency.originFactory,
             quotaTracker: dependency.quotaTracker,
             blockNumberProvider: dependency.blockNumberProvider,
+            dateProvider: dependency.dateProvider,
             logger: logger
         )
 

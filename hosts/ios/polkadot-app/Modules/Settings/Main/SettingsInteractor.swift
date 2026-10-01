@@ -9,7 +9,6 @@ final class SettingsInteractor {
     let logger: LoggerProtocol
     let mnemonicBackupHelper: MnemonicBackupHelperProtocol
     let selectedCurrencyManager: SelectedCurrencyManaging
-    let emailComposePresenter: EmailComposePresenting
     private let notificationCenter: NotificationCenter
     private let eventCenter: EventCenterProtocol
     private let chatContactDataProviderFactory: ChatContactDataProviderMaking
@@ -23,7 +22,6 @@ final class SettingsInteractor {
     init(
         logger: LoggerProtocol,
         mnemonicBackupHelper: MnemonicBackupHelperProtocol,
-        emailComposePresenter: EmailComposePresenting,
         selectedCurrencyManager: SelectedCurrencyManaging = SelectedCurrencyManager.shared,
         notificationCenter: NotificationCenter = .default,
         eventCenter: EventCenterProtocol = EventCenter.shared,
@@ -33,7 +31,6 @@ final class SettingsInteractor {
     ) {
         self.logger = logger
         self.mnemonicBackupHelper = mnemonicBackupHelper
-        self.emailComposePresenter = emailComposePresenter
         self.selectedCurrencyManager = selectedCurrencyManager
         self.notificationCenter = notificationCenter
         self.eventCenter = eventCenter
@@ -166,15 +163,6 @@ extension SettingsInteractor: SettingsInteractorInputProtocol {
 
     func saveTabBarLabelsEnabled(_ isEnabled: Bool) {
         tabBarLabelsStore.save(isEnabled: isEnabled)
-    }
-
-    func openMailApp() {
-        let canSendMail = MainActor.assumeIsolated { emailComposePresenter.canSendMail() }
-        if canSendMail {
-            Task { await presenter?.didOpenMailApp() }
-        } else {
-            Task { await presenter?.didFailToOpenMailApp(email: AppConfig.contactEmail) }
-        }
     }
 }
 

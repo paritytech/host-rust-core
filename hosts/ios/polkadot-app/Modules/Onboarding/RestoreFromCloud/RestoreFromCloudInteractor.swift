@@ -50,11 +50,13 @@ private extension RestoreFromCloudInteractor {
             presenter?.didReceiveInProgress(true)
 
             presenter?.authorizeUser { [weak self] isAuthorized in
+                guard let self else { return }
                 if isAuthorized {
-                    self?.authState = .done
-                    self?.continueRestoreWallets()
+                    authState = .done
+                    continueRestoreWallets()
                 } else {
-                    self?.authState = .notAuthorized
+                    authState = .notAuthorized
+                    presenter?.didFailAuthorization()
                 }
             }
         }

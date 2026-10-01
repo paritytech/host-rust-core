@@ -28,8 +28,7 @@ protocol ExtrinsicVersionProviding {
     func getExtrinsicVersion(for chainId: ChainId, isSigned: Bool) async throws -> Extrinsic.Version
 }
 
-/// Which extrinsic format a chain takes, decided the way Android's `DefaultExtrinsicVersionProvider`
-/// decides it. People and Asset Hub take V5 with the remote-config extension version. A *signed* V5
+/// People and Asset Hub take V5 with the remote-config extension version. A *signed* V5
 /// transaction carries its signature in the `VerifyMultiSignature` extension, so on a runtime whose
 /// pipeline lacks it the SDK would silently emit an unsigned general transaction; such a runtime still
 /// accepts V4, so signed transactions fall back to it. Every other chain is V4.

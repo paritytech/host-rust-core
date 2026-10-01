@@ -1,20 +1,32 @@
 import Foundation
 import Operation_iOS
-import SubstrateSdk
 import Combine
 import AsyncExtensions
 import ChainRegistry
 import FoundationExt
+import StructuredConcurrency
+import FirebaseRemoteConfig
 
 final class FirebaseFacade {
+    private enum RemoteConfigOutcome {
+        case valid(RemoteAppConfig)
+        case invalid
+    }
+
+    private enum Constants {
+        static let fetchMaxAttempts = 4
+        static let fetchRetryInitialDelay: Duration = .seconds(1)
+    }
+
     static let shared = FirebaseFacade()
 
     private let firebaseService = FirebaseApplicationService.shared
     private let appConfigProvider: AppConfigProvider = .shared
     private let logger: LoggerProtocol?
     private var chainRegistry: ChainRegistryProtocol?
+    private let pathMonitor: NetworkPathMonitoring
 
-    private let remoteConfigSubject = AsyncCurrentValueSubject<RemoteAppConfig?>(nil)
+    private let remoteConfigSubject = AsyncCurrentValueSubject<RemoteConfigOutcome?>(nil)
 
     private let appStateStreamFactory = ApplicationStateStreamFactory()
     private let foregroundRefreshInterval: TimeInterval = .secondsInHour
@@ -22,8 +34,12 @@ final class FirebaseFacade {
     private var foregroundTask: Task<Void, Never>?
     private var fetchTask: Task<Void, Never>?
 
-    private init(logger: LoggerProtocol? = Logger.shared) {
+    private init(
+        logger: LoggerProtocol? = Logger.shared,
+        pathMonitor: NetworkPathMonitoring = NetworkPathMonitor()
+    ) {
         self.logger = logger
+        self.pathMonitor = pathMonitor
         firebaseService.delegate = self
 
         startForegroundRefresh()
@@ -40,7 +56,7 @@ final class FirebaseFacade {
     }
 }
 
-extension FirebaseFacade: RemoteConfigManaging {
+extension FirebaseFacade: RemoteConfigManaging, ChainRegistryConfiguring {
     func fetchRemoteConfigValues() {
         applyCachedConfigIfValid()
         scheduleRemoteFetch()
@@ -71,32 +87,53 @@ extension FirebaseFacade: RemoteConfigManaging {
     }
 
     func asyncWaitRemoteConfig() async throws -> RemoteAppConfig {
-        for await config in remoteConfigSubject.compacted() {
-            return config
+        for await outcome in remoteConfigSubject.compacted() {
+            switch outcome {
+            case let .valid(config):
+                return config
+            case .invalid:
+                throw RemoteConfigError.invalidConfig
+            }
         }
 
         throw CancellationError()
     }
 }
 
-extension FirebaseFacade: RemoteConfigDelegate {
-    func remoteConfig(didFinishLoading result: Result<Void, Error>) {
-        switch result {
-        case .success:
-            applyConfig(firebaseService.syncedAppConfig())
-        case let .failure(failure):
-            logger?.error(failure.localizedDescription)
-        }
+extension FirebaseFacade: RemoteConfigObserving {
+    func remoteConfigStream() -> AnyAsyncSequence<RemoteAppConfig> {
+        // Invalid outcomes are dropped because they are never applied.
+        remoteConfigSubject
+            .compacted()
+            .compactMap { outcome -> RemoteAppConfig? in
+                guard case let .valid(config) = outcome else { return nil }
+                return config
+            }
+            .eraseToAnyAsyncSequence()
     }
+}
 
+extension FirebaseFacade: RemoteConfigDelegate {
     func remoteConfig(appVersionDidChange _: Result<String, Error>) {}
 }
 
 private extension FirebaseFacade {
     func applyCachedConfigIfValid() {
         let cached = firebaseService.syncedAppConfig()
-        guard cached.isValid else { return }
+        guard cached.isValid else {
+            // A retry must wait for the new fetch instead of replaying the previous failure.
+            if case .invalid = remoteConfigSubject.value {
+                remoteConfigSubject.send(nil)
+            }
+            return
+        }
         applyConfig(cached)
+    }
+
+    /// A failed fetch keeps an already applied config; without one, waiters would hang until their deadline.
+    func publishInvalidUnlessApplied() {
+        if case .valid = remoteConfigSubject.value { return }
+        remoteConfigSubject.send(.invalid)
     }
 
     func scheduleRemoteFetch() {
@@ -105,8 +142,17 @@ private extension FirebaseFacade {
         lastRemoteFetchAt = Date()
 
         fetchTask = Task { @MainActor [unowned self] in
-            try? await waitUntilReachable()
-            firebaseService.fetchRemoteConfigValues()
+            do {
+                try await withRetry(
+                    maxAttempts: Constants.fetchMaxAttempts,
+                    initialDelay: Constants.fetchRetryInitialDelay,
+                    shouldRetry: { !$0.isRemoteConfigThrottled },
+                    operation: { [self] in try await performFetchAttempt() }
+                )
+                handleFetchSuccess()
+            } catch {
+                handleFetchFailure(error)
+            }
             fetchTask = nil
         }
     }
@@ -134,11 +180,44 @@ private extension FirebaseFacade {
     func applyConfig(_ config: RemoteAppConfig) {
         appConfigProvider.apply(config)
         chainRegistry?.syncUp()
-        remoteConfigSubject.send(config)
+        remoteConfigSubject.send(.valid(config))
     }
 
-    func waitUntilReachable() async throws {
-        guard let reachabilityManager = ReachabilityManager.shared else { return }
-        try await reachabilityManager.asyncWaitReachable()
+    func performFetchAttempt() async throws {
+        try await waitUntilPathSatisfied()
+
+        do {
+            try await firebaseService.fetchAndActivateRemoteConfig()
+        } catch {
+            logger?.warning("Remote config fetch attempt failed: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    func handleFetchSuccess() {
+        let config = firebaseService.syncedAppConfig()
+        if config.isValid {
+            applyConfig(config)
+        } else {
+            remoteConfigSubject.send(.invalid)
+        }
+    }
+
+    func handleFetchFailure(_ error: Error) {
+        logger?.error(error.localizedDescription)
+        publishInvalidUnlessApplied()
+    }
+
+    func waitUntilPathSatisfied() async throws {
+        for try await isSatisfied in pathMonitor.pathStream() where isSatisfied {
+            return
+        }
+    }
+}
+
+private extension Error {
+    var isRemoteConfigThrottled: Bool {
+        guard case FirebaseRemoteConfig.RemoteConfigError.throttled = self else { return false }
+        return true
     }
 }

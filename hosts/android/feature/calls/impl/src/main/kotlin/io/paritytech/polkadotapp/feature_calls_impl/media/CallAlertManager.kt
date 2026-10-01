@@ -7,7 +7,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
-import android.media.ToneGenerator
+import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -17,6 +17,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import io.paritytech.polkadotapp.feature_calls_api.domain.models.ActiveCallState
 import io.paritytech.polkadotapp.feature_calls_api.domain.models.CallDirection
 import io.paritytech.polkadotapp.feature_calls_api.domain.models.CallStatus
+import io.paritytech.polkadotapp.feature_calls_impl.R
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -27,7 +28,7 @@ sealed interface CallAlert {
 }
 
 // Mutated only by CallService's single call-state observer (including its onCompletion teardown),
-// so the player/tone/vibrator fields need no synchronization.
+// so the player and vibrator fields need no synchronization.
 class CallAlertManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
 ) {
@@ -42,9 +43,11 @@ class CallAlertManager @Inject constructor(
         )
         .build()
 
+    private val ringbackUri: Uri = Uri.parse("android.resource://${context.packageName}/${R.raw.call_ringback}")
+
     private var currentAlert: CallAlert = CallAlert.None
     private var ringtonePlayer: MediaPlayer? = null
-    private var ringbackTone: ToneGenerator? = null
+    private var ringbackPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
 
     fun setActiveAlert(alert: CallAlert) {
@@ -108,10 +111,22 @@ class CallAlertManager @Inject constructor(
         vibrator = vib
     }
 
+    // A MediaPlayer is a registered player, unlike ToneGenerator's native track: without an active
+    // VOICE_COMMUNICATION player or recorder AudioService drops MODE_IN_COMMUNICATION and the
+    // communication route 6 s after they were requested, re-routing whatever is playing.
     private fun startOutgoingRingback() {
-        ringbackTone = runCatching {
-            ToneGenerator(AudioManager.STREAM_VOICE_CALL, TONE_VOLUME).apply {
-                startTone(ToneGenerator.TONE_SUP_RINGTONE)
+        ringbackPlayer = runCatching {
+            MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                setDataSource(context, ringbackUri)
+                isLooping = true
+                prepare()
+                start()
             }
         }.onFailure { Timber.w(it, "Failed to start ringback tone") }.getOrNull()
     }
@@ -128,11 +143,11 @@ class CallAlertManager @Inject constructor(
         vibrator?.cancel()
         vibrator = null
 
-        ringbackTone?.let { tone ->
-            tone.stopTone()
-            tone.release()
+        ringbackPlayer?.let { player ->
+            runCatching { player.stop() }
+            player.release()
         }
-        ringbackTone = null
+        ringbackPlayer = null
     }
 
     private fun systemVibrator(): Vibrator? =
@@ -144,15 +159,15 @@ class CallAlertManager @Inject constructor(
         }
 
     private companion object {
-        const val TONE_VOLUME = 80
         const val RING_VIBRATION_REPEAT_INDEX = 0
         val RING_VIBRATION_PATTERN = longArrayOf(0, 1000, 1000)
     }
 }
 
-internal fun ActiveCallState?.toCallAlert(): CallAlert = when {
+// Ringback waits for the call route so it starts on the selected device, already in MODE_IN_COMMUNICATION.
+internal fun ActiveCallState?.toCallAlert(audio: CallAudioDevicesState): CallAlert = when {
     isIncomingRinging() -> CallAlert.IncomingRinging
-    isOutgoingRingback() -> CallAlert.OutgoingRingback
+    isOutgoingRingback() && audio.isRouteApplied -> CallAlert.OutgoingRingback
     else -> CallAlert.None
 }
 

@@ -16,7 +16,7 @@ final class RestoreFromCloudPresenter {
 
 extension RestoreFromCloudPresenter: RestoreFromCloudPresenterProtocol {
     func setup() {
-        provideViewModel(isInProgress: false)
+        provideViewModel(.idle)
     }
 
     func viewDidAppear() {
@@ -26,7 +26,11 @@ extension RestoreFromCloudPresenter: RestoreFromCloudPresenterProtocol {
 
 extension RestoreFromCloudPresenter: RestoreFromCloudInteractorOutputProtocol {
     func didReceiveInProgress(_ value: Bool) {
-        provideViewModel(isInProgress: value)
+        provideViewModel(value ? .inProgress : .idle)
+    }
+
+    func didFailAuthorization() {
+        provideViewModel(.authFailed)
     }
 
     func didRestoreWallets() {
@@ -47,7 +51,7 @@ extension RestoreFromCloudPresenter: RestoreFromCloudInteractorOutputProtocol {
 }
 
 private extension RestoreFromCloudPresenter {
-    func provideViewModel(isInProgress: Bool) {
-        view?.didReceive(viewModel: .init(isInProgress: isInProgress))
+    func provideViewModel(_ viewModel: RestoreFromCloudViewLayout.ViewModel) {
+        view?.didReceive(viewModel: viewModel)
     }
 }

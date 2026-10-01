@@ -27,6 +27,7 @@ final class MessageExchangeChatCoordinator {
     private let deviceMessageBroadcaster: DeviceMessageBroadcaster
     private let pendingDeviceFanOutProcessor: PendingDeviceFanOutProcessor
     private let messageExchangeModeProvider: MessageExchangeModeProviding
+    private let statementStoreMonitor: StatementStoreActivityMonitoring
 
     private var contactsProvider: StreamableProvider<Chat.Contact>?
     private var contactsByIdentifier = [String: Chat.Contact]()
@@ -45,6 +46,7 @@ final class MessageExchangeChatCoordinator {
         serviceFactory: MessageExchageServiceMaking,
         pushIdFactory: ChatPushIdMaking,
         pushMessageCoder: ChatPushMessageCoding,
+        notificationPayloadBuilder: ChatNotificationPayloadBuilding,
         chatRequestStoreService: ChatRequestStoreServicing,
         messageCompacterFactory: (any ChatMessageCompactorMaking)?,
         chatChainId: ChainModel.Id = AppConfig.Chains.chatChain,
@@ -55,6 +57,7 @@ final class MessageExchangeChatCoordinator {
         contactsStorageService: ContactsLocalStorageServicing = ContactsLocalStorageService(),
         chatContactDataProviderFactory: ChatContactDataProviderMaking,
         messageExchangeModeProvider: MessageExchangeModeProviding,
+        statementStoreMonitor: StatementStoreActivityMonitoring,
         workQueue: DispatchQueue = DispatchQueue(label: "ChatCoordinator.workQueue", qos: .utility),
         operationQueue: OperationQueue = OperationManagerFacade.sharedDefaultQueue,
         logger: LoggerProtocol = Logger.shared
@@ -74,6 +77,7 @@ final class MessageExchangeChatCoordinator {
             apnsClientService: APNSClientService(
                 pushIdFactory: pushIdFactory,
                 messageCoder: pushMessageCoder,
+                payloadBuilder: notificationPayloadBuilder,
                 tokenProvider: tokenProvider,
                 workQueue: workQueue
             ),
@@ -121,6 +125,7 @@ final class MessageExchangeChatCoordinator {
         self.serviceFactory = serviceFactory
         self.chainRegistry = chainRegistry
         self.messageExchangeModeProvider = messageExchangeModeProvider
+        self.statementStoreMonitor = statementStoreMonitor
         senderDeviceActivator = MultideviceComponentFactory.makeSenderDeviceActivator(
             contactsStorageService: contactsStorageService,
             chatRequestStoreService: chatRequestStoreService,
@@ -184,12 +189,14 @@ private extension MessageExchangeChatCoordinator {
 
             let compactorFactory = messageCompacterFactory.map { AnyMessageCompactorFactory($0) }
 
+            let statementStoreConnection = StatementStoreConnection(
+                connection: connection,
+                retryMatcher: StatementSubmitErrorMatcher.retryWhenTimeoutOrNoAllowance(),
+                logger: logger
+            )
+
             exchangeService = try serviceFactory.makeService(
-                statementStoreConnection: StatementStoreConnection(
-                    connection: connection,
-                    retryMatcher: StatementSubmitErrorMatcher.retryWhenTimeoutOrNoAllowance(),
-                    logger: logger
-                ),
+                statementStoreConnection: statementStoreMonitor.observing(statementStoreConnection),
                 delegate: AnyPeerSessionDelegate(self),
                 compactorFactory: compactorFactory
             )

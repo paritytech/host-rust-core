@@ -57,7 +57,7 @@ public final class VoucherLoader: VoucherLoaderProtocol {
         breakdownContext: DenominationBreakdownContext,
         groupId: CoinageTxGroupId?
     ) async throws -> [Voucher] {
-        let denominations = breakdownContext.breakdown(amountInPlanks: amount)
+        let denominations = try breakdownContext.breakdown(amountInPlanks: amount)
 
         let pairs = try await runtimeCalls(for: denominations)
 

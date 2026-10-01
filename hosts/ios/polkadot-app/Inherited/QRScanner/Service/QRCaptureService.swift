@@ -26,6 +26,11 @@ final class QRCaptureService: NSObject {
     static let processingQueue = DispatchQueue(label: "nova.qr.capture.service.queue")
 
     private(set) var captureSession: AVCaptureSession?
+    /// Read and written on `processingQueue`, which also delivers metadata. Armed exactly while the
+    /// session runs: flipped in the same block that starts or stops it, so a frame delivered in
+    /// between cannot yield a code after the stop was asked for. Filtering here instead of clearing
+    /// `metadataObjectTypes` avoids reconfiguring the running session, which would stall the preview.
+    private var isRecognitionArmed = false
 
     weak var delegate: QRCaptureServiceDelegate?
     var delegateQueue: DispatchQueue
@@ -69,7 +74,7 @@ final class QRCaptureService: NSObject {
         self.captureSession = captureSession
 
         output.setMetadataObjectsDelegate(self, queue: QRCaptureService.processingQueue)
-        output.metadataObjectTypes = [AVMetadataObject.ObjectType.qr]
+        output.metadataObjectTypes = [.qr]
     }
 
     private func startAuthorizedSession() {
@@ -78,6 +83,8 @@ final class QRCaptureService: NSObject {
                 try self.configureSessionIfNeeded()
 
                 if let captureSession = self.captureSession {
+                    self.isRecognitionArmed = true
+
                     captureSession.startRunning()
 
                     self.notifyDelegateWithCreation(of: captureSession)
@@ -147,6 +154,8 @@ extension QRCaptureService: QRCaptureServiceProtocol {
 
     func stop() {
         QRCaptureService.processingQueue.async {
+            self.isRecognitionArmed = false
+
             self.captureSession?.stopRunning()
         }
     }
@@ -158,6 +167,10 @@ extension QRCaptureService: AVCaptureMetadataOutputObjectsDelegate {
         didOutput metadataObjects: [AVMetadataObject],
         from _: AVCaptureConnection
     ) {
+        guard isRecognitionArmed else {
+            return
+        }
+
         guard let metadata = metadataObjects.first as? AVMetadataMachineReadableCodeObject else {
             return
         }

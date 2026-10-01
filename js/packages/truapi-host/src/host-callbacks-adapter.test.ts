@@ -234,13 +234,15 @@ describe("createWasmRawCallbacks", () => {
               case "SignPayload":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.account.dotNsIdentifier ===
+                  review.value.value.callingProductId === "playground.dot" &&
+                  review.value.value.request.account.dotNsIdentifier ===
                     "playground.dot" &&
-                  review.value.value.payload.method === "0x0102"
+                  review.value.value.request.payload.method === "0x0102"
                 );
               case "SignRaw":
                 return (
                   review.value.tag === "Product" &&
+                  review.value.value.callingProductId === "playground.dot" &&
                   review.value.value.watermarked === false &&
                   review.value.value.request.payload.tag === "Bytes" &&
                   review.value.value.request.payload.value.bytes === "0x0304"
@@ -248,8 +250,10 @@ describe("createWasmRawCallbacks", () => {
               case "CreateTransaction":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.signer.derivationIndex.tag === "Index" &&
-                  review.value.value.callData === "0x0506"
+                  review.value.value.callingProductId === "playground.dot" &&
+                  review.value.value.payload.signer.derivationIndex.tag ===
+                    "Index" &&
+                  review.value.value.payload.callData === "0x0506"
                 );
               case "AccountAlias":
                 return (
@@ -320,8 +324,11 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
-              account: PRODUCT_ACCOUNT,
-              payload: SIGN_PAYLOAD,
+              callingProductId: "playground.dot",
+              request: {
+                account: PRODUCT_ACCOUNT,
+                payload: SIGN_PAYLOAD,
+              },
             },
           },
         }),
@@ -334,6 +341,7 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
+              callingProductId: "playground.dot",
               request: {
                 account: PRODUCT_ACCOUNT,
                 payload: {
@@ -354,11 +362,15 @@ describe("createWasmRawCallbacks", () => {
           value: {
             tag: "Product",
             value: {
-              signer: PRODUCT_ACCOUNT,
-              genesisHash: GENESIS,
-              callData: "0x0506",
-              extensions: [],
-              txExtVersion: 0,
+              callingProductId: "playground.dot",
+              payload: {
+                signer: PRODUCT_ACCOUNT,
+                genesisHash: GENESIS,
+                callData: "0x0506",
+                extensions: [],
+                txExtVersion: 0,
+                contacts: [],
+              },
             },
           },
         }),
@@ -606,7 +618,7 @@ describe("createWasmRawCallbacks", () => {
 describe("ProductContext codec", () => {
   // Mirror of the Rust test
   // `product_context_encoding_matches_the_generated_host_codec` in
-  // `rust/crates/truapi-platform/src/lib.rs`, which pins these same bytes
+  // `rust/crates/truapi/src/platform.rs`, which pins these same bytes
   // through `parity-scale-codec`. Both halves must be edited together: a
   // ProductContext travels the wasm callback boundary encoded in Rust and
   // decoded here.

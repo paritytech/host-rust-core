@@ -1,6 +1,7 @@
 import AsyncExtensions
 import DurableTransactions
 import Foundation
+import os
 import SubstrateSdk
 
 /// Which engine-shaped reads fail, so a scenario can hold a transaction undecided without changing what
@@ -38,23 +39,46 @@ public struct ChainReadFailure: Error {
 public final class FakePinnedChainViewFactory<State: FakeChainState>: PinnedChainViewFactoryProtocol,
     @unchecked Sendable {
     public let chain: FakeChain<State>
-    public var faults: FakeChainFaults = .none
+
+    // Trackers pin from concurrent tasks while scenarios switch faults, so all mutable state is locked.
+    private struct MutableState {
+        var faults: FakeChainFaults = .none
+        var pins = 0
+        var pinnedChainIds: [ChainId] = []
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: MutableState())
+
+    public var faults: FakeChainFaults {
+        get { state.withLock { $0.faults } }
+        set { state.withLock { $0.faults = newValue } }
+    }
 
     /// How many times a view was pinned, so a scenario can assert a pass did not read the chain.
-    public private(set) var pins = 0
+    public var pins: Int { state.withLock { $0.pins } }
 
     /// The chain ids pins were asked for, in order.
-    public private(set) var pinnedChainIds: [ChainId] = []
+    public var pinnedChainIds: [ChainId] { state.withLock { $0.pinnedChainIds } }
+
+    // Never finishes on its own, like the production stream.
+    private let finalizedHeadTicks = AsyncPassthroughSubject<BlockNumber>()
 
     public init(chain: FakeChain<State>) {
         self.chain = chain
     }
 
-    public func pin(chainId: ChainId) async throws -> any PinnedChainViewProtocol {
-        pins += 1
-        pinnedChainIds.append(chainId)
+    public func emitFinalizedHead(_ number: BlockNumber) {
+        finalizedHeadTicks.send(number)
+    }
 
-        if faults.pinFails {
+    public func pin(chainId: ChainId) async throws -> any PinnedChainViewProtocol {
+        let currentFaults = state.withLock { current in
+            current.pins += 1
+            current.pinnedChainIds.append(chainId)
+            return current.faults
+        }
+
+        if currentFaults.pinFails {
             throw ChainReadFailure(message: "pin failed")
         }
 
@@ -73,7 +97,7 @@ public final class FakePinnedChainViewFactory<State: FakeChainState>: PinnedChai
     }
 
     public func finalizedHeads(chainId _: ChainId) -> AnyAsyncSequence<BlockNumber> {
-        AsyncStream<BlockNumber> { $0.finish() }.eraseToAnyAsyncSequence()
+        finalizedHeadTicks.eraseToAnyAsyncSequence()
     }
 
     public func bestHeads(chainId _: ChainId) -> AnyAsyncSequence<BlockNumber> {
@@ -121,7 +145,7 @@ private final class FakePinnedChainView<State: FakeChainState>: PinnedChainViewP
         return .present(BlockRef(number: block.number, hash: block.hash))
     }
 
-    func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<Bool> {
+    func dispatchOutcome(txHash: Data, at block: BlockRef) async -> ReadResult<DispatchOutcome> {
         switch lookUp(txHash, atBlockHash: block.hash) {
         case let .outcome(result): result
         case .notInBlock,
@@ -169,13 +193,13 @@ private extension FakePinnedChainView {
         guard block.body.contains(txHash) else { return .notInBlock }
 
         guard let success = block.state.outcomes[txHash] else { return .outcome(.failedRead) }
-        return .outcome(.present(success))
+        return .outcome(.present(success ? .succeeded : .failed(reason: "Fake.DispatchFailed")))
     }
 
-    static func mapSearchOutcome(result: ReadResult<Bool>, block: BlockRef) -> BodySearchOutcome {
+    static func mapSearchOutcome(result: ReadResult<DispatchOutcome>, block: BlockRef) -> BodySearchOutcome {
         switch result {
-        case .present(true): .foundSucceeded(block)
-        case .present(false): .foundFailed(block)
+        case .present(.succeeded): .foundSucceeded(block)
+        case let .present(.failed(reason)): .foundFailed(block, reason: reason)
         case .absent,
              .failedRead: .foundOutcomeUnreadable(block)
         }

@@ -15,11 +15,6 @@
         android:label="ChatFeedFragment" />
 
     <fragment
-        android:id="@+id/addContactFragment"
-        android:name="io.paritytech.polkadotapp.feature_chats_impl.presentation.search.AddContactFragment"
-        android:label="AddContactFragment" />
-
-    <fragment
         android:id="@+id/chatSearchFragment"
         android:name="io.paritytech.polkadotapp.feature_chats_impl.presentation.chatSearch.ChatSearchFragment"
         android:label="ChatSearchFragment" />
@@ -74,6 +69,11 @@
         android:id="@+id/productBotManagementFragment"
         android:name="io.paritytech.polkadotapp.feature_products_impl.presentation.productBotManagement.ProductBotManagementFragment"
         android:label="ProductBotManagementFragment" />
+
+    <fragment
+        android:id="@+id/pocketFacePreviewFragment"
+        android:name="io.paritytech.polkadotapp.feature_products_impl.presentation.pocketFacePreview.PocketFacePreviewFragment"
+        android:label="PocketFacePreviewFragment" />
 
     <fragment
         android:id="@+id/spaBrowserFragment"
@@ -197,10 +197,6 @@
         app:popUpTo="@id/mainFragment" />
 
     <action
-        android:id="@+id/action_global_to_addContactFragment"
-        app:destination="@id/addContactFragment" />
-
-    <action
         android:id="@+id/action_global_to_chatSearchFragment"
         app:destination="@id/chatSearchFragment" />
 
@@ -271,6 +267,11 @@
     <action
         android:id="@+id/action_global_to_product_bots_management"
         app:destination="@id/productBotManagementFragment"
+        app:launchSingleTop="true" />
+
+    <action
+        android:id="@+id/action_global_to_pocket_face_preview"
+        app:destination="@id/pocketFacePreviewFragment"
         app:launchSingleTop="true" />
 
     <action
@@ -356,6 +357,14 @@
     <action
         android:id="@+id/action_global_to_truapiConfirmationBottomSheet"
         app:destination="@id/truapiConfirmationBottomSheet" />
+
+    <dialog
+        android:id="@+id/truapiContactPickBottomSheet"
+        android:name="io.paritytech.polkadotapp.feature_products_impl.presentation.truapiContactPick.TrUAPIContactPickBottomSheet" />
+
+    <action
+        android:id="@+id/action_global_to_truapiContactPickBottomSheet"
+        app:destination="@id/truapiContactPickBottomSheet" />
 
     <action
         android:id="@+id/action_global_to_resourceAllocationRequestBottomSheet"

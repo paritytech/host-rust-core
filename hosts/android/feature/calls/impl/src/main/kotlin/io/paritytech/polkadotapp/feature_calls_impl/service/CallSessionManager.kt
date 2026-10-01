@@ -48,6 +48,8 @@ class CallSessionManager @Inject constructor(
         Timber.i("startSession: direction=$callDirection, offerId=$offerId, withVideo=$withVideo")
         peerChannel.value?.dispose()
 
+        with(sessionScope) { callAudioRouteController.start(defaultToSpeaker = withVideo) }
+
         val signaling = externalCallSignaling.asPeerChannelSignaling(chatId, offerId, withVideo)
 
         sessionScope.launch {
@@ -73,8 +75,6 @@ class CallSessionManager @Inject constructor(
             observeStatus(sessionScope, channel, chatId, offerId, callDirection, onTerminated)
             observeMediaTracks(sessionScope, channel)
             observeMediaState(sessionScope, channel)
-
-            callAudioRouteController.start(defaultToSpeaker = withVideo)
 
             peerChannel.value = channel
         }

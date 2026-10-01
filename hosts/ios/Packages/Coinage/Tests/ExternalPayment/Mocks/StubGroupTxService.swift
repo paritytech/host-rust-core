@@ -92,6 +92,16 @@ final class StubGroupTxService: CoinageTxServicing, @unchecked Sendable {
         return entries.map(\.id)
     }
 
+    /// The offramp never schedules — it registers built extrinsics and is never retried.
+    @discardableResult
+    func scheduleTransactions(
+        _: [CoinageScheduledTxRequest],
+        groupId _: CoinageTxGroupId,
+        joining _: any DurableTxRegistrationScope
+    ) throws -> [CoinageTxId] {
+        []
+    }
+
     func subscribeTransactionStatus(_: CoinageTxId) -> AnyAsyncSequence<CoinageTxStatus> {
         AsyncStream<CoinageTxStatus> { $0.finish() }.eraseToAnyAsyncSequence()
     }

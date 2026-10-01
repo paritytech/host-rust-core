@@ -13,6 +13,8 @@ protocol ChainStatusProviding: Actor {
 /// One shared instance. The subject always holds a row set, so the first render carries a
 /// complete set and a host subscribing later sees live state rather than a re-seed.
 actor ChainStatusProvider {
+    static let statementStoreRowId = "statement-store"
+
     private static let connectDebounce: Duration = .milliseconds(300)
     private static let deadDwell: TimeInterval = 3
     private static let anchorTimeout: Duration = .seconds(15)
@@ -21,11 +23,13 @@ actor ChainStatusProvider {
     private let blockProvider: ChainBlockProviding
     private let anchorProvider: ChainLivenessAnchorProviding
     private let appStateStreamFactory: ApplicationStateStreamFactory
+    private let statementStoreStatusProvider: StatementStoreStatusProviding
     private let logger: LoggerProtocol
 
     private nonisolated let rowsSubject: AsyncCurrentValueSubject<[ChainConnectionStatusViewModel]>
 
     private var statuses: [ChainConnectionTarget: NetworkStatus]
+    private var statementStoreStatus: StatementStoreStatus = .connecting
     private var blocks: [ChainConnectionTarget: ChainBlockInfo] = [:]
     private var liveness: [ChainConnectionTarget: ChainLiveness] = [:]
 
@@ -45,12 +49,14 @@ actor ChainStatusProvider {
         blockProvider: ChainBlockProviding,
         anchorProvider: ChainLivenessAnchorProviding,
         appStateStreamFactory: ApplicationStateStreamFactory,
+        statementStoreStatusProvider: StatementStoreStatusProviding,
         logger: LoggerProtocol
     ) {
         self.networkStatusService = networkStatusService
         self.blockProvider = blockProvider
         self.anchorProvider = anchorProvider
         self.appStateStreamFactory = appStateStreamFactory
+        self.statementStoreStatusProvider = statementStoreStatusProvider
         self.logger = logger
 
         let seededStatuses = ChainConnectionTarget.allCases
@@ -61,7 +67,7 @@ actor ChainStatusProvider {
             dict[target] = ChainLiveness(blockPeriod: target.expectedBlockTime)
         }
         rowsSubject = AsyncCurrentValueSubject(
-            Self.makeRows(statuses: seededStatuses)
+            Self.makeRows(statuses: seededStatuses, statementStore: .connecting)
         )
     }
 
@@ -93,6 +99,9 @@ extension ChainStatusProvider: ChainStatusProviding {
         statusTasks = ChainConnectionTarget.allCases.map { target in
             observeStatus(for: target)
         } + [observeBlocks(), observeForeground(), activationTask]
+
+        statementStoreStatusProvider.start()
+        statusTasks.append(observeStatementStore(statementStoreStatusProvider))
 
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -147,6 +156,15 @@ extension ChainStatusProvider {
         emitRows(at: date)
     }
 
+    func handleStatementStoreUpdate(_ status: StatementStoreStatus, at date: Date = Date()) {
+        guard statementStoreStatus != status else {
+            return
+        }
+
+        statementStoreStatus = status
+        emitRows(at: date)
+    }
+
     func handleForeground(at date: Date = Date()) {
         for target in ChainConnectionTarget.allCases where statuses[target] == .connected {
             awaitingReanchor.insert(target)
@@ -157,7 +175,7 @@ extension ChainStatusProvider {
     }
 
     func emitRows(at date: Date = Date()) {
-        let rawRows = Self.makeRows(statuses: statuses)
+        let rawRows = Self.makeRows(statuses: statuses, statementStore: statementStoreStatus)
         let indicatedRows = indicateRows(rawRows, at: date)
 
         guard indicatedRows != lastEmittedRows else { return }
@@ -240,7 +258,8 @@ extension ChainStatusProvider {
     }
 
     static func makeRows(
-        statuses: [ChainConnectionTarget: NetworkStatus]
+        statuses: [ChainConnectionTarget: NetworkStatus],
+        statementStore: StatementStoreStatus
     ) -> [ChainConnectionStatusViewModel] {
         let targetRows = ChainConnectionTarget.allCases.map { target in
             let state = (statuses[target] ?? .connecting).connectionState
@@ -257,7 +276,23 @@ extension ChainStatusProvider {
             )
         }
 
-        return targetRows
+        return targetRows + [makeStatementStoreRow(statementStore)]
+    }
+
+    static func makeStatementStoreRow(_ status: StatementStoreStatus) -> ChainConnectionStatusViewModel {
+        let state = status.connectionState
+
+        return ChainConnectionStatusViewModel(
+            id: Self.statementStoreRowId,
+            title: "Statement Store",
+            state: state,
+            stateTitle: status.localizedTitle,
+            icon: .statementStore,
+            indication: ChainStatusIndication.resolve(state: state, liveness: nil),
+            liveness: nil,
+            expectedBlockSeconds: 0,
+            showsChainMetrics: false
+        )
     }
 
     private func startAnchor(for target: ChainConnectionTarget, at date: Date) {
@@ -315,6 +350,18 @@ private extension ChainStatusProvider {
                 }
             } catch {
                 logger.error("Chain status stream failed for \(target.chainId): \(error)")
+            }
+        }
+    }
+
+    func observeStatementStore(_ provider: StatementStoreStatusProviding) -> Task<Void, Never> {
+        Task { [weak self, logger] in
+            do {
+                for try await status in provider.statusStream() {
+                    await self?.handleStatementStoreUpdate(status)
+                }
+            } catch {
+                logger.error("Statement store status stream failed: \(error)")
             }
         }
     }

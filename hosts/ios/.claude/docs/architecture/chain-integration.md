@@ -102,7 +102,7 @@ For reactive subscriptions, prefer `CallbackBatchStorageSubscription.asyncStream
 ## SCALE Codec
 
 - `substrate-sdk-ios` provides SCALE encoding/decoding
-- Use `Data(hexString:)` to convert hex strings to Data — the `Data` wrapper is preferred over the underlying `NSData(hexString:)` from NovaCrypto
+- Use `hexString.fromHex()` (SubstrateSdkExt) to convert hex strings to Data. It wraps `Data(hexString:)` and reads left to right at the call site; both are preferred over the underlying `NSData(hexString:)` from NovaCrypto
 - Use `toHex()` from SubstrateSdk for Data-to-hex conversion — prefer the `Data` wrapper over the underlying `NSData.toHexString` from NovaCrypto
 - Implement `ScaleEncodable`/`ScaleDecodable` at the type level for reusability
 - Use `Data.randomOrError` from SubstrateSdk for random/test data generation

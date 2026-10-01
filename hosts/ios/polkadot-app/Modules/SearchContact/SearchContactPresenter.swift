@@ -90,30 +90,37 @@ private extension SearchContactPresenter {
         }
     }
 
-    func makeStatus() -> SearchContactViewLayout.StatusViewModel {
-        let query = currentSearch.query
-        let allEmpty = selection.isEmpty
-        let showHint = !currentSearch.isSearching && !currentSearch.queryFailed && allEmpty && query.isEmpty
-
-        let searchFailReason: NSAttributedString?
-        if !currentSearch.isSearching, currentSearch.queryFailed || (!query.isEmpty && allEmpty) {
-            let searchFailedString = String(localized: .searchContactNoSuchUsername(username: query))
-            var attributes = LabelStyle.title16SemiBold().attributes(for: .center)
-            attributes[.foregroundColor] = UIColor.fgSecondary
-            searchFailReason = NSAttributedString(
-                string: searchFailedString,
-                attributes: attributes
-            )
-        } else {
-            searchFailReason = nil
-        }
-
-        return SearchContactViewLayout.StatusViewModel(
-            showHint: showHint,
-            searchFailReason: searchFailReason,
+    func makeStatus() -> SearchContactResultsView.StatusViewModel {
+        SearchContactResultsView.StatusViewModel(
+            message: makeStatusMessage(),
             showsLoader: currentSearch.showsLoader,
             loaderText: currentSearch.loaderText
         )
+    }
+
+    /// Shown instead of the rows once the search settles: the failure reason, or the
+    /// no-recents hint when the field is empty.
+    func makeStatusMessage() -> NSAttributedString? {
+        guard !currentSearch.isSearching else {
+            return nil
+        }
+
+        let query = currentSearch.query
+        let allEmpty = selection.isEmpty
+
+        if currentSearch.queryFailed || (!query.isEmpty && allEmpty) {
+            return makeCenteredMessage(String(localized: .searchContactNoSuchUsername(username: query)))
+        } else if allEmpty, query.isEmpty {
+            return makeCenteredMessage(String(localized: .searchContactNoRecentSearches))
+        } else {
+            return nil
+        }
+    }
+
+    func makeCenteredMessage(_ text: String) -> NSAttributedString {
+        var attributes = LabelStyle.title16SemiBold().attributes(for: .center)
+        attributes[.foregroundColor] = UIColor.fgSecondary
+        return NSAttributedString(string: text, attributes: attributes)
     }
 
     func provideStatus() {
@@ -121,7 +128,7 @@ private extension SearchContactPresenter {
     }
 
     func provideViewModel(sections: AccountSearchSections<ContactSearchPayload, ContactSearchPayload>) {
-        let viewModel = SearchContactViewLayout.ViewModel(
+        let viewModel = SearchContactResultsView.ViewModel(
             sections: buildViewSections(from: sections),
             status: makeStatus()
         )
@@ -131,7 +138,7 @@ private extension SearchContactPresenter {
 
     func buildViewSections(
         from sections: AccountSearchSections<ContactSearchPayload, ContactSearchPayload>
-    ) -> [SearchContactViewLayout.ViewModel.Section] {
+    ) -> [SearchContactResultsView.ViewModel.Section] {
         [
             makeViewSection(
                 id: "recent",
@@ -155,10 +162,10 @@ private extension SearchContactPresenter {
         id: String,
         title: String,
         rows: [SearchRow<ContactSearchPayload>]
-    ) -> SearchContactViewLayout.ViewModel.Section? {
+    ) -> SearchContactResultsView.ViewModel.Section? {
         guard !rows.isEmpty else { return nil }
 
-        return SearchContactViewLayout.ViewModel.Section(
+        return SearchContactResultsView.ViewModel.Section(
             id: id,
             title: title,
             rows: rows.map { row in

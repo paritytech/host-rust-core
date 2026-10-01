@@ -1,3 +1,4 @@
+import DurableTransactionsTestSupport
 import Foundation
 import Testing
 @testable import Coinage
@@ -47,7 +48,7 @@ struct DurabilityHarnessSmokeTest {
         #expect(try await harness.handoffKeys().isEmpty)
 
         let commit = try await harness.preCommitHandoff([harness.coinOutput(spentCoin)])
-        try await commit.commit()
+        try commit.commit(in: InMemoryRegistrationScope())
         try await harness.relaunch()
         #expect(try await harness.handoffKeys().contains(HarnessKeys.coinKey(spentCoin)))
     }

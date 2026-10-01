@@ -4,9 +4,14 @@ import com.google.gson.Gson
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsResolver
 import io.paritytech.polkadotapp.feature_dotns_api.domain.DotNsTld
 import io.paritytech.polkadotapp.feature_products_api.domain.error.ProductResolutionError
+import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCardId
+import io.paritytech.polkadotapp.feature_products_api.model.PocketCardPreview
+import io.paritytech.polkadotapp.feature_products_api.model.ProductExecutable
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.data.manifest.ManifestParser
 import io.paritytech.polkadotapp.feature_products_impl.data.repository.ProductRepository
+import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.DebugPocketCard
+import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.DebugPocketCards
 import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -26,10 +31,17 @@ class RealResolveProductUseCaseTest {
     private val base = "coinflip.dot"
     private val productId = ProductId.fromStoredValue(base)
 
+    private var debugCard: DebugPocketCard? = null
+    private val debugPocketCards = object : DebugPocketCards {
+        override fun get(productId: ProductId): DebugPocketCard? = debugCard
+        override fun set(productId: ProductId, card: DebugPocketCard?) = Unit
+    }
+
     private fun useCase() = RealResolveProductUseCase(
         dotNsResolver,
         manifestParser,
         productRepository,
+        debugPocketCards,
     )
 
     private fun appJson() = """{"${'$'}v":1,"kind":"app","appVersion":[1,0,0]}"""
@@ -129,5 +141,56 @@ class RealResolveProductUseCaseTest {
         val result = useCase().resolve(productId)
 
         assertEquals(ProductResolutionError.MalformedManifest, result.exceptionOrNull())
+    }
+
+    /**
+     * A worker served from a developer's machine is the whole point of the debug URL: without a card
+     * on it there is nothing to add to the Pocket, and trying a card still costs a publish.
+     */
+    @Test
+    fun `a debug worker carries the card the debug menu names`() = runBlocking {
+        debugCard = DebugPocketCard(PocketCardId("loyalty"), "Loyalty", DEV_FACE)
+        whenever(dotNsResolver.getMetadataEntry(base, "manifest")).thenReturn(Result.success(null))
+        whenever(productRepository.getUserWorkerUrl(productId)).thenReturn(DEV_WORKER)
+
+        val worker = useCase().resolve(productId).getOrThrow().executables.worker
+
+        assertEquals(true, worker?.includesPocket)
+        assertEquals(PocketCardId("loyalty"), worker?.pocketCards?.single()?.id)
+        assertEquals(PocketCardPreview.Url(DEV_FACE), worker?.pocketCards?.single()?.preview)
+    }
+
+    /** Naming no card must leave the worker exactly as it was before cards existed. */
+    @Test
+    fun `a debug worker with no card named publishes none`() = runBlocking {
+        debugCard = null
+        whenever(dotNsResolver.getMetadataEntry(base, "manifest")).thenReturn(Result.success(null))
+        whenever(productRepository.getUserWorkerUrl(productId)).thenReturn(DEV_WORKER)
+
+        val worker = useCase().resolve(productId).getOrThrow().executables.worker
+
+        assertEquals(false, worker?.includesPocket)
+        assertEquals(emptyList<Any>(), worker?.pocketCards)
+    }
+
+    /** A published worker is the product's own word; a local override must not quietly beat it. */
+    @Test
+    fun `a published worker still wins over the debug one`() = runBlocking {
+        debugCard = DebugPocketCard(PocketCardId("loyalty"), "Loyalty", DEV_FACE)
+        whenever(dotNsResolver.getMetadataEntry(base, "manifest")).thenReturn(Result.success(rootJson()))
+        whenever(dotNsResolver.getMetadataEntry("app.$base", "executable")).thenReturn(Result.success(appJson()))
+        whenever(dotNsResolver.getMetadataEntry("widget.$base", "executable")).thenReturn(Result.success(null))
+        whenever(dotNsResolver.getMetadataEntry("worker.$base", "executable")).thenReturn(Result.success(workerJson()))
+        whenever(productRepository.getUserWorkerUrl(productId)).thenReturn(DEV_WORKER)
+
+        val worker = useCase().resolve(productId).getOrThrow().executables.worker as ProductExecutable.Worker
+
+        assertEquals("https://worker.coinflip.dot/index.js", worker.scriptUrl)
+        assertEquals(emptyList<Any>(), worker.pocketCards)
+    }
+
+    private companion object {
+        const val DEV_WORKER = "http://127.0.0.1:5173/worker.js"
+        const val DEV_FACE = "http://127.0.0.1:5173/faces/loyalty.json"
     }
 }

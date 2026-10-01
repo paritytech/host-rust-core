@@ -3,9 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   coreWireSchemaHash,
   createDebuggerLink,
-  isLoopbackWsUrl,
   type DebuggerSocket,
 } from "./worker-runtime.js";
+import { isLoopbackWsUrl } from "./worker-protocol.js";
 
 /**
  * The gate mirrors the native sink's (`native_debug.rs`) three cases — loopback
@@ -28,11 +28,9 @@ describe("isLoopbackWsUrl", () => {
       // 127.0.0.0/8 in full, not just 127.0.0.1.
       "ws://127.5.6.7:9231",
       "ws://[::1]:9231",
-      // Bracket forms: expanded and IPv4-mapped, both of which the URL parser
-      // normalizes to a different string than the one written.
+      // A bracket form the URL parser normalizes to a different string than the
+      // one written.
       "ws://[0:0:0:0:0:0:0:1]:9231",
-      "ws://[::ffff:127.0.0.1]:9231",
-      "ws://[::ffff:7f00:1]:9231",
       // Scheme and host are case-insensitive; a path or query is irrelevant.
       "WS://127.0.0.1:9231",
       "ws://LOCALHOST:9231",
@@ -74,6 +72,12 @@ describe("isLoopbackWsUrl", () => {
       "ws://[::ffff:192.0.2.1]:9231",
       // A trailing dot is a distinct hostname and is not accepted.
       "ws://localhost.:9231",
+      // IPv4-mapped loopback, in both the written and the normalized spelling.
+      // The native sink refuses it (`Ipv6Addr::is_loopback` matches only `::1`),
+      // so accepting it here would make a dial that works in the web host fail
+      // in the CLI - a difference a developer would debug as a broken debugger.
+      "ws://[::ffff:127.0.0.1]:9231",
+      "ws://[::ffff:7f00:1]:9231",
     ]) {
       expect(isLoopbackWsUrl(url)).toBe(false);
     }

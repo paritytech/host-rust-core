@@ -2,8 +2,8 @@ import PolkadotUI
 import UIKitExt
 
 protocol SearchContactViewProtocol: ControllerBackedProtocol {
-    func didReceive(viewModel: SearchContactViewLayout.ViewModel)
-    func didReceive(status: SearchContactViewLayout.StatusViewModel)
+    func didReceive(viewModel: SearchContactResultsView.ViewModel)
+    func didReceive(status: SearchContactResultsView.StatusViewModel)
 }
 
 @MainActor

@@ -47,7 +47,7 @@ class QRScannerViewController: UIViewController, ViewHolder {
         presenter.viewWillDisappear()
     }
 
-    private func configureVideoLayer(with captureSession: AVCaptureSession) {
+    func configureVideoLayer(with captureSession: AVCaptureSession) {
         if let layer = rootView.qrFrameView.frameLayer as? AVCaptureVideoPreviewLayer {
             if layer.session === captureSession {
                 return

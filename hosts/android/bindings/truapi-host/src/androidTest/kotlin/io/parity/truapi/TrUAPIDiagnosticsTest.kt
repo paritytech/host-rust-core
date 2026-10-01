@@ -11,14 +11,18 @@ import okhttp3.OkHttpClient
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import uniffi.truapi_platform.AuthState
+import uniffi.truapi.AuthState
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
-import uniffi.truapi_platform.PermissionDecision
-import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi.PermissionDecision
+import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.io.path.createTempDirectory
 
 /**
  * End-to-end host check: build the TrUAPI core with a local signing session
@@ -106,6 +110,7 @@ class TrUAPIDiagnosticsTest {
             bulletinChainGenesisHash = ByteArray(32),
             assetHubChainGenesisHash = ByteArray(32),
             networkSuffix = "paseo",
+            databaseDirectory = createTempDirectory("truapi").toString(),
             // 32 bytes of BIP-39 entropy → a deterministic local signing session
             // (no SSO pairing, fully offline).
             localSessionSecret = ByteArray(32) { (it + 1).toByte() },

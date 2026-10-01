@@ -80,3 +80,6 @@ sentry.properties
 
 # Temp
 tmp/
+
+# Agent scratch notes (worklog, memory, tools)
+.agent/

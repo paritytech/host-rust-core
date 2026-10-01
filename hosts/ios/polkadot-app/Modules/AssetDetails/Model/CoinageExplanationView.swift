@@ -10,7 +10,6 @@ struct CoinageLegendSwatch: View {
     enum Kind {
         case availableNow
         case gainingPrivacy
-        case unavailable
     }
 
     let kind: Kind
@@ -38,8 +37,7 @@ struct CoinageLegendSwatch: View {
     private var shape: some View {
         switch kind {
         case .availableNow: Color.fgStaticWhite
-        case .gainingPrivacy: DSBarberPole()
-        case .unavailable: Color.fgError
+        case .gainingPrivacy: DSBarberPole(isAnimated: false)
         }
     }
 }
@@ -146,7 +144,8 @@ private extension CoinageExplanationView {
                 text: String(localized: .coinageKeyVoucher),
                 illustration: AnyView(
                     VoucherStatusView(
-                        model: .init(maxFungibility: 55, fungibility: 15, isUnloadable: false)
+                        model: .init(maxFungibility: 55, fungibility: 15, isUnloadable: false),
+                        isAnimated: false
                     )
                 )
             )

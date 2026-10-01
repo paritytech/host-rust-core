@@ -132,7 +132,7 @@ private extension NetworkStatusServiceTests {
         }
     }
 
-    final class RecordingChainRegistry: ChainRegistryProtocol {
+    final class RecordingChainRegistry: ChainRegistryProtocol, @unchecked Sendable {
         private let mutex = NSLock()
         private var subscribers: [ChainModel.Id: ConnectionStateSubscription] = [:]
         private var subscribeCalls: [ChainModel.Id: Int] = [:]

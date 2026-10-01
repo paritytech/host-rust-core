@@ -9,11 +9,18 @@ import StructuredConcurrency
 /// are sequential — required for dependent transactions where one spends another's output. Requests
 /// without a key are built independently, each with its own signer. Order is preserved so the returned
 /// models align with the requests.
-struct ExtrinsicBatchBuilder {
+public struct ExtrinsicBatchBuilder {
     let operationFactory: any ExtrinsicOperationFactoryProtocol
     let logger: SDKLoggerProtocol?
 
-    func build(_ requests: [DurableTxRequest]) async throws -> [ExtrinsicBuiltModel] {
+    /// Public so a domain's submission policy builds its rebuilt extrinsics through the same grouping
+    /// and ordering the engine uses for a first attempt, rather than reimplementing them.
+    public init(operationFactory: any ExtrinsicOperationFactoryProtocol, logger: SDKLoggerProtocol?) {
+        self.operationFactory = operationFactory
+        self.logger = logger
+    }
+
+    public func build(_ requests: [DurableTxRequest]) async throws -> [ExtrinsicBuiltModel] {
         guard !requests.isEmpty else { return [] }
 
         // Batches are independent of one another, so run them concurrently rather than serialising one

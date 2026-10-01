@@ -1,5 +1,6 @@
 import ExtrinsicService
 import Foundation
+import FoundationExt
 import KeyDerivation
 import SDKLogger
 import StateMachine
@@ -23,6 +24,7 @@ final class ExternalPaymentStateFactory {
     let originFactory: OriginCreating
     let quotaTracker: any UnloadQuotaTracking
     let blockNumberProvider: BlockInfoProviding
+    let dateProvider: any DateProviding
     let logger: SDKLoggerProtocol?
 
     init(
@@ -38,6 +40,7 @@ final class ExternalPaymentStateFactory {
         originFactory: OriginCreating,
         quotaTracker: any UnloadQuotaTracking,
         blockNumberProvider: BlockInfoProviding,
+        dateProvider: any DateProviding,
         logger: SDKLoggerProtocol?
     ) {
         self.instanceId = instanceId
@@ -52,6 +55,7 @@ final class ExternalPaymentStateFactory {
         self.originFactory = originFactory
         self.quotaTracker = quotaTracker
         self.blockNumberProvider = blockNumberProvider
+        self.dateProvider = dateProvider
         self.logger = logger
     }
 }

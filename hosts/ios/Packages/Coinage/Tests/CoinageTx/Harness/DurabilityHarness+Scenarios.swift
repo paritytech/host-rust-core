@@ -83,7 +83,7 @@ extension DurabilityHarness {
     /// changes.
     func chainReachesMortalityOf(_ id: CoinageTxId, finality: TestActionFinality) async throws {
         guard let entry = try await store.getEntry(id: id) else { return }
-        let target = entry.checkpoint.number + entry.mortality + 1
+        let target = entry.submittedAttempt.checkpoint.number + entry.submittedAttempt.mortalityBlocks + 1
         while chain.bestHead.number < target {
             chain.produceBlock()
         }
@@ -114,9 +114,9 @@ extension DurabilityHarness {
         let id = try await givenUnwatchedEntry(inputCoin: inputCoin, outputCoin: outputCoin)
         guard let entry = try await store.getEntry(id: id) else { return id }
 
-        produceBlock(finality, body: [entry.txHash]) { state in
+        produceBlock(finality, body: [entry.submittedAttempt.txHash]) { state in
             state
-                .applied(entry.txHash, success: true)
+                .applied(entry.submittedAttempt.txHash, success: true)
                 .consumeCoin(HarnessKeys.coinKey(inputCoin))
                 .mintCoin(HarnessKeys.coinKey(outputCoin))
         }

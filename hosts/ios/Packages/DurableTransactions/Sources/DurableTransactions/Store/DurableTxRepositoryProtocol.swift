@@ -26,21 +26,80 @@ public protocol DurableTxRepositoryProtocol: Sendable {
         onRegister: @escaping DurableTxRegistrationHook
     ) async throws -> [DurableTxId]
 
-    /// Atomically applies `verdict` iff the entry's current status still equals `expectedCurrentStatus`
-    /// and is not terminal — the read and the write share one transaction, so the status cannot move
-    /// between them. Returns whether it wrote. The single guarded writer of a rule verdict.
+    /// Inserts one row per schedule with no attempt, status ``DurableTxStatus/pendingSubmission``, and
+    /// runs `onRegister` with the minted ids — the same atomicity `register` gives.
+    ///
+    /// A non-`nil` `scope` is an already-open write transaction to join: the rows are written through it
+    /// and committed by whoever opened it, and no transaction of this store's own is opened. That is the
+    /// only way to make these rows commit together with a row of another subsystem, and it is required —
+    /// opening a second transaction on a shared serial writer would deadlock.
+    func schedule(
+        _ schedules: [DurableTxSchedule],
+        in scope: (any DurableTxRegistrationScope)?,
+        onRegister: @escaping DurableTxRegistrationHook
+    ) async throws -> [DurableTxId]
+
+    /// The scope-joining half of ``schedule(_:in:onRegister:)``, synchronous because its caller already
+    /// is: a transport writing the row that carries a payment runs inside its store's write block, which
+    /// cannot suspend. Everything this does is context work, so there is nothing to await.
+    func schedule(
+        _ schedules: [DurableTxSchedule],
+        joining scope: any DurableTxRegistrationScope,
+        onRegister: DurableTxRegistrationHook
+    ) throws -> [DurableTxId]
+
+    /// Atomically applies `verdict` iff the entry's current status still equals `expectedCurrentStatus`,
+    /// its attempt is still `expectedTxHash`, and it is not terminal — the read and the write share one
+    /// transaction, so neither can move between them. Returns whether it wrote. The single guarded writer
+    /// of a rule verdict.
+    ///
+    /// Matching on the attempt is what keeps a verdict about bytes that were already proven unable to
+    /// land from being written onto the rebuilt transaction that replaced them.
     @discardableResult
     func updateTxStatus(
         for id: DurableTxId,
         expectedCurrentStatus: DurableTxStatus,
+        expectedTxHash: Data,
         verdict: Verdict
     ) async throws -> Bool
+
+    /// Replaces the attempt of a transaction waiting to be built and makes it `pending`, clearing any
+    /// success record the previous attempt left. Returns whether it wrote — `false` when the row was no
+    /// longer waiting, which is how two builders of the same row resolve.
+    func startAttempt(id: DurableTxId, attempt: DurableTxAttempt) async throws -> Bool
+
+    /// Fails a transaction waiting to be built, for good. Returns whether it wrote.
+    func abandonSubmission(id: DurableTxId) async throws -> Bool
+
+    /// Fails every transaction of `domain` waiting to be built by `policyId`, in one write.
+    ///
+    /// For a policy nothing has registered: every row naming it is unbuildable whatever group it is
+    /// in, so the store selects them with a predicate rather than having a caller read them all back
+    /// and decide one at a time. Returns how many it failed.
+    @discardableResult
+    func abandonSubmissions(domain: TxDomainId, policyId: SubmissionPolicyId) async throws -> Int
+
+    /// The policy that may build this transaction again, if it has one.
+    func getSubmissionPolicy(id: DurableTxId) async throws -> SubmissionPolicy?
+
+    /// The transactions waiting to be built, across every domain, then again on every ledger change.
+    func subscribePendingSubmissions() -> AnyAsyncSequence<[ScheduledDurableTx]>
+
+    /// The transactions waiting to be built under one policy and group, ordered by `sequence`.
+    func getPendingSubmissions(
+        policyId: SubmissionPolicyId,
+        groupId: DurableTxGroupId?
+    ) async throws -> [ScheduledDurableTx]
 
     /// Every entry of every domain, live and terminal, ordered by `sequence`.
     func getAllEntries() async throws -> [DurableTxEntry]
 
-    /// Every entry of one domain, live and terminal, ordered by `sequence`. The recovery pass reads this
-    /// twice per domain per pass, so a store backed by a database answers it with a predicate.
+    /// Every entry of one domain that carries an attempt, live and terminal, ordered by `sequence`. The
+    /// recovery pass reads this twice per domain per pass, so a store backed by a database answers it
+    /// with a predicate.
+    ///
+    /// A transaction waiting to be built is deliberately absent: it has no bytes, no window and no
+    /// inclusion for any rule to read, so nothing a pass could do would decide it.
     func getAllEntries(domain: TxDomainId) async throws -> [DurableTxEntry]
 
     /// The entry with this id, if any.

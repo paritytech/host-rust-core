@@ -17,11 +17,16 @@ Coinage (`Packages/Coinage/Sources/CoinageTx/`) is the first domain; installatio
 
 | Component | Role |
 |-----------|------|
-| `DurableTxService` / `DurableTxServicing` | Builds, registers (atomically, with the domain's hook inside the same transaction) and submits; status and group streams; `start()` / `stop()` the head-driven recovery |
-| `DurableTxRepositoryProtocol` | The ledger row, domain-neutral: id, `domainId`, sequence, group, tx hash, checkpoint, mortality, status, success record. Compare-and-set is the only status writer |
+| `DurableTxService` / `DurableTxServicing` | Builds, registers (atomically, with the domain's hook inside the same transaction) and submits; **schedules** rows that have no extrinsic yet; status and group streams; `start()` / `stop()` the head-driven recovery and the builder |
+| `DurableSubmissionPolicy` / `DurableSubmissionPolicyRegistry` | The write-side domain seam (below): builds a transaction outside the call that registered it, and again when an attempt is proven unable to land |
+| `DurableSubmissionExecutor` | Actor. Watches the ledger's `pendingSubmission` rows, buckets them by `(policyId, groupId)`, one task per bucket, with backoff and a per-row rebuild cooldown |
+| `DurableSubmissionLauncher` | Takes ownership of an attempt, writes it onto the row, and hands it to the tracker — the one path both a first submission and a rebuild go through |
+| `DurableVerdictWriter` | The single writer of every status write. A `failure` whose policy answers `canRetry` becomes `pendingSubmission` instead |
+| `DurableTxAttempt` | One attempt: `txHash`, `checkpoint`, `mortalityBlocks`, derived from a built extrinsic's own `CheckMortality` era |
+| `DurableTxRepositoryProtocol` | The ledger row, domain-neutral: id, `domainId`, sequence, group, the current attempt (tx hash, checkpoint, mortality), status, success record, submission policy. Compare-and-set is the only status writer |
 | `DurableTxRegistrationScope` | Marker for the store's open write transaction. A domain store writes its rows inside a hook receiving it and must throw `foreignRegistrationScope` for a scope of another store technology |
 | `DurableTxTracker` | Follows one built extrinsic from submission; proposes verdicts through the same compare-and-set; releases ownership exactly once |
-| `DurableTxOwnershipSet` | Volatile: which transactions a live submission owns, so a pass skips them |
+| `DurableTxOwnershipSet` | Volatile: which *attempt* of which transaction a live submission owns, so a pass skips it. One-shot per attempt, so a rebuild is owned afresh |
 | `DurableRecoveryPass` | One pinned view per chain, two rounds per domain (so a domain reasoning over other transactions' statuses sees round-one writes), CAS writes |
 | `CompletionLadder` | Rules 0–5 (below) |
 | `PinnedChainViewProtocol` / `PinnedChainViewFactory` | The generic chain reads at two pinned heads: block hash at height, block ref by hash, dispatch outcome, body search over a window. Keyed by `chainId` |
@@ -54,6 +59,59 @@ Coinage (`Packages/Coinage/Sources/CoinageTx/`) is the first domain; installatio
 - `CoinageStateReader` — coin, voucher and alias reads at a `BlockRef`.
 - `CoinageTxEntry` = engine `DurableTxEntry` + `inputs` / `outputs`. `CoinageTxId`, `CoinageTxStatus`,
   `CoinageTxGroupId` are typealiases of the engine's types; `Coinage` re-exports `DurableTransactions`.
+
+## Status and Attempts
+
+`DurableTxStatus` has five cases. The two predicates over them are deliberately different:
+
+- **`isLive`** — `pending`, `pendingSuccess`, `pendingSubmission`. The transaction holds whatever its
+  domain locked for it.
+- **`awaitsVerdict`** — `pending`, `pendingSuccess`. Bytes were submitted and nothing has concluded
+  about them, so a recovery pass may decide it.
+
+`pendingSubmission` is the gap between them: registered, locks held, nothing on the wire. It is the
+executor's, not a pass's — a row with no attempt has no bytes, no window and no inclusion for any rule
+to read. `getAllEntries(domain:)` therefore excludes such rows, so neither the pass nor any oracle sees
+one.
+
+A row's `txHash` / `checkpoint` / `mortality` describe **the current attempt**, not *the* extrinsic. A
+rebuild overwrites them in place and keeps the row's id, group and the domain's rows — which is what
+lets a payment made out of a reorged claim still land once the claim is built again. Every status write
+is therefore a compare-and-set on `(status, txHash)`: a verdict about bytes already proven unable to
+land can never be written onto the rebuilt attempt that replaced them.
+
+A scheduled row still *is* a `DurableTxEntry`, carrying placeholder attempt fields
+(`DurableTxSchedule.makeEntry`), so a caller watching its operation group sees the transaction exist and
+waits for it rather than reading an empty group as a finished one. Those fields are meaningless until
+`withAttempt(_:)` replaces them and nothing reads them while the status is `pendingSubmission`.
+
+## The Seam: `DurableSubmissionPolicy`
+
+The write-side counterpart of `TxCompletionOracle`:
+
+```swift
+public protocol DurableSubmissionPolicy: Sendable {
+    var chainId: ChainId { get }
+    func canRetry(_ entry: DurableTxEntry, params: Data, failure: DurableFailureKind) async -> Bool
+    func prepareSubmission(_ transactions: [ScheduledDurableTx])
+        async throws -> [DurableTxId: SubmissionPreparation]   // .ready(ExtrinsicBuiltModel) | .giveUp
+}
+```
+
+1. **`canRetry` must not read the chain.** It is asked while a verdict is being written. Whether a
+   rebuild is still *possible* belongs to `prepareSubmission`, which may suspend for as long as it needs.
+2. **A failure kind bounds the loop.** `DurableFailureKind` is `.expired`, `.dispatchFailed` or
+   `.rejected`. An attempt that was simply never included may be rebuilt however late; one that was
+   dispatched and failed, or refused outright, would most likely fail the same way — nothing else stops
+   a repeating failure from being rebuilt for ever.
+3. **A thrown error is never a verdict.** `prepareSubmission` throwing just means the call is made again
+   after a backoff; only `.giveUp` fails a transaction.
+4. **`params` are opaque to the engine** and stored as given, so a policy owns their encoding *and its
+   evolution* — a shape change needs a versioned decoder for the rows already written.
+
+Policies are registered into `DurableTxService.policies` before anything is scheduled. A row naming an
+unregistered policy is abandoned by the executor rather than left waiting for ever, and a verdict for it
+is written as the failure it already was.
 
 ## The Seam: `TxCompletionOracle`
 
@@ -135,6 +193,10 @@ attempt has settled without a `finalizedSuccess`.
 
 1. **Terminal verdicts rest on finalized facts.** Only the finalized-bounded search, Rule 3 at F, and a
    pre-submission validation refusal may write `failure`; only F-level evidence writes `finalizedSuccess`.
+1b. **Every status write goes through `DurableVerdictWriter`.** It is the one place that offers a
+   failure back to the transaction's policy before it becomes terminal. A writer that bypasses it is a
+   path that can forget to retry. A policy that cannot be *read* fails the write rather than the
+   transaction: the verdict is re-derived next pass, while a failure written now could never be taken back.
 2. **Unknown is never a verdict.** A failed read leaves a transaction undecided; every predicate is
    positive-form.
 3. **Rows are never deleted.** Terminal rows are history a domain's provenance reads still need.
@@ -148,6 +210,9 @@ attempt has settled without a `finalizedSuccess`.
 | Seam | Where | When to touch |
 |------|-------|---------------|
 | Engine API | `Packages/DurableTransactions/Sources/DurableTransactions/Engine/DurableTxService.swift` | New engine capability every domain needs |
+| Submission seam | `.../Engine/DurableSubmissionPolicy.swift` | Changing what a domain can build or rebuild |
+| Builder pacing | `.../Engine/DurableSubmissionExecutor.swift` (`Timing`) | Backoff and rebuild cooldown |
+| Verdict routing | `.../Engine/DurableVerdictWriter.swift` | How a failure is offered back to a policy |
 | Ladder | `.../Engine/CompletionLadder.swift` | Only for a rule true of *any* transaction |
 | Domain seam | `.../Oracle/TxCompletionOracle.swift` | Changing what a domain can tell the engine |
 | Chain reads | `.../Chain/PinnedChainView*.swift` | New generic chain access |
