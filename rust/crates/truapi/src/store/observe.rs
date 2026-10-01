@@ -252,43 +252,41 @@ impl Db {
                     // Subscribe before the first read, so no commit is missed.
                     Phase::Start => match db.subscribe(sql).await {
                         Ok(wake) => (wake, None),
-                        Err(error) => return Some((Err(error), Phase::Done)),
+                        Err(error) => return Some((Some(Err(error)), Phase::Done)),
                     },
                     Phase::Running { mut wake, last } => {
                         wake.next().await?;
                         (wake, last)
                     }
                 };
-                db.next_emission(sql, query, wake, last).await
+                Some(db.requery(sql, query, wake, last).await)
             }
         })
+        .filter_map(core::future::ready)
         .boxed()
     }
 
-    /// Re-runs the query until its rows differ from `last`, waiting for the
-    /// next wake after each unchanged run. Returns the item to emit and the
-    /// phase that follows it, or `None` once the wake signal is gone.
-    async fn next_emission<T, F>(
+    /// Runs the query once and returns what to emit, `None` when its rows
+    /// equal `last`, together with the phase that follows.
+    async fn requery<T, F>(
         &self,
         sql: &'static str,
         query: Arc<F>,
-        mut wake: mpsc::Receiver<()>,
+        wake: mpsc::Receiver<()>,
         last: Option<Vec<Value>>,
-    ) -> Option<(Result<T, DbError>, Phase)>
+    ) -> (Option<Result<T, DbError>>, Phase)
     where
         T: Send + 'static,
         F: Fn(&mut ObservedStatement<'_>) -> Result<T, DbError> + Send + Sync + 'static,
     {
-        loop {
-            match self.run_observed(sql, query.clone()).await {
-                Ok((_, snapshot)) if last.as_ref() == Some(&snapshot) => wake.next().await?,
-                Ok((value, snapshot)) => {
-                    let last = Some(snapshot);
-                    return Some((Ok(value), Phase::Running { wake, last }));
-                }
-                Err(DbError::Closed) => return Some((Err(DbError::Closed), Phase::Done)),
-                Err(error) => return Some((Err(error), Phase::Running { wake, last: None })),
+        match self.run_observed(sql, query).await {
+            Ok((_, snapshot)) if last.as_ref() == Some(&snapshot) => (None, Phase::Running { wake, last }),
+            Ok((value, snapshot)) => {
+                let last = Some(snapshot);
+                (Some(Ok(value)), Phase::Running { wake, last })
             }
+            Err(DbError::Closed) => (Some(Err(DbError::Closed)), Phase::Done),
+            Err(error) => (Some(Err(error)), Phase::Running { wake, last: None }),
         }
     }
 
