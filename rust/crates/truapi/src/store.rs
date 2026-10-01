@@ -2,13 +2,20 @@
 //! and async access that works on any executor.
 //!
 //! Each connection runs on its own thread (via `async-sqlite`), so SQLite work
-//! never blocks the runtime's executor.
+//! never blocks the runtime's executor. [`Db::observe`] turns a query into a
+//! stream that follows every commit.
+
+mod observe;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_sqlite::{JournalMode, Pool, PoolBuilder};
 use rusqlite::{OpenFlags, TransactionBehavior};
 use rusqlite_migration::Migrations;
+
+pub use observe::ObservedStatement;
+use observe::{Invalidation, delete_row_by_row};
 
 /// Where a database lives.
 #[derive(Debug, Clone)]
@@ -73,6 +80,9 @@ pub enum DbError {
     /// The host configured no database location.
     #[error("no database configured")]
     NotConfigured,
+    /// An observed query reads no table, so no commit could ever change it.
+    #[error("observed query reads no table: {0}")]
+    Unobservable(&'static str),
 }
 
 impl From<async_sqlite::Error> for DbError {
@@ -101,6 +111,7 @@ pub struct DbStatus {
 pub struct Db {
     writer: Pool,
     readers: Pool,
+    invalidation: Arc<Invalidation>,
 }
 
 impl Db {
@@ -117,6 +128,8 @@ impl Db {
         .map_err(|error| DbError::Open(error.to_string()))?;
 
         let migrations = config.migrations;
+        let invalidation = Arc::new(Invalidation::default());
+        let hook = invalidation.clone();
         writer
             .conn_mut_and_then(move |conn| {
                 conn.pragma_update(None, "synchronous", "FULL")?;
@@ -127,9 +140,16 @@ impl Db {
                     Ok(())
                     | Err(rusqlite_migration::Error::MigrationDefinition(
                         rusqlite_migration::MigrationDefinitionError::NoMigrationsDefined,
-                    )) => Ok(()),
-                    Err(error) => Err(DbError::Migration(error.to_string())),
+                    )) => {}
+                    Err(error) => return Err(DbError::Migration(error.to_string())),
                 }
+                conn.authorizer(Some(delete_row_by_row))?;
+                conn.update_hook(Some(move |_, database: &str, table: &str, _| {
+                    if database == "main" {
+                        hook.touch(table);
+                    }
+                }))?;
+                Ok(())
             })
             .await?;
 
@@ -143,7 +163,10 @@ impl Db {
                     .await
                     .map_err(|error| DbError::Open(error.to_string()))?;
                 readers
-                    .conn_for_each(|conn| conn.busy_timeout(BUSY_TIMEOUT))
+                    .conn_for_each(|conn| {
+                        conn.busy_timeout(BUSY_TIMEOUT)?;
+                        conn.authorizer(Some(delete_row_by_row))
+                    })
                     .await
                     .into_iter()
                     .collect::<Result<Vec<()>, _>>()?;
@@ -152,22 +175,37 @@ impl Db {
             DbLocation::Memory => writer.clone(),
         };
 
-        Ok(Self { writer, readers })
+        Ok(Self {
+            writer,
+            readers,
+            invalidation,
+        })
     }
 
     /// Runs `f` in one `BEGIN IMMEDIATE` transaction on the writer. Commits
-    /// when `f` returns `Ok` and rolls back when it returns `Err`.
+    /// when `f` returns `Ok` and rolls back when it returns `Err`. A commit
+    /// wakes the observers of every table it changed.
     pub async fn write<T, F>(&self, f: F) -> Result<T, DbError>
     where
         F: FnOnce(&rusqlite::Transaction<'_>) -> Result<T, DbError> + Send + 'static,
         T: Send + 'static,
     {
+        let invalidation = self.invalidation.clone();
         self.writer
             .conn_mut_and_then(move |conn| {
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let value = f(&tx)?;
-                tx.commit()?;
-                Ok(value)
+                let committed = (|| {
+                    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    let value = f(&tx)?;
+                    tx.commit()?;
+                    Ok(value)
+                })();
+                // Publish only once readers can see the rows: `commit_hook`
+                // runs before the commit is visible.
+                match committed {
+                    Ok(_) => invalidation.publish(),
+                    Err(_) => invalidation.discard(),
+                }
+                committed
             })
             .await
     }
@@ -203,6 +241,7 @@ impl Db {
             .await?;
         self.readers.close().await?;
         self.writer.close().await?;
+        self.invalidation.close();
         Ok(())
     }
 }
