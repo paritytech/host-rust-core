@@ -1,5 +1,5 @@
 ---
-"@parity/truapi": patch
+"@parity/truapi": minor
 ---
 
 Restore or provision explicitly selected CLI sessions, retry unfinished setup,
