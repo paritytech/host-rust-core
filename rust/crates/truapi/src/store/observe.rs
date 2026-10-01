@@ -34,6 +34,20 @@ struct Observer {
     wake: mpsc::Sender<()>,
 }
 
+impl Observer {
+    /// Wakes the observer if it reads a touched table. Returns whether it is
+    /// still listening.
+    fn notify(&mut self, touched: &BTreeSet<String>) -> bool {
+        if !self.tables.iter().any(|table| touched.contains(table)) {
+            return !self.wake.is_closed();
+        }
+        match self.wake.try_send(()) {
+            Ok(()) => true,
+            Err(error) => error.is_full(),
+        }
+    }
+}
+
 impl Invalidation {
     /// Records a row change on the writer. Called by `update_hook`.
     pub fn touch(&self, table: &str) {
@@ -47,15 +61,16 @@ impl Invalidation {
         if touched.is_empty() {
             return;
         }
-        self.observers.lock().retain_mut(|observer| {
-            if !observer.tables.iter().any(|table| touched.contains(table)) {
-                return !observer.wake.is_closed();
-            }
-            match observer.wake.try_send(()) {
-                Ok(()) => true,
-                Err(error) => error.is_full(),
-            }
-        });
+        self.observers
+            .lock()
+            .retain_mut(|observer| observer.notify(&touched));
+    }
+
+    /// Registers an observer of `tables` and returns its wake signal.
+    fn register(&self, tables: Arc<[String]>) -> mpsc::Receiver<()> {
+        let (wake, receiver) = mpsc::channel(0);
+        self.observers.lock().push(Observer { tables, wake });
+        receiver
     }
 
     /// Forgets the changes of a write that rolled back.
@@ -83,11 +98,33 @@ pub fn delete_row_by_row(context: AuthContext<'_>) -> Authorization {
     }
 }
 
-/// Lists the tables `sql` reads. SQLite reports every table a statement
-/// reads to the authorizer while preparing it, including the tables behind a
-/// view or a subquery. Views, CTEs, table-valued functions and SQLite's own
-/// tables are reported too; matching against the schema's tables drops them.
+/// Makes the writer report every committed row change to `invalidation`.
+pub fn track_changes(conn: &Connection, invalidation: Arc<Invalidation>) -> rusqlite::Result<()> {
+    conn.authorizer(Some(delete_row_by_row))?;
+    conn.update_hook(Some(move |_, database: &str, table: &str, _| {
+        if database == "main" {
+            invalidation.touch(table);
+        }
+    }))
+}
+
+/// Lists the schema tables `sql` reads. An observed query that reads none
+/// could never be woken, so it is rejected.
 fn resolve_tables(conn: &Connection, sql: &'static str) -> Result<Arc<[String]>, DbError> {
+    let tables: Arc<[String]> = names_read_by(conn, sql)?
+        .intersection(&schema_tables(conn)?)
+        .cloned()
+        .collect();
+    if tables.is_empty() {
+        return Err(DbError::Unobservable(sql));
+    }
+    Ok(tables)
+}
+
+/// Every name SQLite reports as read while preparing `sql`. That covers the
+/// tables behind a view or a subquery, but also views, CTEs, table-valued
+/// functions and SQLite's own tables.
+fn names_read_by(conn: &Connection, sql: &str) -> Result<BTreeSet<String>, DbError> {
     let reads = Arc::new(Mutex::new(BTreeSet::new()));
     let recorder = reads.clone();
     conn.authorizer(Some(move |context: AuthContext<'_>| {
@@ -103,17 +140,17 @@ fn resolve_tables(conn: &Connection, sql: &'static str) -> Result<Arc<[String]>,
     let prepared = conn.prepare(sql).map(drop);
     conn.authorizer(Some(delete_row_by_row))?;
     prepared?;
+    Ok(core::mem::take(&mut *reads.lock()))
+}
 
+/// The schema's tables, without SQLite's internal ones.
+fn schema_tables(conn: &Connection) -> Result<BTreeSet<String>, DbError> {
     let mut stmt = conn.prepare_cached(SCHEMA_TABLES_SQL)?;
-    let schema_tables = stmt
+    let names = stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .map(|name| name.map(|name| name.to_ascii_lowercase()))
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    let tables: Arc<[String]> = reads.lock().intersection(&schema_tables).cloned().collect();
-    if tables.is_empty() {
-        return Err(DbError::Unobservable(sql));
-    }
-    Ok(tables)
+        .collect::<Result<_, _>>()?;
+    Ok(names)
 }
 
 const SCHEMA_TABLES_SQL: &str =
@@ -210,7 +247,7 @@ impl Db {
             let db = db.clone();
             let query = query.clone();
             async move {
-                let (mut wake, mut last) = match phase {
+                let (wake, last) = match phase {
                     Phase::Done => return None,
                     // Subscribe before the first read, so no commit is missed.
                     Phase::Start => match db.subscribe(sql).await {
@@ -222,38 +259,53 @@ impl Db {
                         (wake, last)
                     }
                 };
-                loop {
-                    match db.run_observed(sql, query.clone()).await {
-                        Ok((value, snapshot)) => {
-                            if last.as_ref() == Some(&snapshot) {
-                                wake.next().await?;
-                                continue;
-                            }
-                            last = Some(snapshot);
-                            return Some((Ok(value), Phase::Running { wake, last }));
-                        }
-                        Err(DbError::Closed) => return Some((Err(DbError::Closed), Phase::Done)),
-                        Err(error) => return Some((Err(error), Phase::Running { wake, last: None })),
-                    }
-                }
+                db.next_emission(sql, query, wake, last).await
             }
         })
         .boxed()
     }
 
-    async fn subscribe(&self, sql: &'static str) -> Result<mpsc::Receiver<()>, DbError> {
-        let cached = self.invalidation.resolved.lock().get(sql).cloned();
-        let tables = match cached {
-            Some(tables) => tables,
-            None => {
-                let tables = self.readers.conn_and_then(move |conn| resolve_tables(conn, sql)).await?;
-                self.invalidation.resolved.lock().insert(sql, tables.clone());
-                tables
+    /// Re-runs the query until its rows differ from `last`, waiting for the
+    /// next wake after each unchanged run. Returns the item to emit and the
+    /// phase that follows it, or `None` once the wake signal is gone.
+    async fn next_emission<T, F>(
+        &self,
+        sql: &'static str,
+        query: Arc<F>,
+        mut wake: mpsc::Receiver<()>,
+        last: Option<Vec<Value>>,
+    ) -> Option<(Result<T, DbError>, Phase)>
+    where
+        T: Send + 'static,
+        F: Fn(&mut ObservedStatement<'_>) -> Result<T, DbError> + Send + Sync + 'static,
+    {
+        loop {
+            match self.run_observed(sql, query.clone()).await {
+                Ok((_, snapshot)) if last.as_ref() == Some(&snapshot) => wake.next().await?,
+                Ok((value, snapshot)) => {
+                    let last = Some(snapshot);
+                    return Some((Ok(value), Phase::Running { wake, last }));
+                }
+                Err(DbError::Closed) => return Some((Err(DbError::Closed), Phase::Done)),
+                Err(error) => return Some((Err(error), Phase::Running { wake, last: None })),
             }
-        };
-        let (wake, receiver) = mpsc::channel(0);
-        self.invalidation.observers.lock().push(Observer { tables, wake });
-        Ok(receiver)
+        }
+    }
+
+    async fn subscribe(&self, sql: &'static str) -> Result<mpsc::Receiver<()>, DbError> {
+        let tables = self.tables(sql).await?;
+        Ok(self.invalidation.register(tables))
+    }
+
+    /// The tables `sql` reads, resolved once per SQL constant: migrations run
+    /// only in `open`, so the schema can't change under a cached answer.
+    async fn tables(&self, sql: &'static str) -> Result<Arc<[String]>, DbError> {
+        if let Some(tables) = self.invalidation.resolved.lock().get(sql) {
+            return Ok(tables.clone());
+        }
+        let tables = self.readers.conn_and_then(move |conn| resolve_tables(conn, sql)).await?;
+        self.invalidation.resolved.lock().insert(sql, tables.clone());
+        Ok(tables)
     }
 
     async fn run_observed<T, F>(&self, sql: &'static str, query: Arc<F>) -> Result<(T, Vec<Value>), DbError>

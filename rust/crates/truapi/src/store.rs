@@ -15,7 +15,7 @@ use rusqlite::{OpenFlags, TransactionBehavior};
 use rusqlite_migration::Migrations;
 
 pub use observe::ObservedStatement;
-use observe::{Invalidation, delete_row_by_row};
+use observe::{Invalidation, delete_row_by_row, track_changes};
 
 /// Where a database lives.
 #[derive(Debug, Clone)]
@@ -140,16 +140,10 @@ impl Db {
                     Ok(())
                     | Err(rusqlite_migration::Error::MigrationDefinition(
                         rusqlite_migration::MigrationDefinitionError::NoMigrationsDefined,
-                    )) => {}
-                    Err(error) => return Err(DbError::Migration(error.to_string())),
-                }
-                conn.authorizer(Some(delete_row_by_row))?;
-                conn.update_hook(Some(move |_, database: &str, table: &str, _| {
-                    if database == "main" {
-                        hook.touch(table);
-                    }
-                }))?;
-                Ok(())
+                    )) => Ok(()),
+                    Err(error) => Err(DbError::Migration(error.to_string())),
+                }?;
+                track_changes(conn, hook).map_err(DbError::from)
             })
             .await?;
 
@@ -193,12 +187,7 @@ impl Db {
         let invalidation = self.invalidation.clone();
         self.writer
             .conn_mut_and_then(move |conn| {
-                let committed = (|| {
-                    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                    let value = f(&tx)?;
-                    tx.commit()?;
-                    Ok(value)
-                })();
+                let committed = in_transaction(conn, f);
                 // Publish only once readers can see the rows: `commit_hook`
                 // runs before the commit is visible.
                 match committed {
@@ -244,6 +233,17 @@ impl Db {
         self.invalidation.close();
         Ok(())
     }
+}
+
+/// Runs `f` in one `BEGIN IMMEDIATE` transaction, committing on `Ok`.
+fn in_transaction<T>(
+    conn: &mut rusqlite::Connection,
+    f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, DbError>,
+) -> Result<T, DbError> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let value = f(&tx)?;
+    tx.commit()?;
+    Ok(value)
 }
 
 const BUSY_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(5);
