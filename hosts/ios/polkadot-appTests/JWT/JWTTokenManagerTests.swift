@@ -21,7 +21,8 @@ struct JWTTokenManagerTests {
                 fundingUrl: nil,
                 offrampUrl: nil,
                 accountDataStoreContract: nil,
-                paymentAsset: nil
+                paymentAsset: nil,
+                appSharingUrl: nil
             )
         )
     }

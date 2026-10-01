@@ -42,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import kotlin.io.path.createTempDirectory
 
 @RunWith(AndroidJUnit4::class)
 class MediaPermissionIntegrationTest {
@@ -67,6 +68,7 @@ class MediaPermissionIntegrationTest {
             bulletinChainGenesisHash = ByteArray(32),
             assetHubChainGenesisHash = ByteArray(32),
             networkSuffix = "paseo",
+            databaseDirectory = createTempDirectory("truapi").toString(),
         )
         TrUAPIHostRuntime(bridge, config).use { runtime ->
             runtime.openProductExecution(bridge, ProductExecutionConfig("media.paseo", ProductExecutionKind.APP)).use { execution ->
@@ -84,9 +86,9 @@ class MediaPermissionIntegrationTest {
                         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest) =
                             WebResourceResponse("text/html", "UTF-8", PAGE.byteInputStream())
                     }
-                    TrUAPIBootstrapInstaller().installerFor(webView, setOf("http://localhost"))(
+                    TrUAPIBootstrapInstaller(context).installerFor(setOf("http://localhost"))(
                         LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token),
-                    )
+                    )(webView)
                     webView.loadUrl("http://localhost/")
                 }
                 fun call(script: String, expected: String) {
