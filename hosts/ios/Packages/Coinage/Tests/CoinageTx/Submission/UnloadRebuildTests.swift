@@ -40,7 +40,7 @@ struct UnloadRebuildTests {
             outputs: outputs.map { .coin($0.derivationIndex, $0.publicKey) }
         )]
 
-        let unload = try #require(await rebuild.resolve([transaction], assets: assets)[transaction.id])
+        let unload = try #require(try await rebuild.resolve([transaction], assets: assets)[transaction.id])
 
         #expect(unload.voucherIndices == vouchers.map(\.derivationIndex))
         #expect(unload.outputs.map(\.publicKey) == outputs.map(\.publicKey))
@@ -58,7 +58,7 @@ struct UnloadRebuildTests {
             outputs: outputs.map { .coin($0.derivationIndex, $0.publicKey) }
         )]
 
-        let unload = try #require(await rebuild.resolve([transaction], assets: assets)[transaction.id])
+        let unload = try #require(try await rebuild.resolve([transaction], assets: assets)[transaction.id])
 
         #expect(rebuild.inputs(of: unload) == [1, 2])
     }
@@ -78,7 +78,7 @@ struct UnloadRebuildTests {
             outputs: outputs.map { .coin($0.derivationIndex, $0.publicKey) }
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -94,7 +94,7 @@ struct UnloadRebuildTests {
             outputs: [.coin(5, RebuildFixtures.key(5))]
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -111,7 +111,7 @@ struct UnloadRebuildTests {
             outputs: outputs.map { .coin($0.derivationIndex, $0.publicKey) }
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -136,7 +136,7 @@ struct UnloadRebuildTests {
             )
         ]
 
-        let resolved = await rebuild.resolve([noOutputs, noInputs], assets: assets)
+        let resolved = try await rebuild.resolve([noOutputs, noInputs], assets: assets)
 
         #expect(resolved.isEmpty)
     }

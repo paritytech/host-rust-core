@@ -15,6 +15,9 @@
 # difference no adaptation accounts for is upstream work that was dropped, and
 # an adaptation that left no difference is an adaptation that did not survive.
 #
+# Changes move one way, from the source into this tree. A change made here is
+# not sent back; the source is upstream of this repository, not a peer.
+#
 # Usage:
 #   scripts/refresh-host-import.sh status <host>
 #   scripts/refresh-host-import.sh refresh <host> [--ref <rev>] [--source <url>]
@@ -114,70 +117,6 @@ compare_against_source() {
   return $rc
 }
 
-# Paths that exist because the tree lives here rather than upstream. They are
-# wrong in the source repository by construction, so they are never owed back.
-manifest_infrastructure() {
-  local host=$1
-  python3 - "$host" <<'PY'
-import json, sys
-host = sys.argv[1]
-with open("hosts/imports.json") as fh:
-    data = json.load(fh)
-for entry in data[host].get("infrastructure", []):
-    print(entry)
-PY
-}
-
-cmd_backport() {
-  local host=$1; shift
-  local out=""
-  while [ $# -gt 0 ]; do
-    case $1 in
-      --patch) out=$2; shift 2 ;;
-      *) die "unknown argument $1" ;;
-    esac
-  done
-
-  local source recorded
-  source="$(manifest_get "$host" source)"
-  recorded="$(manifest_get "$host" ref)"
-  fetch_source "$source" "$recorded"
-
-  local base_tree adapted infra
-  base_tree="$(upstream_tree_at_prefix "$host" "$recorded")"
-  adapted="$(mktemp)"; infra="$(mktemp)"
-  git diff -z --name-only "$base_tree" HEAD -- "hosts/${host}" > "$adapted"
-  manifest_infrastructure "$host" > "$infra"
-
-  note "hosts/${host} against ${recorded}"
-  echo
-
-  local owed
-  owed="$(mktemp)"
-  python3 scripts/lib/classify-host-adaptations.py "$adapted" "$infra" "hosts/${host}/" "$owed"
-  local rc=$?
-
-  if [ -n "$out" ] && [ -s "$owed" ]; then
-    # Rewritten to the source repository's paths, so it applies there with
-    # `git apply` from the root rather than needing -p juggling.
-    local owed_paths=()
-    while IFS= read -r owed_path; do
-      owed_paths+=("$owed_path")
-    done < "$owed"
-    git diff --binary "$base_tree" HEAD -- "${owed_paths[@]}" \
-      | sed -e "s|^diff --git a/hosts/${host}/|diff --git a/|" \
-            -e "s| b/hosts/${host}/| b/|" \
-            -e "s|^--- a/hosts/${host}/|--- a/|" \
-            -e "s|^+++ b/hosts/${host}/|+++ b/|" \
-      > "$out"
-    echo
-    note "patch written to ${out}, applies at the root of ${source}"
-  fi
-
-  rm -f "$adapted" "$infra" "$owed"
-  return $rc
-}
-
 cmd_status() {
   local host=$1 source ref branch
   source="$(manifest_get "$host" source)"
@@ -254,14 +193,19 @@ cmd_refresh() {
   # merge against, so it hard-rejects the moment upstream touches a path this
   # repository deleted. Kept in this patch, that one rejection would discard
   # every other adaptation with it.
-  git diff --binary --diff-filter=d "$base_tree" HEAD -- "hosts/${host}" > "$patch"
-  git diff -z --name-only --diff-filter=D "$base_tree" HEAD -- "hosts/${host}" > "$deleted_list"
+  #
+  # --no-renames throughout. A moved file is otherwise reported as a rename,
+  # which the deletion filter does not see and --name-only lists by its new
+  # path alone, so the old path is neither removed nor accounted for and reads
+  # as upstream work that was dropped.
+  git diff --no-renames --binary --diff-filter=d "$base_tree" HEAD -- "hosts/${host}" > "$patch"
+  git diff --no-renames -z --name-only --diff-filter=D "$base_tree" HEAD -- "hosts/${host}" > "$deleted_list"
   local adapted_list
   adapted_list="$(scratch)"
   # NUL-delimited to match the listings it is compared against. --name-only
   # quotes and escapes any path outside ASCII, and one asset in the iOS tree
   # would then never match its own entry and read as dropped work.
-  git diff -z --name-only "$base_tree" HEAD -- "hosts/${host}" > "$adapted_list"
+  git diff --no-renames -z --name-only "$base_tree" HEAD -- "hosts/${host}" > "$adapted_list"
   note "adaptations to re-apply: $(tr -cd '\0' < "$adapted_list" | wc -c | tr -d ' ') files"
 
   # Tracked paths only. rm -rf would also take ignored working files such as
@@ -344,8 +288,7 @@ main() {
   case "$cmd" in
     status)  [ $# -ge 1 ] || die "usage: $0 status <host>"; cmd_status "$@" ;;
     refresh) [ $# -ge 1 ] || die "usage: $0 refresh <host> [--ref <rev>]"; cmd_refresh "$@" ;;
-    backport) [ $# -ge 1 ] || die "usage: $0 backport <host> [--patch <file>]"; cmd_backport "$@" ;;
-    *) die "usage: $0 {status|refresh|backport} <host> [options]" ;;
+    *) die "usage: $0 {status|refresh} <host> [options]" ;;
   esac
 }
 

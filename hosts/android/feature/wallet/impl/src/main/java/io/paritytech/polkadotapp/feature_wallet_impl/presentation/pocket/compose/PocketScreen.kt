@@ -27,6 +27,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
+import io.paritytech.polkadotapp.common.presentation.notification.rememberAppNotifier
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.screens.ObserveViewModelEvents
 import io.paritytech.polkadotapp.design.components.dialog.NovaAlertDialog
 import io.paritytech.polkadotapp.design.components.navigationbar.LocalAppNavigationBarInsets
 import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
@@ -59,7 +63,7 @@ import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.PocketScreenState
 import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.MutableStateFlow
 import io.paritytech.polkadotapp.common.R as RCommon
 
 private val CollectiblesSketchbookPeek = 80.dp
@@ -71,6 +75,8 @@ fun PocketScreen() {
     val screenState by viewModel.state.collectAsStateWithLifecycle()
     val cards by viewModel.cards.collectAsStateWithLifecycle()
     val expandedProductSession by viewModel.expandedProductSession.collectAsStateWithLifecycle()
+
+    ObserveViewModelEvents(viewModel, rememberAppNotifier())
 
     PocketScreenInternal(
         screenState = screenState,
@@ -338,7 +344,8 @@ private fun Transition<PocketScreenState>.extractAnchorCard(): PocketCardUiModel
 private fun PocketScreenPreview() {
     PolkadotTheme {
         CompositionLocalProvider(
-            LocalTokenAmountFormatter provides TokenAmountFormatter.mocked
+            LocalTokenAmountFormatter provides TokenAmountFormatter.mocked,
+            LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
         ) {
             PocketScreenInternal(
                 screenState = PocketScreenState.List(collectiblesAvailable = true, removalCandidate = null),
@@ -360,7 +367,7 @@ private fun PocketScreenPreview() {
                 expandedProductSession = null,
                 bindingsOf = { card ->
                     ProductFaceBindings(
-                        face = flowOf(JsWidget.Text(text = card.title)),
+                        face = MutableStateFlow(JsWidget.Text(text = card.title)),
                         onFaceAction = { _, _ -> },
                         imageResolver = JsImageResolver { null },
                     )

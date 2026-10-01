@@ -14,7 +14,7 @@ let coreIsInTree: Bool = {
     var root = URL(fileURLWithPath: #filePath)
     for _ in 0 ..< 5 { root.deleteLastPathComponent() }
     return FileManager.default.fileExists(
-        atPath: root.appendingPathComponent("rust/crates/truapi-server").path
+        atPath: root.appendingPathComponent("rust/crates/truapi").path
     )
 }()
 
@@ -22,7 +22,7 @@ let dependencyConfigs: [DependencyConfig] = [
     .init(
         name: "extrinsic-service-ios",
         url: "https://github.com/novasamatech/extrinsic-service-ios",
-        version: .exact("1.18.0"),
+        version: .exact("1.20.0"),
         products: ["ExtrinsicService"]
     ),
     .init(
@@ -34,7 +34,7 @@ let dependencyConfigs: [DependencyConfig] = [
     .init(
         name: "firebase-ios-sdk",
         url: "https://github.com/firebase/firebase-ios-sdk",
-        version: .exact("12.5.0"),
+        version: .exact("12.6.0"),
         products: [
             "FirebaseCore",
             "FirebaseRemoteConfig"
@@ -73,7 +73,7 @@ let dependencyConfigs: [DependencyConfig] = [
     .init(
         name: "substrate-sdk-ios",
         url: "https://github.com/novasamatech/substrate-sdk-ios",
-        version: .exact("5.15.0"),
+        version: .exact("5.17.0"),
         products: [
             "SubstrateSdk",
             "SubstrateMetadataHash"
@@ -129,8 +129,8 @@ let dependencyConfigs: [DependencyConfig] = [
     ),
     .init(
         name: "AsyncExtensions",
-        url: "https://github.com/sideeffect-io/AsyncExtensions",
-        version: .exact("0.5.4"),
+        url: "https://github.com/paritytech/AsyncExtensions",
+        version: .exact("0.5.6"),
         products: ["AsyncExtensions"]
     ),
     .init(

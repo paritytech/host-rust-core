@@ -173,6 +173,7 @@ Optional — an absent key disables or degrades the feature it drives:
 | `payment_asset_config` | JSON object | `{"symbol": "CASH", "iconSquareUrl": "https://…/square.svg", "iconWideUrl": "https://…/wide.svg"}` — the payment asset's symbol and logos: a square mark for amounts and payment messages, a wide mark-plus-wordmark for the balance card, as absolute web URLs (SVG or PNG; an SVG must not set `fill="none"` on its root element, which the iOS renderer cannot draw). Each field is optional; anything missing or failing to load falls back to the bundled brand (`BRAND_CASH_SYMBOL` and the built-in mark). Logos are fetched as soon as the config is applied and kept cached by URL, so a change shows on the next config refresh without an app update; publish a changed logo under a new URL. Test assets live in `docs/assets/payment-asset/`. |
 | `collectibles_fallback_url` | string | Web URL used when the collectibles dApp cannot be resolved through DotNS. |
 | `game_results_fallback_url` | string | Web URL used when the game-results dApp cannot be resolved through DotNS. |
+| `app_sharing_url` | string | Download link included in the message the ID card's Share button composes ("Download it at {link} and add me – my username is {username}."). Without it the message is shared without the link sentence. |
 
 **Chain ids per environment.** `KnownChainId` (`polkadot-app/AppConfig/KnownChains.swift`)
 hardcodes the `chainId` strings the app looks up in `chains_v2`, and

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -81,7 +82,6 @@ fun RootNavBarOverlay(
     scannerTooltipVisible: Boolean,
     openScanPanelRequests: Flow<Unit>,
     onTabSelected: (BottomTab) -> Unit,
-    onUsernameSearchClick: () -> Unit,
     onScannerTooltipDismiss: () -> Unit,
     onAppClick: (Long) -> Unit,
     onAppClose: (Long) -> Unit,
@@ -151,6 +151,7 @@ fun RootNavBarOverlay(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .statusBarsPadding()
                     .graphicsLayer { translationX = -pull.offset },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -227,7 +228,6 @@ fun RootNavBarOverlay(
                         onAppClose = onAppClose,
                         onScanClicked = { onScannerTooltipDismiss(); pull.toggleScan() },
                         onScanHandled = { navigate -> pull.collapsePanels(); navigate?.invoke() },
-                        onUsernameSearchClick = { pull.collapsePanels(); onUsernameSearchClick() },
                         onScannerTooltipDismiss = onScannerTooltipDismiss,
                     )
                 }

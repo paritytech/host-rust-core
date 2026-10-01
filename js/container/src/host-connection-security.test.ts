@@ -9,6 +9,8 @@ const source = await browserScript(`
   import { createHostConnection } from '@parity/truapi/internal';
   import { freezePermissionRuntime } from './permission-runtime.ts';
   import { freezeValue } from './freeze.ts';
+  import { installFetchGate } from './network.ts';
+  import { createPermissionAuthorization } from './network-transport.ts';
   freezePermissionRuntime();
   const connection = createHostConnection('ws://127.0.0.1:1234/?t=execution');
   freezeValue(window, '__HOST_WEBVIEW_MARK__', true);
@@ -21,6 +23,9 @@ const source = await browserScript(`
     set() {},
     configurable: false,
   });
+  window.Promise = Promise;
+  window.TypeError = TypeError;
+  installFetchGate(window, createPermissionAuthorization(window, connection.internal).network);
   globalThis.fixture = {
     connection,
     authorize: () => connection.internal.permissions.authorizeRemotePermission({
@@ -134,7 +139,11 @@ function browser() {
       dispatch.call(this, new Event('close'));
     }
   }
+  const requests: string[] = [];
   const native = {
+    URL, Request, Response, AbortController, AbortSignal, DOMException,
+    location: { href: 'https://product.example/', origin: 'https://product.example' },
+    fetch: async (request: Request) => { requests.push(request.url); return new Response('received'); },
     ...globals,
     WebSocket: BrowserSocket,
     MessageChannel: BrowserChannel,
@@ -155,6 +164,8 @@ function browser() {
   cleanups.push(() => connection.dispose());
   return {
     context,
+    requests,
+    fetch: () => (win as unknown as { fetch: typeof fetch }).fetch('https://denied.example/data'),
     connection,
     authorize,
     sockets,
@@ -199,27 +210,120 @@ describe('shared connection permission isolation', () => {
     });
   });
 
-  // TODO: re-enable once built-in prototypes are locked again in a way that still lets
-  // subclasses shadow inherited methods, such as React's Flight client assigning `then`.
-  it.skip('locks messaging and clock APIs before products can intercept later connections', async () => {
+  for (const [name, attack] of [
+    ['Set iteration', `
+      const original = Set.prototype[Symbol.iterator];
+      Set.prototype[Symbol.iterator] = function* () {
+        for (const listener of Reflect.apply(original, this, [])) {
+          yield message => {
+            if (message instanceof Uint8Array) message[message.length - 1] = 1;
+            listener(message);
+          };
+        }
+      };
+    `],
+    ['SDK result methods', `
+      const result = window.__HOST_API_CLIENT__.client.system.handshake();
+      Object.getPrototypeOf(result).then = function (resolve) {
+        return Promise.resolve(resolve({ isOk: () => true, value: { granted: true } }));
+      };
+    `],
+  ]) {
+    it(`cannot make native fetch run after a denied reply through ${name}`, async () => {
+      const host = browser();
+      await host.connect();
+      runInContext(`try { ${attack} } catch (error) { if (!(error instanceof TypeError)) throw error; }`, host.context);
+      const result = host.fetch().then(() => 'allowed', () => 'denied');
+      await until(() => host.requests.length > 0 || permissionRequests(host.sockets[0]!).length === 1);
+      const request = permissionRequests(host.sockets[0]!)[0];
+      if (request) host.sockets[0]!.reply(reply(request, false));
+      expect({ decision: await result, requests: host.requests }).toEqual({ decision: 'denied', requests: [] });
+    });
+  }
+
+  it('uses captured native methods after product replacements and reconnect', async () => {
     const host = browser();
-    expect(runInContext(`
-      const originals = { MessageChannel, MessagePort, MessageEvent, EventTarget, Date };
-      const replaced = [
-        ...Object.entries(originals).map(([name, original]) => {
-          globalThis[name] = class {};
-          return globalThis[name] !== original;
-        }),
-        Reflect.defineProperty(MessageChannel.prototype, 'port1', { get() { throw new Error('channel intercepted'); } }),
-        Reflect.defineProperty(MessageChannel.prototype, 'port2', { get() { throw new Error('channel intercepted'); } }),
-        ...['postMessage', 'start', 'close'].map(name =>
-          Reflect.defineProperty(MessagePort.prototype, name, { value() { throw new Error('port intercepted'); } })),
-        Reflect.defineProperty(EventTarget.prototype, 'addEventListener', { value() { throw new Error('listener intercepted'); } }),
-        Reflect.defineProperty(MessageEvent.prototype, 'data', { get() { throw new Error('message intercepted'); } }),
-        Reflect.defineProperty(Date, 'now', { value: () => 0 }),
-      ];
-      replaced;
-    `, host.context)).toEqual(Array(13).fill(false));
+    runInContext(`
+      'use strict';
+      const intercepted = () => { throw new Error('product replacement'); };
+      Function.prototype.call = intercepted;
+      Function.prototype.apply = intercepted;
+      Function.prototype.bind = intercepted;
+      Reflect.apply = intercepted;
+      Reflect.construct = intercepted;
+      globalThis.Function = intercepted;
+      globalThis.Reflect = {};
+      globalThis.Symbol = intercepted;
+      Object.defineProperty(MessageEvent.prototype, 'data', { get: intercepted });
+      globalThis.MessageEvent = intercepted;
+    `, host.context);
+    for (const granted of [false, true]) {
+      await host.connect();
+      const result = host.fetch().then(() => 'allowed', () => 'denied');
+      const socket = host.sockets[host.sockets.length - 1]!;
+      await until(() => permissionRequests(socket).length === 1);
+      socket.reply(reply(permissionRequests(socket)[0]!, granted));
+      expect({ decision: await result, requests: host.requests }).toEqual({
+        decision: granted ? 'allowed' : 'denied',
+        requests: granted ? ['https://denied.example/data'] : [],
+      });
+      if (!granted) {
+        socket.disconnect();
+        await until(() => host.sockets.length === 2);
+      }
+    }
+  });
+
+  for (const [name, attack] of [
+    ['MessageChannel', `
+      const NativeChannel = MessageChannel;
+      globalThis.MessageChannel = class extends NativeChannel {
+        constructor() { super(); exposed.push(this.port2); }
+      };
+      const { get } = Object.getOwnPropertyDescriptor(NativeChannel.prototype, 'port2');
+      Reflect.defineProperty(NativeChannel.prototype, 'port2', {
+        get() { const port = Reflect.apply(get, this, []); exposed.push(port); return port; },
+      });
+    `],
+    ['MessagePort', `
+      const start = MessagePort.prototype.start;
+      MessagePort.prototype.start = function () { exposed.push(this); return Reflect.apply(start, this, []); };
+    `],
+    ['EventTarget', `
+      const add = EventTarget.prototype.addEventListener;
+      EventTarget.prototype.addEventListener = function (...args) { exposed.push(this); return Reflect.apply(add, this, args); };
+    `],
+  ]) {
+    it(`keeps the lazy legacy endpoint private after ${name} replacement`, async () => {
+      const host = browser();
+      runInContext(`globalThis.exposed = []; ${attack}`, host.context);
+      const port = host.port();
+      await host.connect();
+      port.postMessage(frame('p:legacy'));
+      await until(() => host.sockets[0]!.sent.some(request => request.requestId === 'p:legacy'));
+      const result = host.fetch().then(() => 'allowed', () => 'denied');
+      await until(() => permissionRequests(host.sockets[0]!).length === 1);
+      host.sockets[0]!.reply(reply(permissionRequests(host.sockets[0]!)[0]!, false));
+      expect({ decision: await result, exposed: host.context.exposed, requests: host.requests }).toEqual({
+        decision: 'denied', exposed: [], requests: [],
+      });
+    });
+  }
+
+  it('protects later connections while unrelated built-ins remain mutable', async () => {
+    const host = browser();
+    runInContext(`
+      'use strict';
+      Date.now = () => 0;
+      globalThis.Date = class {};
+      Object.defineProperty(ArrayBuffer.prototype, 'byteLength', { get() { throw new Error('buffer intercepted'); } });
+      globalThis.ArrayBuffer = class {};
+      globalThis.TextEncoder = class {};
+      globalThis.TextDecoder = class {};
+      Number.prototype.toString = () => 'replaced';
+      BigInt.prototype.toString = () => 'replaced';
+      BigInt.asUintN = () => 0n;
+    `, host.context);
     const port = host.port();
     await host.connect();
     port.postMessage(frame('p:protected'));
@@ -274,9 +378,7 @@ describe('shared connection permission isolation', () => {
     }).toEqual({ samePort: true, sameClient: true, hosted: true, sockets: 1 });
   });
 
-  // TODO: re-enable once built-in prototypes are locked again in a way that still lets
-  // subclasses shadow inherited methods, such as React's Flight client assigning `then`.
-  it.skip('keeps authorization private when public methods and shared prototypes are replaced', async () => {
+  it('keeps authorization private when public methods and shared prototypes are replaced', async () => {
     const host = browser();
     const client = await host.connect();
     runInContext(`
@@ -291,14 +393,13 @@ describe('shared connection permission isolation', () => {
         () => { Promise.prototype.then = function () { exposed.push(this); }; },
         () => { Object.fromEntries = () => ({ granted: true }); },
         () => { Uint8Array.prototype.set = function () { exposed.push(this); }; },
+        () => { EventTarget.prototype.addEventListener = function () { throw new Error('listener intercepted'); }; },
       ]) { try { poison(); } catch {} }
       globalThis.WebSocket = function () { throw new Error('constructor intercepted'); };
       performance.now = () => { exposed.push('clock'); throw new Error('clock intercepted'); };
       globalThis.performance = { now() { exposed.push('clock'); throw new Error('clock replaced'); } };
       window.WebSocket.prototype.send = function () { throw new Error('send intercepted'); };
       window.WebSocket.prototype.close = function () { throw new Error('close intercepted'); };
-      EventTarget.prototype.addEventListener = function () { throw new Error('listener intercepted'); };
-      Reflect.defineProperty(MessageEvent.prototype, 'data', { get() { throw new Error('data intercepted'); } });
       for (const name of ['port1', 'port2']) {
         Reflect.defineProperty(MessageChannel.prototype, name, { get() { throw new Error('channel intercepted'); } });
       }

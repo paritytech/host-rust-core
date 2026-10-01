@@ -20,7 +20,7 @@
 ///
 /// An enum with one variant rather than a struct because the native bindings
 /// export this type, and uniffi errors must be enums.
-#[derive(Debug, Clone, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
 #[cfg_attr(
     all(feature = "uniffi", not(target_arch = "wasm32")),
     derive(uniffi::Error)
@@ -51,14 +51,6 @@ impl StorageClientError {
 
 impl std::error::Error for StorageClientError {}
 
-impl From<StorageClientError> for truapi::latest::GenericError {
-    fn from(error: StorageClientError) -> Self {
-        Self {
-            reason: error.to_string(),
-        }
-    }
-}
-
 /// Where warm-start blobs are kept between runs.
 ///
 /// A client that cannot answer must return `Err`, never `Ok(None)`: an empty
@@ -73,7 +65,7 @@ impl From<StorageClientError> for truapi::latest::GenericError {
     all(feature = "uniffi", not(target_arch = "wasm32")),
     uniffi::export(with_foreign)
 )]
-#[truapi_platform::async_trait]
+#[async_trait::async_trait]
 pub trait StorageClient: Send + Sync {
     /// Read the blob stored for `genesis_hash`, if any.
     async fn load(&self, genesis_hash: [u8; 32]) -> Result<Option<String>, StorageClientError>;
@@ -88,7 +80,7 @@ pub trait StorageClient: Send + Sync {
 /// information decides that on its own. What it costs is a runtime download on
 /// the next start, which is why a blob that has the code must never be replaced
 /// by one that does not.
-pub(crate) fn carries_runtime_code(blob: &str) -> bool {
+pub fn carries_runtime_code(blob: &str) -> bool {
     // smoldot serialises the runtime code as `runtimeCode` and omits the key
     // when it has none, and its shrink ladder drops that field first when a
     // snapshot is over the size cap. A blob without it still skips the warp
@@ -108,7 +100,7 @@ pub(crate) fn carries_runtime_code(blob: &str) -> bool {
 /// The quality of the stored blob is passed in rather than the blob itself, so
 /// a caller that already knows what it wrote does not read megabytes back to
 /// find out.
-pub(crate) fn is_worth_storing(blob: &str, stored_has_runtime_code: Option<bool>) -> bool {
+pub fn is_worth_storing(blob: &str, stored_has_runtime_code: Option<bool>) -> bool {
     if !carries_chain_information(blob) {
         return false;
     }
@@ -124,7 +116,7 @@ pub(crate) fn is_worth_storing(blob: &str, stored_has_runtime_code: Option<bool>
 /// has finalized nothing yet, and the blob it returns then decodes to a database
 /// with no chain information, which it discards on the next run. Storing one
 /// over a good blob trades a resumed start for a cold one.
-pub(crate) fn carries_chain_information(blob: &str) -> bool {
+pub fn carries_chain_information(blob: &str) -> bool {
     // A substring test rather than a parse: this runs on every snapshot against
     // a blob of up to 8 MB, and the encoder in smoldot omits the key entirely when
     // there is no chain information and writes it as an object when there is
@@ -133,20 +125,6 @@ pub(crate) fn carries_chain_information(blob: &str) -> bool {
     // carry no key at all.
     blob.contains("\"chain\":{")
 }
-
-/// Genesis hash of the chain a blob belongs to.
-pub type GenesisHash = [u8; 32];
-
-// Bridged for the native bindings the way `truapi` bridges its own 32-byte
-// values: uniffi has no fixed-size array type, so the hash crosses as bytes and
-// converts back here. Lowering only, since the provider validates the length
-// before a store ever sees one.
-#[cfg(all(feature = "uniffi", not(target_arch = "wasm32")))]
-uniffi::custom_type!(GenesisHash, Vec<u8>, {
-    remote,
-    lower: |hash| hash.to_vec(),
-    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
-});
 
 #[cfg(test)]
 mod tests {

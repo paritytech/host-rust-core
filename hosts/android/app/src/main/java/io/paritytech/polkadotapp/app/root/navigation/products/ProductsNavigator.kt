@@ -102,6 +102,10 @@ class ProductsNavigator @Inject constructor(
         performNavigation(R.id.action_global_to_truapiConfirmationBottomSheet)
     }
 
+    override suspend fun openTrUAPIContactPick() = withContext(dispatchers.main) {
+        performNavigation(R.id.action_global_to_truapiContactPickBottomSheet)
+    }
+
     override fun openPocketAddCard(payload: PocketAddCardPayload) = performNavigation(
         actionId = R.id.action_global_to_pocketAddCardBottomSheet,
         args = payload.toPayloadBundle(),

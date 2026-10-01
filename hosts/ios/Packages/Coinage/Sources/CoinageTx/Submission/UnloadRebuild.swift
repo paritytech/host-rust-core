@@ -33,7 +33,7 @@ struct UnloadRebuild: CoinageRebuild {
     func resolve(
         _ transactions: [ScheduledDurableTx],
         assets: [CoinageTxId: CoinageTxEntry]
-    ) async -> [CoinageTxId: Unload] {
+    ) async throws -> [CoinageTxId: Unload] {
         let outputKeys = assets.values.reduce(into: Set<PublicKey>()) {
             $0.formUnion($1.outputs.map(\.publicKey))
         }
@@ -41,11 +41,8 @@ struct UnloadRebuild: CoinageRebuild {
             $0.formUnion($1.inputs.map(\.publicKey))
         }
 
-        guard let coins = try? await coinService.fetchCoins(publicKeys: outputKeys),
-              let vouchers = try? await voucherService.fetchVouchers(publicKeys: inputKeys)
-        else {
-            return [:]
-        }
+        let coins = try await coinService.fetchCoins(publicKeys: outputKeys)
+        let vouchers = try await voucherService.fetchVouchers(publicKeys: inputKeys)
 
         let coinsByKey = coins.reduce(into: [PublicKey: Coin]()) { $0[$1.publicKey] = $1 }
         let heldVouchers = Set(vouchers.map(\.publicKey))

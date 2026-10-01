@@ -213,11 +213,16 @@ private extension CoinageAssetLedgerCoreData {
 
 private extension CoinageAssetLedgerCoreData {
     func markHandoffPending(_ asset: OwnAsset, in context: NSManagedObjectContext) throws {
-        guard let coin = try coinForAsset(asset, in: context) else { return }
-        // Never regress a committed mark back to provisional.
-        if coin.handoffMark == CoinHandoffMark.none.rawValue {
-            coin.handoffMark = CoinHandoffMark.pending.rawValue
+        guard case .coin = asset else { return }
+
+        guard let coin = try coinForAsset(asset, in: context) else {
+            throw CoinageTxError.handoffOfUnknownAsset(asset.publicKey.toHex())
         }
+
+        guard coin.handoffMark == CoinHandoffMark.none.rawValue else {
+            throw CoinageTxError.handoffOfHandedOffAsset(asset.publicKey.toHex())
+        }
+        coin.handoffMark = CoinHandoffMark.pending.rawValue
     }
 
     /// Clears a provisional mark; a committed one is left alone — the keys did leave.

@@ -23,9 +23,12 @@ import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.RemotePermissionRequest
-import uniffi.truapi_platform.PermissionAuthorizationRequest
-import uniffi.truapi_platform.PermissionAuthorizationStatus
-import uniffi.truapi_platform.PermissionDecision
+import uniffi.truapi.PermissionAuthorizationRequest
+import uniffi.truapi.PermissionAuthorizationStatus
+import uniffi.truapi.PermissionDecision
+import uniffi.truapi.HostRuntimeConfig
+import uniffi.truapi.ProductExecutionConfig
+import uniffi.truapi.ProductExecutionKind
 import java.io.Closeable
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -37,6 +40,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.io.path.createTempDirectory
 
 @RunWith(AndroidJUnit4::class)
 class ContainerHttpAuthorizationTest {
@@ -61,6 +65,7 @@ class ContainerHttpAuthorizationTest {
             bulletinChainGenesisHash = ByteArray(32),
             assetHubChainGenesisHash = ByteArray(32),
             networkSuffix = "paseo",
+            databaseDirectory = createTempDirectory("truapi").toString(),
         )
 
         TrUAPIHostRuntime(bridge, config).use { runtime ->
@@ -179,12 +184,12 @@ class ContainerHttpAuthorizationTest {
 
     private class MemoryStorage : HostStorage, HostCoreStorage {
         private val values = ConcurrentHashMap<Any, ByteArray>()
-        override fun read(key: String): ByteArray? = values[key]
-        override fun write(key: String, value: ByteArray) { values[key] = value }
-        override fun clear(key: String) { values.remove(key) }
-        override fun read(key: ByteArray): ByteArray? = values[key.toList()]
-        override fun write(key: ByteArray, value: ByteArray) { values[key.toList()] = value }
-        override fun clear(key: ByteArray) { values.remove(key.toList()) }
+        override suspend fun read(key: String): ByteArray? = values[key]
+        override suspend fun write(key: String, value: ByteArray) { values[key] = value }
+        override suspend fun clear(key: String) { values.remove(key) }
+        override suspend fun read(key: ByteArray): ByteArray? = values[key.toList()]
+        override suspend fun write(key: ByteArray, value: ByteArray) { values[key.toList()] = value }
+        override suspend fun clear(key: ByteArray) { values.remove(key.toList()) }
     }
 
     private class Reports {

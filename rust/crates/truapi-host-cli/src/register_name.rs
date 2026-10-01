@@ -14,17 +14,17 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tracing::debug;
-use truapi_server::host_logic::dotns_gateway::{
+use truapi::host_logic::dotns_gateway::{
     DOTNS_GATEWAY_CONTEXT, Link, MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN,
     build_register_proof_message, encode_register_full_name_extra, encode_register_name_call,
     is_dotted_lite_username, is_registrable_full_label,
 };
-use truapi_server::host_logic::product_account::{
+use truapi::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derive_full_person_ring_vrf_entropy, derive_identity_keypair,
 };
-use truapi_server::statement_allowance::collection::PersonhoodCollection;
-use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
-use truapi_server::statement_allowance::{
+use truapi::statement_allowance::collection::PersonhoodCollection;
+use truapi::statement_allowance::extension::AS_DOTNS_GATEWAY;
+use truapi::statement_allowance::{
     self as alloc, extension, extrinsic, proof, ring, rpc::RpcClient,
 };
 

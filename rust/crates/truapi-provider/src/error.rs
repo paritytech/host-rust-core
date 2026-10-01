@@ -2,20 +2,20 @@
 
 #[cfg(feature = "smoldot")]
 use serde_json::{Value, json};
-use truapi::latest::GenericError;
 
-/// Failure modes surfaced by the provider's backends.
-///
-/// Converts to the trait's [`GenericError`] at the
-/// [`ChainProvider`](truapi_platform::ChainProvider) boundary while letting
-/// in-crate callers match on the cause (e.g. for retry or telemetry).
+#[cfg(feature = "smoldot")]
+use crate::storage::StorageClientError;
+
+/// Failure modes of a [`ChainProvider`](crate::platform::ChainProvider) and of
+/// the embedded provider's own API, so callers can match on the cause (e.g.
+/// for retry or telemetry).
 ///
 /// Which variants are constructed depends on the enabled backends and target
 /// (e.g. `MissingRuntime` is native-WebSocket only), so the enum as a whole
 /// allows dead variants rather than cfg-gating each one.
 #[allow(dead_code)]
-#[derive(Debug, derive_more::Display, derive_more::Error)]
-pub(crate) enum ProviderError {
+#[derive(Debug, PartialEq, Eq, derive_more::Display, derive_more::Error)]
+pub enum ProviderError {
     /// No backend is registered — and no bundled network defines — this
     /// genesis hash.
     #[display("no chain registered for genesis 0x{}", hex::encode(genesis))]
@@ -53,6 +53,17 @@ pub(crate) enum ProviderError {
         /// The ceiling that was reached.
         limit: usize,
     },
+    /// The embedded light client is not running this chain, so there is no
+    /// lifecycle to watch until something connects to it. A chain served by a
+    /// remote node never has one.
+    #[display(
+        "the light client is not running chain 0x{}; connect to it first, since only light-client chains have a lifecycle",
+        hex::encode(genesis)
+    )]
+    NotRunning {
+        /// The queried genesis hash.
+        genesis: [u8; 32],
+    },
     /// The native WebSocket backend was called without an ambient tokio
     /// runtime to drive its transport.
     #[display("the WebSocket backend requires an ambient tokio runtime")]
@@ -63,6 +74,43 @@ pub(crate) enum ProviderError {
         /// The underlying failure.
         reason: String,
     },
+    /// A host's own [`ChainProvider`](crate::platform::ChainProvider)
+    /// implementation refused or failed to open the connection.
+    #[display("{reason}")]
+    Host {
+        /// The reason the host reported.
+        reason: String,
+    },
+    /// Warm start was asked of a provider built without a store.
+    #[display(
+        "this provider was built without storage, so there is nowhere to keep finalized state"
+    )]
+    NoStorage,
+    /// The warm store could not read or write a blob.
+    #[cfg(feature = "smoldot")]
+    #[display("{_0}")]
+    Storage(StorageClientError),
+    /// No bundled network has this name.
+    #[display("unknown network \"{name}\"; bundled: {known}")]
+    UnknownNetwork {
+        /// The requested name.
+        name: String,
+        /// Comma-separated names of the bundled networks.
+        known: String,
+    },
+    /// A bundled genesis hash does not decode to 32 bytes.
+    #[display("bundled genesis hash {hex} is malformed")]
+    MalformedGenesis {
+        /// The catalog entry as written.
+        hex: String,
+    },
+}
+
+#[cfg(feature = "smoldot")]
+impl From<StorageClientError> for ProviderError {
+    fn from(error: StorageClientError) -> Self {
+        Self::Storage(error)
+    }
 }
 
 /// `url` without its userinfo, for an error that will be logged.
@@ -71,7 +119,7 @@ pub(crate) enum ProviderError {
 /// address carrying `user:pass@` would otherwise leak the credentials into
 /// every log line and error report that touches it.
 #[cfg(feature = "ws")]
-pub(crate) fn redacted(url: &url::Url) -> String {
+pub fn redacted(url: &url::Url) -> String {
     if url.username().is_empty() && url.password().is_none() {
         return url.to_string();
     }
@@ -84,14 +132,6 @@ pub(crate) fn redacted(url: &url::Url) -> String {
     let _ = stripped.set_username("");
     let _ = stripped.set_password(None);
     stripped.to_string()
-}
-
-impl From<ProviderError> for GenericError {
-    fn from(error: ProviderError) -> Self {
-        GenericError {
-            reason: error.to_string(),
-        }
-    }
 }
 
 /// JSON-RPC internal-error code (per the spec's reserved range).
@@ -108,7 +148,7 @@ const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 /// WebSocket backends instead end the whole response stream, since a send
 /// failure there means the socket is dead.)
 #[cfg(feature = "smoldot")]
-pub(crate) fn synthetic_error_frame(request: &str, message: &str) -> Option<String> {
+pub fn synthetic_error_frame(request: &str, message: &str) -> Option<String> {
     let value: Value = serde_json::from_str(request).ok()?;
     let id = value.get("id").filter(|id| !id.is_null())?;
     Some(
@@ -123,7 +163,7 @@ pub(crate) fn synthetic_error_frame(request: &str, message: &str) -> Option<Stri
 
 /// Outcome of matching a JSON-RPC response frame against an awaited request id.
 #[cfg(feature = "smoldot")]
-pub(crate) enum FrameForId {
+pub enum FrameForId {
     /// The frame answers `id` with a string `result`.
     Result(String),
     /// The frame answers `id` with an `error`, or with a `result` that is not a
@@ -138,7 +178,7 @@ pub(crate) enum FrameForId {
 /// node that rejects the method answers with an `error` and keeps the socket
 /// open, so treating an error frame as unmatched would wait forever.
 #[cfg(feature = "smoldot")]
-pub(crate) fn frame_for_id(frame: &str, id: &str) -> Option<FrameForId> {
+pub fn frame_for_id(frame: &str, id: &str) -> Option<FrameForId> {
     let value: Value = serde_json::from_str(frame).ok()?;
     if value.get("id")?.as_str()? != id {
         return None;

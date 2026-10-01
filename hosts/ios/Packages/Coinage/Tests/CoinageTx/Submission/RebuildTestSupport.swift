@@ -1,4 +1,3 @@
-import AsyncExtensions
 import DurableTransactions
 import ExtrinsicService
 import Foundation
@@ -91,29 +90,5 @@ enum RebuildFixtures {
 struct StubTxFactory: DurableTxMaking {
     func makeExtrinsics(_: [DurableTxRequest], chainId _: ChainId) async throws -> [ExtrinsicBuiltModel] {
         []
-    }
-}
-
-/// A coin query that reports a fixed on-chain set. Only `subscribeCoinInfos` is on a rebuild's path.
-struct StubCoinQuery: CoinOnChainQuerying {
-    var onChain: Set<PublicKey> = []
-
-    func fetchCoins(for _: [Data], atBlockHash _: Data?) async throws -> [CoinSyncResult.OnChainCoin?] {
-        []
-    }
-
-    func awaitAllCoinsOnChain(for _: [Data]) async throws {}
-    func awaitAllCoinsOffChain(for _: [Data]) async throws {}
-
-    func subscribeCoinInfos(for publicKeys: [Data]) -> AnyAsyncSequence<[Data: ClaimableCoinInfo]> {
-        let present = publicKeys.filter { onChain.contains($0) }
-
-        return AsyncStream<[Data: ClaimableCoinInfo]> { continuation in
-            continuation.yield(
-                present.reduce(into: [:]) { $0[$1] = ClaimableCoinInfo(exponent: 3, age: 0) }
-            )
-            continuation.finish()
-        }
-        .eraseToAnyAsyncSequence()
     }
 }

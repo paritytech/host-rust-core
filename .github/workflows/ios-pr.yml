@@ -21,6 +21,8 @@ on:
       - "ios/**"
       - "Package.swift"
       - "Makefile"
+      - "nightly-toolchain"
+      - ".github/actions/rust-nightly/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "js/container/**"
@@ -34,19 +36,15 @@ on:
       - "rust/crates/truapi/**"
       - "rust/crates/truapi-codegen/**"
       - "rust/crates/truapi-macros/**"
-      - "rust/crates/truapi-platform/**"
-      - "rust/crates/truapi-server/**"
       - "rust/crates/truapi-provider/**"
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
       - ".github/actions/bootstrap-ios-core/**"
       - ".github/actions/upsert-pr-comment/**"
-  # Also on the default branch, which is the only way the SPM cache becomes
-  # useful. A cache written during a pull request is scoped to that pull
-  # request's ref, so nothing else can read it. Only a run on the default
-  # branch writes one every later pull request restores from, and this
-  # workflow never ran there, so every run resolved 27 local packages and the
-  # remote graph from cold.
+  # Also on the default branch, which is the only run that saves the in-tree
+  # core's Rust cache. A cache written during a pull request is scoped to that
+  # pull request's ref, so nothing else can read it, and one written on main is
+  # what every later pull request restores.
   push:
     branches: [main]
     paths:
@@ -54,6 +52,8 @@ on:
       - "ios/**"
       - "Package.swift"
       - "Makefile"
+      - "nightly-toolchain"
+      - ".github/actions/rust-nightly/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "js/container/**"
@@ -67,8 +67,6 @@ on:
       - "rust/crates/truapi/**"
       - "rust/crates/truapi-codegen/**"
       - "rust/crates/truapi-macros/**"
-      - "rust/crates/truapi-platform/**"
-      - "rust/crates/truapi-server/**"
       - "rust/crates/truapi-provider/**"
       - "rust/crates/uniffi-bindgen-cli/**"
       - ".github/workflows/ios-pr.yml"
@@ -135,6 +133,8 @@ jobs:
 
       - name: Bootstrap the in-tree core
         uses: ./.github/actions/bootstrap-ios-core
+        with:
+          save: "true"
 
       # Through tar rather than the raw paths, so the xcframework keeps its
       # layout and executable bits, which upload-artifact does not preserve.
@@ -199,7 +199,7 @@ jobs:
           set -euo pipefail
           tar -xzf "$RUNNER_TEMP/ios-core.tgz"
           test -d ios/truapi-host/Binaries/truapi_server.xcframework
-          test -d ios/truapi-host/Sources/truapi_serverFFI/include
+          test -d ios/truapi-host/Sources/truapiFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -311,7 +311,7 @@ jobs:
           set -euo pipefail
           tar -xzf "$RUNNER_TEMP/ios-core.tgz"
           test -d ios/truapi-host/Binaries/truapi_server.xcframework
-          test -d ios/truapi-host/Sources/truapi_serverFFI/include
+          test -d ios/truapi-host/Sources/truapiFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
@@ -448,7 +448,7 @@ jobs:
           set -euo pipefail
           tar -xzf "$RUNNER_TEMP/ios-core.tgz"
           test -d ios/truapi-host/Binaries/truapi_server.xcframework
-          test -d ios/truapi-host/Sources/truapi_serverFFI/include
+          test -d ios/truapi-host/Sources/truapiFFI/include
 
       - name: Configure Google services
         uses: ./hosts/ios/.github/actions/configure-google-services
