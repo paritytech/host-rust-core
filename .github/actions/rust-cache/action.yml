@@ -2,7 +2,9 @@ name: Rust cache
 description: >-
   Swatinem/rust-cache with the repository's one saving rule: a cache is saved
   only by a run on main, and every other run restores. Every Rust job uses
-  this rather than rust-cache directly.
+  this rather than rust-cache directly, except the composites
+  bootstrap-ios-core and setup-android-build, which apply the same rule
+  themselves because a post step two composites deep loses its inputs.
 
 # GitHub scopes a saved cache to the ref that saved it, and a run can restore
 # only from its own ref, its base branch or the default branch. A cache saved
@@ -26,7 +28,10 @@ inputs:
     default: ""
   save:
     description: >-
-      "false" for a job restoring a `shared-key` another job owns and saves.
+      "false" for a job restoring a `shared-key` another job owns and saves,
+      or for a release or publish job, which runs too rarely for its cache to be read
+      again before eviction and would only push out the caches every pull
+      request restores.
     required: false
     default: "true"
 
