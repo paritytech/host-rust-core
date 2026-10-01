@@ -1,4 +1,4 @@
-package io.paritytech.polkadotapp.feature_videogame_impl.domain.autoLaunch
+package io.paritytech.polkadotapp.feature_videogame_impl.presentation.autoLaunch
 
 import io.paritytech.polkadotapp.common.data.memory.ComputationalScope
 import io.paritytech.polkadotapp.common.data.time.TimeProvider

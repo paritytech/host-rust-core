@@ -8,13 +8,13 @@ import io.paritytech.polkadotapp.common.utils.CoroutineDispatchers
 import io.paritytech.polkadotapp.common.utils.runCancellableCatching
 import io.paritytech.polkadotapp.feature_account_api.data.repository.AccountRepository
 import io.paritytech.polkadotapp.feature_account_api.data.repository.awaitAccountsInitialized
+import io.paritytech.polkadotapp.feature_products_api.domain.game.ProductGameReminder
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameRouter
 import io.paritytech.polkadotapp.feature_videogame_impl.deeplink.PRODUCT_GAME_PATH
 import io.paritytech.polkadotapp.feature_videogame_impl.deeplink.WAITING_ROOM_PATH
 import io.paritytech.polkadotapp.feature_videogame_impl.deeplink.WEEKLY_GAME_HOST
 import io.paritytech.polkadotapp.feature_videogame_impl.deeplink.isWeeklyGameLinkEnabled
-import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.OpenHeldProductGameUseCase
 import io.paritytech.polkadotapp.feature_videogame_impl.utils.VideoGameLaunchCoordinator
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -24,7 +24,7 @@ class VideoGameDeepLinkHandler @Inject constructor(
     private val accountRepository: AccountRepository,
     private val videoGameRouter: VideoGameRouter,
     private val videoGameLaunchCoordinator: VideoGameLaunchCoordinator,
-    private val openHeldProductGame: OpenHeldProductGameUseCase,
+    private val productGameReminder: ProductGameReminder,
 ) : DeepLinkHandler {
     override suspend fun canHandle(data: Uri): Boolean {
         if (data.scheme != DeepLinkHandler.APP_SCHEME || data.host != WEEKLY_GAME_HOST) return false
@@ -41,7 +41,7 @@ class VideoGameDeepLinkHandler @Inject constructor(
 
             when (path) {
                 PRODUCT_GAME_PATH -> data.pathSegments.getOrNull(1)
-                    ?.let { openHeldProductGame(ProductId.fromStoredValue(it)) }
+                    ?.let { openProductGame(ProductId.fromStoredValue(it)) }
                 WAITING_ROOM_PATH -> withContext(coroutineDispatchers.main) {
                     videoGameRouter.openWeeklyGameBot()
                     videoGameLaunchCoordinator.launchGame()
@@ -53,5 +53,10 @@ class VideoGameDeepLinkHandler @Inject constructor(
 
             DeeplinkProcessingOutcome.NoOp
         }
+    }
+
+    private suspend fun openProductGame(productId: ProductId) {
+        withContext(coroutineDispatchers.main) { videoGameRouter.openGameProduct(productId) }
+        productGameReminder.cancel(productId)
     }
 }

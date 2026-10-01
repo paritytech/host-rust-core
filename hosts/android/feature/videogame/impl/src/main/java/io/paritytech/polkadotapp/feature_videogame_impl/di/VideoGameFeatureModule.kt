@@ -75,7 +75,6 @@ import io.paritytech.polkadotapp.feature_videogame_impl.data.telemetry.NoOpGameD
 import io.paritytech.polkadotapp.feature_videogame_impl.data.telemetry.RealGameDashboardTelemetryRepository
 import io.paritytech.polkadotapp.feature_videogame_impl.data.tracked.LocalTxOverrideInterceptor
 import io.paritytech.polkadotapp.feature_videogame_impl.data.voucher.RealScoreVouchersSyncManager
-import io.paritytech.polkadotapp.feature_videogame_impl.domain.autoLaunch.ProductGameAutoOpener
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.autoLaunch.VideoGameAutoLauncher
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.bot.WeeklyGameBot
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.chat.GameChatOriginConfiguration
@@ -119,6 +118,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.domain.usecase.VideoGame
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.usecase.VideoGameOffboardingOptionUseCase
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.usecase.VideoGameRegistrationStageUseCase
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.usecase.VideoGameReportSubmittedUseCase
+import io.paritytech.polkadotapp.feature_videogame_impl.presentation.autoLaunch.ProductGameAutoOpener
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.GamePillOverlayRenderer
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.ProductGamePillOverlayViewModel
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.RealWeeklyGamePillVisibilityHolder
