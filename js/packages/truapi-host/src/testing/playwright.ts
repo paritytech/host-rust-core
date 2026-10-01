@@ -170,6 +170,11 @@ export interface TestHostFixtureOptions {
    * two halves of a statement flow agree: a product that is handed an
    * unregistered allowance key can still submit with it.
    *
+   * The store rides on the People chain's proxy, or on the single proxy of a
+   * one-chain suite. Several chains with no People among them carry no store:
+   * left to the default the fixture serves none, and `true` is refused, because
+   * attaching it to a hub would answer reads a real hub refuses.
+   *
    * Nothing submitted this way leaves the page, and a real store would refuse
    * it. Set `false` to send statements to the chain and see what it says.
    */
@@ -447,6 +452,16 @@ export function productStorageEntry(
 }
 
 /**
+ * Whether the loopback statement store is served, and on whose say-so.
+ *
+ * `"default"` is the store turned on because allocation is granted rather than
+ * because a suite named it. The distinction decides what happens when no
+ * declared proxy can carry the store: a suite that asked for it is told, a
+ * suite that never mentioned it gets no store and builds.
+ */
+export type LoopbackStatements = boolean | "default";
+
+/**
  * Expand `networks` into the three settings that have to agree.
  *
  * A single proxy carries no genesis hash: an unhashed proxy takes every
@@ -460,7 +475,7 @@ export function productStorageEntry(
  */
 export function fromNetworks(
   networks: NetworkConfig[],
-  loopbackStatements = false,
+  loopbackStatements: LoopbackStatements = false,
 ): {
   mock: Pick<MockHostConfig, "chainProxies" | "supportedChains">;
   runtimeConfig: Record<string, unknown>;
@@ -488,7 +503,12 @@ export function fromNetworks(
   const peopleChains = networks.filter(
     (entry) => splitChainId(entry.id).identifier === "People",
   );
-  if (loopbackStatements && peopleChains.length === 0 && networks.length > 1) {
+  const carried = peopleChains.length > 0 || networks.length === 1;
+  // Loud only for the suite that named the store: it asked for something these
+  // networks cannot give. The default is on for every granted-allocation suite,
+  // including the many that never submit a statement, so there it serves no
+  // store rather than refusing to build a fixture over an unrelated option.
+  if (loopbackStatements === true && !carried) {
     throw new Error(
       "testHost `loopbackStatements` needs a People chain in `networks`, or a " +
         "single chain whose proxy takes every request. Several chains are " +
@@ -498,7 +518,8 @@ export function fromNetworks(
     );
   }
   const servesStatements = (entry: NetworkConfig): boolean =>
-    loopbackStatements &&
+    loopbackStatements !== false &&
+    carried &&
     (peopleChains.length > 0
       ? splitChainId(entry.id).identifier === "People"
       : true);
@@ -580,8 +601,12 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
   const chains = defaults.networks ?? (defaults.chain ? [defaults.chain] : undefined);
   // Defaults to on when allocation is granted unchecked, so a product handed
   // an unregistered allowance key has somewhere its statements are accepted.
-  const loopbackStatements =
-    defaults.loopbackStatements ?? (defaults.allowances ?? "granted") === "granted";
+  // Carried as "default" rather than `true` so the networks the suite declared
+  // decide the rest: a derived store steps aside where none can be served, a
+  // named one says so.
+  const loopbackStatements: LoopbackStatements =
+    defaults.loopbackStatements ??
+    ((defaults.allowances ?? "granted") === "granted" ? "default" : false);
   // Only the refused entries travel: `true` is what every unlisted resource
   // already is, so carrying it would say something the host does not act on.
   const withheldResources = Object.entries(

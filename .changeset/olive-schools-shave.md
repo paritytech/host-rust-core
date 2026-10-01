@@ -16,6 +16,8 @@ Surface a migrating suite has to match:
   `{topics, data}` as well as the SCALE wire bytes.
 - `getSubmittedStatements` answers `StatementEntry[]`, so a read of a
   statement's payload goes through `entry.data` rather than the `0x` hex.
-- `fromNetworks` refuses two or more chains with no People chain among them
-  when the statement store is asked for, because no declared proxy can carry
-  it. Declare the People chain, or drop to a single chain.
+- The loopback statement store rides on the People chain's proxy, or on the
+  single proxy of a one-chain suite. Two or more chains with no People among
+  them carry no store: a suite that passed `loopbackStatements: true` is
+  refused and told to declare the People chain or drop to one chain, and a
+  suite that only took the default gets no store and builds.

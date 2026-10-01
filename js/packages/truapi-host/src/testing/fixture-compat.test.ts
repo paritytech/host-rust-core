@@ -361,6 +361,33 @@ describe("where the loopback statement store attaches", () => {
     );
   });
 
+  it("serves no store where the derived default cannot be carried", () => {
+    // The store is on by default for every granted-allocation suite, so the
+    // refusal above must not reach one that never named it: it would attach
+    // nowhere, and the whole fixture would fail over an option the suite does
+    // not use.
+    const second = { ...SAMPLE_CHAIN, id: "paseo-bulletin", genesisHash: "0xb" };
+    const { mock } = fromNetworks([SAMPLE_CHAIN, second], "default");
+    expect(mock.chainProxies).toEqual([
+      { genesisHash: SAMPLE_CHAIN.genesisHash, rpcUrl: SAMPLE_CHAIN.rpcUrl },
+      { genesisHash: second.genesisHash, rpcUrl: second.rpcUrl },
+    ]);
+  });
+
+  it("builds a two-chain fixture on default options", () => {
+    // The default-on store is derived from `allowances`, which itself defaults
+    // to "granted", so this is what a suite declaring a relay and a hub writes
+    // without naming statements at all.
+    const second = { ...SAMPLE_CHAIN, id: "paseo-bulletin", genesisHash: "0xb" };
+    expect(() =>
+      createTestHostFixture({
+        productUrl: "http://localhost:5200",
+        hostUrl: "http://localhost:5199",
+        networks: [SAMPLE_CHAIN, second],
+      }),
+    ).not.toThrow();
+  });
+
   it("attaches nothing when the store is not asked for", () => {
     const { mock } = fromNetworks([SAMPLE_CHAIN], false);
     expect(mock.chainProxies).toEqual([{ rpcUrl: SAMPLE_CHAIN.rpcUrl }]);
