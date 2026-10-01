@@ -51,12 +51,6 @@ on:
       GOOGLE_PROJECT_ID:
         required: true
 
-# Keyed on the pull request rather than on the workflow, so CI's call and a
-# label on the same request do not build the same commit twice.
-concurrency:
-  group: android-device-preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
   # The run links its artifact from the pull request, so a reviewer does not
@@ -76,6 +70,14 @@ jobs:
        && github.event.label.name == 'android-device-build')
       || (github.event.action == 'synchronize'
           && contains(github.event.pull_request.labels.*.name, 'android-device-build'))
+    # On the job rather than the workflow. Adding any label starts a run of this
+    # workflow, and a workflow-level group would let that run cancel a build in
+    # progress before its own job is skipped. A skipped job never joins the
+    # group. Keyed on the pull request, so CI's call and a label on the same
+    # request do not build the same commit twice.
+    concurrency:
+      group: android-device-preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
