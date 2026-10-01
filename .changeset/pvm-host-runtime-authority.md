@@ -10,3 +10,7 @@ Keep the SDK usable in no-std guest builds, including Pocket message types.
 Preserve that guest boundary with the consolidated `truapi` crate: host API
 traits use the `host-api` feature, and native/browser packaging explicitly
 requests its shared or static library artifacts.
+
+Build each iOS XCFramework slice with its own `cargo rustc` invocation.
+Explicit static-library output cannot be combined with multiple target triples
+in one invocation.

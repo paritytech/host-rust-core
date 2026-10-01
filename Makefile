@@ -6,6 +6,8 @@
 .PHONY: help setup build codegen test check check-generated clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap debugger dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-pocket-cli e2e-cross-product-storage e2e-cross-product-ringvrf e2e-cross-product-signing e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
+# The dated nightly CI runs; see nightly-toolchain.
+NIGHTLY_TOOLCHAIN ?= $(or $(TRUAPI_NIGHTLY_TOOLCHAIN),$(shell head -n1 nightly-toolchain))
 TRUAPI_PKG := js/packages/truapi
 PLAYGROUND := playground
 JS_PACKAGES := js/packages
@@ -337,7 +339,7 @@ test: check-generated ## Run Rust + TypeScript client tests.
 check: check-generated ## Full verification suite (build, fmt, clippy, test, TS tests, playground build + lint).
 	cargo build --workspace
 	cargo check --target wasm32-unknown-unknown -p truapi
-	cargo +nightly fmt --check
+	cargo +$(NIGHTLY_TOOLCHAIN) fmt --check
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 	cargo test --workspace --all-features --all-targets
 	cd $(TRUAPI_PKG) && npm run build && npm test
@@ -502,14 +504,13 @@ XCFRAMEWORK_TARGETS ?= $(if $(SIM_ONLY_ON),$(IOS_SIM_TARGET),$(IOS_DEVICE_TARGET
 XCFRAMEWORK_PROFILE ?= release
 XCFRAMEWORK_CARGO_FLAGS := $(if $(filter release,$(XCFRAMEWORK_PROFILE)),--release,)
 
-# One cargo invocation carrying every slice, so the target graphs are scheduled
-# together: the release profile's single codegen unit and fat LTO leave a long
-# serial tail per slice, which the other slice fills.
+# Explicit crate types require one target per cargo rustc invocation.
 xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator (SIM_ONLY=1 for simulator only).
 	rustup target add $(XCFRAMEWORK_TARGETS)
-	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) rustc -p truapi --lib --crate-type staticlib \
-		$(XCFRAMEWORK_CARGO_FLAGS) \
-		$(XCFRAMEWORK_TARGETS:%=--target %)
+	set -e; for target in $(XCFRAMEWORK_TARGETS); do \
+		IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) rustc -p truapi --lib --crate-type staticlib \
+			$(XCFRAMEWORK_CARGO_FLAGS) --target "$$target"; \
+	done
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
 	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(XCFRAMEWORK_HEADERS)/

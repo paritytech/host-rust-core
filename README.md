@@ -44,9 +44,13 @@ handles discoverable; proof creation still checks permission and ring membership
 The `listRingVrfKeys` example checks that both built-in keys are discoverable
 under `peopl.paseo` on Paseo.
 
+Preimage lookups that miss the core's cache read the selected network's Bulletin
+node through `bitswap_v1_get`. The CLI verifies the returned bytes against the
+requested key and keeps missing lookups subscribed until the blob arrives.
+
 Product scripts and `truapi-host dev` use the same web API permission checks from `js/container`. Dev loads the container through a blocking script tag in your existing browser. Scripts run in Bun and retain filesystem, environment and process access.
 
-To build from source, run `make headless install` with stable Rust, nightly Rust with rustfmt, Node.js 22 or newer, and
+To build from source, run `make headless install` with stable Rust, the nightly pinned in `nightly-toolchain` with rustfmt, Node.js 22 or newer, and
 Bun installed. The target installs missing workspace build tools and regenerates the Rust and TypeScript sources before
 compiling. CI tests this command in both a fresh checkout and one with stale generated files, then runs a product script
 through the installed CLI. Code generation and the workspace documentation check reject rustdoc warnings. These checks
@@ -503,7 +507,9 @@ convenience: these builds carry configuration that should not be public, so
 attaching them to a release is not an option.
 
 `android-nightly.yml` runs daily at 22:00 UTC, two hours after the iOS
-nightly starts, so the two never overlap. Both nightlies skip a scheduled night
+nightly starts, so the two never overlap. Each announcement lists the pull
+requests the build carries, with breaking changes, the titles carrying `!`,
+listed first and marked `Breaking:`. Both nightlies skip a scheduled night
 when `main` has not moved past what their last successful run built. `android-debug-distribution.yml` runs
 when a pull request merges to `main`, and answers what `main` does right now.
 It builds the merge commit rather than the pull request's merge preview, which
