@@ -3,4 +3,4 @@
 "@parity/truapi-host": minor
 ---
 
-Give native signing hosts a core-owned SQLite database. `HostRuntimeConfig.database_directory` (`databaseDirectory` in Swift and Kotlin) names an existing, writable directory; the runtime refuses to start when it does not exist, and opens `core.sqlite3` there on first use. `coreDatabaseStatus()` opens it and reports the SQLite version, schema version and path.
+Give native signing hosts a core-owned SQLite database. `HostRuntimeConfig.database_directory` (`databaseDirectory` in Swift and Kotlin) is required and names an existing, writable directory kept out of backups. The runtime opens `core.sqlite3` there at startup and refuses to start when it cannot. `coreDatabaseStatus()` reports the SQLite version, schema version and path.

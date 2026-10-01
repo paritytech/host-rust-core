@@ -829,10 +829,7 @@ class TrUAPIHostRuntime @Throws(NativeRuntimeConfigException::class) constructor
         inner.disconnect()
     }
 
-    /**
-     * Open the core database if needed and report its SQLite version, schema
-     * version and file path.
-     */
+    /** Report the core database's SQLite version, schema version and file path. */
     @Throws(NativeCoreDatabaseException::class)
     suspend fun coreDatabaseStatus(): DbStatus = inner.coreDatabaseStatus()
 

@@ -69,10 +69,7 @@ impl From<v01::GenericError> for HostRejection {
 /// Why the core database status could not be read.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum NativeCoreDatabaseError {
-    /// The host configured no `database_directory`.
-    #[error("no database directory configured")]
-    NotConfigured,
-    /// The database could not be opened or read.
+    /// The database could not be read.
     #[error("core database unavailable: {reason}")]
     Unavailable {
         /// What failed.
@@ -82,11 +79,8 @@ pub enum NativeCoreDatabaseError {
 
 impl From<crate::store::DbError> for NativeCoreDatabaseError {
     fn from(error: crate::store::DbError) -> Self {
-        match error {
-            crate::store::DbError::NotConfigured => Self::NotConfigured,
-            other => Self::Unavailable {
-                reason: other.to_string(),
-            },
+        Self::Unavailable {
+            reason: error.to_string(),
         }
     }
 }

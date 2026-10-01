@@ -20,6 +20,7 @@ use crate::host_internal::sso_messages::{
 };
 use crate::runtime::AnnouncedPairing;
 use crate::runtime::sso_remote::sso_message_id;
+use crate::store::{Db, core_db_config};
 use crate::subscription::Spawner;
 use crate::{PairedSsoPeer, ResponderExit, SigningHostRuntime};
 
@@ -66,6 +67,12 @@ impl NativeTrUApiHostRuntime {
                 reason: err.to_string(),
             }
         })?;
+        let directory = &runtime_config.database_directory;
+        let core_db = futures::executor::block_on(Db::open(core_db_config(directory))).map_err(
+            |err| NativeRuntimeConfigError::DatabaseUnavailable {
+                reason: format!("{}: {err}", directory.display()),
+            },
+        )?;
         let events = Arc::new(NativeEventBus::default());
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
@@ -88,14 +95,10 @@ impl NativeTrUApiHostRuntime {
             runtime.set_device_pairing_observer(platform),
             "a freshly built runtime installs its device pairing observer once"
         );
-        if let Some(directory) = runtime_config.database_directory {
-            assert!(
-                runtime.set_core_db(crate::store::LazyDb::new(crate::store::core_db_config(
-                    &directory
-                ))),
-                "a freshly built runtime installs its core database once"
-            );
-        }
+        assert!(
+            runtime.set_core_db(core_db),
+            "a freshly built runtime installs its core database once"
+        );
         if let Some(secret) = runtime_config.local_session_secret {
             futures::executor::block_on(runtime.activate_local_session_with_identity(
                 secret,
@@ -529,8 +532,8 @@ impl NativeTrUApiHostRuntime {
         .map_err(Into::into)
     }
 
-    /// Opens the core database if needed and reports its SQLite version,
-    /// schema version and file path.
+    /// Reports the core database's SQLite version, schema version and file
+    /// path.
     pub async fn core_database_status(
         &self,
     ) -> Result<crate::store::DbStatus, NativeCoreDatabaseError> {
@@ -1287,45 +1290,21 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_database_directory_installs_the_core_database_lazily() {
-        // The file opens on first use, so a host that never needs durable
-        // state pays nothing at startup.
+    fn the_runtime_opens_the_core_database_at_startup() {
+        // Durable work resumes as soon as the runtime exists, so the database
+        // has to be open before the first call reaches it.
         let dir = tempfile::tempdir().unwrap();
         let host = NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             HostRuntimeConfig {
-                database_directory: Some(dir.path().to_string_lossy().into_owned()),
-                ..native_host_runtime_config()
-            },
-        )
-        .expect("host runtime config should be valid");
-
-        let second = crate::store::LazyDb::new(crate::store::core_db_config(dir.path()));
-        assert_eq!(
-            (
-                host.runtime.set_core_db(second),
-                dir.path().join(crate::store::CORE_DB_FILE).exists()
-            ),
-            (false, false),
-        );
-    }
-
-    #[test]
-    fn the_core_database_status_opens_the_configured_file() {
-        // The status call is how an app checks, on a real device, that the
-        // core database works end to end.
-        let dir = tempfile::tempdir().unwrap();
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
-            Arc::new(EventCallbacks::new()),
-            HostRuntimeConfig {
-                database_directory: Some(dir.path().to_string_lossy().into_owned()),
+                database_directory: dir.path().to_string_lossy().into_owned(),
                 ..native_host_runtime_config()
             },
         )
         .expect("host runtime config should be valid");
 
         let status = futures::executor::block_on(host.core_database_status())
-            .expect("the core database opens");
+            .expect("the core database is open");
 
         let file = dir
             .path()
@@ -1333,35 +1312,30 @@ mod tests {
             .unwrap()
             .join(crate::store::CORE_DB_FILE);
         assert_eq!(
-            (status.path, status.schema_version, file.exists()),
-            (Some(file.to_string_lossy().into_owned()), 0, true),
+            status.path,
+            Some(file.to_string_lossy().into_owned()),
+            "the database lives in the configured directory"
         );
     }
 
     #[test]
-    fn the_core_database_status_reports_a_host_without_a_directory() {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+    fn a_missing_database_directory_fails_runtime_creation() {
+        // A wrong directory must stop the host at startup, not surface later
+        // as durable work that cannot be recorded.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+
+        let result = NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
-            native_host_runtime_config(),
-        )
-        .expect("host runtime config should be valid");
+            HostRuntimeConfig {
+                database_directory: missing.to_string_lossy().into_owned(),
+                ..native_host_runtime_config()
+            },
+        );
 
         assert!(matches!(
-            futures::executor::block_on(host.core_database_status()),
-            Err(NativeCoreDatabaseError::NotConfigured)
+            result,
+            Err(NativeRuntimeConfigError::DatabaseUnavailable { .. })
         ));
-    }
-
-    #[test]
-    fn without_a_database_directory_no_core_database_is_installed() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
-            Arc::new(EventCallbacks::new()),
-            native_host_runtime_config(),
-        )
-        .expect("host runtime config should be valid");
-
-        let late = crate::store::LazyDb::new(crate::store::core_db_config(dir.path()));
-        assert!(host.runtime.set_core_db(late));
     }
 }

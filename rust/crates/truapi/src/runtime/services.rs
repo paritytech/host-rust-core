@@ -14,6 +14,8 @@ use crate::platform::{HostInfo, JsonRpcConnection, PermissionStatusHost, Platfor
 use crate::runtime::bulletin_rpc::BulletinRpc;
 use crate::runtime::signing_host::DevicePairingObserver;
 use crate::runtime::statement_store_rpc::StatementStoreRpc;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::store::{Db, DbError};
 use crate::subscription::Spawner;
 use async_trait::async_trait;
 use truapi::latest;
@@ -52,10 +54,10 @@ pub struct RuntimeServices {
     /// host. Unset leaves a paired device unannounced.
     device_pairing_observer: OnceLock<Arc<dyn DevicePairingObserver>>,
     /// Core-owned database, installed once at startup by a host that
-    /// configured a location. Unset makes every durable consumer report
-    /// [`crate::store::DbError::NotConfigured`].
+    /// configured one. Unset makes every durable consumer report
+    /// [`DbError::NotConfigured`].
     #[cfg(not(target_arch = "wasm32"))]
-    core_db: OnceLock<crate::store::LazyDb>,
+    core_db: OnceLock<Db>,
     /// Asset Hub the dotNS contracts are deployed on. All-zero says this host
     /// has none, which leaves every manifest unresolvable.
     asset_hub_chain_genesis_hash: [u8; 32],
@@ -243,21 +245,14 @@ impl RuntimeServices {
     /// Set-once, so durable state cannot move to another file under a running
     /// consumer. Returns whether this call installed it.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn install_core_db(&self, db: crate::store::LazyDb) -> bool {
+    pub(crate) fn install_core_db(&self, db: Db) -> bool {
         self.core_db.set(db).is_ok()
     }
 
-    /// The core database, opened on first use.
-    ///
-    /// Open failures are returned to every caller rather than cached, so a
-    /// later call retries.
+    /// The core database.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn core_db(&self) -> Result<crate::store::Db, crate::store::DbError> {
-        self.core_db
-            .get()
-            .ok_or(crate::store::DbError::NotConfigured)?
-            .get()
-            .await
+    pub(crate) fn core_db(&self) -> Result<Db, DbError> {
+        self.core_db.get().cloned().ok_or(DbError::NotConfigured)
     }
 
     /// This device's persisted X25519 encryption secret, created on first use.

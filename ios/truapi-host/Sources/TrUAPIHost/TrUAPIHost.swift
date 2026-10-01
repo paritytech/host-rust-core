@@ -858,8 +858,8 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         try await inner.disconnectPairedHost(peer: peer)
     }
 
-    /// Opens the core database if needed and reports its SQLite version,
-    /// schema version and file path.
+    /// Reports the core database's SQLite version, schema version and file
+    /// path.
     public func coreDatabaseStatus() async throws -> DbStatus {
         try await inner.coreDatabaseStatus()
     }

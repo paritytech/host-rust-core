@@ -696,20 +696,19 @@ impl SigningHostRuntime {
     /// Install the core-owned database that durable consumers share.
     ///
     /// Set-once, so durable state cannot move to another file under a running
-    /// consumer. Returns whether this call installed it. The file itself opens
-    /// on first use.
+    /// consumer. Returns whether this call installed it.
     #[cfg(not(target_arch = "wasm32"))]
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_core_db"))]
-    pub fn set_core_db(&self, db: crate::store::LazyDb) -> bool {
+    pub fn set_core_db(&self, db: crate::store::Db) -> bool {
         self.services.install_core_db(db)
     }
 
-    /// Opens the core database if needed and reports its state.
+    /// Reports the core database's state.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn core_database_status(
         &self,
     ) -> Result<crate::store::DbStatus, crate::store::DbError> {
-        self.services.core_db().await?.status().await
+        self.services.core_db()?.status().await
     }
 
     /// Build a product-facing runtime from this signing host.
@@ -3477,7 +3476,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_core_database_is_installed_once_and_reports_when_missing() {
-        use crate::store::{DbConfig, DbError, DbLocation, LazyDb};
+        use crate::store::{Db, DbConfig, DbError, DbLocation};
         use futures::executor::block_on;
         use crate::platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
@@ -3504,13 +3503,15 @@ mod tests {
         };
 
         assert!(matches!(
-            block_on(runtime.services.core_db()),
+            runtime.services.core_db(),
             Err(DbError::NotConfigured)
         ));
-        assert!(runtime.set_core_db(LazyDb::new(db_config.clone())));
-        assert!(!runtime.set_core_db(LazyDb::new(db_config)));
+        let installed = block_on(Db::open(db_config.clone())).expect("database opens");
+        let other = block_on(Db::open(db_config)).expect("database opens");
+        assert!(runtime.set_core_db(installed));
+        assert!(!runtime.set_core_db(other));
 
-        let db = block_on(runtime.services.core_db()).expect("installed database opens");
+        let db = runtime.services.core_db().expect("installed database is served");
         let answer: i64 =
             block_on(db.write(|tx| Ok(tx.query_row("SELECT 42", [], |row| row.get(0))?)))
                 .expect("installed database serves writes");

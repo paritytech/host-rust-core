@@ -209,38 +209,9 @@ impl Db {
 
 const BUSY_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(5);
 
-/// Opens a [`Db`] on first use and hands out the same handle afterwards.
-pub struct LazyDb {
-    config: DbConfig,
-    db: futures::lock::Mutex<Option<Db>>,
-}
-
-impl LazyDb {
-    /// Wraps `config` without touching the file.
-    pub fn new(config: DbConfig) -> Self {
-        Self {
-            config,
-            db: futures::lock::Mutex::new(None),
-        }
-    }
-
-    /// Returns the open database, opening it and running migrations if
-    /// needed. A failed open is not cached, so the next call retries.
-    pub async fn get(&self) -> Result<Db, DbError> {
-        let mut slot = self.db.lock().await;
-        if let Some(db) = slot.as_ref() {
-            return Ok(db.clone());
-        }
-        let db = Db::open(self.config.clone()).await?;
-        *slot = Some(db.clone());
-        Ok(db)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use futures::executor::block_on;
-    use rusqlite::OptionalExtension;
     use rusqlite_migration::M;
 
     use super::*;
@@ -394,33 +365,5 @@ mod tests {
         block_on(db.close()).unwrap();
 
         assert!(matches!(insert(&db, "late"), Err(DbError::Closed)));
-    }
-
-    #[test]
-    fn lazy_open_retries_after_a_failure() {
-        // Hosts validate the directory up front, but a later open can still
-        // fail; the error must reach the caller and must not stick forever.
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("not-yet");
-        let lazy = LazyDb::new(DbConfig {
-            location: DbLocation::File(missing.join("core.sqlite3")),
-            migrations,
-            readers: 1,
-        });
-
-        assert!(matches!(block_on(lazy.get()), Err(DbError::Open(_))));
-
-        std::fs::create_dir(&missing).unwrap();
-        let db = block_on(lazy.get()).unwrap();
-        insert(&db, "after retry").unwrap();
-
-        let same = block_on(lazy.get()).unwrap();
-        let seen: Option<String> = block_on(same.read(|conn| {
-            Ok(conn
-                .query_row("SELECT note FROM ledger", [], |row| row.get(0))
-                .optional()?)
-        }))
-        .unwrap();
-        assert_eq!(seen.as_deref(), Some("after retry"));
     }
 }

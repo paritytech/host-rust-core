@@ -44,16 +44,15 @@ pub struct HostRuntimeConfig {
     /// way the host's own onboarding does; a wrong value derives a different
     /// person from the same seed.
     pub network_suffix: String,
+    /// Existing, writable directory for core-owned databases, kept out of
+    /// device backups. The runtime opens its database there at startup.
+    pub database_directory: String,
     /// Optional local signing-host secret material (raw BIP-39 entropy).
     #[uniffi(default)]
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
     #[uniffi(default)]
     pub local_session_lite_username: Option<String>,
-    /// Existing, writable directory for core-owned databases, kept out of
-    /// device backups. `None` runs the host without the core database.
-    #[uniffi(default)]
-    pub database_directory: Option<String>,
 }
 
 /// Trusted identity attached by a native host to one executable connection.
@@ -74,8 +73,8 @@ pub struct NativeResolvedHostRuntimeConfig {
     pub local_session_secret: Option<Vec<u8>>,
     /// Lite username attached to that local session.
     pub local_session_lite_username: Option<String>,
-    /// Directory the core database lives in, checked to exist.
-    pub database_directory: Option<PathBuf>,
+    /// Directory the core database lives in.
+    pub database_directory: PathBuf,
 }
 
 /// Why a native runtime or product configuration was refused.
@@ -91,6 +90,12 @@ pub enum NativeRuntimeConfigError {
     #[error("core runtime unavailable: {reason}")]
     RuntimeUnavailable {
         /// Why the runtime failed to start.
+        reason: String,
+    },
+    /// The core database could not be opened in `database_directory`.
+    #[error("core database unavailable: {reason}")]
+    DatabaseUnavailable {
+        /// Which directory, and why opening it failed.
         reason: String,
     },
     /// Local signing-host session activation failed.
@@ -158,29 +163,13 @@ impl TryFrom<HostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             asset_hub_chain_genesis_hash,
             config.network_suffix,
         )?;
-        let database_directory = config
-            .database_directory
-            .map(|directory| existing_directory(&directory))
-            .transpose()?;
         Ok(Self {
             signing,
             local_session_secret: config.local_session_secret,
             local_session_lite_username: config.local_session_lite_username,
-            database_directory,
+            database_directory: PathBuf::from(config.database_directory),
         })
     }
-}
-
-/// Checks that `directory` exists. Whether it can be written only shows when
-/// the database first opens.
-fn existing_directory(directory: &str) -> Result<PathBuf, NativeRuntimeConfigError> {
-    let path = PathBuf::from(directory);
-    if !path.is_dir() {
-        return Err(NativeRuntimeConfigError::Invalid {
-            reason: format!("database_directory {directory:?} is not an existing directory"),
-        });
-    }
-    Ok(path)
 }
 
 impl From<&ProductContext> for ProductExecutionConfig {

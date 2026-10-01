@@ -49,7 +49,7 @@ class CoreDatabaseTest {
 
     @Test
     fun aMissingDirectoryStopsTheRuntimeFromStarting() {
-        assertThrows(NativeRuntimeConfigException.Invalid::class.java) {
+        assertThrows(NativeRuntimeConfigException.DatabaseUnavailable::class.java) {
             TrUAPIHostRuntime(InertBridge(), config(directory.absolutePath))
         }
     }

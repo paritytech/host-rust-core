@@ -605,9 +605,15 @@ pub fn native_host_runtime_config() -> HostRuntimeConfig {
         bulletin_chain_genesis_hash: vec![0xbb; 32],
         asset_hub_chain_genesis_hash: vec![0xcc; 32],
         network_suffix: "paseo".to_string(),
+        // Every runtime opens its own database; the directory is left for the
+        // OS to clean so the fixture can stay a plain value.
+        database_directory: tempfile::tempdir()
+            .unwrap()
+            .keep()
+            .to_string_lossy()
+            .into_owned(),
         local_session_secret: Some(vec![7; 32]),
         local_session_lite_username: Some("alice".to_string()),
-        database_directory: None,
     }
 }
 
@@ -1846,27 +1852,6 @@ fn runtime_config_rejects_a_network_suffix_that_is_not_a_bare_tld() {
         err,
         NativeRuntimeConfigError::Invalid {
             reason: r#"network_suffix must be a supported dotNS TLD, got ".paseo""#.to_string(),
-        }
-    );
-}
-
-#[test]
-fn a_missing_database_directory_fails_runtime_creation() {
-    // Hosts pick the directory; a typo must surface at startup rather than
-    // as a durable operation failing much later.
-    let dir = tempfile::tempdir().unwrap();
-    let missing = dir.path().join("absent").to_string_lossy().into_owned();
-
-    let err = NativeResolvedHostRuntimeConfig::try_from(HostRuntimeConfig {
-        database_directory: Some(missing.clone()),
-        ..native_host_runtime_config()
-    })
-    .unwrap_err();
-
-    assert_eq!(
-        err,
-        NativeRuntimeConfigError::Invalid {
-            reason: format!("database_directory {missing:?} is not an existing directory"),
         }
     );
 }
