@@ -11,7 +11,7 @@ use subxt::tx::{TransactionInvalid, ValidationResult};
 use subxt::utils::H256;
 
 use super::{
-    BlockBackend, ChainHeads, DispatchOutcome, Extrinsic, HashAndNumber, HeadEvent, Heads,
+    BlockBackend, ChainHeads, DispatchOutcome, EncodedExtrinsic, HashAndNumber, HeadEvent, Heads,
     SubxtChain, TxSubmitter, TxValidator, WatchEvent,
 };
 use crate::chain_runtime::{ChainRuntime, RuntimeFailureKind};
@@ -335,8 +335,8 @@ fn wait_for_subscriptions(provider: &ScriptedProvider) {
     );
 }
 
-fn extrinsic(tag: u8) -> Extrinsic {
-    Extrinsic::new(vec![0x10, tag, tag, tag, tag])
+fn extrinsic(tag: u8) -> EncodedExtrinsic {
+    EncodedExtrinsic::new(vec![0x10, tag, tag, tag, tag])
 }
 
 #[test]
@@ -345,7 +345,7 @@ fn extrinsic_hash_is_the_hash_the_chain_reports() {
     let offline = bulletin_chain_state().client_at(0).unwrap();
     let chain_hash = offline.tx().from_bytes(bytes.clone()).hash();
 
-    assert_eq!(Extrinsic::new(bytes).hash(), chain_hash);
+    assert_eq!(EncodedExtrinsic::new(bytes).hash(), chain_hash);
 }
 
 #[test]
