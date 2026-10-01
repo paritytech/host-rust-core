@@ -433,8 +433,12 @@ crates. `SIM_ONLY=1` halves it by skipping
 the device slice, which is enough for Simulator but not for an archive.
 
 Because the app builds against the core in this tree, a core change that breaks
-it fails here rather than at the next version bump. Every pull request touching
-the app, or the crates its bindings come from, runs:
+it fails here rather than at the next version bump. Every push to main runs the
+jobs below, and so does a pull request touching the app, or the crates its
+bindings come from, once it is labelled `ios-simulator-build`. They are macOS
+jobs, so a pull request without the label runs none of them; CI's
+`iOS package (Swift + WebKit)` job still checks the bindings compile against
+the core on every push.
 
 - `build`, a DevCI compile, failing on any build warning the committed baseline
   does not already have
