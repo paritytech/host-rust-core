@@ -5,6 +5,18 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Restore or create explicitly selected CLI sessions, retry unfinished setup,
+  and restore the bound account when switching to an imported session.
+- Reject session names with fewer than six lowercase ASCII letters when they
+  must supply the username base for a new account.
+- Select the newest local session by username base or an exact session by full
+  username. Use `--session` to choose the base for new accounts; the separate
+  username-prefix option is removed.
+
 ## [0.23.0] - 2026-09-29
 
 ### Added
