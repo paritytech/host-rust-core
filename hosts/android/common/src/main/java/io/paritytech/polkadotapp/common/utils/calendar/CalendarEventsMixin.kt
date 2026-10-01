@@ -87,28 +87,35 @@ class RealCalendarEventsMixin @Inject constructor(
 
     private fun readPermissionsAreGranted() = permissionAsker.getPermissionState(Manifest.permission.READ_CALENDAR).isGranted()
 
+    // Not PermissionAsker: its state read needs an activity, and a reminder can be scheduled with none open.
+    private fun readWritePermissionsAreGranted() =
+        listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
+            .all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+
     override suspend fun addEventIfPermitted(event: CalendarEvent, alertBefore: Duration): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val granted = listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
-                    .all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-                if (!granted || findEventId(event) != null) return@runCatching
-
+                if (!readWritePermissionsAreGranted() || findEventId(event) != null) return@runCatching
                 val calendarId = getMostRelevantCalendarId() ?: return@runCatching
-                val operations = arrayListOf(
-                    ContentProviderOperation.newInsert(CalendarContract.Events.CONTENT_URI)
-                        .withValues(eventValues(calendarId, event))
-                        .build(),
-                    ContentProviderOperation.newInsert(CalendarContract.Reminders.CONTENT_URI)
-                        .withValueBackReference(CalendarContract.Reminders.EVENT_ID, 0)
-                        .withValue(CalendarContract.Reminders.MINUTES, alertBefore.inWholeMinutes)
-                        .withValue(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
-                        .build(),
-                )
-                context.contentResolver.applyBatch(CalendarContract.AUTHORITY, operations)
+                insertEventWithAlert(calendarId, event, alertBefore)
                 manualRefresh.tryEmit(Unit)
             }
         }
+
+    // One batch, so an event never lands without its alert.
+    private fun insertEventWithAlert(calendarId: Long, event: CalendarEvent, alertBefore: Duration) {
+        val operations = arrayListOf(
+            ContentProviderOperation.newInsert(CalendarContract.Events.CONTENT_URI)
+                .withValues(eventValues(calendarId, event))
+                .build(),
+            ContentProviderOperation.newInsert(CalendarContract.Reminders.CONTENT_URI)
+                .withValueBackReference(CalendarContract.Reminders.EVENT_ID, 0)
+                .withValue(CalendarContract.Reminders.MINUTES, alertBefore.inWholeMinutes)
+                .withValue(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+                .build(),
+        )
+        context.contentResolver.applyBatch(CalendarContract.AUTHORITY, operations)
+    }
 
     private fun addEventToCalendarDirectly(calendarId: Long, event: CalendarEvent) {
         context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, eventValues(calendarId, event))

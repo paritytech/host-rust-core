@@ -1,46 +1,31 @@
 package io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications
 
-import android.content.Context
 import io.paritytech.polkadotapp.common.data.storage.preferences.Preferences
-import io.paritytech.polkadotapp.common.utils.calendar.CalendarEvent
-import io.paritytech.polkadotapp.common.utils.calendar.CalendarEventsMixin
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameNotificationPublisher
 import io.paritytech.polkadotapp.feature_videogame_impl.data.notifications.VideoGameSettingsPreferences
 import io.paritytech.polkadotapp.test_shared.FakeTimeProvider
-import io.paritytech.polkadotapp.test_shared.whenever
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
-import kotlin.time.Duration.Companion.minutes
 
 class RealProductGameReminderTest {
     private val scheduler: VideoGameReminderScheduler = mock()
     private val publisher: VideoGameNotificationPublisher = mock()
-    private val calendar = FakeCalendar()
-    private val context: Context = mock<Context>().also {
-        whenever(it.getString(anyInt())).thenReturn(TITLE)
-    }
+    private val calendar = RecordingCalendar()
     private val reminder = RealProductGameReminder(
         VideoGameSettingsPreferences(MapPreferences()),
         scheduler,
         publisher,
         calendar,
-        context,
         FakeTimeProvider { NOW },
     )
 
@@ -83,11 +68,7 @@ class RealProductGameReminderTest {
     fun `adds a calendar event when asked and the start is an hour or more away`() = runTest {
         reminder.schedule(game, START, true, true)
 
-        val (event, alertBefore) = calendar.added.single()
-        assertEquals(START, event.timeStart)
-        assertEquals(30.minutes, event.duration)
-        assertEquals(TITLE, event.title)
-        assertEquals(5.minutes, alertBefore)
+        assertEquals(listOf(START), calendar.added)
     }
 
     @Test
@@ -96,20 +77,6 @@ class RealProductGameReminderTest {
         assertTrue(calendar.added.isEmpty())
 
         reminder.schedule(game, NOW + 1.hours.inWholeMilliseconds, true, true)
-        assertEquals(1, calendar.added.size)
-    }
-
-    @Test
-    fun `two quick schedules for the same start add the calendar event once`() = runTest {
-        val insert = CompletableDeferred<Unit>()
-        calendar.insertGate = insert
-
-        launch { reminder.schedule(game, START, true, true) }
-        launch { reminder.schedule(game, START, true, true) }
-        testScheduler.runCurrent()
-        insert.complete(Unit)
-        testScheduler.advanceUntilIdle()
-
         assertEquals(1, calendar.added.size)
     }
 
@@ -166,25 +133,14 @@ class RealProductGameReminderTest {
     private companion object {
         const val NOW = 1_000_000_000_000L
         val START = NOW + 2.hours.inWholeMilliseconds
-        const val TITLE = "Game"
     }
 }
 
-private class FakeCalendar : CalendarEventsMixin {
-    val added = mutableListOf<Pair<CalendarEvent, Duration>>()
+private class RecordingCalendar : ProductGameCalendar {
+    val added = mutableListOf<Long>()
 
-    var insertGate: CompletableDeferred<Unit>? = null
-
-    override fun observeEventAddedToCalendar(event: CalendarEvent): Flow<Boolean> = emptyFlow()
-
-    override suspend fun addEvent(event: CalendarEvent): Result<Unit> = Result.success(Unit)
-
-    override suspend fun addEventIfPermitted(event: CalendarEvent, alertBefore: Duration): Result<Unit> {
-        if (added.none { (it, _) -> it.timeStart == event.timeStart && it.title == event.title }) {
-            insertGate?.await()
-            added += event to alertBefore
-        }
-        return Result.success(Unit)
+    override suspend fun addGame(startsAtMillis: Long) {
+        added += startsAtMillis
     }
 }
 

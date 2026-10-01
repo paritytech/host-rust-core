@@ -13,6 +13,7 @@ android {
 
     defaultConfig {
         buildConfigString("CURRENCY_SYMBOL", localProperties.readSecretOrThrow("CURRENCY_SYMBOL"))
+        buildConfigString("APP_NAME", localProperties.readSecretOrThrow("APPLICATION_NAME"))
 
         buildConfigField("String", "TESTNET_ENVIRONMENT", "\"TESTNET\"")
         buildConfigField("boolean", "ALLOW_SHORT_EVIDENCE_VIDEO", "true")

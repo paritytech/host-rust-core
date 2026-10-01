@@ -1,11 +1,6 @@
 package io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications
 
-import android.content.Context
-import dagger.hilt.android.qualifiers.ApplicationContext
 import io.paritytech.polkadotapp.common.data.time.TimeProvider
-import io.paritytech.polkadotapp.common.utils.calendar.CalendarEvent
-import io.paritytech.polkadotapp.common.utils.calendar.CalendarEventsMixin
-import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.feature_products_api.domain.game.ProductGameReminder
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameNotificationPublisher
@@ -17,9 +12,7 @@ import kotlinx.serialization.Serializable
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.time.Duration.Companion.hours
-import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
-import io.paritytech.polkadotapp.common.R as RCommon
 
 @Serializable
 data class ProductGameSlot(val productId: String, val startsAtMillis: Long, val ringAlarm: Boolean)
@@ -35,13 +28,10 @@ class RealProductGameReminder @Inject constructor(
     private val preferences: VideoGameSettingsPreferences,
     private val scheduler: VideoGameReminderScheduler,
     private val notificationPublisher: VideoGameNotificationPublisher,
-    private val calendarEventsMixin: CalendarEventsMixin,
-    @ApplicationContext private val context: Context,
+    private val calendar: ProductGameCalendar,
     private val timeProvider: TimeProvider,
 ) : ProductGameReminder {
     private val lock = Mutex()
-    // Serialises the calendar dedupe and insert, apart from the slot lock so a cancel never waits on the provider.
-    private val calendarLock = Mutex()
 
     val slots: Flow<List<ProductGameSlot>> get() = preferences.productGameSlotsFlow()
 
@@ -56,15 +46,11 @@ class RealProductGameReminder @Inject constructor(
         ringAlarm: Boolean,
         addCalendarEvent: Boolean,
     ) {
-        val now = timeProvider.now().toEpochMilliseconds()
-        val slot = ProductGameSlot(productId.value, startsAtMillis, ringAlarm)
-        lock.withLock {
-            store(currentSlots().filter { it.productId != productId.value } + slot)
-            notificationPublisher.cancelProductGameStartsSoonNotification(productId)
-            scheduler.scheduleProductGameStart(productId, startsAtMillis)
-        }
-        if (addCalendarEvent && startsAtMillis - now >= CALENDAR_MIN_LEAD.inWholeMilliseconds) {
-            addCalendarEvent(startsAtMillis)
+        val leadMillis = startsAtMillis - now()
+        lock.withLock { hold(ProductGameSlot(productId.value, startsAtMillis, ringAlarm)) }
+        // Outside the slot lock, so a cancel never waits on the calendar provider.
+        if (addCalendarEvent && leadMillis >= CALENDAR_MIN_LEAD.inWholeMilliseconds) {
+            calendar.addGame(startsAtMillis)
         }
     }
 
@@ -74,13 +60,10 @@ class RealProductGameReminder @Inject constructor(
 
     override suspend fun restore() {
         lock.withLock {
-            for (slot in currentSlots()) {
-                if (slot.isStale()) {
-                    drop(slot)
-                } else {
-                    scheduler.scheduleProductGameStart(slot.product(), slot.startsAtMillis)
-                }
-            }
+            val now = now()
+            val (stale, live) = currentSlots().partition { !it.isLiveAt(now) }
+            stale.forEach(::drop)
+            live.forEach { scheduler.scheduleProductGameStart(it.product(), it.startsAtMillis) }
         }
     }
 
@@ -89,9 +72,16 @@ class RealProductGameReminder @Inject constructor(
         lock.withLock { drop(slot) }
     }
 
+    private fun hold(slot: ProductGameSlot) {
+        store(currentSlots().filterNot { it.productId == slot.productId } + slot)
+        notificationPublisher.cancelProductGameStartsSoonNotification(slot.product())
+        scheduler.scheduleProductGameStart(slot.product(), slot.startsAtMillis)
+    }
+
     private fun drop(slot: ProductGameSlot) {
-        if (slot !in currentSlots()) return
-        store(currentSlots() - slot)
+        val slots = currentSlots()
+        if (slot !in slots) return
+        store(slots - slot)
         scheduler.cancelProductGameStart(slot.product())
         notificationPublisher.cancelProductGameStartsSoonNotification(slot.product())
     }
@@ -99,24 +89,10 @@ class RealProductGameReminder @Inject constructor(
     private fun store(slots: List<ProductGameSlot>) =
         preferences.setProductGameSlots(slots.sortedBy { it.startsAtMillis })
 
-    private fun ProductGameSlot.isStale() = !isLiveAt(timeProvider.now().toEpochMilliseconds())
-
-    private suspend fun addCalendarEvent(startsAtMillis: Long) {
-        val event = CalendarEvent(
-            timeStart = startsAtMillis,
-            duration = CALENDAR_EVENT_DURATION,
-            title = context.getString(RCommon.string.video_game_calendar_event_title),
-        )
-        calendarLock.withLock {
-            calendarEventsMixin.addEventIfPermitted(event, CALENDAR_ALERT_BEFORE)
-                .logFailure("product game calendar event")
-        }
-    }
+    private fun now() = timeProvider.now().toEpochMilliseconds()
 
     private companion object {
         val CALENDAR_MIN_LEAD = 1.hours
-        val CALENDAR_EVENT_DURATION = 30.minutes
-        val CALENDAR_ALERT_BEFORE = 5.minutes
     }
 }
 

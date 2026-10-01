@@ -41,6 +41,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameNotificationPub
 import io.paritytech.polkadotapp.feature_videogame_impl.data.RealVideoGameInfoSyncService
 import io.paritytech.polkadotapp.feature_videogame_impl.data.ScoreContextProvider
 import io.paritytech.polkadotapp.feature_videogame_impl.data.VideoGameInfoSyncService
+import io.paritytech.polkadotapp.feature_videogame_impl.data.calendar.RealProductGameCalendar
 import io.paritytech.polkadotapp.feature_videogame_impl.data.collectibles.CollectiblesRepository
 import io.paritytech.polkadotapp.feature_videogame_impl.data.collectibles.RealCollectiblesRepository
 import io.paritytech.polkadotapp.feature_videogame_impl.data.collectibles.RealCollectiblesUrlResolver
@@ -92,6 +93,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.VideoG
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.VideoGameChatBotInteractor
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.VideoGameVoteInteractor
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.models.GameContactOrigins
+import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.ProductGameCalendar
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealProductGameReminder
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealVideoGameReminderScheduler
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.VideoGameNotificationAutoCanceller
@@ -193,6 +195,9 @@ internal interface VideoGameFeatureModule {
 
     @Binds
     fun bindProductGameReminder(impl: RealProductGameReminder): ProductGameReminder
+
+    @Binds
+    fun bindProductGameCalendar(impl: RealProductGameCalendar): ProductGameCalendar
 
     @Binds
     fun bindVideoGameKeepPlayingWarningUseCase(impl: RealVideoGameKeepPlayingWarningUseCase): VideoGameKeepPlayingWarningUseCase

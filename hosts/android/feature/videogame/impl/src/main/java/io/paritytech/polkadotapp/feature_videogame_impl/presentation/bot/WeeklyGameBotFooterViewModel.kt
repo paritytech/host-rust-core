@@ -21,6 +21,7 @@ import io.paritytech.polkadotapp.feature_upgrade_username_api.domain.model.Upgra
 import io.paritytech.polkadotapp.feature_upgrade_username_api.presentation.bot.toBotUi
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameRouter
 import io.paritytech.polkadotapp.feature_videogame_impl.data.VideoGameInfoSyncService
+import io.paritytech.polkadotapp.feature_videogame_impl.data.calendar.gameCalendarEventTitle
 import io.paritytech.polkadotapp.feature_videogame_impl.data.models.gameDuration
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.dim.Dim2CommitmentHandler
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.RegisterOutcome
@@ -46,7 +47,6 @@ import kotlinx.coroutines.flow.runningReduce
 import kotlinx.coroutines.flow.update
 import timber.log.Timber
 import javax.inject.Inject
-import io.paritytech.polkadotapp.common.R as RCommon
 
 @HiltViewModel
 internal class WeeklyGameBotFooterViewModel @Inject constructor(
@@ -77,7 +77,7 @@ internal class WeeklyGameBotFooterViewModel @Inject constructor(
         .map {
             it?.let {
                 CalendarEvent(
-                    title = context.getString(RCommon.string.video_game_calendar_event_title),
+                    title = context.gameCalendarEventTitle(),
                     timeStart = it.gameStartMillis,
                     duration = it.gameDuration()
                 )
