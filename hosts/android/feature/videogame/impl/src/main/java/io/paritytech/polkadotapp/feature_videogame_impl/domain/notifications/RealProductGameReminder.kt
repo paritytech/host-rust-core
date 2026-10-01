@@ -29,9 +29,14 @@ class RealProductGameReminder @Inject constructor(
     private val scheduler: VideoGameReminderScheduler,
     private val notificationPublisher: VideoGameNotificationPublisher,
     private val calendar: ProductGameCalendar,
+    private val osAccess: ProductGameOsAccess,
     private val timeProvider: TimeProvider,
 ) : ProductGameReminder {
     private val lock = Mutex()
+
+    // Applies schedules and cancels in call order across their OS prompts; [lock] guards only the
+    // slots, so their readers never wait on a prompt.
+    private val requestLock = Mutex()
 
     val slots: Flow<List<ProductGameSlot>> get() = preferences.productGameSlotsFlow()
 
@@ -40,22 +45,24 @@ class RealProductGameReminder @Inject constructor(
     fun currentSlot(productId: ProductId): ProductGameSlot? =
         currentSlots().firstOrNull { it.productId == productId.value }
 
-    override suspend fun schedule(
-        productId: ProductId,
-        startsAtMillis: Long,
-        ringAlarm: Boolean,
-        addCalendarEvent: Boolean,
-    ) {
+    // An alarm needs both notifications and exact alarms; without exact alarms a notification still reminds.
+    override suspend fun schedule(productId: ProductId, startsAtMillis: Long): Result<Unit> = requestLock.withLock {
         val leadMillis = startsAtMillis - now()
+        if (!osAccess.requestNotifications()) {
+            return@withLock Result.failure(IllegalStateException("notifications are not allowed"))
+        }
+        val ringAlarm = osAccess.requestExactAlarms()
         lock.withLock { hold(ProductGameSlot(productId.value, startsAtMillis, ringAlarm)) }
-        // Outside the slot lock, so a cancel never waits on the calendar provider.
-        if (addCalendarEvent && leadMillis >= CALENDAR_MIN_LEAD.inWholeMilliseconds) {
+        if (leadMillis >= CALENDAR_MIN_LEAD.inWholeMilliseconds && osAccess.requestCalendar()) {
             calendar.addGame(startsAtMillis)
         }
+        Result.success(Unit)
     }
 
     override suspend fun cancel(productId: ProductId) {
-        lock.withLock { currentSlot(productId)?.let(::drop) }
+        requestLock.withLock {
+            lock.withLock { currentSlot(productId)?.let(::drop) }
+        }
     }
 
     override suspend fun restore() {

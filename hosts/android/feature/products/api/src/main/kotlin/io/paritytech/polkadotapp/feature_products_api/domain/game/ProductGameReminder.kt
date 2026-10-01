@@ -6,9 +6,9 @@ import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 interface ProductGameReminder {
     /**
      * Remind about [productId]'s game starting at [startsAtMillis] (Unix ms), replacing its own reminder.
-     * [ringAlarm] asks for an alarm and [addCalendarEvent] for a calendar event.
+     * Asks the OS for what the reminder uses, and fails without holding anything when notifications are not allowed.
      */
-    suspend fun schedule(productId: ProductId, startsAtMillis: Long, ringAlarm: Boolean, addCalendarEvent: Boolean)
+    suspend fun schedule(productId: ProductId, startsAtMillis: Long): Result<Unit>
 
     /** Drop [productId]'s reminder, if any. */
     suspend fun cancel(productId: ProductId)

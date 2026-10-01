@@ -94,6 +94,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.VideoG
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.interactor.VideoGameVoteInteractor
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.models.GameContactOrigins
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.ProductGameCalendar
+import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.ProductGameOsAccess
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealProductGameReminder
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.RealVideoGameReminderScheduler
 import io.paritytech.polkadotapp.feature_videogame_impl.domain.notifications.VideoGameNotificationAutoCanceller
@@ -125,6 +126,7 @@ import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.ProductGamePillOverlayViewModel
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.RealWeeklyGamePillVisibilityHolder
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.bot.overlay.WeeklyGamePillVisibilityHolder
+import io.paritytech.polkadotapp.feature_videogame_impl.presentation.notifications.RealProductGameOsAccess
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.renderer.GameChatHeaderRenderer
 import io.paritytech.polkadotapp.feature_videogame_impl.service.GestureAcceptanceChannel
 import io.paritytech.polkadotapp.feature_videogame_impl.service.RealVideoGameStateHolder
@@ -198,6 +200,9 @@ internal interface VideoGameFeatureModule {
 
     @Binds
     fun bindProductGameCalendar(impl: RealProductGameCalendar): ProductGameCalendar
+
+    @Binds
+    fun bindProductGameOsAccess(impl: RealProductGameOsAccess): ProductGameOsAccess
 
     @Binds
     fun bindVideoGameKeepPlayingWarningUseCase(impl: RealVideoGameKeepPlayingWarningUseCase): VideoGameKeepPlayingWarningUseCase

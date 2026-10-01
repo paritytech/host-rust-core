@@ -1,55 +1,21 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers
 
 import android.Manifest
-import android.content.Intent
 import android.os.Build
-import android.provider.Settings
-import androidx.activity.ComponentActivity
-import androidx.activity.result.ActivityResult
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.net.toUri
-import androidx.lifecycle.Lifecycle
-import io.paritytech.polkadotapp.common.data.storage.preferences.Preferences
-import io.paritytech.polkadotapp.common.presentation.resources.ContextManager
-import io.paritytech.polkadotapp.common.utils.ActivityResultExecutor
-import io.paritytech.polkadotapp.common.utils.canScheduleExactAlarms
 import io.paritytech.polkadotapp.common.utils.permissions.PermissionAsker
 import io.paritytech.polkadotapp.common.utils.permissions.PermissionResult
-import io.paritytech.polkadotapp.common.utils.runCancellableCatching
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionRepository
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionRequester
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.DeviceCapabilityType
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.PermissionDecision
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.ProductPermission
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.cancelChildren
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.selects.select
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
-
-private const val KEY_EXACT_ALARM_REFUSED = "product_exact_alarm_access_refused"
-
-/** What the OS says about ringing an alarm, which needs notifications and an exact alarm. */
-enum class AlarmAccess { Allowed, Refused, Unasked }
-
-private sealed interface DeviceCapabilityRequest {
-    data class RuntimePermissions(val permissions: List<String>) : DeviceCapabilityRequest
-
-    // Notifications from the system dialog, then exact alarms from system settings.
-    data object Alarm : DeviceCapabilityRequest
-}
 
 class DeviceCapabilityPermissionHandler @Inject constructor(
     private val repository: ProductPermissionRepository,
     private val requester: ProductPermissionRequester,
     private val permissionAsker: PermissionAsker,
-    private val contextManager: ContextManager,
-    private val preferences: Preferences,
 ) : ProductPermissionHandler<ProductPermission.DeviceCapability> {
     override suspend fun isGranted(productId: ProductId, permission: ProductPermission.DeviceCapability): Boolean {
         return repository.isGranted(productId, permission)
@@ -78,90 +44,29 @@ class DeviceCapabilityPermissionHandler @Inject constructor(
         repository.revoke(productId, permission)
     }
 
-    suspend fun requestOsPermissionIfNeeded(capability: DeviceCapabilityType): Boolean =
-        when (val request = capability.toRequest()) {
-            is DeviceCapabilityRequest.RuntimePermissions -> askRuntimePermissions(request.permissions)
-            // An alarm rings on time only as an exact alarm; refused, the core falls back to a notification.
-            DeviceCapabilityRequest.Alarm -> askRuntimePermissions(notificationPermissions()) && requestExactAlarms()
-        }
-
-    // Refused, the answer is reported as OS-denied until the user allows it in system settings, so the
-    // core falls back to a notification without asking again.
-    fun alarmAccess(): AlarmAccess {
-        val context = contextManager.applicationContext
-        return when {
-            !NotificationManagerCompat.from(context).areNotificationsEnabled() -> when {
-                Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU -> AlarmAccess.Refused
-                notificationsDeniedForever() -> AlarmAccess.Refused
-                else -> AlarmAccess.Unasked
-            }
-            context.canScheduleExactAlarms() -> AlarmAccess.Allowed
-            preferences.getBoolean(KEY_EXACT_ALARM_REFUSED, false) -> AlarmAccess.Refused
-            else -> AlarmAccess.Unasked
-        }
+    suspend fun requestOsPermissionIfNeeded(capability: DeviceCapabilityType): Boolean {
+        val manifestPermission = capability.toManifestPermission() ?: return true
+        val result = permissionAsker.askPermission(manifestPermission)
+        return result == PermissionResult.GRANTED
     }
 
-    private suspend fun askRuntimePermissions(permissions: List<String>): Boolean =
-        permissions.isEmpty() || permissionAsker.askPermission(*permissions.toTypedArray()) == PermissionResult.GRANTED
-
-    private fun notificationsDeniedForever() = runCatching {
-        permissionAsker.getPermissionState(Manifest.permission.POST_NOTIFICATIONS) == PermissionResult.DENIED_FOREVER
-    }.getOrDefault(false)
-
-    private suspend fun requestExactAlarms(): Boolean {
-        if (contextManager.applicationContext.canScheduleExactAlarms()) return true
-        val allowed = withContext(Dispatchers.Main.immediate) {
-            runCancellableCatching { askExactAlarms(contextManager.requireActivity()) }.getOrNull()
-        } ?: return false
-        preferences.putBoolean(KEY_EXACT_ALARM_REFUSED, !allowed)
-        return allowed
-    }
-
-    // A destroyed activity drops the settings result, so the wait ends with it, unanswered.
-    private suspend fun askExactAlarms(activity: ComponentActivity): Boolean? = coroutineScope {
-        val answer = async { ExactAlarmAccessExecutor(activity).execute().getOrNull() }
-        val destroyed = launch { activity.lifecycle.currentStateFlow.first { it == Lifecycle.State.DESTROYED } }
-        select<Boolean?> {
-            answer.onAwait { it }
-            destroyed.onJoin { null }
-        }.also { coroutineContext.cancelChildren() }
-    }
-
-    private fun DeviceCapabilityType.toRequest(): DeviceCapabilityRequest = when (this) {
-        DeviceCapabilityType.Alarm -> DeviceCapabilityRequest.Alarm
-        DeviceCapabilityType.Camera -> runtimePermissions(Manifest.permission.CAMERA)
-        DeviceCapabilityType.Microphone -> runtimePermissions(Manifest.permission.RECORD_AUDIO)
+    private fun DeviceCapabilityType.toManifestPermission(): String? = when (this) {
+        DeviceCapabilityType.Camera -> Manifest.permission.CAMERA
+        DeviceCapabilityType.Microphone -> Manifest.permission.RECORD_AUDIO
         DeviceCapabilityType.Bluetooth -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            runtimePermissions(Manifest.permission.BLUETOOTH_CONNECT)
+            Manifest.permission.BLUETOOTH_CONNECT
         } else {
-            runtimePermissions()
+            null
         }
-        DeviceCapabilityType.Location -> runtimePermissions(Manifest.permission.ACCESS_FINE_LOCATION)
-        DeviceCapabilityType.Notifications -> DeviceCapabilityRequest.RuntimePermissions(notificationPermissions())
-        DeviceCapabilityType.NFC -> runtimePermissions(Manifest.permission.NFC)
-        // READ as well: deduping an added event queries the calendar.
-        DeviceCapabilityType.Calendar -> runtimePermissions(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
+        DeviceCapabilityType.Location -> Manifest.permission.ACCESS_FINE_LOCATION
+        DeviceCapabilityType.Notifications -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.POST_NOTIFICATIONS
+        } else {
+            null
+        }
+        DeviceCapabilityType.NFC -> Manifest.permission.NFC
         DeviceCapabilityType.Clipboard,
         DeviceCapabilityType.Biometrics,
-        DeviceCapabilityType.OpenUrl -> runtimePermissions()
+        DeviceCapabilityType.OpenUrl -> null
     }
-
-    private fun runtimePermissions(vararg permissions: String) = DeviceCapabilityRequest.RuntimePermissions(permissions.toList())
-
-    private fun notificationPermissions(): List<String> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            listOf(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            emptyList()
-        }
-}
-
-// The settings screen returns CANCELED whatever the user chose, so the answer is read back from the OS.
-private class ExactAlarmAccessExecutor(
-    private val activity: ComponentActivity,
-) : ActivityResultExecutor<Boolean>(activity) {
-    override fun createIntent() =
-        Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, "package:${activity.packageName}".toUri())
-
-    override fun handleResult(result: ActivityResult) = Result.success(activity.canScheduleExactAlarms())
 }

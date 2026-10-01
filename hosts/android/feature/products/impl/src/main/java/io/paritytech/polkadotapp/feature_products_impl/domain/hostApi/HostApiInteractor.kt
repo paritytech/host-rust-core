@@ -58,7 +58,6 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.Req
 import io.paritytech.polkadotapp.feature_products_impl.domain.paymentRequest.spendableByProducts
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.ProductPermissionGuard
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.RealProductPermissionRequester
-import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.AlarmAccess
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.DeviceCapabilityPermissionHandler
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.DeviceCapabilityType
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.PermissionDecision
@@ -294,8 +293,6 @@ class HostApiInteractor @Inject constructor(
         val permissions = requests.flatMap { it.toDomainPermissions() }
         permissionGuard.requestPermissionsBatched(callingProductId, permissions)
     }
-
-    fun alarmAccess(): AlarmAccess = deviceCapabilityPermissionHandler.alarmAccess()
 
     suspend fun requestDevicePermissionDecision(
         callingProductId: ProductId,

@@ -115,6 +115,4 @@ enum class DeviceCapabilityType {
     Clipboard,
     Biometrics,
     OpenUrl,
-    Alarm,
-    Calendar,
 }

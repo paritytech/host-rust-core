@@ -10,16 +10,19 @@ import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.HostApiInteractor
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.navigation.NavigationPolicy
 import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.PocketCardStore
+import io.paritytech.polkadotapp.test_shared.whenever
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
 import org.mockito.stubbing.Answer
+import uniffi.truapi.HostRejection
 
 class ProductTrUAPIHostBridgeTest {
     // The core refuses the open: an unavailable loopback port, or an execution config it rejects.
@@ -58,12 +61,27 @@ class ProductTrUAPIHostBridgeTest {
 
     @Test
     fun `the game bridge schedules and cancels for the calling product`() = runTest {
+        withScheduleOutcome(Result.success(Unit))
         val gameBridge = bridge().gameBridge(game)
 
-        gameBridge.scheduleReminder(1_000u, false, true)
+        gameBridge.scheduleReminder(1_000u)
         gameBridge.cancelReminder()
 
-        verify(gameReminder).schedule(game, 1_000, false, true)
+        verify(gameReminder).schedule(game, 1_000)
         verify(gameReminder).cancel(game)
+    }
+
+    @Test
+    fun `the game bridge rejects a schedule the reminder fails`() = runTest {
+        withScheduleOutcome(Result.failure(IllegalStateException("notifications are not allowed")))
+        val gameBridge = bridge().gameBridge(game)
+
+        val outcome = runCatching { gameBridge.scheduleReminder(1_000u) }
+
+        assertEquals("notifications are not allowed", (outcome.exceptionOrNull() as? HostRejection.Rejected)?.reason)
+    }
+
+    private suspend fun withScheduleOutcome(outcome: Result<Unit>) {
+        whenever(gameReminder.schedule(game, 1_000)).thenReturn(outcome)
     }
 }

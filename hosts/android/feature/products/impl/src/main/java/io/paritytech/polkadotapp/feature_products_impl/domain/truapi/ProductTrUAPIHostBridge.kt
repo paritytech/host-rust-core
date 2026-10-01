@@ -29,7 +29,6 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.ProductThe
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.ThemeVariant
 import io.paritytech.polkadotapp.feature_products_impl.domain.hostApi.navigation.NavigationPolicy
 import io.paritytech.polkadotapp.feature_products_impl.domain.notifications.NotificationId
-import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.handlers.AlarmAccess
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.DeviceCapabilityType
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.PermissionDecision
 import io.paritytech.polkadotapp.feature_products_impl.domain.permissions.models.RemotePermissionRequest
@@ -48,7 +47,6 @@ import uniffi.truapi.HostThemeSubscribeItem
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.ThemeName
 import uniffi.truapi.AuthState
-import uniffi.truapi.DevicePermissionStatus
 import uniffi.truapi.HostChainSet
 import uniffi.truapi.UserConfirmationReview
 import uniffi.truapi.HostNavigateToException
@@ -199,14 +197,6 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
                 .getOrElse { throw it }
                 .toNative()
 
-        // Only alarms are reported: a refusal there makes the core deliver a notification instead of
-        // asking again. The other capabilities keep the prompt-driven default.
-        override suspend fun devicePermissionStatus(request: HostDevicePermissionRequest): DevicePermissionStatus =
-            when (request) {
-                HostDevicePermissionRequest.ALARM -> hostApiInteractor.alarmAccess().toStatus()
-                else -> DevicePermissionStatus.NOT_APPLICABLE
-            }
-
         override suspend fun remotePermission(
             product: ProductExecutionConfig,
             request: RemotePermission,
@@ -240,8 +230,9 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
     }
 
     internal fun gameBridge(callingProductId: ProductId) = object : GameHostBridge {
-        override suspend fun scheduleReminder(startsAt: ULong, ringAlarm: Boolean, addCalendarEvent: Boolean) =
-            productGameReminder.schedule(callingProductId, startsAt.toLong(), ringAlarm, addCalendarEvent)
+        override suspend fun scheduleReminder(startsAt: ULong) =
+            productGameReminder.schedule(callingProductId, startsAt.toLong())
+                .getOrElse { throw HostRejection.Rejected(it.message.orEmpty()) }
 
         override suspend fun cancelReminder() = productGameReminder.cancel(callingProductId)
     }
@@ -382,14 +373,6 @@ private fun HostDevicePermissionRequest.toCapability(): DeviceCapabilityType = w
     HostDevicePermissionRequest.CLIPBOARD -> DeviceCapabilityType.Clipboard
     HostDevicePermissionRequest.OPEN_URL -> DeviceCapabilityType.OpenUrl
     HostDevicePermissionRequest.BIOMETRICS -> DeviceCapabilityType.Biometrics
-    HostDevicePermissionRequest.ALARM -> DeviceCapabilityType.Alarm
-    HostDevicePermissionRequest.CALENDAR -> DeviceCapabilityType.Calendar
-}
-
-private fun AlarmAccess.toStatus(): DevicePermissionStatus = when (this) {
-    AlarmAccess.Allowed -> DevicePermissionStatus.GRANTED
-    AlarmAccess.Refused -> DevicePermissionStatus.DENIED
-    AlarmAccess.Unasked -> DevicePermissionStatus.NOT_DETERMINED
 }
 
 private fun RemotePermission.toDomain(): RemotePermissionRequest = when (this) {
