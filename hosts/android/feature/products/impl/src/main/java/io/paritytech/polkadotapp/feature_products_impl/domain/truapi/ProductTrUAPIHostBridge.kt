@@ -203,11 +203,7 @@ class ProductTrUAPIHostBridge @AssistedInject constructor(
         // asking again. The other capabilities keep the prompt-driven default.
         override suspend fun devicePermissionStatus(request: HostDevicePermissionRequest): DevicePermissionStatus =
             when (request) {
-                HostDevicePermissionRequest.ALARM -> when (hostApiInteractor.alarmAccess()) {
-                    AlarmAccess.Allowed -> DevicePermissionStatus.GRANTED
-                    AlarmAccess.Refused -> DevicePermissionStatus.DENIED
-                    AlarmAccess.Unasked -> DevicePermissionStatus.NOT_DETERMINED
-                }
+                HostDevicePermissionRequest.ALARM -> hostApiInteractor.alarmAccess().toStatus()
                 else -> DevicePermissionStatus.NOT_APPLICABLE
             }
 
@@ -388,6 +384,12 @@ private fun HostDevicePermissionRequest.toCapability(): DeviceCapabilityType = w
     HostDevicePermissionRequest.BIOMETRICS -> DeviceCapabilityType.Biometrics
     HostDevicePermissionRequest.ALARM -> DeviceCapabilityType.Alarm
     HostDevicePermissionRequest.CALENDAR -> DeviceCapabilityType.Calendar
+}
+
+private fun AlarmAccess.toStatus(): DevicePermissionStatus = when (this) {
+    AlarmAccess.Allowed -> DevicePermissionStatus.GRANTED
+    AlarmAccess.Refused -> DevicePermissionStatus.DENIED
+    AlarmAccess.Unasked -> DevicePermissionStatus.NOT_DETERMINED
 }
 
 private fun RemotePermission.toDomain(): RemotePermissionRequest = when (this) {

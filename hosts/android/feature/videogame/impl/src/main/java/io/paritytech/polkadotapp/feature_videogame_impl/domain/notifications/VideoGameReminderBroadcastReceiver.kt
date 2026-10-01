@@ -56,20 +56,20 @@ class VideoGameReminderBroadcastReceiver : BroadcastReceiver() {
                     }
 
                     is VideoGameNotificationType.ProductGameStartsSoon -> {
-                        // In the foreground the pill and the auto-open take over. An inexact alarm may fire
-                        // late; a held slot still wants its notification then.
-                        val slot = productGameReminder.currentSlot(ProductId.fromStoredValue(type.productId))
-                        if (slot != null && appLifecycleObserver.getCurrentState() != AppLifecycleState.FOREGROUND) {
-                            notificationPublisher.publishProductGameStartsSoonNotification(
-                                slot.product(),
-                                slot.ringAlarm,
-                            )
-                        }
+                        publishProductGameStartsSoon(ProductId.fromStoredValue(type.productId))
                     }
 
                     null -> Unit
                 }
             }
         }
+    }
+
+    // In the foreground the pill and the auto-open take over. An inexact alarm may fire late; a held slot
+    // still wants its notification then.
+    private fun publishProductGameStartsSoon(productId: ProductId) {
+        if (appLifecycleObserver.getCurrentState() == AppLifecycleState.FOREGROUND) return
+        val slot = productGameReminder.currentSlot(productId) ?: return
+        notificationPublisher.publishProductGameStartsSoonNotification(slot.product(), slot.ringAlarm)
     }
 }

@@ -30,6 +30,7 @@ class RealVideoGameReminderScheduler @Inject constructor(
         val WAITING_ROOM_SCHEDULE_OFFSET_MILLIS = 5.minutes.inWholeMilliseconds
         val ABOUT_TO_START_SCHEDULE_OFFSET_MILLIS = 1.minutes.inWholeMilliseconds
         const val PRODUCT_GAME_REQUEST_CODE_BASE = 1000
+        const val PRODUCT_GAME_REQUEST_CODE_MASK = 0x3FFFFFFF
     }
 
     private val alarmManager = contextManager.applicationContext.getSystemService(AlarmManager::class.java)
@@ -130,7 +131,9 @@ class RealVideoGameReminderScheduler @Inject constructor(
         VideoGameNotificationType.WaitingRoomAvailable -> 2
         VideoGameNotificationType.GameAboutToStart -> 3
         VideoGameNotificationType.GameStartsSoon -> 4
-        // One pending intent per product, apart from the native game's codes above.
-        is VideoGameNotificationType.ProductGameStartsSoon -> PRODUCT_GAME_REQUEST_CODE_BASE + productId.hashCode()
+        // One pending intent per product. The hash is masked non-negative and small enough not to overflow,
+        // so it never lands on the native game's codes above.
+        is VideoGameNotificationType.ProductGameStartsSoon ->
+            PRODUCT_GAME_REQUEST_CODE_BASE + (productId.hashCode() and PRODUCT_GAME_REQUEST_CODE_MASK)
     }
 }
