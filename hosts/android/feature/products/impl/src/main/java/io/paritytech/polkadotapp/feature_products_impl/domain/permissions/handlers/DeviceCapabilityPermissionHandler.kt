@@ -37,6 +37,13 @@ private const val KEY_EXACT_ALARM_REFUSED = "product_exact_alarm_access_refused"
 /** What the OS says about ringing an alarm, which needs notifications and an exact alarm. */
 enum class AlarmAccess { Allowed, Refused, Unasked }
 
+private sealed interface DeviceCapabilityRequest {
+    data class RuntimePermissions(val permissions: List<String>) : DeviceCapabilityRequest
+
+    // Notifications from the system dialog, then exact alarms from system settings.
+    data object Alarm : DeviceCapabilityRequest
+}
+
 class DeviceCapabilityPermissionHandler @Inject constructor(
     private val repository: ProductPermissionRepository,
     private val requester: ProductPermissionRequester,
@@ -71,16 +78,12 @@ class DeviceCapabilityPermissionHandler @Inject constructor(
         repository.revoke(productId, permission)
     }
 
-    suspend fun requestOsPermissionIfNeeded(capability: DeviceCapabilityType): Boolean {
-        val manifestPermissions = capability.toManifestPermissions()
-        if (manifestPermissions.isNotEmpty() &&
-            permissionAsker.askPermission(*manifestPermissions.toTypedArray()) != PermissionResult.GRANTED
-        ) {
-            return false
+    suspend fun requestOsPermissionIfNeeded(capability: DeviceCapabilityType): Boolean =
+        when (val request = capability.toRequest()) {
+            is DeviceCapabilityRequest.RuntimePermissions -> askRuntimePermissions(request.permissions)
+            // An alarm rings on time only as an exact alarm; refused, the core falls back to a notification.
+            DeviceCapabilityRequest.Alarm -> askRuntimePermissions(notificationPermissions()) && requestExactAlarms()
         }
-        // An alarm rings on time only as an exact alarm; refused, the core falls back to a notification.
-        return capability != DeviceCapabilityType.Alarm || requestExactAlarms()
-    }
 
     // Refused, the answer is reported as OS-denied until the user allows it in system settings, so the
     // core falls back to a notification without asking again.
@@ -97,6 +100,9 @@ class DeviceCapabilityPermissionHandler @Inject constructor(
             else -> AlarmAccess.Unasked
         }
     }
+
+    private suspend fun askRuntimePermissions(permissions: List<String>): Boolean =
+        permissions.isEmpty() || permissionAsker.askPermission(*permissions.toTypedArray()) == PermissionResult.GRANTED
 
     private fun notificationsDeniedForever() = runCatching {
         permissionAsker.getPermissionState(Manifest.permission.POST_NOTIFICATIONS) == PermissionResult.DENIED_FOREVER
@@ -121,28 +127,33 @@ class DeviceCapabilityPermissionHandler @Inject constructor(
         }.also { coroutineContext.cancelChildren() }
     }
 
-    private fun DeviceCapabilityType.toManifestPermissions(): List<String> = when (this) {
-        DeviceCapabilityType.Camera -> listOf(Manifest.permission.CAMERA)
-        DeviceCapabilityType.Microphone -> listOf(Manifest.permission.RECORD_AUDIO)
+    private fun DeviceCapabilityType.toRequest(): DeviceCapabilityRequest = when (this) {
+        DeviceCapabilityType.Alarm -> DeviceCapabilityRequest.Alarm
+        DeviceCapabilityType.Camera -> runtimePermissions(Manifest.permission.CAMERA)
+        DeviceCapabilityType.Microphone -> runtimePermissions(Manifest.permission.RECORD_AUDIO)
         DeviceCapabilityType.Bluetooth -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            listOf(Manifest.permission.BLUETOOTH_CONNECT)
+            runtimePermissions(Manifest.permission.BLUETOOTH_CONNECT)
         } else {
-            emptyList()
+            runtimePermissions()
         }
-        DeviceCapabilityType.Location -> listOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        DeviceCapabilityType.Notifications,
-        DeviceCapabilityType.Alarm -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        DeviceCapabilityType.Location -> runtimePermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+        DeviceCapabilityType.Notifications -> DeviceCapabilityRequest.RuntimePermissions(notificationPermissions())
+        DeviceCapabilityType.NFC -> runtimePermissions(Manifest.permission.NFC)
+        // READ as well: deduping an added event queries the calendar.
+        DeviceCapabilityType.Calendar -> runtimePermissions(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
+        DeviceCapabilityType.Clipboard,
+        DeviceCapabilityType.Biometrics,
+        DeviceCapabilityType.OpenUrl -> runtimePermissions()
+    }
+
+    private fun runtimePermissions(vararg permissions: String) = DeviceCapabilityRequest.RuntimePermissions(permissions.toList())
+
+    private fun notificationPermissions(): List<String> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             listOf(Manifest.permission.POST_NOTIFICATIONS)
         } else {
             emptyList()
         }
-        DeviceCapabilityType.NFC -> listOf(Manifest.permission.NFC)
-        // READ as well: deduping an added event queries the calendar.
-        DeviceCapabilityType.Calendar -> listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
-        DeviceCapabilityType.Clipboard,
-        DeviceCapabilityType.Biometrics,
-        DeviceCapabilityType.OpenUrl -> emptyList()
-    }
 }
 
 // The settings screen returns CANCELED whatever the user chose, so the answer is read back from the OS.
