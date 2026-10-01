@@ -2308,7 +2308,6 @@ async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
     Ok(())
 }
 
-
 fn current_account_base_path(session: &SigningHostSession) -> Result<PathBuf> {
     Ok(session
         .profile
