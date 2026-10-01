@@ -52,6 +52,7 @@ export interface WorkerHostRuntime extends PermissionAuthorizationRuntime {
   productRuntime(
     product: unknown,
     coreCallbacks: unknown,
+    platformCallbacks?: unknown,
   ): WorkerProductRuntime;
   disconnectSession(): Promise<void>;
   notifyContactsChanged(): void;

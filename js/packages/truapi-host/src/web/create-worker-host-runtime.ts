@@ -67,10 +67,13 @@ export interface WorkerPairingHostRuntime {
    * should. Undefined for a core built before the export existed.
    */
   readonly coreWireSchemaHash: string | undefined;
-  createProvider(product: {
-    productId: string;
-    executionKind?: ProductExecutionKind;
-  }): Promise<TrUApiProductProvider>;
+  createProvider(
+    product: {
+      productId: string;
+      executionKind?: ProductExecutionKind;
+    },
+    callbacks?: WebWorkerHostCallbacks,
+  ): Promise<TrUApiProductProvider>;
   disconnectSession(): Promise<void>;
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
@@ -207,6 +210,7 @@ interface RuntimeState {
   identityGeneration: number;
   pendingAllowanceSnapshots: Map<number, PendingEntry<WalletAllowanceSnapshot>>;
   rawCallbacks: RawCallbacks;
+  coreCallbacks: Map<number, RawCallbacks>;
   cores: Map<number, CoreState>;
   pendingCores: Map<
     number,
@@ -219,9 +223,9 @@ interface RuntimeState {
   subscriptionDisposers: Map<number, () => void>;
   /**
    * Open `worker.beginOperation` holds. A non-empty set defers `dispose()`.
-   * Worker-wide rather than per-core, since a `callbackRequest` carries no core
-   * id, so entries are product-scoped: `OperationId` is only unique per product
-   * and two products sharing this worker may be handed the same id.
+   * Worker-wide rather than per-core: operation holds can outlive a product
+   * connection. Entries are product-scoped because `OperationId` is only
+   * unique per product and products sharing this worker may use the same id.
    */
   openOperations: Set<string>;
   /** A dispose() arrived while operations were open; run it once they drain. */
@@ -578,18 +582,25 @@ function handleCallbackRequest(
   state: RuntimeState,
   msg: {
     requestId: number;
+    coreId?: number;
     name: CallbackName;
     args: readonly unknown[];
   },
 ): void {
-  const fn = Object.hasOwn(state.rawCallbacks, msg.name)
-    ? (
-        state.rawCallbacks as unknown as Record<
-          string,
-          (...args: readonly unknown[]) => unknown
-        >
-      )[msg.name]
-    : undefined;
+  if (state.disposed) return;
+  const callbacks =
+    msg.coreId === undefined
+      ? state.rawCallbacks
+      : state.coreCallbacks.get(msg.coreId);
+  const fn =
+    callbacks && Object.hasOwn(callbacks, msg.name)
+      ? (
+          callbacks as unknown as Record<
+            string,
+            (...args: readonly unknown[]) => unknown
+          >
+        )[msg.name]
+      : undefined;
   if (!fn) {
     state.worker.postMessage({
       kind: "callbackResponse",
@@ -600,7 +611,12 @@ function handleCallbackRequest(
     return;
   }
   Promise.resolve()
-    .then(() => fn(...msg.args))
+    .then(() => {
+      if (state.disposed) throw new Error("Host runtime is unavailable");
+      if (msg.coreId !== undefined && !state.coreCallbacks.has(msg.coreId))
+        throw new Error("Product callbacks are unavailable");
+      return fn(...msg.args);
+    })
     .then(
       (value) => {
         // Tracked in the success arm only: a rejected begin must not leave a
@@ -642,6 +658,7 @@ function handleSubscriptionStart(
   state: RuntimeState,
   msg: {
     subId: number;
+    coreId?: number;
     name: SubscriptionName;
     payload: Uint8Array | string | null;
   },
@@ -664,15 +681,20 @@ function handleSubscriptionStart(
   };
   let dispose: (() => void) | void = undefined;
   try {
+    const callbacks =
+      msg.coreId === undefined
+        ? state.rawCallbacks
+        : state.coreCallbacks.get(msg.coreId);
+    if (!callbacks) throw new Error("Product callbacks are unavailable");
     dispose = startRawSubscription(
-      state.rawCallbacks,
+      callbacks,
       msg.name,
       msg.payload,
       sendItem,
       sendError,
     );
   } catch (err) {
-    console.error(`[truapi worker] ${msg.name} threw on start:`, err);
+    sendError({ reason: errorMessage(err) });
     return;
   }
   if (typeof dispose === "function") {
@@ -1110,6 +1132,7 @@ function teardown(state: RuntimeState, error: Error, fault: boolean): void {
     closeCoreState(core, error);
   }
   state.cores.clear();
+  state.coreCallbacks.clear();
   for (const fn of state.subscriptionDisposers.values()) {
     try {
       fn();
@@ -1234,6 +1257,7 @@ function createWebWorkerHostRuntime(
       identityGeneration: 0,
       pendingAllowanceSnapshots: new Map(),
       rawCallbacks: callbacks,
+      coreCallbacks: new Map(),
       cores: new Map(),
       pendingCores: new Map(),
       subscriptionDisposers: new Map(),
@@ -1563,6 +1587,7 @@ function handleCoreError(
   const pending = state.pendingCores.get(coreId);
   if (!pending) return;
   state.pendingCores.delete(coreId);
+  state.coreCallbacks.delete(coreId);
   pending.reject(new Error(error));
 }
 
@@ -1577,6 +1602,7 @@ function handleFrameError(
   const failure = new Error(`worker frame error: ${error}`);
   closeCoreState(core, failure);
   state.cores.delete(coreId);
+  state.coreCallbacks.delete(coreId);
   // Renders left registered would never settle: the worker cancels them with
   // the core, so nothing further arrives to complete the sink.
   failRendersForCore(state, coreId, failure);
@@ -1595,7 +1621,7 @@ function buildRuntime(
 ): WorkerPairingHostRuntime & WorkerSigningHostRuntime {
   const runtime: WorkerPairingHostRuntime & WorkerSigningHostRuntime = {
     coreWireSchemaHash: state.coreWireSchemaHash,
-    createProvider(product): Promise<TrUApiProductProvider> {
+    createProvider(product, callbacks): Promise<TrUApiProductProvider> {
       if (state.disposed) {
         return Promise.reject(
           state.closedError ?? new Error("runtime disposed"),
@@ -1609,13 +1635,26 @@ function buildRuntime(
           reject,
         });
         try {
+          if (callbacks)
+            state.coreCallbacks.set(coreId, createWasmRawCallbacks(callbacks));
           state.worker.postMessage({
             kind: "createCore",
             coreId,
             product,
+            ...(callbacks === undefined
+              ? {}
+              : {
+                  capabilities: {
+                    chat: callbacks.chat !== undefined,
+                    contacts: callbacks.contacts !== undefined,
+                    permissionStatus: callbacks.permissionStatus !== undefined,
+                    pocket: callbacks.pocket !== undefined,
+                  },
+                }),
           } satisfies MainToWorker);
         } catch (err) {
           state.pendingCores.delete(coreId);
+          state.coreCallbacks.delete(coreId);
           reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
@@ -2114,6 +2153,7 @@ function buildProvider(
       if (core.disposed) return;
       closeCoreState(core, new Error("provider disposed"));
       state.cores.delete(core.coreId);
+      state.coreCallbacks.delete(core.coreId);
       // Renders left registered would never settle: the worker cancels them
       // with the core, so nothing further arrives to complete the sink.
       failRendersForCore(state, core.coreId, new Error("provider disposed"));

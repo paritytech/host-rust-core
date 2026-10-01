@@ -297,6 +297,7 @@ pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     chat_platform: Option<Arc<dyn crate::platform::ChatPlatform>>,
+    contacts_platform: Option<Arc<dyn crate::platform::ContactsPlatform>>,
     /// Live OS permission state for this connection, when the host serves it.
     permission_status: Option<Arc<dyn crate::platform::PermissionStatusHost>>,
     /// Permission requests and consuming operations can arrive on different connections.
@@ -346,6 +347,7 @@ impl ProductRuntimeHost {
             services,
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
+            contacts_platform: adapters.contacts_platform,
             permission_status: adapters.permission_status,
             temporary_permissions: adapters.permission_grants,
             authority,
@@ -475,6 +477,7 @@ impl ProductRuntimeHost {
             services,
             platform,
             chat_platform: None,
+            contacts_platform: None,
             permission_status: None,
             temporary_permissions: Arc::default(),
             authority: pairing_host.clone(),
@@ -1347,8 +1350,9 @@ impl ProductRuntimeHost {
         // A capability the host does not serve is a framework answer; a
         // missing session is one the product handles.
         let platform = self
-            .services
-            .contacts_platform()
+            .contacts_platform
+            .clone()
+            .or_else(|| self.services.contacts_platform())
             .ok_or(CallError::Unsupported)?;
         let session = self
             .authority

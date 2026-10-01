@@ -88,6 +88,7 @@ const chainResponseListeners = new Map<number, (json: string) => void>();
 function callbackRequest(
   name: CallbackName,
   args: readonly unknown[],
+  coreId?: number,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const requestId = ++nextRequestId;
@@ -95,7 +96,13 @@ function callbackRequest(
       if (r.ok) resolve(r.value);
       else reject(new Error(r.error));
     });
-    postToMain({ kind: "callbackRequest", requestId, name, args });
+    postToMain({
+      kind: "callbackRequest",
+      requestId,
+      name,
+      args,
+      ...(coreId === undefined ? {} : { coreId }),
+    });
   });
 }
 
@@ -104,13 +111,20 @@ function startSubscription<T>(
   payload: Uint8Array | string | null,
   sendItem: (value: T) => void,
   sendError: (error: GenericError) => void,
+  coreId?: number,
 ): () => void {
   const subId = ++nextSubId;
   subscriptionListeners.set(subId, {
     sendItem: sendItem as (value: unknown) => void,
     sendError: (error) => sendError({ reason: error }),
   });
-  postToMain({ kind: "subscriptionStart", subId, name, payload });
+  postToMain({
+    kind: "subscriptionStart",
+    subId,
+    name,
+    payload,
+    ...(coreId === undefined ? {} : { coreId }),
+  });
   return () => {
     subscriptionListeners.delete(subId);
     postToMain({ kind: "subscriptionStop", subId });
@@ -177,12 +191,16 @@ function chainConnect(
 }
 
 /** Build the host-level callback object passed to the WASM runtime. */
-function buildRawCallbacks(capabilities: OptionalCapabilities) {
+function buildRawCallbacks(
+  capabilities: OptionalCapabilities,
+  coreId?: number,
+) {
   return {
     ...createWorkerRawCallbacks(
       {
-        callbackRequest,
-        startSubscription,
+        callbackRequest: (name, args) => callbackRequest(name, args, coreId),
+        startSubscription: (name, payload, sendItem, sendError) =>
+          startSubscription(name, payload, sendItem, sendError, coreId),
         chainConnect,
       },
       capabilities,
@@ -811,6 +829,9 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         const core = runtime.productRuntime(
           msg.product,
           buildCoreCallbacks(msg.coreId),
+          msg.capabilities === undefined
+            ? undefined
+            : buildRawCallbacks(msg.capabilities, msg.coreId),
         );
         cores.set(msg.coreId, core);
         postToMain({ kind: "coreReady", coreId: msg.coreId });

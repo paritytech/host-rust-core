@@ -94,7 +94,12 @@ export type MainToWorker =
        */
       role?: HostRole;
     }
-  | { kind: "createCore"; coreId: number; product: unknown }
+  | {
+      kind: "createCore";
+      coreId: number;
+      product: unknown;
+      capabilities?: OptionalCapabilities;
+    }
   | { kind: "disposeCore"; coreId: number }
   | { kind: "setLogLevel"; level: LogLevel }
   | { kind: "frame"; coreId: number; bytes: Uint8Array }
@@ -385,12 +390,14 @@ export type WorkerToMain =
   | {
       kind: "callbackRequest";
       requestId: number;
+      coreId?: number;
       name: CallbackName;
       args: CallbackArgs;
     }
   | {
       kind: "subscriptionStart";
       subId: number;
+      coreId?: number;
       name: SubscriptionName;
       payload: Uint8Array | string | null;
     }
