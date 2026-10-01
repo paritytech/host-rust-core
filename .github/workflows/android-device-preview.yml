@@ -44,6 +44,12 @@ on:
         required: true
       GOOGLE_SERVICES_JSON_BASE64:
         required: true
+      FIRESTORE_DATABASE_ID:
+        required: true
+      GOOGLE_OAUTH_ID:
+        required: true
+      GOOGLE_PROJECT_ID:
+        required: true
 
 # Keyed on the pull request rather than on the workflow, so CI's call and a
 # label on the same request do not build the same commit twice.

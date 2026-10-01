@@ -628,10 +628,24 @@ jobs:
   #
   # The build lives in its own workflow because the label that also starts it
   # needs the `labeled` event, which has no business rerunning every gate here.
+  #
+  # Pull requests from this repository only. The queue and pushes to main run
+  # every gate, and an APK nobody installs is twenty minutes each time; a fork
+  # receives no secrets, so it could only build an APK that cannot sign in.
+  # It is a convenience rather than a gate, as the iOS simulator build is, so
+  # CI Status does not wait on it and a failed build never blocks a merge.
   host-android-apk:
     name: Android host app (installable APK)
     needs: changes
-    if: needs.changes.outputs.host_android == 'true'
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && needs.changes.outputs.host_android == 'true'
+    # A called workflow gets no more than its caller grants, and this one links
+    # its artifact from the pull request.
+    permissions:
+      contents: read
+      pull-requests: write
     uses: ./.github/workflows/android-device-preview.yml
     with:
       always: true
@@ -641,6 +655,9 @@ jobs:
       CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
       CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
       GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+      FIRESTORE_DATABASE_ID: ${{ secrets.FIRESTORE_DATABASE_ID }}
+      GOOGLE_OAUTH_ID: ${{ secrets.GOOGLE_OAUTH_ID }}
+      GOOGLE_PROJECT_ID: ${{ secrets.GOOGLE_PROJECT_ID }}
 
   host-android-detekt:
     name: Android host (detekt)
@@ -1343,7 +1360,6 @@ jobs:
         provider-android-bindings,
         host-android-bindings,
         host-android-detekt,
-        host-android-apk,
         cli-package,
         ts-client,
         ts-host,
