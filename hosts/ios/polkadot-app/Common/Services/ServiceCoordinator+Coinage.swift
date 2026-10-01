@@ -20,14 +20,12 @@ extension ServiceCoordinator {
         let transferMonitor: CoinageTransferMonitoring
         let w3sPaymentTracking: W3sPaymentTracking
         let backupSyncService: CoinageBackupSyncServicing
-        let claimStatusStore: ClaimStatusStore
     }
 
     /// `allowanceManager` is the coordinator's PGAS manager: the data store account is topped up through
     /// the same one as everything else.
     static func createCoinageServices(allowanceManager: AllowanceManaging) -> CoinageServices? {
         let databaseFactory = CoinageDatabaseDependencyFactory(storageFacade: UserDataStorageFacade.shared)
-        let claimStatusStore = ClaimStatusStore()
 
         let externalPaymentStore = ExternalPaymentCoreDataStore(
             storageFacade: UserDataStorageFacade.shared
@@ -56,9 +54,11 @@ extension ServiceCoordinator {
         }
 
         let transferMonitor = CoinageTransferMonitor(
-            coinageService: coinageService,
-            storageFacade: UserDataStorageFacade.shared,
-            claimStatusStore: claimStatusStore
+            claimCoinsService: coinageService.claimCoinsService,
+            transferStatusService: coinageService.transferStatusService,
+            denominationContext: { try await coinageService.denominationContext() },
+            transferStateStore: TransferStateCoreDataStore(storageFacade: UserDataStorageFacade.shared),
+            storageFacade: UserDataStorageFacade.shared
         )
 
         let backupSyncService = CoinageBackupSyncService(
@@ -71,8 +71,7 @@ extension ServiceCoordinator {
             durableTransactionEngine: durableEngine,
             transferMonitor: transferMonitor,
             w3sPaymentTracking: createW3sPaymentTracking(coinageService: coinageService),
-            backupSyncService: backupSyncService,
-            claimStatusStore: claimStatusStore
+            backupSyncService: backupSyncService
         )
     }
 

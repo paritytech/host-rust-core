@@ -156,19 +156,16 @@ extension TransferAmountViewController: KeyboardAdoptable {
     }
 }
 
-private extension ClaimStatus {
+private extension OutgoingTransferState.Status {
     var sendingStatusTitle: String {
         switch self {
-        case .detecting:
+        case .sending:
             String(localized: .transferStatusSending)
-        case .claiming,
-             .partiallyClaimed:
-            String(localized: .transferStatusClaiming)
         case .sent:
             String(localized: .transferStatusSent)
-        case .finished:
+        case .claimed:
             String(localized: .transferStatusFinished)
-        case .error:
+        case .failed:
             String(localized: .transferStatusError)
         }
     }
@@ -238,8 +235,8 @@ extension TransferAmountViewController: TransferAmountViewProtocol {
         rootView.bind(state: .confirm)
     }
 
-    func didReceive(transferStatus: ClaimStatus) {
-        rootView.bind(transferStatus: transferStatus.sendingStatusTitle)
+    func didReceive(transferState: OutgoingTransferState) {
+        rootView.bind(transferStatus: transferState.status.sendingStatusTitle)
     }
 
     func didUnlockNavigation() {

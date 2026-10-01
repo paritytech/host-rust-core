@@ -14,40 +14,40 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
 import io.paritytech.polkadotapp.common.presentation.loading.LoadingState
-import io.paritytech.polkadotapp.common.presentation.loading.dataOrNull
-import io.paritytech.polkadotapp.common.utils.CurrencyConfig
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetLogoVariant
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.compose.PaymentAssetLogoImage
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.compose.aspectRatio
 import io.paritytech.polkadotapp.design.components.icon.NovaIcon
 import io.paritytech.polkadotapp.design.components.icon.NovaIcons
 import io.paritytech.polkadotapp.design.components.icon.vectors.Refreshing
 import io.paritytech.polkadotapp.design.components.icon.vectors.WarningFilled
 import io.paritytech.polkadotapp.design.components.progress.Shimmer
 import io.paritytech.polkadotapp.design.components.spacer.HorizontalSpacer
+import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
 import io.paritytech.polkadotapp.design.components.surface.PolkadotSurface
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.LocalTokenAmountFormatter
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.TokenAmountFormatter
-import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.formatFiat
-import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.RoundPrecision
+import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.formatFiatSigned
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.TokenAmountModel
 import io.paritytech.polkadotapp.feature_wallet_impl.R
-import io.paritytech.polkadotapp.feature_wallet_impl.presentation.compose.components.icons.DigitalDollarIcon
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.animation.LocalCardTilt
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.animation.MotionShineParameters
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.animation.maskedMotionShine
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.components.CardSizes
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.components.PocketCardColors
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.pocketBalanceSharedElement
+import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.DigitalDollarBalanceStatus
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.models.PocketCardUiModel
 import io.paritytech.polkadotapp.common.R as RCommon
 
@@ -60,34 +60,16 @@ fun DigitalDollarCard(
 ) {
     val tiltState = LocalCardTilt.current
 
-    val borderBrush = remember {
-        Brush.radialGradient(
-            colorStops = arrayOf(
-                0f to PocketCardColors.Primary,
-                1f to PocketCardColors.Transparent
-            ),
-            center = Offset.Zero,
-            radius = 900f
-        )
-    }
+    val highlightBrush = remember { digitalDollarHighlightBrush() }
 
-    val highlightBrush = remember {
-        Brush.radialGradient(
-            colorStops = arrayOf(
-                0f to PocketCardColors.Primary.copy(alpha = 0.35f),
-                0.5f to PocketCardColors.Primary.copy(alpha = 0.1f),
-                1f to PocketCardColors.Transparent
-            ),
-            center = Offset.Zero,
-            radius = 700f
-        )
-    }
+    val litBorderColor = PolkadotTheme.colors.fg.staticWhite
+    val borderBrush = remember(litBorderColor) { digitalDollarBorderBrush(litBorderColor) }
 
     PolkadotSurface(
         modifier = modifier,
         shape = PolkadotTheme.shapes.large,
         color = PocketCardColors.DigitalDollarCardBackground,
-        border = BorderStroke(Dp.Hairline, borderBrush),
+        border = BorderStroke(BORDER_WIDTH, borderBrush),
         onClick = { onSelected?.invoke(card) },
         enabled = onSelected != null
     ) {
@@ -95,24 +77,6 @@ fun DigitalDollarCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(CardSizes.HEIGHT)
-        ) {
-            Image(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .align(Alignment.CenterEnd)
-                    .maskedMotionShine(
-                        tiltState = tiltState,
-                        parameters = MotionShineParameters.DigitalDollarCard,
-                        contentAlpha = 0f
-                    ),
-                painter = painterResource(R.drawable.img_digital_dollar_card),
-                contentDescription = null,
-                contentScale = ContentScale.FillHeight
-            )
-        }
-        Box(
-            modifier = Modifier
-                .matchParentSize()
                 .background(highlightBrush)
         )
 
@@ -120,13 +84,33 @@ fun DigitalDollarCard(
             modifier = Modifier.matchParentSize(),
             painter = painterResource(R.drawable.img_texture_grain_dark),
             contentDescription = null,
-            contentScale = ContentScale.Crop
+            contentScale = ContentScale.Crop,
+            alpha = TEXTURE_ALPHA
         )
+
+        Box(modifier = Modifier.matchParentSize()) {
+            Image(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .align(Alignment.CenterEnd)
+                    .maskedMotionShine(
+                        tiltState = tiltState,
+                        parameters = MotionShineParameters.DigitalDollarCard,
+                        contentAlpha = ILLUSTRATION_ALPHA
+                    ),
+                painter = painterResource(R.drawable.img_digital_dollar_card),
+                contentDescription = null,
+                contentScale = ContentScale.FillHeight
+            )
+        }
 
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .padding(PolkadotTheme.spacings.mediumIncreased)
+                .padding(
+                    horizontal = PolkadotTheme.spacings.large,
+                    vertical = PolkadotTheme.spacings.mediumIncreased
+                )
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -136,18 +120,11 @@ fun DigitalDollarCard(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    NovaIcon(
-                        imageVector = DigitalDollarIcon,
-                        tint = PocketCardColors.Primary
-                    )
-
-                    HorizontalSpacer { extraSmall }
-
-                    NovaText(
-                        text = stringResource(RCommon.string.pocket_digital_dollar_card_title, CurrencyConfig.symbol)
-                            .withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
-                        style = PolkadotTheme.typography.title.large,
-                        color = PocketCardColors.Primary
+                    PaymentAssetLogoImage(
+                        modifier = Modifier
+                            .height(LogoHeight)
+                            .aspectRatio(PaymentAssetLogoVariant.Square.aspectRatio),
+                        variant = PaymentAssetLogoVariant.Square
                     )
                 }
 
@@ -162,24 +139,17 @@ fun DigitalDollarCard(
                 Column(
                     modifier = Modifier.align(Alignment.BottomStart)
                 ) {
-                    val amounts = card.amounts.dataOrNull
-                    val balanceStatus = when {
-                        card.syncInProgress -> BalanceStatus.Syncing
-                        card.accountBackupPending -> BalanceStatus.AccountBackupPending
-                        amounts != null && amounts.notFullyReady -> BalanceStatus.Ready(amounts.ready)
-                        else -> BalanceStatus.Hidden
-                    }
-
                     AnimatedContent(
-                        targetState = balanceStatus,
+                        targetState = card.balanceStatus,
+                        contentKey = { it::class },
                         label = "DigitalDollarBalanceStatus"
                     ) { status ->
                         when (status) {
-                            BalanceStatus.Syncing -> SyncProgress()
-                            BalanceStatus.AccountBackupPending -> AccountBackupPending()
-                            is BalanceStatus.Ready -> ReadyBalance(amount = status.amount)
+                            DigitalDollarBalanceStatus.Syncing -> SyncProgress()
+                            DigitalDollarBalanceStatus.AccountBackupPending -> AccountBackupPending()
+                            is DigitalDollarBalanceStatus.PartlyReady -> PartlyReadyBalance(amount = status.amount)
 
-                            BalanceStatus.Hidden -> Unit
+                            DigitalDollarBalanceStatus.TotalOnly -> Unit
                         }
                     }
 
@@ -205,13 +175,11 @@ private fun BalanceAmount(
     when (amounts) {
         is LoadingState.Loaded -> NovaText(
             modifier = sharedElement,
-            text = LocalTokenAmountFormatter.current.formatTokenAmount(
-                tokenAmount = amounts.data.balance,
-                precision = RoundPrecision.FIAT,
-                withSymbol = false
-            ),
+            text = LocalTokenAmountFormatter.current.formatFiatSigned(amounts.data.balance, withSymbol = true)
+                .withCurrencyTickerStyle(PolkadotTheme.typography.headline.medium),
+            maxLines = 1,
             style = PolkadotTheme.typography.headline.medium,
-            color = PocketCardColors.Primary
+            color = PolkadotTheme.colors.fg.staticWhite
         )
 
         else -> Shimmer(
@@ -222,20 +190,28 @@ private fun BalanceAmount(
 }
 
 @Composable
-fun ReadyBalance(amount: TokenAmountModel) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+private fun PartlyReadyBalance(amount: TokenAmountModel) {
+    Column {
         NovaText(
-            text = LocalTokenAmountFormatter.current.formatFiat(amount).withCurrencyTickerStyle(PolkadotTheme.typography.body.medium),
+            text = stringResource(RCommon.string.pocket_coinage_ready),
+            maxLines = 1,
+            style = PolkadotTheme.typography.body.medium,
+            color = PocketCardColors.Secondary
+        )
+
+        NovaText(
+            text = LocalTokenAmountFormatter.current.formatFiatSigned(amount, withSymbol = true)
+                .withCurrencyTickerStyle(PolkadotTheme.typography.body.medium),
+            maxLines = 1,
             style = PolkadotTheme.typography.body.medium,
             color = PocketCardColors.Primary
         )
 
-        HorizontalSpacer { small }
+        VerticalSpacer { small }
 
         NovaText(
-            text = stringResource(RCommon.string.pocket_coinage_ready),
+            text = stringResource(RCommon.string.pocket_coinage_total_balance),
+            maxLines = 1,
             style = PolkadotTheme.typography.body.medium,
             color = PocketCardColors.Secondary
         )
@@ -290,20 +266,18 @@ private fun AccountBackupPending() {
     }
 }
 
-private sealed interface BalanceStatus {
-    data object Syncing : BalanceStatus
+private val BORDER_WIDTH = 0.5.dp
 
-    data object AccountBackupPending : BalanceStatus
+private const val ILLUSTRATION_ALPHA = 0.2f
 
-    data class Ready(val amount: TokenAmountModel) : BalanceStatus
-
-    data object Hidden : BalanceStatus
-}
+private const val TEXTURE_ALPHA = 0.3f
 
 private object AmountShimmerSizes {
     val WIDTH = 100.dp
     val HEIGHT = 28.dp
 }
+
+private val LogoHeight = 36.dp
 
 @Preview
 @Composable
@@ -313,6 +287,18 @@ private fun DigitalDollarCardPreview() {
             PocketCardUiModel.DigitalDollar.Amounts(TokenAmountModel.mock, TokenAmountModel.mock)
         ),
         syncInProgress = true,
+        isExpanded = true
+    )
+}
+
+@Preview
+@Composable
+private fun DigitalDollarCardPartlyReadyPreview() {
+    DigitalDollarCardPreviewContainer(
+        amounts = LoadingState.Loaded(
+            PocketCardUiModel.DigitalDollar.Amounts(TokenAmountModel.mock(30), TokenAmountModel.mock(20))
+        ),
+        syncInProgress = false,
         isExpanded = true
     )
 }
@@ -381,7 +367,8 @@ private fun DigitalDollarCardPreviewContainer(
 ) {
     PolkadotTheme {
         CompositionLocalProvider(
-            LocalTokenAmountFormatter provides TokenAmountFormatter.mocked
+            LocalTokenAmountFormatter provides TokenAmountFormatter.mocked,
+            LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
         ) {
             DigitalDollarCard(
                 card = PocketCardUiModel.DigitalDollar(

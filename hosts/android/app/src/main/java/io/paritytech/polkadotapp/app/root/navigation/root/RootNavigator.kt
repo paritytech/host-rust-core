@@ -19,8 +19,6 @@ class RootNavigator @Inject constructor(
         performNavigation(R.id.action_global_to_main_graph)
     }
 
-    override fun openAddContact() = performNavigation(R.id.action_global_to_addContactFragment)
-
     override fun openActiveProduct() = performNavigation(R.id.action_global_to_spaBrowserFragment)
 
     override fun openClaimUsername() = performNavigationToGraph(
@@ -39,6 +37,8 @@ class RootNavigator @Inject constructor(
     override fun openVideoGame() = performNavigation(R.id.action_global_to_video_game_play_graph)
 
     override fun openProductBotsManagement() = performNavigation(R.id.action_global_to_product_bots_management)
+
+    override fun openPocketFacePreview() = performNavigation(R.id.action_global_to_pocket_face_preview)
 
     override fun openSpaBrowser(payload: SpaBrowserPayload) = performNavigation(
         R.id.action_global_to_spaBrowserFragment,

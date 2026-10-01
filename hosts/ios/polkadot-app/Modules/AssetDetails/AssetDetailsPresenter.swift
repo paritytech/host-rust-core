@@ -71,13 +71,13 @@ final class AssetDetailsPresenter {
 
         view?.didReceiveData(viewModel: .token(balanceViewModel), index: 0)
 
-        guard (coinageAmounts?.gainingPrivacy ?? 0) > 0 else {
+        guard let coinageAmounts, coinageAmounts.hasFundsNotReady else {
             view?.didReceive(readyAmount: nil)
             return
         }
 
         let readyViewModel = balanceViewModelFactory.balanceFromPrice(
-            coinageAmounts?.availableNow ?? 0,
+            coinageAmounts.availableNow,
             priceData: price
         )
         .value(for: .current)

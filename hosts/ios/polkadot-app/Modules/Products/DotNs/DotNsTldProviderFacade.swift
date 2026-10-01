@@ -33,6 +33,7 @@ enum DotNsTldProviderFacade {
             ),
             configProvider: { try AppConfig.DotNs.config() }
         ),
-        store: SettingsDotNsTldStore()
+        store: SettingsDotNsTldStore(),
+        logger: Logger.shared
     )
 }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -36,16 +37,20 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isUnspecified
 import io.paritytech.polkadotapp.common.presentation.compose.withCurrencyTickerStyle
-import io.paritytech.polkadotapp.design.components.icon.NovaIcon
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.LocalPaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetBrand
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.PaymentAssetLogoVariant
+import io.paritytech.polkadotapp.common.presentation.paymentAsset.compose.PaymentAssetLogoImage
 import io.paritytech.polkadotapp.design.components.spacer.HorizontalSpacer
+import io.paritytech.polkadotapp.design.components.spacer.VerticalSpacer
 import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.design.utils.conditionalNotNull
-import io.paritytech.polkadotapp.feature_wallet_impl.presentation.compose.components.icons.DigitalDollarIcon
 import io.paritytech.polkadotapp.common.R as RCommon
 
-private val SymbolIconSize = DpSize(42.dp, 47.dp)
+private val SymbolIconSize = DpSize(32.dp, 36.dp)
 private val AmountReferenceHeight = 64.dp
+private const val DIGIT_CAP_HEIGHT_RATIO = 0.72f
 
 private fun Density.symbolIconSizeFor(amountFontSize: TextUnit): DpSize =
     SymbolIconSize * (amountFontSize.toDp() / AmountReferenceHeight)
@@ -124,12 +129,15 @@ internal fun EnterAmountInput(
                     .copy(fontSize = currentFontSize)
 
                 Row(modifier = Modifier.offset(x = offsetX)) {
-                    NovaIcon(
+                    val markBaselineOffset = with(density) {
+                        ((currentFontSize.toDp() * DIGIT_CAP_HEIGHT_RATIO - symbolIconSize.height) / 2).roundToPx()
+                    }
+
+                    PaymentAssetLogoImage(
                         modifier = Modifier
                             .size(symbolIconSize)
-                            .alignBy { it.measuredHeight },
-                        imageVector = DigitalDollarIcon,
-                        tint = PolkadotTheme.colors.fg.primary
+                            .alignBy { it.measuredHeight + markBaselineOffset },
+                        variant = PaymentAssetLogoVariant.Square
                     )
 
                     HorizontalSpacer { small }
@@ -164,11 +172,15 @@ internal fun EnterAmountInput(
             }
         }
 
+        VerticalSpacer { extraMedium }
+
         NovaText(
-            text = symbol.withCurrencyTickerStyle(PolkadotTheme.typography.title.extraLarge),
-            style = PolkadotTheme.typography.title.extraLarge,
+            text = symbol.withCurrencyTickerStyle(PolkadotTheme.typography.headline.small),
+            style = PolkadotTheme.typography.headline.small,
             color = PolkadotTheme.colors.fg.secondary
         )
+
+        VerticalSpacer { small }
 
         val errorText =
             if (showError) stringResource(RCommon.string.send_enter_amount_not_enough_funds_error)
@@ -176,7 +188,7 @@ internal fun EnterAmountInput(
 
         NovaText(
             text = errorText,
-            style = PolkadotTheme.typography.body.medium,
+            style = PolkadotTheme.typography.body.large,
             color = PolkadotTheme.colors.fg.error,
             textAlign = TextAlign.Center
         )
@@ -185,7 +197,9 @@ internal fun EnterAmountInput(
 
 @Preview
 @Composable
-private fun EnterAmountInputPreview() {
+private fun EnterAmountInputPreview() = CompositionLocalProvider(
+    LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
+) {
     PolkadotTheme {
         EnterAmountInput(
             input = "",
@@ -199,7 +213,9 @@ private fun EnterAmountInputPreview() {
 
 @Preview
 @Composable
-private fun EnterAmountInputLongAmountPreview() {
+private fun EnterAmountInputLongAmountPreview() = CompositionLocalProvider(
+    LocalPaymentAssetBrand provides PaymentAssetBrand.mocked
+) {
     PolkadotTheme {
         EnterAmountInput(
             input = "1234567890.12",

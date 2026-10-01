@@ -176,7 +176,8 @@ extension AssetDetailsInteractor: AssetDetailsInteractorInputProtocol {
                             availableNow: context.decimal(fromPlanks: balance.availablePrivate),
                             gainingPrivacy: context.decimal(
                                 fromPlanks: balance.gainingPrivacy.amount
-                            )
+                            ),
+                            pending: context.decimal(fromPlanks: balance.pending)
                         ),
                         holdings: summary.holdings
                     )

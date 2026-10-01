@@ -294,7 +294,7 @@ private extension ChatPresenter {
                 case let .send(content):
                     // Legacy
                     viewModelFactory.transferPreviewText(
-                        content: .init(totalValue: content.amount, coinKeys: [], status: nil),
+                        content: .init(totalValue: content.amount, coinKeys: []),
                         isIncoming: message.status.isIncoming,
                         peerName: metadata.peerName
                     )
@@ -407,6 +407,11 @@ private extension ChatPresenter {
     func handleStartCall(callType: ChatCallType) {
         guard let metadata else { return }
         MainActor.assumeIsolated {
+            if interactor.isMicrophoneDenied() {
+                wireframe.presentMicrophoneAccessDenied(from: view)
+                return
+            }
+
             wireframe.showCall(
                 from: view,
                 chatMetadata: metadata.chatMetadata,

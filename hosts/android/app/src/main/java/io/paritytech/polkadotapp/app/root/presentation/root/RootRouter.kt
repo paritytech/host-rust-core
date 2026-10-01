@@ -9,8 +9,6 @@ interface RootRouter : ReturnableRouter {
 
     fun openMain()
 
-    fun openAddContact()
-
     fun openActiveProduct()
 
     fun openDebugMenu()
@@ -20,6 +18,9 @@ interface RootRouter : ReturnableRouter {
     fun openVideoGame()
 
     fun openProductBotsManagement()
+
+    /** Debug: draw a renderer tree served over HTTP at Pocket card size. */
+    fun openPocketFacePreview()
 
     fun openSpaBrowser(payload: SpaBrowserPayload)
 

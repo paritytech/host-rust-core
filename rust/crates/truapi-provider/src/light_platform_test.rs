@@ -33,13 +33,13 @@ const COLLAPSED_SLEEP: Duration = Duration::from_millis(200);
 /// Wraps a platform and collapses its long sleeps. Every other capability is
 /// the inner platform's.
 #[derive(Debug, Clone)]
-pub(crate) struct ShortDeadlinePlatform<T> {
+pub struct ShortDeadlinePlatform<T> {
     inner: T,
 }
 
 impl<T> ShortDeadlinePlatform<T> {
     /// Wraps `inner`.
-    pub(crate) const fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         ShortDeadlinePlatform { inner }
     }
 }

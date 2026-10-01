@@ -65,7 +65,7 @@ struct RustHostRuntimeBridgeTests {
     @Test func navigateToRejects() async {
         let bridge = makeHostBridge()
 
-        await #expect(throws: HostNavigateRejection.self) {
+        await #expect(throws: HostNavigateToError.self) {
             try await bridge.navigateTo(url: "https://example.com")
         }
     }
@@ -143,7 +143,8 @@ struct TrUAPIHostRuntimeProviderConfigTests {
                 chainRegistry: MockChainRegistry(),
                 secret: Data([0x01]),
                 liteUsername: nil,
-                networkSuffix: "paseo"
+                networkSuffix: "paseo",
+                databaseDirectory: NSTemporaryDirectory()
             )
         }
     }

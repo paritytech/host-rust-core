@@ -29,12 +29,15 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::layer::{Context as LayerContext, Layer};
-use truapi_platform::PermissionDecision;
+use truapi::platform::PermissionDecision;
 use unicode_width::UnicodeWidthChar;
 
 use crate::LogLevel;
 use crate::qr_scanner::RgbaFrame;
-use crate::signing_shell::{CommandEditor, contains_mnemonic, mask_mnemonic, parse_approval};
+use crate::signing_shell::{
+    CommandEditor, SessionCommand, ShellCommand, contains_mnemonic, mask_mnemonic, parse_approval,
+    parse_command,
+};
 
 const TRANSCRIPT_LIMIT: usize = 10_000;
 const TRANSCRIPT_LINE_LIMIT: usize = 10_000;
@@ -88,7 +91,7 @@ impl ApprovalKind {
 }
 
 /// Tracing target reserved for SSO summaries that must remain visible at every log level.
-pub const SSO_TRANSCRIPT_TARGET: &str = "truapi_server::sso_transcript";
+pub const SSO_TRANSCRIPT_TARGET: &str = "truapi::sso_transcript";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoticeTone {
@@ -756,7 +759,7 @@ pub enum DriveResult<T> {
     Cancelled,
 }
 
-pub(super) enum PairingImageInput {
+pub enum PairingImageInput {
     Pixels(RgbaFrame),
     Path(PathBuf),
 }
@@ -2094,6 +2097,10 @@ impl App {
                 let completions = self.editor.completions();
                 if let Some(completion) = completions.get(self.editor.completion_index())
                     && text != completion.value
+                    && !matches!(
+                        parse_command(&text),
+                        Ok(ShellCommand::Session(SessionCommand::Switch(_)))
+                    )
                 {
                     self.editor.accept_completion();
                     return None;
@@ -2488,6 +2495,12 @@ fn footer_text(app: &App, approval: bool, autocomplete: bool, width: u16) -> Str
         return "PgUp/PgDn · wheel scroll".to_string();
     }
     if autocomplete && width >= 70 {
+        if matches!(
+            parse_command(&app.editor.text()),
+            Ok(ShellCommand::Session(SessionCommand::Switch(_)))
+        ) {
+            return "↑↓ select · Tab complete · Enter submit".to_string();
+        }
         return "↑↓ select · Tab/Enter complete".to_string();
     }
     String::new()
@@ -3057,7 +3070,7 @@ fn redact_pairing_link(text: &str) -> String {
     format!("{}<pairing link>", &text[..start])
 }
 
-pub(crate) fn sanitize_terminal_text(text: &str) -> String {
+pub fn sanitize_terminal_text(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut characters = text.chars().peekable();
     while let Some(character) = characters.next() {
@@ -3693,6 +3706,20 @@ mod tests {
 
         assert_eq!(app.session, "alice");
         assert_eq!(app.editor.completions()[0].value, "/session bob");
+    }
+
+    #[test]
+    fn session_prefix_enter_submits_the_typed_name() {
+        let mut app = test_app();
+        app.editor
+            .set_session_names(vec!["workbench.42".to_string(), "workbench.73".to_string()]);
+        app.editor.set_text("/session workbench");
+        let submitted = app.handle_idle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+
+        assert_eq!(submitted, Some(Some("/session workbench".to_string())));
     }
 
     #[test]

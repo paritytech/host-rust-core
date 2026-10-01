@@ -5,6 +5,7 @@ import io.paritytech.polkadotapp.feature_products_api.domain.pocket.PocketCardId
 import io.paritytech.polkadotapp.feature_products_api.model.ExecutableHost
 import io.paritytech.polkadotapp.feature_products_api.model.ExecutableKind
 import io.paritytech.polkadotapp.feature_products_api.model.PocketCardDefinition
+import io.paritytech.polkadotapp.feature_products_api.model.PocketCardPreview
 import io.paritytech.polkadotapp.feature_products_api.model.ProductExecutable
 import io.paritytech.polkadotapp.feature_products_api.model.ProductIcon
 import org.junit.Assert.assertEquals
@@ -149,7 +150,32 @@ class ManifestParserTest {
         ).getOrNull() as? ProductExecutable.Worker
 
         assertEquals(true, worker?.includesPocket)
-        assertEquals(listOf(PocketCardDefinition(PocketCardId("loyalty"), "Loyalty", "faces/loyalty.json")), worker?.pocketCards)
+        val expected = PocketCardDefinition(
+            PocketCardId("loyalty"),
+            "Loyalty",
+            PocketCardPreview.Archive("faces/loyalty.json"),
+        )
+        assertEquals(listOf(expected), worker?.pocketCards)
+    }
+
+    /**
+     * A manifest is published on chain by the product, and the preview is read before the user has
+     * approved anything. Reading it must stay inside the product's own archive: a manifest that
+     * could name a URL would be a manifest that could point the host at any address it liked.
+     */
+    @Test
+    fun `a published card's preview is always a path in the archive, never a url`() {
+        val worker = parser.parseExecutable(
+            """{"${'$'}v":1,"kind":"worker","appVersion":[1,0,0],"entrypoint":"index.js","includes":{"chat":false,"pocket":true},
+               "pocket":{"cards":[{"id":"loyalty","title":"Loyalty","preview":"https://example.invalid/face.json"}]}}""",
+            ExecutableKind.WORKER,
+            host("worker.coinflip.dot"),
+        ).getOrNull() as? ProductExecutable.Worker
+
+        assertEquals(
+            PocketCardPreview.Archive("https://example.invalid/face.json"),
+            worker?.pocketCards?.single()?.preview,
+        )
     }
 
     @Test

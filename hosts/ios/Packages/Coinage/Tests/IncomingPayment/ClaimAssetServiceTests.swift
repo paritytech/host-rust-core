@@ -10,6 +10,11 @@ import SubstrateSdk
 /// real durability entries with `MockCoinageTxService`, and an in-memory voucher store to value them.
 /// Time is virtual (`TestTime`): every timeout, delay, and window is driven by the test, so the exact
 /// retry cadence is asserted rather than a wall-clock range.
+///
+/// Every virtual step costs dozens of task yields, so wall time scales with how starved the process is:
+/// a CI runner measured 28x slower than usual pushed the longest tests here past one minute while the
+/// virtual `Stalled` limit stays the real hang tripwire.
+@Suite(.timeLimit(.minutes(5)))
 struct ClaimAssetServiceTests {
     /// Denominations 8, 4, 2, 1 planks.
     private static let denomination = DenominationBreakdownContext(
@@ -35,7 +40,7 @@ struct ClaimAssetServiceTests {
         entropyManager: MockEntropyManager(entropy: Data(repeating: 0x02, count: 32))
     )
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func exactAmountIsClaimedAndFinalized() async throws {
         let rig = makeRig(tracking: StubAssetsTracking(looks: [10]))
 
@@ -47,18 +52,19 @@ struct ClaimAssetServiceTests {
         #expect(rig.loader.loads() == [10])
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func remainderBelowSmallestDenominationEndsAsPartial() async throws {
         let rig = makeRig(tracking: StubAssetsTracking(looks: [11]))
 
         let detections = await rig.run(amount: 11, retryUntil: .distantFuture, context: Self.coarseDenomination)
 
         #expect(detections.last == .claimedPartially(claimed: 10))
-        // The 1-plank remainder is not attempted again: nothing could ever load it.
-        #expect(rig.loader.loads() == [11])
+        // The 1-plank remainder is not attempted again: nothing could ever load it. The loader is
+        // asked for the 10 the denominations can carry, rather than for 11 and quietly given 10.
+        #expect(rig.loader.loads() == [10])
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func nothingArrivingWithinWindowIsNotClaimed() async throws {
         let tracking = StubAssetsTracking(looks: [])
         let rig = makeRig(tracking: tracking)
@@ -74,8 +80,14 @@ struct ClaimAssetServiceTests {
         #expect(tracking.trackCalls() == 1)
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    func closedWindowIsNotAttemptedEvenWhenFunded() async throws {
+    /// Reversed deliberately (audit finding H5). This previously asserted that a closed window is never
+    /// attempted "even when funded", on the reasoning that the funds are the caller's own and nothing
+    /// else will spend them. That holds only while the key survives — and `settle` wipes the source
+    /// secret on `notClaimed`, which for a `.coins` source *is* the money. A resume that arrives after
+    /// the window must therefore still take one look and one attempt, the same guarantee
+    /// `ClaimCoinsService` documents and makes.
+    @Test
+    func closedWindowStillTakesOneAttemptWhenFunded() async throws {
         let rig = makeRig(tracking: StubAssetsTracking(looks: [10]))
 
         let detections = await rig.run(
@@ -85,18 +97,40 @@ struct ClaimAssetServiceTests {
         )
 
         #expect(detections.first == .detecting)
-        #expect(!detections.contains(.claiming))
-        #expect(detections.last == .notClaimed)
+        #expect(detections.contains(.claiming))
+        #expect(detections.last == .claimed(amount: 10, finalized: true))
+        #expect(rig.loader.loads() == [10])
+    }
+
+    /// The window still ends the loop — it just does so after the look, not before it. Nothing arriving
+    /// means nothing to attempt, so no load is made and the verdict is unchanged.
+    @Test
+    func closedWindowWithNothingArrivingMakesNoAttempt() async throws {
+        let rig = makeRig(tracking: StubAssetsTracking(looks: []))
+
+        let run = rig.start(amount: 10, retryUntil: rig.time.date(after: -1), context: Self.denomination)
+        try await rig.time.advance(until: { run.isFinished })
+
+        #expect(await run.detections().last == .notClaimed)
         #expect(rig.loader.loads().isEmpty)
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func unopenableTrackerIsRetriedAtItsDelayUntilTheWindowCloses() async throws {
         let tracking = StubAssetsTracking(openError: StubAssetsTracking.Unavailable())
         let rig = makeRig(tracking: tracking)
 
         let run = rig.start(amount: 10, retryUntil: rig.time.date(after: 0.25), context: Self.denomination)
-        try await rig.time.advance(until: { run.isFinished })
+
+        // Each reopen needs the service scheduled, but the deadline is absolute: stepping the clock
+        // without waiting for the reopen it triggers loses reopens outright and lands under the range
+        // below. Advancing to each one in turn keeps the clock behind the service.
+        var reopens = 1
+        while !run.isFinished {
+            let expected = reopens
+            try await rig.time.advance(until: { tracking.trackCalls() >= expected || run.isFinished })
+            reopens += 1
+        }
 
         #expect(await run.detections().last == .notClaimed)
         #expect(rig.loader.loads().isEmpty)
@@ -105,32 +139,46 @@ struct ClaimAssetServiceTests {
         #expect((25 ... 27).contains(tracking.trackCalls()))
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func failingLoadIsRetriedAtDetectionCadenceUntilTheWindowCloses() async throws {
         let rig = makeRig(tracking: StubAssetsTracking(looks: [10]))
         rig.loader.loadError = StubVoucherLoaderFactory.Failure()
 
         let run = rig.start(amount: 10, retryUntil: rig.time.date(after: 0.3), context: Self.denomination)
+
+        // One attempt per detection timeout. The window is checked before each wait, not after it, so
+        // the wait that ends exactly at the deadline still loads: t = 0, 50, ..., 300 ms. Stepping to
+        // each load keeps the clock from running ahead of the service and dropping that last attempt.
+        for expected in 1 ... 7 {
+            try await rig.time.advance(until: { rig.loader.loads().count >= expected || run.isFinished })
+        }
         try await rig.time.advance(until: { run.isFinished })
 
         #expect(await run.detections().last == .notClaimed)
-        // One attempt per detection timeout. The window is checked before each wait, not after it, so
-        // the wait that ends exactly at the deadline still loads: t = 0, 50, ..., 300 ms.
         #expect(rig.loader.loads().count == 7)
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func batchFailingOnChainIsRetriedAtDetectionCadenceUntilTheWindowCloses() async throws {
         let rig = makeRig(tracking: StubAssetsTracking(looks: [10]), submissionOutcome: .chainFailure)
 
         let run = rig.start(amount: 10, retryUntil: rig.time.date(after: 0.3), context: Self.denomination)
+
+        // One load lands immediately, then one per detection timeout at 50ms...300ms inclusive. The
+        // 300ms attempt survives only because the window check preceding it reads exactly 250ms, so
+        // the clock must not run ahead of the service: `advance(until:)` steps blind, and a single
+        // run to completion can spend five steps while the service is descheduled and lose that last
+        // attempt. Stopping at each load keeps the drift at one step.
+        for expected in 1 ... 7 {
+            try await rig.time.advance(until: { rig.loader.loads().count >= expected || run.isFinished })
+        }
         try await rig.time.advance(until: { run.isFinished })
 
         #expect(await run.detections().last == .notClaimed)
         #expect(rig.loader.loads().count == 7)
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func fundsArrivingLaterAreClaimed() async throws {
         let tracking = StubAssetsTracking(looks: [0])
         let rig = makeRig(tracking: tracking)
@@ -148,7 +196,7 @@ struct ClaimAssetServiceTests {
         #expect(rig.loader.loads() == [10])
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test
     func unreadableVoucherStoreEndsWithoutAVerdict() async throws {
         let rig = makeRig(tracking: StubAssetsTracking(looks: [10]))
         rig.vouchers.fetchError = InMemoryVoucherService.Unreadable()

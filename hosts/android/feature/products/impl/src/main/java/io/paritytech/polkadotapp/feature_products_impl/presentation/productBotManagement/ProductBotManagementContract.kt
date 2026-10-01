@@ -22,5 +22,11 @@ interface ProductBotManagementContract {
 
     fun onWorkerUrlChanged(url: String)
 
+    fun onCardIdChanged(cardId: String)
+
+    fun onCardTitleChanged(title: String)
+
+    fun onPreviewUrlChanged(url: String)
+
     fun onDialogConfirm()
 }

@@ -1,5 +1,104 @@
 # @parity/truapi-host
 
+## 0.23.0
+
+### Minor Changes
+
+- 7663ece: `create_transaction` and `create_transaction_with_legacy_account` read `txExtVersion` as the version of the
+  transaction extensions in `extensions`, as the runtime numbers them. With `0` the host builds a V5 general transaction
+  when transaction extension version 0 includes `VerifyMultiSignature`, and a signed V4 transaction otherwise. A
+  non-zero value builds V5 with that version. A version the runtime does not declare returns `NotSupported` naming the
+  declared versions.
+
+### Patch Changes
+
+- ca44c7f: Native host storage and Pocket card removal are asynchronous. The core awaits `core_storage_read`,
+  `core_storage_write`, `core_storage_clear`, `local_storage_read`, `local_storage_write`, `local_storage_clear` and
+  `NativePocketCallbacks::remove_card`, so a host backend that waits on disk, a keystore or a database no longer holds a
+  core thread. On Android, `HostStorage`, `HostCoreStorage` and `PocketHostBridge.removeCard` are `suspend` functions,
+  which is a breaking change for `@parity/android-host` implementers. On iOS the protocols are unchanged, since
+  synchronous implementations satisfy the async requirements. `chain_send` and `chain_close` stay synchronous so
+  requests keep their order, and must only enqueue work.
+- 57475ce: Native hosts run the whole core on one process-wide tokio runtime. Subscriptions and background loops spawned
+  by the core and the localhost WebSocket bridge's connections share its workers, so a bridged product's request and the
+  subscriptions it opens run on the same executor. The runtime constructor fails with `RuntimeUnavailable` when that
+  runtime cannot start.
+- Updated dependencies [7663ece]
+  - @parity/truapi@0.23.0
+
+## 0.22.0
+
+### Patch Changes
+
+- d3d3312: Every native build of the core includes the localhost WebSocket bridge and the debug sink. There are no
+  `ws-bridge` or `debug-sink` Cargo features: native targets compile both with the default `runtime` feature, and wasm32
+  builds never include them.
+- 336be6e: The shared Rust core asks blessed products only for device permissions and legacy-account signing. Other
+  product operations bypass permission prompts and recorded decisions.
+- 4ef4efc: Build the core WASM without wasm-opt's one-caller inlining, which merges functions into bodies that compress
+  poorly. The `web` core is 719.5 KiB brotli and 952.5 KiB gzip, down from 775.4 KiB and 1.02 MiB; the raw size is
+  unchanged at 2.66 MiB.
+- Updated dependencies [a285523]
+- Updated dependencies [60940ff]
+- Updated dependencies [de343d4]
+- Updated dependencies [3ef2191]
+  - @parity/truapi@0.22.0
+
+## 0.21.0
+
+### Minor Changes
+
+- 579f450: Load `verifiable` on demand in the browser. The core WASM is 2.64 MiB raw and 775 KiB brotli, down from 7.76
+  MiB and 5.40 MiB: `verifiable` and its 4.5 MiB of powers of tau live in a separate module, `truapi_verifiable.js` and
+  `truapi_verifiable_bg.wasm` beside the core's files in each bundle, fetched in the background once a pairing session
+  connects, or when a ring-VRF operation first runs. Bundlers that follow `new URL(…, import.meta.url)`, such as Vite,
+  emit both files, and a host serving a bundle directory as a whole needs no change; a host that copies individual files
+  out of it must copy both too.
+- db004aa: SSO request cancellation. A pairing host whose caller withdraws a request it has published sends a `Cancel`
+  naming it, when that request is still the newest one on the session; a host timeout sends nothing. The core's
+  signing-host responder reads `Cancel` while it is still serving earlier requests: a running request stops at its
+  confirmation prompt or before its next allocation step and posts no response, and one not yet started never runs.
+  `Cancel` is appended to the SSO catalog at the next index, so a peer that predates it logs the message and serves the
+  request as before.
+- 0e56d37: Take the wire debugger's dial from the embedding host instead of `localStorage`.
+
+  `createWebWorkerPairingHostRuntime` accepts a `debugger` option; a dev build may carry a default in
+  `VITE_TRUAPI_DEBUGGER_URL`. The host's own value wins, and `null` or `""` refuses the dial outright. The dial is
+  resolved once at construction and cannot be changed from the page afterwards, so whether a session is observed is a
+  property of the build and the host rather than of anything typed into a console later.
+
+  While a dial is live the host shows a small dev-only badge naming every endpoint frames are going to, suppressible
+  with `debuggerIndicator: false` for a host that renders its own. The badge belongs to the runtimes that are dialling,
+  so an embedder with one worker runtime per product surface can give a dial to some of them without the rest taking the
+  badge down.
+
+  A dial URL must be `ws://` on `localhost`, 127.0.0.0/8 or `[::1]`, the same set the native sink accepts. An
+  IPv4-mapped literal such as `ws://[::ffff:127.0.0.1]` is refused.
+
+  **Breaking for anyone enabling the debugger today:** the `truapi:debugger` `localStorage` key is no longer read, and
+  setting it has no effect. Pass the `debugger` option, or build with `VITE_TRUAPI_DEBUGGER_URL`.
+
+- 5a9f4b9: The `Permissions` host callbacks name the product that asked: `devicePermission(product, request)` and
+  `remotePermission(product, request)` take the requesting `ProductContext` first, like the other product-scoped
+  callbacks, so a host can title the prompt with the product and key any grant it keeps itself by the product. Stored
+  decisions stay keyed by `productId` alone.
+
+  The `truapi-host` CLI names the requesting product in its permission approvals.
+
+### Patch Changes
+
+- cf1702f: Initialize built-in personhood ring keys when an authorized product lists the personhood owner's keys, so
+  full and lite handles are available without prior registration on the device.
+- dadcabd: A withdrawn request stops on the host, not only at the product. A call cancelled while its confirmation
+  prompt is open stops waiting, and an answer given afterwards authorizes nothing. A withdrawn call never publishes its
+  paired-host request, never sends a broadcast, statement, notification or navigation it had not yet sent, and a
+  broadcast already sent is stopped when the node gave it an operation id. Permission prompts still finish and record
+  their answer. Every stop reaches the product as `CallError.Cancelled`.
+- Updated dependencies [ffdd9b4]
+- Updated dependencies [5a9f4b9]
+- Updated dependencies [cf1702f]
+  - @parity/truapi@0.21.0
+
 ## 0.20.0
 
 ### Patch Changes

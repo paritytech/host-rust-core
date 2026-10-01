@@ -3,13 +3,13 @@ import Coinage
 import Foundation
 @preconcurrency import SDKLogger
 
-/// Projects the coinage external-payment status stream into ``ClaimStatus``
+/// Projects the coinage external-payment status stream into ``OutgoingTransferState``
 /// for the transfer screen. Tracking runs in an owned task so submission
 /// returns immediately and the screen reacts to streamed statuses.
 final class ExternalPaymentLifecycleReporter: TransferLifecycleReporting {
     private let coinageService: CoinageServicing
     private let logger: SDKLoggerProtocol?
-    private let subject = AsyncCurrentValueSubject<ClaimStatus>(.detecting)
+    private let subject = AsyncCurrentValueSubject<OutgoingTransferState>(.init(status: .sending))
 
     init(
         coinageService: CoinageServicing,
@@ -19,7 +19,7 @@ final class ExternalPaymentLifecycleReporter: TransferLifecycleReporting {
         self.logger = logger
     }
 
-    func makeStream() -> AnyAsyncSequence<ClaimStatus> {
+    func makeStream() -> AnyAsyncSequence<OutgoingTransferState> {
         subject.eraseToAnyAsyncSequence()
     }
 
@@ -39,19 +39,19 @@ final class ExternalPaymentLifecycleReporter: TransferLifecycleReporting {
                 for try await status in statuses {
                     switch status {
                     case .processing:
-                        subject.send(.detecting)
+                        subject.send(.init(status: .sending))
                     case .completed:
-                        subject.send(.finished(claimedAmount: amountInPlanks))
+                        subject.send(.init(status: .claimed, actualValue: amountInPlanks))
                         subject.send(Termination<Never>.finished)
                         return
                     case let .partiallyCompleted(settledInPlanks):
                         logger?.error("External payment \(paymentId) short: \(settledInPlanks) of \(amountInPlanks)")
-                        subject.send(.finished(claimedAmount: settledInPlanks))
+                        subject.send(.init(status: .claimed, actualValue: settledInPlanks))
                         subject.send(Termination<Never>.finished)
                         return
                     case let .failed(reason):
                         logger?.error("External payment \(paymentId) failed: \(reason)")
-                        subject.send(.error)
+                        subject.send(.init(status: .failed))
                         subject.send(Termination<Never>.finished)
                         return
                     }
@@ -60,7 +60,7 @@ final class ExternalPaymentLifecycleReporter: TransferLifecycleReporting {
                 subject.send(Termination<Never>.finished)
             } catch {
                 logger?.error("External payment \(paymentId) status stream failed: \(error)")
-                subject.send(.error)
+                subject.send(.init(status: .failed))
                 subject.send(Termination<Never>.finished)
             }
         }

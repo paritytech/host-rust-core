@@ -39,7 +39,7 @@ struct SplitRebuildTests {
             outputs: outputs.map { .coin($0.derivationIndex, $0.publicKey) }
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         let split = try #require(resolved[transaction.id])
         #expect(split.coinToSplit.publicKey == input.publicKey)
@@ -58,7 +58,7 @@ struct SplitRebuildTests {
             outputs: [.coin(2, output.publicKey)]
         )]
 
-        let split = try #require(await rebuild.resolve([transaction], assets: assets)[transaction.id])
+        let split = try #require(try await rebuild.resolve([transaction], assets: assets)[transaction.id])
 
         #expect(rebuild.inputs(of: split) == [input.publicKey])
     }
@@ -79,7 +79,7 @@ struct SplitRebuildTests {
             ]
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -95,7 +95,7 @@ struct SplitRebuildTests {
             outputs: [.coin(2, output.publicKey)]
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -116,7 +116,7 @@ struct SplitRebuildTests {
             outputs: [.coin(2, output.publicKey)]
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -132,7 +132,7 @@ struct SplitRebuildTests {
             outputs: []
         )]
 
-        let resolved = await rebuild.resolve([transaction], assets: assets)
+        let resolved = try await rebuild.resolve([transaction], assets: assets)
 
         #expect(resolved[transaction.id] == nil)
     }
@@ -142,17 +142,39 @@ struct SplitRebuildTests {
         let rebuild = makeRebuild(coins: [RebuildFixtures.coin(1)])
         let transaction = try scheduled()
 
-        let resolved = await rebuild.resolve([transaction], assets: [:])
+        let resolved = try await rebuild.resolve([transaction], assets: [:])
 
         #expect(resolved[transaction.id] == nil)
+    }
+
+    /// The distinction the policy depends on: a row it cannot *resolve* is unbuildable and given up on,
+    /// but a store that cannot be *read* says nothing about the row. Swallowing the error made the two
+    /// indistinguishable and terminally failed a leg whose memo the recipient already held.
+    @Test("a store that cannot be read propagates instead of resolving to nothing")
+    func unreadableStorePropagates() async throws {
+        let rebuild = makeRebuild(coinService: StubCoinService(fetchError: StubCoinService.Failure.unavailable))
+        let transaction = try scheduled()
+        let assets = [transaction.id: RebuildFixtures.entry(
+            id: transaction.id,
+            inputs: [.coin(.own(1, RebuildFixtures.coin(1).publicKey))],
+            outputs: [.coin(2, RebuildFixtures.coin(2).publicKey)]
+        )]
+
+        await #expect(throws: StubCoinService.Failure.self) {
+            _ = try await rebuild.resolve([transaction], assets: assets)
+        }
     }
 }
 
 private extension SplitRebuildTests {
     func makeRebuild(coins: [Coin]) -> SplitRebuild {
+        makeRebuild(coinService: StubCoinService(coins: RebuildFixtures.tracked(coins)))
+    }
+
+    func makeRebuild(coinService: any CoinServiceProtocol) -> SplitRebuild {
         SplitRebuild(
-            coinService: StubCoinService(coins: RebuildFixtures.tracked(coins)),
-            coinQuery: StubCoinQuery(),
+            coinService: coinService,
+            coinQuery: StubCoinOnChainQuery(),
             builder: SplitExtrinsicBuilder(
                 coinKeyFactory: StubCoinKeyFactory(),
                 originFactory: StubOriginFactory(),

@@ -17,6 +17,8 @@ import io.paritytech.polkadotapp.feature_products_api.model.SemVer
 import io.paritytech.polkadotapp.feature_products_impl.data.manifest.ManifestParser
 import io.paritytech.polkadotapp.feature_products_impl.data.manifest.RootManifest
 import io.paritytech.polkadotapp.feature_products_impl.data.repository.ProductRepository
+import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.DebugPocketCards
+import io.paritytech.polkadotapp.feature_products_impl.domain.pocket.toDefinition
 import io.paritytech.polkadotapp.feature_products_impl.domain.product.ProductManifest
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -32,6 +34,7 @@ internal class RealResolveProductUseCase @Inject constructor(
     private val dotNsResolver: DotNsResolver,
     private val manifestParser: ManifestParser,
     private val productRepository: ProductRepository,
+    private val debugPocketCards: DebugPocketCards,
 ) : ResolveProductUseCase {
     // Successful resolutions only, so a transient read failure stays retryable. Hit without the
     // lock, since the WebView's request-interception thread blocks on this for every request.
@@ -106,7 +109,7 @@ internal class RealResolveProductUseCase @Inject constructor(
                 Executables(
                     app = ProductExecutable.App(host = ExecutableHost(productId.value), appVersion = SemVer.ZERO),
                     widget = null,
-                    worker = userWorkerUrl?.let(::userSuppliedWorker),
+                    worker = userWorkerUrl?.let { userSuppliedWorker(productId, it) },
                 )
             )
         }
@@ -120,20 +123,28 @@ internal class RealResolveProductUseCase @Inject constructor(
                 Executables(
                     app = appExec as? ProductExecutable.App,
                     widget = widgetExec as? ProductExecutable.Widget,
-                    worker = workerExec as? ProductExecutable.Worker ?: userWorkerUrl?.let(::userSuppliedWorker),
+                    worker = workerExec as? ProductExecutable.Worker
+                        ?: userWorkerUrl?.let { userSuppliedWorker(productId, it) },
                 )
             }
         }
     }
 
-    private fun userSuppliedWorker(scriptUrl: String): ProductExecutable.Worker =
-        ProductExecutable.Worker(
+    /**
+     * A worker served from a developer's machine. It carries a Pocket card when the debug menu names
+     * one, which is what lets a card be tried without publishing a manifest first.
+     */
+    private fun userSuppliedWorker(productId: ProductId, scriptUrl: String): ProductExecutable.Worker {
+        val card = debugPocketCards.get(productId)
+
+        return ProductExecutable.Worker(
             scriptUrl = scriptUrl,
             appVersion = SemVer.ZERO,
             includesChat = true,
-            includesPocket = false,
-            pocketCards = emptyList(),
+            includesPocket = card != null,
+            pocketCards = listOfNotNull(card?.toDefinition()),
         )
+    }
 
     // A read failure fails the whole resolution, so a transient one is retried rather than cached
     // as "this product has no such executable". An absent or rejected record is that answer.

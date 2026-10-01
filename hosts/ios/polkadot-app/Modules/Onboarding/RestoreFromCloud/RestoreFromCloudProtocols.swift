@@ -17,6 +17,7 @@ protocol RestoreFromCloudInteractorInputProtocol: AnyObject {
 @MainActor
 protocol RestoreFromCloudInteractorOutputProtocol: AnyObject {
     func didReceiveInProgress(_ value: Bool)
+    func didFailAuthorization()
     func didRestoreWallets()
     func didDecideBroken()
     func authorizeUser(completion: @escaping AuthorizationCompletionBlock)

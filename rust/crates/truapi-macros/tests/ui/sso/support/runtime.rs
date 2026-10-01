@@ -6,8 +6,8 @@ mod runtime {
     }
 
     pub mod sso_service {
-        use crate::host_logic::sso::messages::{Response, v1};
-        use crate::host_logic::sso::wire::ResponseOutcome;
+        use crate::host_internal::sso_messages::{Response, v1};
+        use crate::host_internal::sso_wire::ResponseOutcome;
 
         pub struct SsoRequestContext;
 
