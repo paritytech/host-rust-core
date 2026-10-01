@@ -11,7 +11,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAutoSigningE2e } from "../auto-signing-e2e.ts";
-import { runAutomaticUploadE2e } from "../automatic-upload-e2e.ts";
 import { BatteryReporter } from "../battery-reporter.ts";
 import {
   cliDiagnosisReportMetadata,
@@ -88,13 +87,6 @@ const autoSigningRingVrf = await runAutoSigningRingVrfE2e(
 );
 reporter.result(autoSigningRingVrf);
 rows.push(autoSigningRingVrf);
-// AutomaticUpload must make preimage.submit prompt-free within its limits.
-const automaticUpload = await runAutomaticUploadE2e(
-  truapi,
-  process.env.TRUAPI_APPROVALS_LOG,
-);
-reporter.result(automaticUpload);
-rows.push(automaticUpload);
 reporter.finish(rows, Math.round(performance.now() - startedAt));
 mkdirSync(dirname(REPORT_PATH), { recursive: true });
 writeFileSync(REPORT_PATH, renderDiagnosisReport(report.title, rows));

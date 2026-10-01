@@ -398,16 +398,6 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                 )
                 .await
             }
-            PermissionAuthorizationRequest::AutomaticUpload { root_public_key } => {
-                authorization_status(
-                    self.storage,
-                    CoreStorageKey::automatic_upload_authorization(
-                        self.product_id(),
-                        *root_public_key,
-                    ),
-                )
-                .await
-            }
         }
     }
 
@@ -461,9 +451,6 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             }
             PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
                 CoreStorageKey::account_access_authorization(self.product_id(), target_product_id)
-            }
-            PermissionAuthorizationRequest::AutomaticUpload { root_public_key } => {
-                CoreStorageKey::automatic_upload_authorization(self.product_id(), *root_public_key)
             }
         };
         self.temporary_permissions.revoke(&key);

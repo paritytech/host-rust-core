@@ -102,13 +102,6 @@ recorded permissions. Only device permissions require consent.
 Account access, username disclosure, signing with their own product accounts and
 AutoSigning proceed without approval. Legacy-account signing still asks the user.
 
-`preimage.submit` confirms every upload unless the product holds an
-`AutomaticUpload` consent for the session's root account, granted through
-`resource_allocation.request` and stored as
-`PermissionAuthorizationRequest::AutomaticUpload`. The consent covers uploads
-of at most 256 KiB, up to 4 per product and account in any hour, counted across
-every product runtime of the host. It is never forwarded to the signing host.
-
 ```text
 Product app
 (product_id = "my-product")
@@ -381,8 +374,10 @@ AutoSigning without approval. Legacy-account signing still asks the user.
   Defined in `truapi_provider::platform` so the provider implements them
   without linking the runtime, and re-exported here.
 - `AuthPresenter`: render core-owned auth state transitions.
-- `UserConfirmation`: confirm signing, transaction, resource, alias, and
-  preimage actions before the core asks the paired wallet.
+- `UserConfirmation`: confirm signing, transaction, resource and alias
+  actions before the core asks the paired wallet. `preimage.submit` needs
+  only the `PreimageSubmit` permission: an always grant covers every upload,
+  a one-use grant covers one.
 - `ThemeHost`: stream the host theme into the runtime.
 - `PreimageHost`: submit and look up preimages through the host-selected backend.
 - `ChatPlatform`: create product-scoped native chat rooms, register product

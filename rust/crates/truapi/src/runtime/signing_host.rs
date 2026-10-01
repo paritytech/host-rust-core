@@ -1342,8 +1342,6 @@ impl ProductAuthority for SigningHost {
                     .grant_auto_signing(session, &product_id)
                     .map(|_| v01::AllocationOutcome::Allocated)
                     .map_err(sso_responder::AllowanceAllocationError::Authority),
-                // The product runtime grants this consent itself and never forwards it.
-                v01::AllocatableResource::AutomaticUpload => Ok(v01::AllocationOutcome::NotAvailable),
             };
             match outcome {
                 Ok(outcome) => outcomes.push(outcome),

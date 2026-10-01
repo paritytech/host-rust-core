@@ -13,7 +13,6 @@ mod allowances;
 /// Core-owned auth/session UI state machine.
 pub mod auth_state;
 mod authority;
-mod automatic_upload;
 /// In-core Bulletin preimage submission over the shared Subxt client.
 pub mod bulletin_rpc;
 mod capabilities;
@@ -766,45 +765,6 @@ impl ProductRuntimeHost {
             return Ok(true);
         }
         self.platform.confirm_user_action(review).await
-    }
-
-    /// Record the user's automatic-upload consent for this product and the
-    /// session's account. The allocation review the user just approved is the
-    /// consent, so this only persists it.
-    async fn grant_automatic_upload(&self, session: &AuthoritySession) -> v01::AllocationOutcome {
-        let request = PermissionAuthorizationRequest::AutomaticUpload {
-            root_public_key: session.public_key,
-        };
-        match self
-            .permissions_service()
-            .set_authorization_status(&request, PermissionAuthorizationStatus::Authorized)
-            .await
-        {
-            Ok(()) => v01::AllocationOutcome::Allocated,
-            Err(reason) => {
-                tracing::warn!(?reason, "automatic upload consent could not be stored");
-                v01::AllocationOutcome::NotAvailable
-            }
-        }
-    }
-
-    /// Whether a preimage of `size` bytes may be uploaded without asking,
-    /// reserving it against the consent's frequency limit when it may.
-    async fn reserve_automatic_upload(&self, session: &AuthoritySession, size: u64) -> bool {
-        let request = PermissionAuthorizationRequest::AutomaticUpload {
-            root_public_key: session.public_key,
-        };
-        let consented = self
-            .permissions_service()
-            .authorization_status(&request)
-            .await
-            .is_ok_and(|status| status == PermissionAuthorizationStatus::Authorized);
-        consented
-            && self.services.automatic_uploads.try_reserve(
-                &self.product_id(),
-                session.public_key,
-                size,
-            )
     }
 
     async fn require_chain_submit<E>(&self, denied_error: E) -> Result<(), CallError<E>> {

@@ -136,10 +136,7 @@ pub struct StubPlatform {
         Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
     /// Every `ResourceAllocation` review passed to `confirm_user_action`, in order.
     pub resource_allocation_reviews: Arc<Mutex<Vec<ResourceAllocationReview>>>,
-    /// Inverted so the derived default (`false`) approves every upload.
-    pub preimage_submit_rejected: bool,
     /// Every `PreimageSubmit` review passed to `confirm_user_action`, in order.
-    /// Empty proves an automatic-upload consent suppressed the prompt.
     pub preimage_submit_reviews: Arc<Mutex<Vec<PreimageSubmitReview>>>,
     pub session_blob: Option<Vec<u8>>,
     pub session_error: Option<&'static str>,
@@ -1938,7 +1935,7 @@ impl UserConfirmation for StubPlatform {
                     .lock()
                     .expect("preimage submit review list mutex poisoned")
                     .push(review);
-                (None, !self.preimage_submit_rejected)
+                (None, true)
             }
             UserConfirmationReview::ProductSubtree(review) => {
                 self.product_subtree_reviews

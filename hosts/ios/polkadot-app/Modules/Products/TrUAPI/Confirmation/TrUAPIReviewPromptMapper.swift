@@ -121,8 +121,6 @@ private extension TrUAPIReviewPromptMapper {
             try .smartContractAllowance(dest: index.toSelector())
         case .autoSigning:
             .autoSigning
-        case .automaticUpload:
-            throw TrUAPIReviewMappingError.unsupportedResource
         }
     }
 

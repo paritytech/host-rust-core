@@ -48,9 +48,6 @@ pub struct RuntimeServices {
     /// Contact handles already resolved, shared by every product runtime of
     /// this host and emptied when the host says its contacts changed.
     pub contact_handles: crate::runtime::contacts::ContactHandleCache,
-    /// Uploads made under an automatic-upload consent, shared by every product
-    /// runtime of this host.
-    pub automatic_uploads: crate::runtime::automatic_upload::AutomaticUploadLedger,
     /// Host observer told when a device finishes pairing with this signing
     /// host. Unset leaves a paired device unannounced.
     device_pairing_observer: OnceLock<Arc<dyn DevicePairingObserver>>,
@@ -115,7 +112,6 @@ impl RuntimeServices {
             pocket_platform: OnceLock::new(),
             contacts_platform: OnceLock::new(),
             contact_handles: Default::default(),
-            automatic_uploads: Default::default(),
             device_pairing_observer: OnceLock::new(),
             asset_hub_chain_genesis_hash,
             worker_ledger: WorkerLedger::default(),
