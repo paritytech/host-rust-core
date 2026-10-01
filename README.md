@@ -440,8 +440,8 @@ jobs, so a pull request without the label runs none of them. CI's
 `iOS package (Swift + WebKit)` job still compiles the TrUAPIHost package against
 the core on a pull request touching `ios/` or the core crates, but the app itself
 is compiled before merge only with the label. The first time a pull request
-touches the iOS or Android app, `build-label-hint.yml` comments with the label
-that builds it.
+touches the iOS or Android app, `build-label-hint.yml` comments with the labels
+that build it: `ios-simulator-build`, `ios-device-build` and `android-device-build`.
 
 - `build`, a DevCI compile, failing on any build warning the committed baseline
   does not already have

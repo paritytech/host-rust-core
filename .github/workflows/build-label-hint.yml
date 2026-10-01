@@ -61,13 +61,21 @@ jobs:
             const builds = [
               {
                 label: 'ios-simulator-build',
+                name: 'iOS simulator build',
                 path: /^(hosts\/ios\/|ios\/|Package\.swift$)/,
-                what: 'builds the iOS app, runs its tests and attaches a simulator build',
+                what: 'builds the iOS app, runs its tests and attaches a build for the iOS Simulator on a Mac',
+              },
+              {
+                label: 'ios-device-build',
+                name: 'iOS device build',
+                path: /^(hosts\/ios\/|ios\/|Package\.swift$)/,
+                what: 'attaches a signed build that installs on a registered iPhone or iPad',
               },
               {
                 label: 'android-device-build',
+                name: 'Android build',
                 path: /^(hosts\/android\/|android\/truapi-host\/)/,
-                what: 'attaches an APK that installs on a phone or an emulator',
+                what: 'attaches an APK that installs on an Android phone or an emulator',
               },
             ].filter(b => files.some(f => b.path.test(f))
               && !labels.includes(b.label)
@@ -78,10 +86,10 @@ jobs:
               return;
             }
 
-            const lines = builds.map(b => `- \`${b.label}\` ${b.what}.`);
+            const lines = builds.map(b => `- **${b.name}**, \`${b.label}\`: ${b.what}.`);
             const body = [
               ...builds.map(b => marker(b.label)),
-              'This pull request touches an app, which is not built by default. Add a label to get a build:',
+              'This pull request touches an app, which is not built by default. Add a label for each build you want:',
               '',
               ...lines,
               '',
