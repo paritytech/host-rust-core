@@ -14,11 +14,12 @@ use truapi::{CallContext, CallError};
 
 use crate::platform::GamePlatform;
 use crate::runtime::ProductRuntimeHost;
-use crate::unix_time::current_unix_millis;
+use crate::unix_time::current_unix_secs;
 
-/// A reminder for a game that has begun brings nobody back.
+/// A reminder for a game that has begun brings nobody back. Whole seconds are
+/// precise enough for that.
 fn ensure_upcoming(starts_at: u64) -> Result<(), CallError<HostRemindNextGameError>> {
-    if starts_at > current_unix_millis() {
+    if starts_at > current_unix_secs() * 1000 {
         Ok(())
     } else {
         Err(CallError::Domain(HostRemindNextGameError::V1(
