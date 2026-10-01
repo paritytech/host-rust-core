@@ -252,6 +252,18 @@ return an absent value and open a second purse. This refuses incoming claims as 
 identity-only wallet loader is not another allocator; a single Host runtime may own the purse while that loader retains
 responsibility for secure unlock.
 
+### Core database
+
+Native signing hosts (iOS, Android, the CLI) give the core a directory for its
+own SQLite database (`store` module, bundled SQLite through `rusqlite` and
+`async-sqlite`). The runtime opens `core.sqlite3` there at startup, so a
+missing or unwritable directory stops it from starting. Keep the directory out
+of device backups: it holds durable-transaction state that must not be restored
+onto another device. The required `HostRuntimeConfig.database_directory` sets
+it on iOS and Android, `SigningHostRuntime::set_core_db` on any other embedder,
+and `core_database_status()` reports the SQLite version, schema version and
+path. Web hosts do not compile the store.
+
 ### The two roles
 
 Both implement the role-neutral **`ProductAuthority`** trait; each owns its role-specific lifecycle, so no method exists

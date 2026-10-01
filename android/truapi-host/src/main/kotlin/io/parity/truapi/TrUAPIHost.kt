@@ -62,9 +62,11 @@ import uniffi.truapi.PermissionAuthorizationRequest
 import uniffi.truapi.PermissionAuthorizationStatus
 import uniffi.truapi.PermissionDecision
 import uniffi.truapi.UserConfirmationReview
+import uniffi.truapi.DbStatus
 import uniffi.truapi.HostCallbacks
 import uniffi.truapi.ChatBotRegistrationStatus
 import uniffi.truapi.NativeChatCallbacks
+import uniffi.truapi.NativeCoreDatabaseException
 import uniffi.truapi.ChatRoomRegistrationStatus
 import uniffi.truapi.NativePocketCallbacks
 import uniffi.truapi.NativePocketRemoval
@@ -960,6 +962,10 @@ class TrUAPIHostRuntime @Throws(NativeRuntimeConfigException::class) constructor
     fun disconnect() {
         inner.disconnect()
     }
+
+    /** Report the core database's SQLite version, schema version and file path. */
+    @Throws(NativeCoreDatabaseException::class)
+    suspend fun coreDatabaseStatus(): DbStatus = inner.coreDatabaseStatus()
 
     /** Activate or replace the process-wide local signing session. */
     @Throws(HostRejection::class)

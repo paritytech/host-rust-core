@@ -55,7 +55,10 @@ jobs:
         with:
           toolchain: stable
 
+      # A release run restores without saving, like every release job.
       - uses: ./.github/actions/rust-cache
+        with:
+          save: ${{ inputs.version == '' && 'true' || 'false' }}
 
       # The runner imports @parity/truapi from source, so the generated client
       # has to exist before it can be bundled.
@@ -117,6 +120,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           shared-key: cli-release-${{ matrix.target }}
+          save: ${{ inputs.version == '' && 'true' || 'false' }}
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
