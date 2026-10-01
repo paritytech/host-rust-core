@@ -10,10 +10,17 @@ enum ProductOpener {
         guard tabBar?.mountedProductId != productId else {
             return
         }
-        guard tabBar?.mountExistingTab(where: { $0.dotDomain == productId }) != true,
-              let url = URL(string: "\(AppConfig.ProductUniversalLink.scheme)://\(productId)") else {
+        if tabBar?.mountExistingTab(where: { $0.dotDomain == productId }) == true {
             return
         }
-        DeferredLinkHandler.shared.handle(with: url)
+
+        // Opened directly: the product link is only routed when the products feature is on,
+        // and a game product has to open without it.
+        if let tabBar,
+           let host = ProductHostFactory(tldProvider: DotNsTldProviderFacade.shared).host(rawString: productId) {
+            tabBar.openProduct(page: ProductPage(host: host))
+        } else if let url = URL(string: "\(AppConfig.ProductUniversalLink.scheme)://\(productId)") {
+            DeferredLinkHandler.shared.handle(with: url)
+        }
     }
 }
