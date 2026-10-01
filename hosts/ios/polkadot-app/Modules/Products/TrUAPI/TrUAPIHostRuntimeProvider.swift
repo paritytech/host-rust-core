@@ -18,19 +18,22 @@ enum TrUAPIRuntimeConfigError: Error {
 /// shared across every SPA and chat product.
 protocol TrUAPIHostRuntimeProviding: AnyObject, Sendable {
     /// Return the shared runtime, building and activating its local session on
-    /// first use. Subsequent calls return the cached instance.
-    func sharedRuntime() throws -> TrUAPIHostRuntime
+    /// first use. Concurrent first calls share one build, later calls return
+    /// the built instance, and a failed build is forgotten so the next call
+    /// retries.
+    func sharedRuntime() async throws -> TrUAPIHostRuntime
 
     /// Anchor the host's core confirmations (signing, permission prompts) to
     /// the given view. Until it is attached, host-level prompts deny.
     @MainActor func setPresentationView(_ view: ControllerBackedProtocol)
 }
 
-/// Lazily builds one ``TrUAPIHostRuntime`` from host identity + people/bulletin
-/// genesis hashes + the local session secret, activates the local session
-/// once, and caches it. Lazy so startup is not blocked and the runtime is only
-/// assembled once chains are synced and a session secret exists.
-final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Sendable {
+/// Builds one ``TrUAPIHostRuntime`` from host identity + people/bulletin
+/// genesis hashes + the local session secret, which activates the local
+/// session, and caches it. The build runs off the caller's thread, is started
+/// at launch and retried on demand, so it can wait until chains are synced
+/// and a session secret exists.
+actor TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding {
     private let chainRegistry: ChainRegistryProtocol
     private let entropyManager: RootEntropyManaging
     private let settingsManager: SettingsManagerProtocol
@@ -39,8 +42,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
     private let tldProvider: DotNsTldProviding
     private let logger: LoggerProtocol
 
-    private let lock = NSLock()
-    private var cachedRuntime: TrUAPIHostRuntime?
+    private var buildTask: Task<TrUAPIHostRuntime, Error>?
     private var contactsChangeNotifier: ContactsChangeNotifier?
 
     init(
@@ -66,18 +68,27 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
         confirmationRouterFacade.setPresentationView(view)
     }
 
-    func sharedRuntime() throws -> TrUAPIHostRuntime {
-        lock.lock()
-        defer { lock.unlock() }
-
-        if let cachedRuntime {
-            return cachedRuntime
+    func sharedRuntime() async throws -> TrUAPIHostRuntime {
+        let task = buildTask ?? Task { try await buildRuntime() }
+        buildTask = task
+        do {
+            return try await task.value
+        } catch {
+            if buildTask == task {
+                buildTask = nil
+            }
+            throw error
         }
+    }
+}
 
+private extension TrUAPIHostRuntimeProvider {
+    func buildRuntime() async throws -> TrUAPIHostRuntime {
         let secret = try entropyManager.fetchRootEntropy()
         let networkSuffix = try tldProvider.currentTldOrError()
-        let runtimeConfig = try Self.makeRuntimeConfig(
+        let runtimeConfig = try await Self.makeRuntimeConfig(
             chainRegistry: chainRegistry,
+            platformVersion: UIDevice.current.systemVersion,
             secret: secret,
             liteUsername: settingsManager.string(for: .username),
             networkSuffix: networkSuffix
@@ -100,7 +111,7 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
             logger: logger
         )
 
-        let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
+        let runtime = try await TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
         bridge.attach(runtime)
         // Before any product execution opens, so a product never sees the
         // window where the host lists no contacts.
@@ -120,9 +131,6 @@ final class TrUAPIHostRuntimeProvider: TrUAPIHostRuntimeProviding, @unchecked Se
                 runtime?.notifyContactsChanged()
             }
         )
-        try runtime.activateLocalSession(secret: secret, liteUsername: settingsManager.string(for: .username))
-
-        cachedRuntime = runtime
         return runtime
     }
 }
@@ -136,6 +144,7 @@ extension TrUAPIHostRuntimeProvider {
     /// seam.
     static func makeRuntimeConfig(
         chainRegistry: ChainRegistryProtocol,
+        platformVersion: String,
         secret: Data,
         liteUsername: String?,
         networkSuffix: String
@@ -164,7 +173,7 @@ extension TrUAPIHostRuntimeProvider {
             hostName: "Polkadot App",
             hostVersion: version,
             platformType: "ios",
-            platformVersion: UIDevice.current.systemVersion,
+            platformVersion: platformVersion,
             peopleChainGenesisHash: Data(hexString: peopleGenesisHex),
             bulletinChainGenesisHash: Data(hexString: bulletinGenesisHex),
             assetHubChainGenesisHash: Data(hexString: assetHubGenesisHex),

@@ -687,18 +687,19 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     private let foregroundObserver: NSObjectProtocol
     private var contactsRetainer: NativeContactsCallbacks?
 
-    public convenience init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
-        try self.init(bridge: bridge, runtimeConfig: runtimeConfig, notificationCenter: .default)
+    /// Build the runtime, activating the configured local session if there is one.
+    public convenience init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) async throws {
+        try await self.init(bridge: bridge, runtimeConfig: runtimeConfig, notificationCenter: .default)
     }
 
     init(
         bridge: HostBridge,
         runtimeConfig: HostRuntimeConfig,
         notificationCenter: NotificationCenter
-    ) throws {
+    ) async throws {
         let adapter = HostCallbackAdapter(bridge: bridge)
         callbackRetainer = adapter
-        let inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
+        let inner = try await NativeTrUApiHostRuntime.withRuntimeConfig(
             callbacks: adapter,
             runtimeConfig: runtimeConfig
         )
@@ -768,8 +769,8 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
         )
     }
 
-    public func disconnect() {
-        inner.disconnect()
+    public func disconnect() async {
+        await inner.disconnect()
     }
 
     /// Take one reference on the product's worker for a modality holder that
@@ -853,13 +854,15 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// otherwise keeps answering a host this one no longer considers paired,
     /// and untrack its device statement account, which otherwise keeps being
     /// renewed every period. Dropping the stored pairing alone leaves both
-    /// running.
+    /// running. Cancelling that task does not stop the core yet, because
+    /// UniFFI's Swift bindings cannot cancel a Rust future
+    /// (https://github.com/mozilla/uniffi-rs/pull/3007).
     public func disconnectPairedHost(peer: PairedSsoPeer) async throws {
         try await inner.disconnectPairedHost(peer: peer)
     }
 
-    public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
-        try inner.activateLocalSession(secret: secret, liteUsername: liteUsername)
+    public func activateLocalSession(secret: Data, liteUsername: String? = nil) async throws {
+        try await inner.activateLocalSession(secret: secret, liteUsername: liteUsername)
     }
 
     /// Answer one decrypted SSO remote message from the wallet-managed
@@ -898,16 +901,16 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// ``StatementRenewalTarget/account(accountId:label:)`` does not, and is
     /// dropped by the next pass after ``activateLocalSession(secret:liteUsername:)``
     /// installs a different identity. Re-track those whenever the identity changes.
-    public func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws {
-        try inner.trackStatementRenewalTargets(targets: targets)
+    public func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) async throws {
+        try await inner.trackStatementRenewalTargets(targets: targets)
     }
 
     /// The accounts the ledger tracks, in the order they were tracked.
     ///
     /// Needs no active session, so a `BGTaskScheduler` wake can read it on a
     /// cold start before deciding whether a pass is worth running.
-    public func statementRenewalTargets() throws -> [TrackedStatementRenewalTarget] {
-        try inner.statementRenewalTargets()
+    public func statementRenewalTargets() async throws -> [TrackedStatementRenewalTarget] {
+        try await inner.statementRenewalTargets()
     }
 
     /// The root public key the active identity records its fixed entries under.
@@ -925,18 +928,20 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// Scoped to the active identity, so it never removes an entry another
     /// identity promised.
     @discardableResult
-    public func untrackStatementRenewalAccount(accountId: Data) throws -> Bool {
-        try inner.untrackStatementRenewalAccount(accountId: accountId)
+    public func untrackStatementRenewalAccount(accountId: Data) async throws -> Bool {
+        try await inner.untrackStatementRenewalAccount(accountId: accountId)
     }
 
     /// Run one renewal pass now, reporting what each tracked target got.
     ///
-    /// Submits extrinsics and blocks until they are included, so call it off the
-    /// main thread. There is no cancellation: a pass with several targets can
-    /// outlast a short background budget, though a target registered before the
-    /// process is killed is not lost and reads back as already allocated.
-    public func renewStatementAllowances() throws -> StatementRenewalReport {
-        try inner.renewStatementAllowances()
+    /// Submits extrinsics and returns once they are included. Cancelling the
+    /// calling task does not stop the pass: UniFFI's Swift bindings cannot
+    /// cancel a Rust future yet (https://github.com/mozilla/uniffi-rs/pull/3007).
+    /// A pass with several targets can outlast a short background budget,
+    /// though a target registered before the process is killed is not lost and
+    /// reads back as already allocated.
+    public func renewStatementAllowances() async throws -> StatementRenewalReport {
+        try await inner.renewStatementAllowances()
     }
 
     /// Start the in-process renewal loop, for a host that stays resident. A
@@ -981,7 +986,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
-    ) throws
+    ) async throws
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
     func notifyLocaleChanged(locale: HostLocaleSubscribeItem)
     func notifyStorageChanged(key: String, value: Data?)
@@ -989,7 +994,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
     func notifyChatRoomsChanged(rooms: [ChatRoom])
-    func sessionChatIdentityKey() throws -> Data?
+    func sessionChatIdentityKey() async throws -> Data?
     func notifyPocketCardsChanged(cards: [PocketCard])
 }
 
@@ -1058,8 +1063,8 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     public func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
-    ) throws {
-        try inner.setPermissionAuthorizationStatus(request: request, status: status)
+    ) async throws {
+        try await inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
     public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
@@ -1092,8 +1097,8 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         inner.notifyChainClosed(connectionId: connectionId)
     }
 
-    public func sessionChatIdentityKey() throws -> Data? {
-        try inner.sessionChatIdentityKey()
+    public func sessionChatIdentityKey() async throws -> Data? {
+        try await inner.sessionChatIdentityKey()
     }
 
     public func notifyChatRoomsChanged(rooms: [ChatRoom]) {

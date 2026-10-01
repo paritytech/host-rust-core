@@ -164,6 +164,15 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
         // Keep the cached TLD warm on each launch without blocking.
         tldProvider.refresh()
 
+        // Build the TrUAPI runtime now so a product opened later finds it ready.
+        Task {
+            do {
+                _ = try await truapiRuntimeProvider.sharedRuntime()
+            } catch {
+                logger.debug("TrUAPI runtime not built at launch, retried on first use: \(error)")
+            }
+        }
+
         #if FEATURE_DIMS
             determineStateSyncService.setup()
             personhoodBackgroundService.setup()

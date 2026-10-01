@@ -66,7 +66,7 @@ class ContainerHttpAuthorizationTest {
             networkSuffix = "paseo",
         )
 
-        TrUAPIHostRuntime(bridge, config).use { runtime ->
+        runBlocking { TrUAPIHostRuntime.create(bridge, config) }.use { runtime ->
             runtime.openProductExecution(bridge, ProductExecutionConfig("http-policy.paseo", kind)).use { execution ->
                 val endpoint = execution.startWsBridge()
                 BridgeProxy(endpoint.port.toInt()).use { proxy ->
@@ -131,9 +131,11 @@ class ContainerHttpAuthorizationTest {
                             assertTrue("product script did not load", reports.ready.await(15, TimeUnit.SECONDS))
                             val operations = listOf("script", "image", "fetch", "xhr")
                             for (operation in operations) {
-                                execution.setPermissionAuthorizationStatus(
-                                    PermissionAuthorizationRequest.Remote(permission), PermissionAuthorizationStatus.NOT_DETERMINED,
-                                )
+                                runBlocking {
+                                    execution.setPermissionAuthorizationStatus(
+                                        PermissionAuthorizationRequest.Remote(permission), PermissionAuthorizationStatus.NOT_DETERMINED,
+                                    )
+                                }
                                 bridge.decisions.add(PermissionDecision.ALLOW_ONCE)
                                 call("requestPermission()", "true")
                                 call("loadResource('$operation', '${server.url("/$operation-allowed")}')", "true")
@@ -146,9 +148,11 @@ class ContainerHttpAuthorizationTest {
 
                             proxy.disconnect()
                             assertTrue("socket loss did not notify the page", reports.reset.await(15, TimeUnit.SECONDS))
-                            execution.setPermissionAuthorizationStatus(
-                                PermissionAuthorizationRequest.Remote(permission), PermissionAuthorizationStatus.NOT_DETERMINED,
-                            )
+                            runBlocking {
+                                execution.setPermissionAuthorizationStatus(
+                                    PermissionAuthorizationRequest.Remote(permission), PermissionAuthorizationStatus.NOT_DETERMINED,
+                                )
+                            }
                             bridge.decisions.add(PermissionDecision.ALLOW_ONCE)
                             call("requestPermission()", "true")
                             call("loadResource('fetch', '${server.url("/reconnected")}')", "true")

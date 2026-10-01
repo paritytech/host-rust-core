@@ -31,7 +31,7 @@ use super::config::{
     ProductExecutionConfig,
 };
 use super::errors::HostRejection;
-use super::executor::shared_native_executor;
+use super::executor::{SharedNativeExecutor, shared_native_executor};
 use super::events::NativeEventBus;
 use super::platform::{
     CallbackPlatform, ChatCallbackPlatform, ContactsCallbackPlatform, PocketCallbackPlatform,
@@ -46,14 +46,16 @@ use super::parse_pairing_deeplink;
 pub struct NativeTrUApiHostRuntime {
     runtime: Arc<SigningHostRuntime>,
     events: Arc<NativeEventBus>,
-    spawner: Spawner,
+    /// Runtime every host-called entry point runs its work on.
+    core: &'static SharedNativeExecutor,
+        spawner: Spawner,
     ws_bridge: Arc<SharedWsBridge>,
     /// The one Worker execution per product; opening another replaces it.
     worker_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
 }
 
 impl NativeTrUApiHostRuntime {
-    fn from_resolved(
+    async fn from_resolved(
         callbacks: Arc<dyn HostCallbacks>,
         runtime_config: NativeResolvedHostRuntimeConfig,
         log_marker: &str,
@@ -89,18 +91,24 @@ impl NativeTrUApiHostRuntime {
             "a freshly built runtime installs its device pairing observer once"
         );
         if let Some(secret) = runtime_config.local_session_secret {
-            futures::executor::block_on(runtime.activate_local_session_with_identity(
-                secret,
-                runtime_config.local_session_lite_username,
-            ))
-            .map_err(|err| NativeRuntimeConfigError::LocalSessionActivation {
-                reason: err.reason,
-            })?;
+            let runtime = runtime.clone();
+            let lite_username = runtime_config.local_session_lite_username;
+            executor
+                .run(async move {
+                    runtime
+                        .activate_local_session_with_identity(secret, lite_username)
+                        .await
+                })
+                .await
+                .map_err(|err| NativeRuntimeConfigError::LocalSessionActivation {
+                    reason: err.reason,
+                })?;
         }
         Ok(Arc::new(Self {
             runtime,
             events,
-            spawner,
+            core: executor,
+                        spawner,
             ws_bridge: Arc::new(SharedWsBridge::new(Arc::new(move |marker, detail| {
                 callbacks.on_core_log(marker.to_string(), detail.to_string());
             }))),
@@ -140,6 +148,7 @@ impl NativeTrUApiHostRuntime {
             });
         let execution = Arc::new(NativeProductExecution {
             runtime: self.runtime.clone(),
+            core: self.core,
             product: product.clone(),
             platform,
             chat,
@@ -230,7 +239,7 @@ pub struct NativeAnnouncedPairing {
 impl NativeTrUApiHostRuntime {
     /// Construct one host-level runtime and optionally activate its local session.
     #[uniffi::constructor]
-    pub fn with_runtime_config(
+    pub async fn with_runtime_config(
         callbacks: Arc<dyn HostCallbacks>,
         runtime_config: HostRuntimeConfig,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
@@ -241,6 +250,7 @@ impl NativeTrUApiHostRuntime {
             "truapi.native.host_runtime.boot",
             "host runtime ready",
         )
+        .await
     }
 
     /// Install the host's contacts adapter, which owns the contact list and
@@ -316,11 +326,16 @@ impl NativeTrUApiHostRuntime {
         deeplink: String,
     ) -> Result<Arc<NativeAnnouncedPairing>, NativePairingError> {
         reject_undecodable_deeplink(&deeplink)?;
-        self.runtime
-            .notify_pairing_allowance_allocation(&deeplink)
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move {
+                runtime
+                    .notify_pairing_allowance_allocation(&deeplink)
+                    .await
+                    .map(|inner| Arc::new(NativeAnnouncedPairing { inner }))
+                    .map_err(NativePairingError::from)
+            })
             .await
-            .map(|inner| Arc::new(NativeAnnouncedPairing { inner }))
-            .map_err(NativePairingError::from)
     }
 
     /// Tell a pairing host that already dropped its QR why pairing stopped.
@@ -333,10 +348,15 @@ impl NativeTrUApiHostRuntime {
         announced: Arc<NativeAnnouncedPairing>,
         reason: String,
     ) -> Result<(), NativePairingError> {
-        self.runtime
-            .notify_pairing_failed(&announced.inner, reason)
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move {
+                runtime
+                    .notify_pairing_failed(&announced.inner, reason)
+                    .await
+                    .map_err(NativePairingError::from)
+            })
             .await
-            .map_err(NativePairingError::from)
     }
 
     /// Answer a pairing host's handshake deeplink, without serving the session
@@ -360,10 +380,15 @@ impl NativeTrUApiHostRuntime {
     /// persisted.
     pub async fn establish_pairing(&self, deeplink: String) -> Result<(), NativePairingError> {
         reject_undecodable_deeplink(&deeplink)?;
-        self.runtime
-            .establish_pairing(&deeplink)
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move {
+                runtime
+                    .establish_pairing(&deeplink)
+                    .await
+                    .map_err(NativePairingError::from)
+            })
             .await
-            .map_err(NativePairingError::from)
     }
 
     /// Serve a paired host's SSO session until it ends.
@@ -376,10 +401,15 @@ impl NativeTrUApiHostRuntime {
         &self,
         peer: PairedSsoPeer,
     ) -> Result<ResponderExit, NativePairingError> {
-        self.runtime
-            .resume_pairing(peer)
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move {
+                runtime
+                    .resume_pairing(peer)
+                    .await
+                    .map_err(NativePairingError::from)
+            })
             .await
-            .map_err(NativePairingError::from)
     }
 
     /// Tell a paired host this signing host is ending their SSO session.
@@ -394,26 +424,37 @@ impl NativeTrUApiHostRuntime {
         &self,
         peer: PairedSsoPeer,
     ) -> Result<(), NativePairingError> {
-        self.runtime
-            .disconnect_paired_host(peer)
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move {
+                runtime
+                    .disconnect_paired_host(peer)
+                    .await
+                    .map_err(NativePairingError::from)
+            })
             .await
-            .map_err(NativePairingError::from)
     }
 
     /// Core-owned logout for the process-wide authentication session.
-    pub fn disconnect(&self) {
-        futures::executor::block_on(self.runtime.disconnect_session());
+    pub async fn disconnect(&self) {
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move { runtime.disconnect_session().await })
+            .await
     }
 
     /// Record the accounts a renewal pass should keep allowed. The ledger
     /// persists, so this only has to be called when the set changes, not on
     /// every launch. Renewal has nothing to do until at least one target is
     /// tracked.
-    pub fn track_statement_renewal_targets(
+    pub async fn track_statement_renewal_targets(
         &self,
         targets: Vec<crate::runtime::StatementRenewalTarget>,
     ) -> Result<(), HostRejection> {
-        futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move { runtime.track_statement_renewal_targets(targets).await })
+            .await
             .map_err(HostRejection::from)
     }
 
@@ -422,10 +463,13 @@ impl NativeTrUApiHostRuntime {
     /// Needs no active session. Slots per period are finite, so a host that
     /// tracked a wrong or stale account can see it here and drop it with
     /// [`Self::untrack_statement_renewal_account`].
-    pub fn statement_renewal_targets(
+    pub async fn statement_renewal_targets(
         &self,
     ) -> Result<Vec<crate::runtime::TrackedStatementRenewalTarget>, HostRejection> {
-        futures::executor::block_on(self.runtime.statement_renewal_targets())
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move { runtime.statement_renewal_targets().await })
+            .await
             .map_err(HostRejection::from)
     }
 
@@ -446,11 +490,14 @@ impl NativeTrUApiHostRuntime {
     ///
     /// Scoped to the active identity, so it never removes an entry another
     /// identity promised. Needs an active session to resolve that identity.
-    pub fn untrack_statement_renewal_account(
+    pub async fn untrack_statement_renewal_account(
         &self,
         account_id: Bytes32,
     ) -> Result<bool, HostRejection> {
-        futures::executor::block_on(self.runtime.untrack_statement_renewal_account(&account_id))
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move { runtime.untrack_statement_renewal_account(&account_id).await })
+            .await
             .map_err(HostRejection::from)
     }
 
@@ -459,7 +506,7 @@ impl NativeTrUApiHostRuntime {
     /// This is the entry point for hosts whose process cannot stay alive
     /// between periods: drive it from WorkManager or BGTaskScheduler rather
     /// than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
-    /// and blocks until they are included, so call it from a background thread.
+    /// and completes once they are included.
     ///
     /// Needs an active session, which is the whole difficulty of the scheduled
     /// case: an OS-woken cold start has none until the host restores one, and
@@ -467,10 +514,13 @@ impl NativeTrUApiHostRuntime {
     /// session before calling, and treat that reason as "not ready" rather than
     /// as a renewal failure. [`Self::start_statement_allowance_renewal`] does
     /// not need this care; its loop skips a tick with no session and retries.
-    pub fn renew_statement_allowances(
+    pub async fn renew_statement_allowances(
         &self,
     ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
-        futures::executor::block_on(self.runtime.renew_statement_allowances())
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move { runtime.renew_statement_allowances().await })
+            .await
             .map_err(HostRejection::from)
     }
 
@@ -509,16 +559,20 @@ impl NativeTrUApiHostRuntime {
     }
 
     /// Activate or replace the process-wide local signing session.
-    pub fn activate_local_session(
+    pub async fn activate_local_session(
         &self,
         secret: Vec<u8>,
         lite_username: Option<String>,
     ) -> Result<(), HostRejection> {
-        futures::executor::block_on(
-            self.runtime
-                .activate_local_session_with_identity(secret, lite_username),
-        )
-        .map_err(Into::into)
+        let runtime = self.runtime.clone();
+        self.core
+            .run(async move {
+                runtime
+                    .activate_local_session_with_identity(secret, lite_username)
+                    .await
+            })
+            .await
+            .map_err(Into::into)
     }
 
     /// Answer one decrypted SSO remote message from a wallet-managed
@@ -541,7 +595,11 @@ impl NativeTrUApiHostRuntime {
     ) -> Result<SsoRequestOutcome, HostRejection> {
         let message =
             decode_remote_message(&message).map_err(|reason| HostRejection::Rejected { reason })?;
-        Ok(self.runtime.answer_sso_request(message).await)
+        let runtime = self.runtime.clone();
+        Ok(self
+            .core
+            .run(async move { runtime.answer_sso_request(message).await })
+            .await)
     }
 
     /// Build the SCALE-encoded `Disconnected` message a wallet posts over a
@@ -572,6 +630,8 @@ impl NativeTrUApiHostRuntime {
 #[derive(uniffi::Object)]
 pub struct NativeProductExecution {
     runtime: Arc<SigningHostRuntime>,
+    /// Runtime every host-called entry point runs its work on.
+    core: &'static SharedNativeExecutor,
     product: ProductContext,
     platform: Arc<dyn crate::platform::Platform>,
     chat: Option<Arc<dyn crate::platform::ChatPlatform>>,
@@ -672,13 +732,18 @@ impl NativeProductExecution {
                 reason: "product execution is closed".to_string(),
             });
         }
+        let admin = self.admin();
         let response = self
-            .admin()
-            .product_runtime()
-            .authorize_remote_permission(
-                &truapi::CallContext::default(),
-                truapi::versioned::permissions::RemotePermissionRequest::V1(request),
-            )
+            .core
+            .run(async move {
+                admin
+                    .product_runtime()
+                    .authorize_remote_permission(
+                        &truapi::CallContext::default(),
+                        truapi::versioned::permissions::RemotePermissionRequest::V1(request),
+                    )
+                    .await
+            })
             .await
             .map_err(|error| HostRejection::Rejected {
                 reason: format!("{error:?}"),
@@ -701,54 +766,68 @@ impl NativeProductExecution {
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, HostRejection> {
+        let admin = self.admin();
         Ok(self
-            .admin()
-            .permission_authorization_status(request)
+            .core
+            .run(async move { admin.permission_authorization_status(request).await })
             .await?)
     }
 
     /// Update a product-scoped permission authorization.
-    pub fn set_permission_authorization_status(
+    pub async fn set_permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
-        futures::executor::block_on(
-            self.admin()
-                .set_permission_authorization_status(request, status),
-        )?;
+        let admin = self.admin();
+        self.core
+            .run(async move {
+                admin
+                    .set_permission_authorization_status(request, status)
+                    .await
+            })
+            .await?;
         Ok(())
     }
 
     /// Read the active session's X25519 chat identity private key, or `None`
     /// when no session is active.
-    pub fn session_chat_identity_key(&self) -> Result<Option<Bytes32>, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin().get_session_chat_identity_key(),
-        )?)
+    pub async fn session_chat_identity_key(&self) -> Result<Option<Bytes32>, HostRejection> {
+        let admin = self.admin();
+        Ok(self
+            .core
+            .run(async move { admin.get_session_chat_identity_key().await })
+            .await?)
     }
 
     /// Read this device's X25519 encryption secret, for device sync against a
     /// peer's `deviceEncPublicKey`. Generated and persisted on first read.
-    pub fn device_encryption_key(&self) -> Result<Bytes32, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin().get_device_encryption_key(),
-        )?)
+    pub async fn device_encryption_key(&self) -> Result<Bytes32, HostRejection> {
+        let admin = self.admin();
+        Ok(self
+            .core
+            .run(async move { admin.get_device_encryption_key().await })
+            .await?)
     }
 
     /// Resolve a product's hard-subtree public key for hosts naming the account
     /// a review will sign with. Answers from the cache, the persisted slot, or
     /// the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
     /// an error; `None` means no active session.
-    pub fn product_subtree_public_key(
+    pub async fn product_subtree_public_key(
         &self,
         product_id: String,
         timeout_ms: Option<u32>,
     ) -> Result<Option<Bytes32>, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin()
-                .get_product_subtree_public_key(product_id, timeout_ms),
-        )?)
+        let admin = self.admin();
+        Ok(self
+            .core
+            .run(async move {
+                admin
+                    .get_product_subtree_public_key(product_id, timeout_ms)
+                    .await
+            })
+            .await?)
     }
 
     /// Push a host theme replacement to this execution's subscriptions.
@@ -940,8 +1019,11 @@ mod tests {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
         config.local_session_lite_username = None;
-        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
-            .expect("host runtime config should be valid");
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            config,
+        ))
+        .expect("host runtime config should be valid");
         let screen = host
             .open_product_execution(
                 callbacks.clone(),
@@ -985,8 +1067,11 @@ mod tests {
         let mut config = native_host_runtime_config();
         config.local_session_secret = None;
         config.local_session_lite_username = None;
-        let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
-            .expect("host runtime config should be valid");
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+            callbacks.clone(),
+            config,
+        ))
+        .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
                 callbacks.clone(),
@@ -1024,10 +1109,10 @@ mod tests {
             fn device_paired(&self, _device: PairedSsoPeer) {}
         }
 
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
 
         assert!(!host.runtime.set_device_pairing_observer(Arc::new(Inert)));
@@ -1035,10 +1120,10 @@ mod tests {
 
     #[test]
     fn process_runtime_shares_authority_and_replaces_one_chat_execution_per_product() {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let app = host
             .open_product_execution(
@@ -1088,10 +1173,10 @@ mod tests {
     fn a_renderer_action_reaches_the_product_that_rendered_it() {
         // The channel is execution-scoped, so the admin handle built from this
         // execution reads what the execution published.
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
@@ -1137,10 +1222,10 @@ mod tests {
 
     #[test]
     fn product_execution_routes_chain_events_to_shared_and_scoped_services() {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .expect("host runtime config should be valid");
         let execution = host
             .open_product_execution(
@@ -1178,10 +1263,10 @@ mod tests {
             remote_permission_result: Ok(PermissionDecision::AllowOnce),
             ..EventCallbacks::new()
         });
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             callbacks.clone(),
             native_host_runtime_config(),
-        )
+        ))
         .unwrap();
         let open = || {
             host.open_product_execution(

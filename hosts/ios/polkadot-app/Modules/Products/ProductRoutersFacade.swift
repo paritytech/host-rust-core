@@ -10,14 +10,14 @@ import UIKitExt
 /// serves three protocol lenses: app flows call its `ProductsRouting`
 /// extensions, while the package-side requesters consume it as
 /// `ProductPermissionRouting` / `AllowancePromptRouting`.
-protocol ProductRoutersFacadeProtocol: AnyObject {
+protocol ProductRoutersFacadeProtocol: AnyObject, Sendable {
     var productsRouter: ProductsRouter { get }
     var navigationRouter: ProductsNavigationRouting { get }
 
     @MainActor func setPresentationView(_ view: ControllerBackedProtocol)
 }
 
-final class ProductRoutersFacade: ProductRoutersFacadeProtocol {
+final class ProductRoutersFacade: ProductRoutersFacadeProtocol, @unchecked Sendable {
     let productsRouter: ProductsRouter
     let navigationRouter: ProductsNavigationRouting
 

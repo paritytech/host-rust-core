@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -115,7 +116,7 @@ class TrUAPIDiagnosticsTest {
             localSessionLiteUsername = "android-diag",
         )
 
-        val runtime = TrUAPIHostRuntime(bridge, config)
+        val runtime = runBlocking { TrUAPIHostRuntime.create(bridge, config) }
         val execution = runtime.openProductExecution(
             bridge = bridge,
             configuration = ProductExecutionConfig("dotli.dot", ProductExecutionKind.APP),

@@ -34,9 +34,7 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
     /// Bound for as long as the chat surface is alive, like the shared worker's
     /// native api.
     private let chatSurface = ProductChatSurface()
-    // Set once in init and only read from the MainActor-isolated `attach`;
-    // all facade mutation happens behind its own @MainActor method.
-    private nonisolated(unsafe) let routers: ProductRoutersFacadeProtocol
+    private let routers: ProductRoutersFacadeProtocol
     private let engineFactory: @Sendable () -> JSEngineProtocol
     private let renderStartupWindow: Duration
     private let logger: LoggerProtocol

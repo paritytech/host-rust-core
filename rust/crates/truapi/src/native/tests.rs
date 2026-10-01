@@ -208,6 +208,8 @@ pub struct EventCallbacks {
         Option<futures::channel::oneshot::Receiver<Result<PermissionDecision, HostRejection>>>,
     >,
     pub core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+    /// The runtime each core storage write arrived from, if any.
+    pub core_storage_write_runtimes: Mutex<Vec<Option<tokio::runtime::Id>>>,
     /// Disclosure consent is distinct from boolean action confirmation.
     pub permission_confirmation_result: PermissionDecision,
     /// Counts prompts across the execution's separate connections.
@@ -256,6 +258,7 @@ impl EventCallbacks {
             remote_permission_result: Ok(PermissionDecision::Deny),
             remote_permission_reply: Mutex::new(None),
             core_storage: Mutex::default(),
+            core_storage_write_runtimes: Mutex::default(),
             permission_confirmation_result: PermissionDecision::Deny,
             remote_permission_calls: std::sync::atomic::AtomicUsize::new(0),
             remote_permission_products: Mutex::new(Vec::new()),
@@ -340,6 +343,11 @@ impl HostCallbacks for EventCallbacks {
         key: Vec<u8>,
         value: Vec<u8>,
     ) -> Result<(), HostRejection> {
+        self.core_storage_write_runtimes.lock().unwrap().push(
+            tokio::runtime::Handle::try_current()
+                .ok()
+                .map(|handle| handle.id()),
+        );
         self.core_storage.lock().unwrap().insert(key, value);
         Ok(())
     }
@@ -627,8 +635,11 @@ pub fn native_product_execution(
     let mut config = native_host_runtime_config();
     config.local_session_secret = None;
     config.local_session_lite_username = None;
-    let host = NativeTrUApiHostRuntime::with_runtime_config(callbacks.clone(), config)
-        .expect("host runtime config should be valid");
+    let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+        callbacks.clone(),
+        config,
+    ))
+    .expect("host runtime config should be valid");
     host.open_product_execution(
         callbacks,
         None,
@@ -846,10 +857,10 @@ fn a_paired_device_reaches_the_host_callbacks() {
 #[test]
 fn process_runtime_counts_worker_references_per_product() {
     let callbacks = Arc::new(EventCallbacks::new());
-    let host = NativeTrUApiHostRuntime::with_runtime_config(
+    let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
         callbacks.clone(),
         native_host_runtime_config(),
-    )
+    ))
     .expect("host runtime config should be valid");
     let product = || "shared.dot".to_string();
 
@@ -986,9 +997,11 @@ fn native_pocket_removal_outcomes_are_decided_by_the_host() {
 fn native_chat_entrypoint_is_unsupported_without_an_adapter() {
     let mut config = native_host_runtime_config();
     config.local_session_secret = Some(vec![7; 32]);
-    let host =
-        NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
-            .expect("host runtime config should be valid");
+    let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+        Arc::new(EventCallbacks::new()),
+        config,
+    ))
+    .expect("host runtime config should be valid");
     let execution = host
         .open_product_execution(
             Arc::new(EventCallbacks::new()),
@@ -2411,10 +2424,10 @@ fn bridge_logs_follow_the_host_and_authenticated_execution() {
         Arc::new(EventCallbacks::new()),
         Arc::new(EventCallbacks::new()),
     ];
-    let host = NativeTrUApiHostRuntime::with_runtime_config(
+    let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
         callbacks[0].clone(),
         native_host_runtime_config(),
-    )
+    ))
     .expect("create host");
     let executions = [(1, "first.dot"), (2, "second.dot")].map(|(index, product_id)| {
         host.open_product_execution(
@@ -2490,10 +2503,10 @@ fn two_executions_share_one_bridge_through_the_native_api() {
 
     use crate::frame::{Payload, ProtocolMessage, request_ids};
 
-    let host = NativeTrUApiHostRuntime::with_runtime_config(
+    let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
         Arc::new(EventCallbacks::new()),
         native_host_runtime_config(),
-    )
+    ))
     .expect("host runtime config should be valid");
     let app = host
         .open_product_execution(
@@ -2618,8 +2631,11 @@ pub fn native_host_runtime_no_session() -> Arc<NativeTrUApiHostRuntime> {
     let mut config = native_host_runtime_config();
     config.local_session_secret = None;
     config.local_session_lite_username = None;
-    NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
-        .expect("host runtime config should be valid")
+    futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+        Arc::new(EventCallbacks::new()),
+        config,
+    ))
+    .expect("host runtime config should be valid")
 }
 
 #[test]
@@ -2703,10 +2719,10 @@ fn native_remote_authorization_uses_the_execution_permission_callback() {
             false,
         ),
     ] {
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
-        )
+        ))
         .unwrap();
         let callbacks = Arc::new(EventCallbacks {
             remote_permission_result: answer,
@@ -2783,10 +2799,10 @@ fn native_remote_authorization_reuses_stored_product_decisions() {
             remote_permission_result: Ok(decision),
             ..EventCallbacks::new()
         });
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             callbacks.clone(),
             native_host_runtime_config(),
-        )
+        ))
         .unwrap();
         let open = |product_id| {
             host.open_product_execution(
@@ -2841,10 +2857,10 @@ fn native_remote_authorization_rejects_closed_and_closing_executions() {
             remote_permission_reply: Mutex::new(Some(response)),
             ..EventCallbacks::new()
         });
-        let host = NativeTrUApiHostRuntime::with_runtime_config(
+        let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
             callbacks.clone(),
             native_host_runtime_config(),
-        )
+        ))
         .unwrap();
         let execution = host
             .open_product_execution(
@@ -2887,12 +2903,48 @@ fn native_remote_authorization_rejects_closed_and_closing_executions() {
 /// permission service. Nothing else covers that path, and the adapter is
 /// per execution rather than per host runtime, so a host-level installer
 /// would silently answer from the wrong object.
+/// A host may call from its main thread, so the call must only wait there:
+/// the core work it starts, down to the host's own storage callback, runs
+/// on the core runtime.
 #[test]
-fn a_native_status_read_follows_the_os_gate() {
-    let host = NativeTrUApiHostRuntime::with_runtime_config(
+fn a_host_call_from_a_plain_thread_runs_its_core_work_on_the_core_runtime() {
+    let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
         Arc::new(EventCallbacks::new()),
         native_host_runtime_config(),
-    )
+    ))
+    .expect("host runtime config should be valid");
+    let callbacks = Arc::new(EventCallbacks::new());
+    let execution = host
+        .open_product_execution(
+            callbacks.clone(),
+            None,
+            None,
+            native_execution_config("stored.dot", ProductExecutionKind::App),
+        )
+        .expect("execution should open");
+
+    futures::executor::block_on(execution.set_permission_authorization_status(
+        PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Camera),
+        PermissionAuthorizationStatus::Authorized,
+    ))
+    .expect("status write");
+
+    let shared = super::executor::shared_native_executor().unwrap();
+    let mut runtimes = callbacks
+        .core_storage_write_runtimes
+        .lock()
+        .unwrap()
+        .clone();
+    runtimes.dedup();
+    assert_eq!(runtimes, vec![Some(shared.handle().id())]);
+}
+
+#[test]
+fn a_native_status_read_follows_the_os_gate() {
+    let host = futures::executor::block_on(NativeTrUApiHostRuntime::with_runtime_config(
+        Arc::new(EventCallbacks::new()),
+        native_host_runtime_config(),
+    ))
     .expect("host runtime config should be valid");
     let execution = host
         .open_product_execution(
