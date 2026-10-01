@@ -8,7 +8,7 @@ status: draft
 
 ## Summary
 
-A host-owned SQLite database per product and account, exposed as the `Database` trait: a product runs SQL in transactions it begins, commits and rolls back, sets a schema version in the same commit as its migration, and hears about every commit. The trait is the surface an SQL library's driver needs, so a product brings its own query builder and migrator. The database is local to the device; replication is a follow-up RFC.
+A host-owned SQLite database per product and account, exposed as the `Database` trait: a product runs SQL in transactions it begins, commits and rolls back, sets a schema version in the same commit as its migration, and hears about every commit. The trait is the surface an SQL library's driver needs, so a product brings its own query builder and migrator. Each database is its own SQLite file, so SQLite's own per-file limits meter it, and a product that outgrows its quota asks the user for more. The database is local to the device; replication is a follow-up RFC.
 
 ## Motivation
 
@@ -28,11 +28,12 @@ t3ams (team chat over Statement Store) submits statements with a 24-hour expiry,
 
 The host keeps one SQLite database per product per signed-in account. With no account signed in the product gets the anonymous database ([Unauthenticated Product Access](0009-unauthenticated-product-access.md)), and its rows do not move into the account's database at sign-in. An executable is one of the product's App, Widget or Worker, as the [Product Manifest](product-manifest.md) defines them.
 
-The design has seven parts:
+The design has eight parts:
 
 - **Transactions**: how a product runs SQL.
 - **Migrations**: how a product changes its schema.
 - **Changes**: how a product observes commits.
+- **Storage**: how the host lays out database files and bounds their cost.
 - **Limits**: what bounds one product.
 - **Lifecycle**: what happens to the database around sign-in and removal.
 - **Isolation**: how the host keeps one product out of another's database.
@@ -62,25 +63,56 @@ Because only one write transaction runs at a time, a webview and a worker that o
 
 `changes_subscribe` emits one item per committed write transaction that changed any of the tables the subscription names, or any table when it names none. The item carries the tables the transaction changed and the tag its `begin` or `execute` carried, so an executable recognises its own commits. The item names tables, not rows; the product re-reads what it shows. A product that needs a row-level log writes one to a table of its own in the same transaction. When the signed-in account changes, every open subscription ends with `AccountChanged`.
 
+### Storage
+
+Each database is one SQLite file in WAL mode, named as [Isolation](#isolation) describes. The host does not multiplex products into one shared file, for these reasons:
+
+- **Library compatibility.** A product's SQL runs unmodified and `sqlite_master` lists only the product's own tables, so a library's migrator and introspection work as they do against any SQLite file. A shared file needs every table name rewritten per product in every statement, and `sqlite_master`, `pragma_table_info` and FTS5's shadow tables filtered. The authorizer can refuse a statement but cannot rewrite it, so the host would need its own SQL rewriter, and every case it misses breaks a library or exposes another product's table.
+- **Isolation.** The boundary between products is the file, as [Isolation](#isolation) describes, not a naming convention inside one.
+- **Writers.** SQLite runs one write transaction per file. In a shared file every product's writes queue behind one lock, so one product catching up on a day of messages makes every other product's writes wait past the write-wait limit. With a file each, one product's open transaction never blocks another.
+- **Metering.** SQLite bounds a file's size with `max_page_count` and fails the write that would pass it, which is exact and costs nothing. A shared file needs the host to count each product's pages itself, either by scanning the file with `dbstat`, which is too slow to run per write, or by keeping a running total, which drifts with indexes, FTS5 and free pages.
+- **Removal.** Removing a product or an account deletes files. In a shared file the space returns only after a `VACUUM`, which rewrites the whole file and holds every product's writes until it finishes.
+- **Fault containment.** A corrupt file or a growing write-ahead log affects one product.
+
+Each open database costs a writer connection, reader connections, a page cache per connection, and three open files: the database, its write-ahead log and its shared-memory index. The host keeps that cost proportional to the databases in use, not the products installed:
+
+- It opens a database on the first call that needs it.
+- It runs every database's connections on one bounded worker pool shared by all products, not a pool per database. The core's own store ([#963](https://github.com/paritytech/host-rust-core/issues/963)) gives its single database one writer and a read pool; product databases share threads instead.
+- It gives each database at most one pool thread for its writer and a bounded share for its readers, so a product cannot take the whole pool.
+- It caps the page cache of each connection.
+- It closes a database that has no open transaction and no open subscription after an idle period, and caps the number of open databases, closing the least recently used idle one first.
+- It checkpoints the write-ahead log and bounds the log's size after a checkpoint with `journal_size_limit`.
+
+The pool size, cache size, idle period and open-database cap are host configuration, not part of the contract. A product sees one effect: the first call after the host closed its database pays for opening it, including recovery of its write-ahead log. The host never closes a database that has an open transaction or subscription.
+
+Requests from different products never wait on each other's locks. Each file has its own write lock, so two products write at the same time, and a slow transaction in one product delays only that product. What products share is the pool: a product running long statements, each bounded by the statement run time, uses at most its share of threads and slows only itself. Several databases are open at once wherever several products run: products, widgets and workers side by side on desktop and in the browser host, and on mobile the foreground product together with the workers that draw [Pocket](pocket-modality.md) cards. Within one product, its App, Widget and Worker share one database under the single-writer rule in [Transactions](#transactions).
+
+The trait never names a file, so a host can change the layout later, for example to multiplex products at scale, without a wire change, provided it keeps every guarantee in this RFC.
+
 ### Limits
 
-The host guarantees every product at least these floors and may allow more.
+The host guarantees every product at least these floors on every platform and may allow more. Each limit applies per database. `stats` reports the values the host applies, so a product reads them rather than assuming the floors.
 
-| Limit | Floor | When exceeded |
-| --- | --- | --- |
-| Database size | 64 MiB | The statement fails with `Full`; the transaction stays open so the product can delete rows. |
-| Request size of one `execute` | 1 MiB | The call fails with `TooLarge`, carrying the host's maximum. |
-| Result size of one `execute` | 4 MiB | The call fails with `TooLarge`; the product pages with `LIMIT`. |
-| Run time of one statement | 5 s | The host interrupts the statement, which fails with `Interrupted`. |
-| Idle time between calls on a transaction | 10 s | The host rolls the transaction back. |
-| Wait for the write transaction | 5 s | The call fails with `Busy`. |
-| Open transactions per executable | 1 write, 4 read | `begin` fails with `Busy`. |
+| Limit | Floor | Enforced by | When exceeded |
+| --- | --- | --- | --- |
+| Database size | 64 MiB | SQLite: `PRAGMA max_page_count`, which the host sets on every connection it opens | The statement fails with `Full`; the call rolls back and the transaction stays open so the product can delete rows. |
+| Request size of one `execute`, SQL text and parameters together | 1 MiB | Host, before it prepares a statement | The call fails with `TooLarge`, carrying the host's maximum; nothing runs. |
+| One text or blob value, including one a statement builds | 1 MiB | SQLite: `sqlite3_limit` with `SQLITE_LIMIT_LENGTH` | The statement fails with `TooLarge`; the call rolls back and the transaction stays open. |
+| Result size of one `execute` | 4 MiB | Host, while it steps the rows | The call fails with `TooLarge` and rolls back; the product pages with `LIMIT`. |
+| Run time of one statement | 5 s | Host, through `sqlite3_progress_handler` | The host interrupts the statement, which fails with `Interrupted`; the call rolls back and the transaction stays open. |
+| Idle time between calls on a transaction | 10 s | Host | The host rolls the transaction back; the next call on it fails with `TransactionClosed`. |
+| Wait for the write transaction | 5 s | Host, which queues write transactions | The call fails with `Busy`; nothing runs. |
+| Open transactions per executable | 1 write, 4 read | Host | `begin` fails with `Busy`. |
 
-`stats` reports the bytes the database occupies and the quota. Each product has its own database, so one product's open transaction never blocks another.
+The database size counts the pages the file holds. The write-ahead log beside it is bounded by checkpoints, not by the quota. A write also fails with `Full` below the quota when the device runs out of space. The host never deletes rows to make room: a full database still serves reads and deletes, and accepts writes again once the product frees pages or its quota rises.
+
+A product that needs more than its quota requests `DatabaseQuota` through `ResourceAllocation` ([RFC 0010](0010-allowance.md)) with the total size it needs. TrUAPI defines the request and its outcome; how the host decides is the host's own, as RFC 0010 leaves its authorization UI to the Account Holder. A host may prompt on each request, grant in fixed steps, offer the user a size control, grant automatically up to a budget it sets, or refuse, and it decides on the device without the Account Holder. It answers `Allocated` once the quota covers the requested size, `Rejected` when the user or the host declines, and `NotAvailable` when the device cannot hold it. A grant may exceed the request, and `stats` reports the quota that results. The host keeps a grant for the product and account until the user changes it.
+
+The host may also lower a quota, for example when the user does. A database above its quota keeps its rows, serves reads and deletes, and fails writes that need new pages with `Full`. The host never deletes a product's rows and never moves one product's quota to another, as [Scheduled Notifications](0019-scheduled-notifications.md) never evicts another product's entry to make room.
 
 ### Lifecycle
 
-The trait needs no permission prompt. A host that does not implement it does not register it, so every call fails with `Unsupported` and the product falls back to `LocalStorage`. Sign-out keeps the account's database; removing the account from the device deletes it. Removing the product from the device deletes every database of that product.
+The trait needs no permission prompt; only raising the quota goes through the host's approval. A host that does not implement it does not register it, so every call fails with `Unsupported` and the product falls back to `LocalStorage`. Sign-out keeps the account's database; removing the account from the device deletes it. Removing the product from the device deletes every database of that product.
 
 ### Isolation
 
@@ -198,12 +230,12 @@ pub trait Database: Send + Sync {
         Subscription::interrupted(CallError::unavailable())
     }
 
-    /// Report the bytes the database occupies and the quota the host allows.
+    /// Report the bytes the database uses, its quota and the limits the host applies.
     ///
     /// ```ts
     /// const stats = await truapi.database.stats();
     /// assert(stats.isOk(), "stats failed:", stats);
-    /// console.log("bytes used:", stats.value.bytesUsed, "quota:", stats.value.quota);
+    /// console.log("bytes used:", stats.value.bytesUsed, "quota:", stats.value.quota, "limits:", stats.value.limits);
     /// ```
     #[wire(id = 5)]
     async fn stats(
@@ -323,10 +355,30 @@ pub struct DatabaseChange {
 
 /// Database statistics.
 pub struct HostDatabaseStatsResponse {
-    /// Bytes the database occupies on the device.
+    /// Bytes in use: the database's pages minus its free pages, times the page size.
     pub bytes_used: u64,
     /// Bytes the host allows the database.
     pub quota: u64,
+    /// Limits the host applies to the database.
+    pub limits: DatabaseLimits,
+}
+
+/// Limits the host applies, each at or above its floor in the limits table.
+pub struct DatabaseLimits {
+    /// Largest `execute` request, SQL text and parameters together, in bytes.
+    pub max_request_bytes: u64,
+    /// Largest text or blob value, in bytes.
+    pub max_value_bytes: u64,
+    /// Largest `execute` result, in bytes.
+    pub max_result_bytes: u64,
+    /// Longest run time of one statement, in milliseconds.
+    pub statement_timeout_ms: u32,
+    /// Longest idle time between calls on a transaction, in milliseconds.
+    pub idle_timeout_ms: u32,
+    /// Longest wait for the write transaction, in milliseconds.
+    pub write_wait_ms: u32,
+    /// Most read transactions one executable holds open.
+    pub max_read_transactions: u32,
 }
 
 /// Database operation error.
@@ -357,12 +409,12 @@ pub enum DatabaseError {
         /// Index of the interrupted statement in the call.
         statement: u32,
     },
-    /// The request or its result exceeds the host's size limit.
+    /// The request, one value or the result exceeds the host's size limit.
     TooLarge {
         /// Largest size the host accepts, in bytes.
         max_bytes: u64,
     },
-    /// The database reached its quota.
+    /// The database reached its quota, or the device ran out of space.
     Full,
     /// The write transaction stayed taken past the wait limit, or the executable holds its maximum of open transactions.
     Busy,
@@ -378,6 +430,16 @@ pub enum DatabaseError {
 }
 ```
 
+`AllocatableResource` in `ResourceAllocation` gains one variant, appended after the existing ones:
+
+```rust
+pub enum AllocatableResource {
+    // Existing variants unchanged.
+    /// Database quota of at least this many bytes for the product's database under the signed-in account.
+    DatabaseQuota(u64),
+}
+```
+
 ## Trade-offs
 
 - The database does not replicate across the account's devices. A follow-up RFC covers replication; the per-account database gives it a unit to replicate.
@@ -385,12 +447,15 @@ pub enum DatabaseError {
 - The SQLite dialect and its minimum version are part of the contract. Considered and dropped: structured write operations, which cannot express `UPDATE … WHERE` or `INSERT … SELECT`.
 - Migrations live on the product side; the host only stores a version. Considered and dropped: a declarative schema the host diffs, which cannot rewrite data, and a host-side migration hook, which needs the host to call into product code.
 - Isolation rests on a file per product and the SQLite authorizer, not on cryptography. A product's data is as private as the host's own storage, which is what `LocalStorage` gives today.
+- Each product's database is its own file, so the host's cost grows with the databases open at once, which the host bounds by sharing threads and closing idle databases; a product pays an open on its first call after its database closes. Considered and dropped: one file multiplexing every product, which needs the host to rewrite product SQL, breaks library migrators and introspection, queues every product behind one writer, and meters only by counting pages itself. A host may revisit it at scale behind the same trait.
+- The quota is a hard limit the host raises on request, not a budget the host reclaims, and the approval UI is the host's. Considered and dropped: a fixed approval flow in the protocol, which would bind every host to one UI across desktop, browser and mobile.
+- The quota is never reclaimed by deleting data. Considered and dropped: evicting a product's data under storage pressure, as browsers do, which loses the only copy of data such as t3ams' history.
 - Change notifications name tables, not rows. Considered and dropped: a row-level change feed, which needs a change log the host retains.
 - `LocalStorage` is unchanged.
 
 ## Open questions
 
-- Whether a product can ask for more than the quota floor, and whether the user approves it.
+- The pool size, page cache size, idle period and open-database cap for mobile hosts, and the memory and open latency of one open database, which need measuring on devices.
 - The largest row a transport frame carries. A product that caches media of tens of megabytes may need a streamed blob call rather than a `Blob` column.
 - How the browser host persists a SQLite database.
 - Whether the host enables foreign key enforcement. A migrator that rebuilds a table by copy, drop and rename inside a transaction cannot turn enforcement off there, so the drop of a referenced table runs enforced.
