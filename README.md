@@ -438,7 +438,8 @@ jobs below, and so does a pull request touching the app, or the crates its
 bindings come from, once it is labelled `ios-simulator-build`. They are macOS
 jobs, so a pull request without the label runs none of them; CI's
 `iOS package (Swift + WebKit)` job still checks the bindings compile against
-the core on every push.
+the core on every push. The first time a pull request touches the iOS or
+Android app, `build-label-hint.yml` comments once with the label that builds it.
 
 - `build`, a DevCI compile, failing on any build warning the committed baseline
   does not already have
