@@ -1915,6 +1915,28 @@
         }
       }
     },
+    "identity.card.share.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hey! I’m using the Polkadot app for chat. It’s private and easy to use. Download it at %1$@ and add me – my username is %2$@."
+          }
+        }
+      }
+    },
+    "identity.card.share.message.no.link" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hey! I’m using the Polkadot app for chat. It’s private and easy to use. Add me – my username is %@."
+          }
+        }
+      }
+    },
     "leave.chat.action" : {
       "extractionState" : "manual",
       "localizations" : {

@@ -186,6 +186,9 @@ pub struct StubPlatform {
     pub chain_connects: Arc<Mutex<Vec<[u8; 32]>>>,
     /// When set, `connect` fails with this reason.
     pub chain_connect_error: Option<&'static str>,
+    /// When set, `connect` to this one chain fails, while every other chain
+    /// still connects.
+    pub unreachable_genesis: Option<[u8; 32]>,
     /// When true, the connection's response stream ends instead of staying
     /// pending. A follow opened over it then yields `None` rather than waiting
     /// out `OPERATION_TIMEOUT`, which is the difference between a test that
@@ -1769,6 +1772,11 @@ impl ChainProvider for StubPlatform {
         if let Some(reason) = self.chain_connect_error {
             return Err(ProviderError::Host {
                 reason: reason.to_string(),
+            });
+        }
+        if self.unreachable_genesis == Some(genesis_hash) {
+            return Err(ProviderError::Host {
+                reason: "fixture serves no such chain".to_string(),
             });
         }
         if self.chain_connect_pending {

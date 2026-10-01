@@ -578,11 +578,15 @@ runtime_items! {
     #[cfg(not(target_arch = "wasm32"))]
     pub mod native_debug;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod store;
+
     pub use truapi_core::TrUApiCore;
     pub use host_core::{
         ChannelId, DebugEvent, DebugSink, FrameDirection, FrameSink, HostAdmin, PairingHostRuntime,
         ProductRuntime, ProductRuntimeControl, ProductRuntimeError, SigningHostRuntime,
     };
+    pub use host_internal::bulletin::{preimage_cid, preimage_key};
     pub use host_logic::session::{
         ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
     };
