@@ -224,6 +224,19 @@ impl SigningHost {
             .contains(tag)
     }
 
+    /// Refuse a withheld resource before any allowance for it is derived.
+    ///
+    /// The allowance-key calls allocate on their own, without a product ever
+    /// asking for an allocation, so a check that lived only in the allocation
+    /// answer would hand the key to the very path the product takes.
+    #[cfg(feature = "test-host")]
+    fn refuse_withheld(&self, resource: &v01::AllocatableResource) -> Result<(), AuthorityError> {
+        if self.withholds(resource) {
+            return Err(AuthorityError::Rejected);
+        }
+        Ok(())
+    }
+
     /// The shared services this role was built over, for tests that also need
     /// to build a product runtime against the same platform and cache.
     #[cfg(test)]
@@ -1419,6 +1432,8 @@ impl ProductAuthority for SigningHost {
         product_id: String,
     ) -> Result<StatementStoreAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
+        #[cfg(feature = "test-host")]
+        self.refuse_withheld(&v01::AllocatableResource::StatementStoreAllowance)?;
         let secret = sso_responder::allocate_statement_store_allowance(
             &self.services,
             self,
@@ -1438,6 +1453,8 @@ impl ProductAuthority for SigningHost {
         product_id: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
+        #[cfg(feature = "test-host")]
+        self.refuse_withheld(&v01::AllocatableResource::BulletinAllowance)?;
         let secret = sso_responder::allocate_bulletin_allowance(
             &self.services,
             self,
@@ -1457,6 +1474,8 @@ impl ProductAuthority for SigningHost {
         product_id: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
+        #[cfg(feature = "test-host")]
+        self.refuse_withheld(&v01::AllocatableResource::BulletinAllowance)?;
         let secret = sso_responder::allocate_bulletin_allowance(
             &self.services,
             self,

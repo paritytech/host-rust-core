@@ -5,7 +5,9 @@
 The test host's statement store reads the field vector the core sends, so a
 topic filter matches what a product submitted, and a suite reads statements
 back as decoded entries. `behaviors.resourceAllocation` withholds a named
-resource, a changed permission answer reaches the core, and product storage
+resource across every way a product reaches it, including the allowance keys
+the statement-proof and preimage paths ask for without requesting an
+allocation. A changed permission answer reaches the core, and product storage
 is readable under the name `@parity/host-api-test-sdk` gives it.
 
 Surface a migrating suite has to match:
