@@ -4099,10 +4099,11 @@ mod tests {
             delivered,
             "the installed sender was cleared by a foreign drop"
         );
-        assert!(matches!(
-            receiver.try_recv(),
-            Ok(UiEvent::Log(line)) if line == "after a foreign drop"
-        ));
+        // Other tests can log through the installed UI without owning its slot.
+        assert!(
+            std::iter::from_fn(|| receiver.try_recv().ok())
+                .any(|event| matches!(event, UiEvent::Log(line) if line == "after a foreign drop"))
+        );
     }
 
     #[test]
