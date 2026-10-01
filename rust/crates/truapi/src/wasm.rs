@@ -868,6 +868,33 @@ fn wasm_platform(bridge: Arc<JsBridge>) -> WasmPlatformAdapters {
     }
 }
 
+fn connection_adapters_from_js(
+    callbacks: Option<&JsValue>,
+) -> Result<Option<crate::host_core::ConnectionAdapters>, JsValue> {
+    let Some(callbacks) = callbacks.filter(|value| !value.is_null() && !value.is_undefined())
+    else {
+        return Ok(None);
+    };
+    let WasmPlatformAdapters {
+        platform,
+        chat_platform,
+        contacts_platform,
+        status_host,
+        pocket_platform,
+    } = wasm_platform(Arc::new(JsBridge::from_js(callbacks)?));
+    Ok(Some(crate::host_core::ConnectionAdapters {
+        platform,
+        chat_platform,
+        contacts_platform,
+        permission_status: status_host,
+        // One-use grants belong to this execution, not the shared host.
+        permission_grants: Arc::default(),
+        pocket_platform,
+        chat: Arc::new(crate::runtime::ActionChannel::chat()),
+        renderer: Arc::new(crate::runtime::ActionChannel::renderer()),
+    }))
+}
+
 /// Reports every worker demand transition to the host's
 /// `workerDemandChanged(productId, transition)` callback.
 struct WasmWorkerDemand {
@@ -953,11 +980,13 @@ impl WasmPairingHostRuntime {
     }
 
     /// Build one product-scoped runtime from this pairing host runtime.
+    /// Optional platform callbacks are execution-local; shared authority stays here.
     #[wasm_bindgen(js_name = productRuntime)]
     pub fn product_runtime(
         &self,
         product: JsValue,
         core_callbacks: JsValue,
+        platform_callbacks: Option<JsValue>,
     ) -> Result<WasmProductRuntime, JsValue> {
         let product = product_context_from_js(&product)?;
         let channel = CoreChannel::from_js(&core_callbacks)?;
@@ -966,7 +995,10 @@ impl WasmPairingHostRuntime {
         let sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
-        let runtime = self.runtime.product_runtime(product, sink);
+        let runtime = match connection_adapters_from_js(platform_callbacks.as_ref())? {
+            Some(adapters) => self.runtime.product_runtime_with(product, adapters, sink),
+            None => self.runtime.product_runtime(product, sink),
+        };
         if let Some(debug_emit) = debug_emit {
             runtime.set_debug_sink(
                 ChannelId(channel_id),
@@ -1252,18 +1284,23 @@ impl WasmSigningHostRuntime {
     }
 
     /// Build one product-scoped runtime from this signing host.
+    /// Optional platform callbacks are execution-local; shared authority stays here.
     #[wasm_bindgen(js_name = productRuntime)]
     pub fn product_runtime(
         &self,
         product: JsValue,
         core_callbacks: JsValue,
+        platform_callbacks: Option<JsValue>,
     ) -> Result<WasmProductRuntime, JsValue> {
         let product = product_context_from_js(&product)?;
         let channel = CoreChannel::from_js(&core_callbacks)?;
         let sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
-        let runtime = self.runtime.product_runtime(product, sink);
+        let runtime = match connection_adapters_from_js(platform_callbacks.as_ref())? {
+            Some(adapters) => self.runtime.product_runtime_with(product, adapters, sink),
+            None => self.runtime.product_runtime(product, sink),
+        };
         Ok(WasmProductRuntime::from_parts(runtime, channel.dispose))
     }
 

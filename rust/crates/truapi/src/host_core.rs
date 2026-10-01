@@ -28,7 +28,6 @@ use tracing::{instrument, warn};
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
 
-use crate::truapi_core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::host_internal::sso_messages::{RemoteMessage, SsoRequestOutcome};
 use crate::host_logic::worker::WorkerLedger;
@@ -42,6 +41,7 @@ use crate::runtime::{
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
+use crate::truapi_core::TrUApiCore;
 
 /// Outgoing frame sink owned by a host adapter.
 ///
@@ -296,6 +296,22 @@ impl PairingHostRuntime {
             self.pairing_host.clone(),
             product,
             ConnectionAdapters::from_services(&self.services),
+            sink,
+        )
+    }
+
+    /// Build one execution with local adapters and shared authentication/services.
+    pub fn product_runtime_with(
+        &self,
+        product: ProductContext,
+        adapters: ConnectionAdapters,
+        sink: Arc<dyn FrameSink>,
+    ) -> ProductRuntime {
+        ProductRuntime::new(
+            self.services.clone(),
+            self.pairing_host.clone(),
+            product,
+            adapters,
             sink,
         )
     }
@@ -709,9 +725,8 @@ impl SigningHostRuntime {
         )
     }
 
-    /// Build one product connection with adapters scoped to one native
-    /// executable while sharing this runtime's authentication and services.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Build one product connection with execution-local adapters while
+    /// sharing this runtime's authentication and services.
     pub fn product_runtime_with(
         &self,
         product: ProductContext,
@@ -1060,10 +1075,7 @@ impl SigningHostRuntime {
     /// even while that request is still being answered by another call, and a
     /// withdrawn request is answered `Ignored`.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.answer_sso_request"))]
-    pub async fn answer_sso_request(
-        &self,
-        message: RemoteMessage,
-    ) -> SsoRequestOutcome {
+    pub async fn answer_sso_request(&self, message: RemoteMessage) -> SsoRequestOutcome {
         let service = SigningHostSsoService::new(self.signing_host.clone());
         match service.answer(message).await {
             Dispatch::Response(answer) => SsoRequestOutcome::Response {
@@ -1175,8 +1187,8 @@ impl SigningHostRuntime {
 }
 
 /// Adapters scoped to one product connection: the platform serving its
-/// syscalls, the optional native Chat adapter, and the connection's
-/// host-fed action streams. Non-native connections use [`Self::from_services`].
+/// syscalls, optional capability adapters, and the connection's host-fed
+/// action streams. Unscoped connections use [`Self::from_services`].
 ///
 /// `pocket_platform` is the same kind of optional adapter for the card
 /// collection.
@@ -1184,6 +1196,7 @@ impl SigningHostRuntime {
 pub struct ConnectionAdapters {
     pub platform: Arc<dyn Platform>,
     pub chat_platform: Option<Arc<dyn ChatPlatform>>,
+    pub contacts_platform: Option<Arc<dyn ContactsPlatform>>,
     /// Live OS permission state for this connection. It travels here rather
     /// than on the host runtime because a native host builds one platform per
     /// product execution, so the object that reports OS state has to be the
@@ -1202,6 +1215,7 @@ impl ConnectionAdapters {
         Self {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
+            contacts_platform: services.contacts_platform(),
             permission_status: services.permission_status_host(),
             permission_grants: Arc::default(),
             chat: Arc::new(ActionChannel::chat()),
