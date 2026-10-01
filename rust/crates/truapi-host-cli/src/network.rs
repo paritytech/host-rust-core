@@ -7,7 +7,8 @@ use truapi::platform::{HostChainEntry, HostChainSet};
 /// The CLI account store keeps BIP-39 mnemonics in plaintext (`accounts.rs`),
 /// which is only acceptable for disposable test identities. A preset that sets
 /// [`NetworkConfig::disposable_identities`] may use that store; any other
-/// preset only signs with a mnemonic supplied per process and never writes one.
+/// preset only signs with a mnemonic supplied per process, never writes one,
+/// and never approves a confirmation without a prompt.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum Network {
     #[value(name = "paseo-next-v2")]
@@ -166,7 +167,8 @@ pub struct NetworkConfig {
     pub asset_hub_genesis: [u8; 32],
     pub live_chain_endpoints: &'static [ChainEndpoint],
     /// Whether identities on this network are disposable test identities the
-    /// plaintext account store may keep. Only test networks set it.
+    /// plaintext account store may keep and auto-accept may sign for. Only
+    /// test networks set it.
     pub disposable_identities: bool,
 }
 
