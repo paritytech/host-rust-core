@@ -42,6 +42,17 @@ extension AssetBalanceDisplayInfo {
         )
     }
 
+    var withFiatSymbol: AssetBalanceDisplayInfo {
+        AssetBalanceDisplayInfo(
+            displayPrecision: displayPrecision,
+            assetPrecision: assetPrecision,
+            symbol: AppConfig.Brand.fiatSymbol,
+            symbolValueSeparator: "",
+            symbolPosition: .prefix,
+            icon: icon
+        )
+    }
+
     var withoutSymbol: AssetBalanceDisplayInfo {
         AssetBalanceDisplayInfo(
             displayPrecision: displayPrecision,

@@ -172,11 +172,11 @@ internal fun EnterAmountInput(
             }
         }
 
-        VerticalSpacer { small }
+        VerticalSpacer { extraMedium }
 
         NovaText(
-            text = symbol.withCurrencyTickerStyle(PolkadotTheme.typography.title.extraLarge),
-            style = PolkadotTheme.typography.title.extraLarge,
+            text = symbol.withCurrencyTickerStyle(PolkadotTheme.typography.headline.small),
+            style = PolkadotTheme.typography.headline.small,
             color = PolkadotTheme.colors.fg.secondary
         )
 
