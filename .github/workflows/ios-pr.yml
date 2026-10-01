@@ -2,7 +2,10 @@ name: iOS CI
 
 # Adding any label starts a run, and one for a label other than
 # ios-simulator-build has nothing to do. It gets a group of its own, so it
-# cannot cancel the run already in progress for the same branch.
+# cannot cancel the run already in progress for the same branch. Its skipped
+# jobs share names with the real ones, so the checks list can show one of them
+# over an earlier result for the same commit; iOS CI is not a required check,
+# so this affects only what the list shows.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ios-simulator-build' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
@@ -110,8 +113,10 @@ jobs:
   # that the Swift bindings compile against the core. Pushes to main and manual
   # runs build everything, so a change that breaks the app is caught there.
   #
-  # The labels are read from the API rather than the event, so a re-run sees a
-  # label added after the run it replays.
+  # The labels are read from the API rather than the event, so re-running a
+  # push's run sees a label added since. A run started by another label stays
+  # skipped on a re-run, because building there would duplicate the run the
+  # ios-simulator-build label starts on its own.
   check-skip-label:
     timeout-minutes: 5
     runs-on: ubuntu-latest
@@ -451,7 +456,8 @@ jobs:
 
           An arm64 simulator slice, so it needs an Apple Silicon Mac and does not
           install on a device. Kept for 14 days, after which the link stops
-          resolving and a new push rebuilds it.
+          resolving and a new push rebuilds it while \`ios-simulator-build\` is
+          set.
           EOF
 
       - name: Link the preview build from the pull request
