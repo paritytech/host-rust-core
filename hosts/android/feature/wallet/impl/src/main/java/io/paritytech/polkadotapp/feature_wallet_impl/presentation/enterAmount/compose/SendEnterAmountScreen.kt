@@ -42,6 +42,7 @@ import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_account_api.presentation.address.model.ExtractedAddress
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.LocalTokenAmountFormatter
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.TokenAmountFormatter
+import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.formatFiatSigned
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.RoundPrecision
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.TokenAmountModel
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.enterAmount.SendEnterAmountContract
@@ -116,7 +117,7 @@ private fun SendEnterAmountScreenInternal(
         formatter.formatToSymbol(state.available)
     }
     val amount = remember(state.spendable) {
-        formatter.formatTokenAmount(state.spendable, RoundPrecision.FIAT, withSymbol = false)
+        formatter.formatFiatSigned(state.spendable)
     }
     val gainingPrivacy = remember(state.gainingPrivacy) {
         state.gainingPrivacy?.let { formatter.formatTokenAmount(it, RoundPrecision.FIAT, withSymbol = false) }

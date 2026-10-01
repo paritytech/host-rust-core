@@ -224,9 +224,8 @@ jobs:
           fi
 
       - if: steps.version.outputs.proceed == 'true'
-        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        uses: ./.github/actions/rust-nightly
         with:
-          toolchain: nightly
           components: rustfmt
 
       - if: steps.version.outputs.proceed == 'true'
@@ -236,6 +235,8 @@ jobs:
 
       - if: steps.version.outputs.proceed == 'true'
         uses: ./.github/actions/rust-cache
+        with:
+          save: "false"
 
       - name: Install dependencies
         if: steps.version.outputs.proceed == 'true'
