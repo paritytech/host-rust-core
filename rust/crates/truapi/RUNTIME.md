@@ -275,6 +275,17 @@ The browser core keeps the trait's `NotGranted` defaults, because its
 JavaScript session answers trait 111 before frames reach the core.
 `cargo test -p truapi --features mock --test live_jam_public_devnet -- --include-ignored`
 dials the public JAM devnet through a product runtime.
+### Core database
+
+Native signing hosts (iOS, Android, the CLI) give the core a directory for its
+own SQLite database (`store` module, bundled SQLite through `rusqlite` and
+`async-sqlite`). The runtime opens `core.sqlite3` there at startup, so a
+missing or unwritable directory stops it from starting. Keep the directory out
+of device backups: it holds durable-transaction state that must not be restored
+onto another device. The required `HostRuntimeConfig.database_directory` sets
+it on iOS and Android, `SigningHostRuntime::set_core_db` on any other embedder,
+and `core_database_status()` reports the SQLite version, schema version and
+path. Web hosts do not compile the store.
 
 ### The two roles
 
