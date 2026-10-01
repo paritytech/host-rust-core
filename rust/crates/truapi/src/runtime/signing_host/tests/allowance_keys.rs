@@ -1,11 +1,14 @@
-//! The allowance key is served from memory after the first proof in a period.
-
 use super::*;
 
 use futures::FutureExt;
 use parity_scale_codec::Encode;
+use truapi::api::StatementStore;
+use truapi::versioned::statement_store::{
+    RemoteStatementStoreSubmitError, RemoteStatementStoreSubmitRequest,
+};
 
 use crate::host_logic::product_account::derive_sr25519_hard_path;
+use crate::host_logic::statement_store::SUBMIT_STATEMENT_METHOD;
 
 const PRODUCT_ID: &str = "myapp.dot";
 const PERIOD: u32 = 7;
@@ -14,8 +17,7 @@ const SECRET: [u8; 64] = [0x42; 64];
 const PEOPLE_METADATA: &[u8] =
     include_bytes!("../../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
 
-/// Slot 0 already holds the product's allowance, so an allocation returns
-/// after the suffix read and one slot read.
+/// Slot 0 already holds the product's allowance.
 fn chain_with_allocated_slot() -> Arc<StubPlatform> {
     let allowance =
         derive_sr25519_hard_path(&ENTROPY, &["allowance", "statement-store", PRODUCT_ID])
@@ -65,8 +67,8 @@ fn active_signing_host(platform: Arc<StubPlatform>) -> Arc<SigningHostRole> {
     signing_host
 }
 
-/// Bounded: a regression waits on a chain read the stub never answers, and
-/// would hang rather than fail.
+/// Bounded so a regression waiting on an unanswered chain read fails instead
+/// of hanging.
 fn allowance_key(signing_host: &SigningHostRole) -> StatementStoreAllowanceKey {
     futures::executor::block_on(async {
         let session = signing_host
@@ -106,12 +108,22 @@ fn remember(signing_host: &SigningHostRole, product_id: &str, period: u32) {
         .insert(product_id.to_string(), (period, secret_key()));
 }
 
-fn remembered(signing_host: &SigningHostRole, product_id: &str, period: u32) -> Option<[u8; 64]> {
+fn current_generation(signing_host: &SigningHostRole) -> u64 {
     signing_host
         .local_grants
         .lock()
         .expect("local AutoSigning grant mutex poisoned")
-        .statement_allowance_key(product_id, period)
+        .activation_generation
+}
+
+fn remembered(signing_host: &SigningHostRole, product_id: &str, period: u32) -> Option<[u8; 64]> {
+    let state = signing_host
+        .local_grants
+        .lock()
+        .expect("local AutoSigning grant mutex poisoned");
+    state
+        .statement_allowance_key(state.activation_generation, product_id, period)
+        .expect("the generation is current")
         .map(|key| key.secret)
 }
 
@@ -183,17 +195,34 @@ fn clearing_a_product_forgets_only_its_key() {
 }
 
 #[test]
+fn a_replaced_session_is_not_served_the_new_sessions_key() {
+    let signing_host = active_signing_host(Arc::new(StubPlatform::default()));
+    let stale_generation = current_generation(&signing_host);
+    futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
+        .expect("re-activation succeeds");
+    remember(&signing_host, PRODUCT_ID, PERIOD);
+
+    assert!(
+        matches!(
+            signing_host
+                .local_grants
+                .lock()
+                .expect("local AutoSigning grant mutex poisoned")
+                .statement_allowance_key(stale_generation, PRODUCT_ID, PERIOD),
+            Err(AuthorityError::Disconnected)
+        ),
+        "a request validated under the replaced session was served a key"
+    );
+}
+
+#[test]
 fn a_key_allocated_under_a_replaced_session_is_not_remembered() {
     let signing_host = active_signing_host(Arc::new(StubPlatform::default()));
-    let stale_generation = signing_host
-        .local_grants
-        .lock()
-        .expect("local AutoSigning grant mutex poisoned")
-        .activation_generation;
+    let stale_generation = current_generation(&signing_host);
     futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
         .expect("re-activation succeeds");
 
-    signing_host
+    let remembered_stale = signing_host
         .local_grants
         .lock()
         .expect("local AutoSigning grant mutex poisoned")
@@ -205,8 +234,80 @@ fn a_key_allocated_under_a_replaced_session_is_not_remembered() {
         );
 
     assert_eq!(
+        (remembered_stale, remembered(&signing_host, PRODUCT_ID, PERIOD)),
+        (Err(AuthorityError::Disconnected), None),
+        "a key allocated for a replaced session was handed back or remembered"
+    );
+}
+
+fn submit_rejected(reason: &str, signer: [u8; 32]) -> Arc<SigningHostRole> {
+    let platform = Arc::new(StubPlatform {
+        rpc_method_responses: vec![(
+            SUBMIT_STATEMENT_METHOD,
+            format!(r#"{{"status":"rejected","reason":"{reason}"}}"#),
+        )],
+        ..Default::default()
+    });
+    let (services, signing_host) = signing_runtime_with_platform(platform);
+    futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
+        .expect("activation succeeds");
+    remember(&signing_host, PRODUCT_ID, PERIOD);
+    let runtime = product_runtime_for(services, signing_host.clone(), PRODUCT_ID);
+
+    let submitted = futures::executor::block_on(runtime.submit(
+        &CallContext::default(),
+        RemoteStatementStoreSubmitRequest::V1(truapi::latest::SignedStatement {
+            proof: truapi::latest::StatementProof::Sr25519 {
+                signature: [0; 64],
+                signer,
+            },
+            decryption_key: None,
+            expiry: None,
+            channel: None,
+            topics: Vec::new(),
+            data: None,
+        }),
+    ));
+    let Err(CallError::Domain(RemoteStatementStoreSubmitError::V1(error))) = submitted else {
+        panic!("the store rejection must surface as a domain error: {submitted:?}");
+    };
+    assert!(
+        error.reason.contains(reason),
+        "the submit failed before the store answered: {}",
+        error.reason
+    );
+    signing_host
+}
+
+#[test]
+fn a_no_allowance_rejection_forgets_the_rejected_key() {
+    let signing_host = submit_rejected("noAllowance", secret_key().public_key);
+
+    assert_eq!(
         remembered(&signing_host, PRODUCT_ID, PERIOD),
         None,
-        "a key allocated for a replaced session was remembered for the new one"
+        "the next proof would reuse a key the store no longer accepts"
+    );
+}
+
+#[test]
+fn a_no_allowance_rejection_for_another_signer_keeps_the_key() {
+    let signing_host = submit_rejected("noAllowance", [0x11; 32]);
+
+    assert_eq!(
+        remembered(&signing_host, PRODUCT_ID, PERIOD),
+        Some(SECRET),
+        "a rejection for a key the host did not issue must not evict the cached one"
+    );
+}
+
+#[test]
+fn another_rejection_keeps_the_key() {
+    let signing_host = submit_rejected("badProof", secret_key().public_key);
+
+    assert_eq!(
+        remembered(&signing_host, PRODUCT_ID, PERIOD),
+        Some(SECRET),
+        "a rejection that says nothing about the allowance must not evict the key"
     );
 }

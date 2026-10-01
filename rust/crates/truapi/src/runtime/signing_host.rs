@@ -95,7 +95,7 @@ struct LocalGrantState {
     activation_generation: u64,
     auto_signing_grants: HashSet<([u8; 32], String)>,
     /// Per product, the period its statement-store allowance was last seen
-    /// registered in, with the key; within a period only a revocation lapses it.
+    /// registered in, and its key.
     statement_allowance_keys: HashMap<String, (u32, StatementStoreAllowanceKey)>,
 }
 
@@ -121,11 +121,28 @@ impl LocalGrantState {
 
     fn statement_allowance_key(
         &self,
+        activation_generation: u64,
         product_id: &str,
         period: u32,
-    ) -> Option<&StatementStoreAllowanceKey> {
-        let (cached_period, key) = self.statement_allowance_keys.get(product_id)?;
-        (*cached_period == period).then_some(key)
+    ) -> Result<Option<&StatementStoreAllowanceKey>, AuthorityError> {
+        if self.activation_generation != activation_generation {
+            return Err(AuthorityError::Disconnected);
+        }
+        Ok(self
+            .statement_allowance_keys
+            .get(product_id)
+            .filter(|(cached_period, _)| *cached_period == period)
+            .map(|(_, key)| key))
+    }
+
+    fn forget_statement_allowance_key(&mut self, product_id: &str, public_key: [u8; 32]) {
+        if self
+            .statement_allowance_keys
+            .get(product_id)
+            .is_some_and(|(_, key)| key.public_key == public_key)
+        {
+            self.statement_allowance_keys.remove(product_id);
+        }
     }
 
     fn remember_statement_allowance_key(
@@ -134,11 +151,13 @@ impl LocalGrantState {
         product_id: String,
         period: u32,
         key: StatementStoreAllowanceKey,
-    ) {
-        if self.activation_generation == activation_generation {
-            self.statement_allowance_keys
-                .insert(product_id, (period, key));
+    ) -> Result<(), AuthorityError> {
+        if self.activation_generation != activation_generation {
+            return Err(AuthorityError::Disconnected);
         }
+        self.statement_allowance_keys
+            .insert(product_id, (period, key));
+        Ok(())
     }
 }
 
@@ -1396,7 +1415,7 @@ impl ProductAuthority for SigningHost {
             .local_grants
             .lock()
             .expect("local AutoSigning grant mutex poisoned")
-            .statement_allowance_key(&product_id, period)
+            .statement_allowance_key(activation_generation, &product_id, period)?
         {
             return Ok(key.clone());
         }
@@ -1413,8 +1432,20 @@ impl ProductAuthority for SigningHost {
         self.local_grants
             .lock()
             .expect("local AutoSigning grant mutex poisoned")
-            .remember_statement_allowance_key(activation_generation, product_id, period, key.clone());
+            .remember_statement_allowance_key(
+                activation_generation,
+                product_id,
+                period,
+                key.clone(),
+            )?;
         Ok(key)
+    }
+
+    fn forget_statement_store_allowance_key(&self, product_id: &str, public_key: [u8; 32]) {
+        self.local_grants
+            .lock()
+            .expect("local AutoSigning grant mutex poisoned")
+            .forget_statement_allowance_key(product_id, public_key);
     }
 
     async fn bulletin_allowance_key(

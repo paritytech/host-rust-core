@@ -181,7 +181,7 @@ pub async fn submit_sso(
         match submit(rpc_client, statement.clone()).await {
             Ok(()) => return Ok(()),
             Err(reason)
-                if is_transient_no_allowance(&reason)
+                if is_no_allowance_rejection(&reason)
                     && attempt < SSO_NO_ALLOWANCE_RETRY_ATTEMPTS =>
             {
                 warn!(
@@ -198,7 +198,8 @@ pub async fn submit_sso(
     unreachable!("the bounded SSO submit loop always returns")
 }
 
-fn is_transient_no_allowance(reason: &str) -> bool {
+/// Whether a [`submit`] failure is a `noAllowance` rejection.
+pub fn is_no_allowance_rejection(reason: &str) -> bool {
     reason.contains("noAllowance")
 }
 
@@ -222,14 +223,14 @@ pub fn rpc_error_message(error: subxt_rpcs::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_transient_no_allowance;
+    use super::is_no_allowance_rejection;
 
     #[test]
-    fn identifies_no_allowance_submit_rejections_for_retry() {
-        assert!(is_transient_no_allowance(
+    fn identifies_no_allowance_submit_rejections() {
+        assert!(is_no_allowance_rejection(
             r#"statement_submit not accepted: {"reason":"noAllowance","status":"rejected"}"#
         ));
-        assert!(!is_transient_no_allowance(
+        assert!(!is_no_allowance_rejection(
             r#"statement_submit not accepted: {"reason":"badProof","status":"rejected"}"#
         ));
     }
