@@ -1199,6 +1199,7 @@ impl PlatformPermissions for StubPlatform {
             .lock()
             .expect("device permission list mutex poisoned")
             .push(request);
+        // Simulate the time a user spends answering a permission prompt.
         std::thread::sleep(self.device_permission_answer_delay);
         Ok(self
             .device_permission_decisions

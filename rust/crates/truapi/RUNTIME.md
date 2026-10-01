@@ -392,7 +392,9 @@ AutoSigning without approval. Legacy-account signing still asks the user.
   reaches the product — only a handle for the selection does. The core caches
   resolved handles; a host calls `notify_contacts_changed` on its runtime when
   a contact is removed or blocked.
-- `GamePlatform`: hold a product's next-game reminder and drop it. A host
+- `GamePlatform`: hold the game product's next-game reminder and drop it.
+  The core serves Game only to `dim2`, on every network, and answers
+  `Unsupported` to any other product without calling the host. A host
   keeps one reminder per product: a schedule replaces the reminder the same
   product already holds. The reminder is kept across app kill and reboot,
   rung as an alarm or delivered as a notification. When `Alarm` is denied

@@ -22,12 +22,6 @@ pub enum HostRemindNextGameError {
     /// neither.
     #[display("reminders are not authorized")]
     PermissionDenied,
-    /// Catch-all.
-    #[display("{reason}")]
-    Unknown {
-        /// Human-readable reason.
-        reason: String,
-    },
 }
 
 /// Request to drop this product's reminder.

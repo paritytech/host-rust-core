@@ -141,9 +141,12 @@ product's held reminder, and `cancelGameReminder` drops it. Its `ringAlarm`
 argument is false when `Alarm` is denied and `Notifications` granted, so the
 host delivers an ordinary notification instead of an alarm, and its
 `addCalendarEvent` argument is true when the product also holds the optional
-`Calendar` grant. A host keeps one reminder per product. The mock test host
+`Calendar` grant. A host keeps one reminder per product. The core serves
+`game` to the game product, `dim2`, alone. The mock test host
 (`@parity/truapi-host/testing`) accepts every reminder and cancel without
-holding them.
+holding them once it runs as that product; its default `mock.dot` gets
+`Unsupported`, so a suite that exercises `game` passes
+`productId: "dim2.dot"`.
 
 Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
 reported to the worker in its `init` message, so the core sees the same

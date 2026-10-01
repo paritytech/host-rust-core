@@ -648,10 +648,11 @@ impl crate::platform::GamePlatform for GameCallbackPlatform {
         starts_at: u64,
         ring_alarm: bool,
         add_calendar_event: bool,
-    ) -> Result<(), v01::HostRemindNextGameError> {
+    ) -> Result<(), v01::GenericError> {
         self.game
             .schedule_reminder(starts_at, ring_alarm, add_calendar_event)
             .await
+            .map_err(v01::GenericError::from)
     }
 
     async fn cancel_game_reminder(
@@ -661,8 +662,6 @@ impl crate::platform::GamePlatform for GameCallbackPlatform {
         self.game
             .cancel_reminder()
             .await
-            .map_err(|error| v01::GenericError {
-                reason: error.to_string(),
-            })
+            .map_err(v01::GenericError::from)
     }
 }

@@ -35,7 +35,7 @@ use truapi::latest::{
     HostFeatureSupportedResponse, HostLocalStorageChangeItem, HostLocaleSubscribeItem,
     HostNavigateToError, HostPlatform, HostPocketListSubscribeItem, HostPocketRemoveCardError,
     HostPocketRemoveCardRequest, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostRemindNextGameError, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
+    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
     HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
     HostWorkerBeginOperationResponse, HostWorkerOperationError, LegacyAccountTxPayload,
     ProductAccountId, ProductAccountTxPayload, ProductProofContext, RemotePermission,
@@ -312,7 +312,10 @@ pub fn has_dotns_tld(normalized: &str) -> bool {
 /// Blessed product labels across every network in [`DOTNS_TLDS`].
 ///
 /// These products bypass recorded permissions and prompt only for device access.
-pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", "dim2", "stash"];
+pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", GAME_PRODUCT_LABEL, "stash"];
+
+/// The bare label of the game product, Jollity, on every network.
+pub(crate) const GAME_PRODUCT_LABEL: &str = "dim2";
 
 /// Hosts available to every product unless a stored permission decision blocks them.
 pub const BLESSED_REMOTE_DOMAINS: &[&str] = &["fonts.googleapis.com", "fonts.gstatic.com"];
@@ -325,10 +328,20 @@ pub const BLESSED_REMOTE_DOMAINS: &[&str] = &["fonts.googleapis.com", "fonts.gst
 /// not. The label is only read out of an id that [`has_dotns_tld`] accepts, so a
 /// widened product-id policy cannot promote an arbitrary single-label host.
 pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
-    has_dotns_tld(product_id)
-        && product_id
-            .rsplit_once('.')
-            .is_some_and(|(label, _tld)| REMOTE_PERMISSION_TRUSTED_LABELS.contains(&label))
+    dotns_product_label(product_id)
+        .is_some_and(|label| REMOTE_PERMISSION_TRUSTED_LABELS.contains(&label))
+}
+
+/// Everything before the TLD of a dotNS `product_id`: `dim2` for `dim2.dot`,
+/// `app.dim2` for `app.dim2.dot`. `None` when the id does not end in one of
+/// [`DOTNS_TLDS`], so a `localhost` id never yields a label.
+///
+/// Expects the [`normalize_product_identifier`] form.
+pub(crate) fn dotns_product_label(product_id: &str) -> Option<&str> {
+    if !has_dotns_tld(product_id) {
+        return None;
+    }
+    product_id.rsplit_once('.').map(|(label, _tld)| label)
 }
 
 /// Whether `product_id` in any accepted spelling holds every
@@ -3290,14 +3303,15 @@ pub trait GamePlatform: Send + Sync {
     /// replacing any it holds.
     /// `ring_alarm` false: deliver an ordinary notification, not an alarm.
     /// `add_calendar_event` says the product holds the `Calendar` grant, so
-    /// the host may also add the game to the user's calendar.
+    /// the host may also add the game to the user's calendar. An error reaches
+    /// the product as a host failure.
     async fn schedule_game_reminder(
         &self,
         product: &ProductContext,
         starts_at: u64,
         ring_alarm: bool,
         add_calendar_event: bool,
-    ) -> Result<(), HostRemindNextGameError>;
+    ) -> Result<(), GenericError>;
 
     /// Drop the product's reminder. Idempotent: dropping none succeeds.
     async fn cancel_game_reminder(&self, product: &ProductContext) -> Result<(), GenericError>;

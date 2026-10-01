@@ -167,18 +167,6 @@ fn an_unexpected_foreign_error_converts_instead_of_panicking() {
             reason: reason.to_string(),
         }
     );
-
-    let remind = <v01::HostRemindNextGameError as uniffi::ConvertError<crate::UniFfiTag>>::
-        try_convert_unexpected_callback_error(
-            uniffi::UnexpectedUniFFICallbackError::new(reason),
-        )
-        .expect("an unexpected foreign error must convert");
-    assert_eq!(
-        remind,
-        v01::HostRemindNextGameError::Unknown {
-            reason: reason.to_string(),
-        }
-    );
 }
 
 pub fn text_chat_action(text: &str) -> v01::HostChatActionSubscribeItem {
@@ -1010,7 +998,7 @@ impl NativeGameCallbacks for RecordingGameCallbacks {
         starts_at: u64,
         ring_alarm: bool,
         add_calendar_event: bool,
-    ) -> Result<(), v01::HostRemindNextGameError> {
+    ) -> Result<(), HostRejection> {
         self.calls
             .lock()
             .expect("game calls mutex poisoned")

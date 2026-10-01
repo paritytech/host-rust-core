@@ -264,9 +264,9 @@ public protocol PocketHostBridge: AnyObject, Sendable {
 /// reboot, rung as an alarm or delivered as a notification when the OS
 /// refuses alarms, and dropped once the game starts.
 ///
-/// `scheduleReminder` throws ``HostRemindNextGameError``; any other error
-/// reaches the product as `.Unknown`. `cancelReminder` throws
-/// ``HostRejection`` (or an error conforming to `LocalizedError`) to decline.
+/// Both calls throw ``HostRejection`` (or an error conforming to
+/// `LocalizedError`) to decline; the product receives it as a host failure
+/// carrying its reason.
 public protocol GameHostBridge: AnyObject, Sendable {
     /// Hold `startsAt` (Unix milliseconds, UTC) as this product's reminder,
     /// replacing any it holds. `ringAlarm` false: deliver an ordinary
@@ -448,16 +448,12 @@ private final class GameCallbackAdapter: NativeGameCallbacks, @unchecked Sendabl
     }
 
     func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
-        do {
+        try await withHostRejection {
             try await bridge.scheduleReminder(
                 startsAt: startsAt,
                 ringAlarm: ringAlarm,
                 addCalendarEvent: addCalendarEvent
             )
-        } catch let error as HostRemindNextGameError {
-            throw error
-        } catch {
-            throw HostRemindNextGameError.Unknown(reason: hostRejectionReason(error))
         }
     }
 

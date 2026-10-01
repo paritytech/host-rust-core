@@ -60,16 +60,6 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for v01::HostNavigateToError {
     }
 }
 
-impl From<uniffi::UnexpectedUniFFICallbackError> for v01::HostRemindNextGameError {
-    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
-        tracing::warn!(
-            reason = %err.reason,
-            "host callback threw an undeclared error; reporting it as a rejection"
-        );
-        v01::HostRemindNextGameError::Unknown { reason: err.reason }
-    }
-}
-
 impl From<v01::GenericError> for HostRejection {
     fn from(err: v01::GenericError) -> Self {
         HostRejection::Rejected { reason: err.reason }

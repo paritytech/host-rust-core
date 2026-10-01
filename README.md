@@ -308,13 +308,14 @@ resting on the product's word. The report lands at
 `explorer/diagnosis-reports/pocket/signing-host-cli.md` and feeds the explorer's
 Pocket compatibility matrix.
 
-`Game` (`remind_next_game`, `cancel_next_game`) has no phase of its own: both
-CLI host roles serve it for every execution kind, so its generated examples run
-in the same battery pass as everything else, backed by an in-memory
-`CliGameHost` that never rings anything. dot.li serves no `Game` surface, so the
-playground's Diagnosis skips the `Game` service. The `truapi` runtime tests
-cover the consent and start-time checks, the `Notifications` fallback when
-`Alarm` is denied, and the optional `Calendar` grant.
+`Game` (`remind_next_game`, `cancel_next_game`) serves only the game product,
+`dim2` on every network, and answers `Unsupported` to any other. The battery
+runs as another product, so it skips the `Game` service, and so does the
+playground's Diagnosis, since dot.li serves no `Game` surface. Both CLI host
+roles still install an in-memory `CliGameHost` that never rings anything. The
+`truapi` runtime tests cover the product gate, the consent and start-time
+checks, cancellation during a prompt, the `Notifications` fallback when `Alarm`
+is denied, and the optional `Calendar` grant.
 
 To run the playground locally in a plain browser tab, against a signing host on
 your own machine:

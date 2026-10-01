@@ -297,7 +297,7 @@ pub trait NativeGameCallbacks: Send + Sync {
         starts_at: u64,
         ring_alarm: bool,
         add_calendar_event: bool,
-    ) -> Result<(), v01::HostRemindNextGameError>;
+    ) -> Result<(), HostRejection>;
 
     /// Drop this product's reminder. Idempotent.
     async fn cancel_reminder(&self) -> Result<(), HostRejection>;

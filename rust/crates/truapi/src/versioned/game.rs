@@ -22,12 +22,8 @@ mod tests {
     fn remind_errors_keep_their_discriminants() {
         let past = HostRemindNextGameError::V1(v01::HostRemindNextGameError::StartsInPast);
         let denied = HostRemindNextGameError::V1(v01::HostRemindNextGameError::PermissionDenied);
-        let unknown = HostRemindNextGameError::V1(v01::HostRemindNextGameError::Unknown {
-            reason: "x".to_string(),
-        });
 
         assert_eq!(hex::encode(past.encode()), "0000");
         assert_eq!(hex::encode(denied.encode()), "0001");
-        assert_eq!(hex::encode(unknown.encode()), "00020478");
     }
 }

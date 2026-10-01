@@ -3,7 +3,7 @@
 //! Reminders are accepted and logged but never held or fired: this exists to
 //! make a Game product runnable headlessly, not to ring anything.
 
-use truapi::latest::{GenericError, HostRemindNextGameError};
+use truapi::latest::GenericError;
 use truapi::platform::{GamePlatform, ProductContext, async_trait};
 
 /// A Game host that accepts every reminder and cancel.
@@ -17,7 +17,7 @@ impl GamePlatform for CliGameHost {
         starts_at: u64,
         ring_alarm: bool,
         add_calendar_event: bool,
-    ) -> Result<(), HostRemindNextGameError> {
+    ) -> Result<(), GenericError> {
         tracing::info!(
             product = %product.product_id,
             starts_at,

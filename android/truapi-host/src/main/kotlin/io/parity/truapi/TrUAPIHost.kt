@@ -71,7 +71,6 @@ import uniffi.truapi.PairedSsoPeer
 import uniffi.truapi.ResponderExit
 import uniffi.truapi.ProductRuntimeException
 import uniffi.truapi.HostNavigateToException
-import uniffi.truapi.HostRemindNextGameException
 import uniffi.truapi.HostRejection
 import uniffi.truapi.HostLocalStorageReadException
 import uniffi.truapi.localhostBridgeBootstrapScript
@@ -430,10 +429,10 @@ interface GameHostBridge {
     /**
      * Hold [startsAt] (Unix milliseconds, UTC) as this product's reminder, replacing any it holds.
      * [ringAlarm] false: deliver an ordinary notification, not an alarm. [addCalendarEvent] says
-     * the product holds the Calendar grant, so the host may also add the game to the calendar. A
-     * [HostRemindNextGameException] reaches the product as thrown; any other exception as `Unknown`.
+     * the product holds the Calendar grant, so the host may also add the game to the calendar. Any
+     * exception reaches the product as a host failure carrying its reason.
      */
-    @Throws(HostRemindNextGameException::class)
+    @Throws(HostRejection::class)
     suspend fun scheduleReminder(startsAt: ULong, ringAlarm: Boolean, addCalendarEvent: Boolean)
 
     /** Drop this product's reminder. Dropping none succeeds. */
@@ -593,18 +592,6 @@ private inline fun <T> withNavigateRejection(operation: () -> T): T =
             .apply { initCause(error) }
     }
 
-private inline fun <T> withRemindRejection(operation: () -> T): T =
-    try {
-        operation()
-    } catch (rejection: HostRemindNextGameException) {
-        throw rejection
-    } catch (cancellation: CancellationException) {
-        throw cancellation
-    } catch (error: Throwable) {
-        throw HostRemindNextGameException.Unknown(hostRejectionReason(error))
-            .apply { initCause(error) }
-    }
-
 private inline fun <T> withStorageException(operation: () -> T): T =
     try {
         operation()
@@ -703,7 +690,7 @@ private class GameCallbackAdapter(private val bridge: GameHostBridge) : NativeGa
         startsAt: ULong,
         ringAlarm: Boolean,
         addCalendarEvent: Boolean,
-    ) = withRemindRejection { bridge.scheduleReminder(startsAt, ringAlarm, addCalendarEvent) }
+    ) = withHostRejection { bridge.scheduleReminder(startsAt, ringAlarm, addCalendarEvent) }
 
     override suspend fun cancelReminder() = withHostRejection { bridge.cancelReminder() }
 }

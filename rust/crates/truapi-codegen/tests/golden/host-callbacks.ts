@@ -1406,7 +1406,8 @@ export interface GamePlatform {
    * replacing any it holds.
    * `ring_alarm` false: deliver an ordinary notification, not an alarm.
    * `add_calendar_event` says the product holds the `Calendar` grant, so
-   * the host may also add the game to the user's calendar.
+   * the host may also add the game to the user's calendar. An error reaches
+   * the product as a host failure.
    */
   scheduleGameReminder(
     product: ProductContext,

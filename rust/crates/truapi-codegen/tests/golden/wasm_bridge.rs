@@ -364,7 +364,7 @@ impl crate::platform::GamePlatform for WasmPlatform {
         starts_at: u64,
         ring_alarm: bool,
         add_calendar_event: bool,
-    ) -> Result<(), v01::HostRemindNextGameError> {
+    ) -> Result<(), v01::GenericError> {
         invoke_unit(
             &self.bridge.schedule_game_reminder,
             vec![
@@ -375,7 +375,7 @@ impl crate::platform::GamePlatform for WasmPlatform {
             ],
         )
         .await
-        .map_err(|reason| v01::HostRemindNextGameError::Unknown { reason })
+        .map_err(generic)
     }
 
     async fn cancel_game_reminder(

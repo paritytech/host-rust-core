@@ -290,7 +290,8 @@ announcing it inline. Defaults to a no-op for a host that answers no pairing.
 
 A host that can hold reminders implements `GameHostBridge`, passed as `game:`
 to `openProductExecution`. Hosts without the bridge pass nothing and Game
-calls answer unsupported.
+calls answer unsupported, as they do for every product but the game product,
+`dim2`.
 
 ```swift
 final class MyGameBridge: GameHostBridge, @unchecked Sendable {
@@ -309,7 +310,7 @@ final class MyGameBridge: GameHostBridge, @unchecked Sendable {
 
 let execution = try runtime.openProductExecution(
     bridge: bridge,
-    configuration: ProductExecutionConfig(productId: "game.dot", executionKind: .worker),
+    configuration: ProductExecutionConfig(productId: "dim2.dot", executionKind: .worker),
     game: MyGameBridge(reminders: reminderStore)
 )
 ```
