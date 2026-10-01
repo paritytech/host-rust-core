@@ -204,7 +204,7 @@ name = "jam_peer_transport_contract"
 required-features = ["runtime"]
 
 [[test]]
-name = "live_jam_public_devnet"
+name = "live_jam_test_instance"
 required-features = ["mock"]
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

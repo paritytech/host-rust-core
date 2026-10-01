@@ -156,6 +156,11 @@ composition crate; the base `truapi` remains PolkaVM-free. Browser hosts
 consume `@parity/polkavm-browser-runtime` directly; browser assets are not
 shipped from this repository.
 
+The native JAM peer transport's live fixture targets JAM-TEST-INSTANCE.
+Run `cargo test -p truapi --features mock --test live_jam_test_instance -- --include-ignored`
+with network access to its six validators; see the
+[peer transport contract](rust/crates/truapi/RUNTIME.md#jam-peer-transport).
+
 Taking a screenshot opens **Report app issue** wherever the shake-opened Debug
 menu is, which is every build except the store submission: `DEBUG_TOOLS_ENABLED`
 on Android, false only for the `release` build type, and `TESTNET_FEATURE` on
