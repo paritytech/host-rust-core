@@ -396,11 +396,11 @@ AutoSigning without approval. Legacy-account signing still asks the user.
   The core serves Game only to `dim2`, on every network, and answers
   `Unsupported` to any other product without calling the host. A host
   keeps one reminder per product: a schedule replaces the reminder the same
-  product already holds. The reminder is kept across app kill and reboot,
-  rung as an alarm or delivered as a notification. When `Alarm` is denied
-  and `Notifications` granted, the core asks for a notification instead of an
-  alarm. When the core reports the optional `Calendar` grant, the host may
-  also add a calendar event.
+  product already holds. The core asks for no per-product consent: the host
+  asks the OS for what the reminder needs, rings an alarm where the OS allows
+  one and delivers a notification otherwise, may add a calendar event, and
+  keeps the reminder across app kill and reboot. A schedule the host cannot
+  hold fails as a host failure carrying its reason.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
 traits above except `ChatPlatform`, `ContactsPlatform`, `PermissionStatusHost`,

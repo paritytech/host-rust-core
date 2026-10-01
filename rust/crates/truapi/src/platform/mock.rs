@@ -1042,8 +1042,6 @@ fn device_permission_key(request: &latest::HostDevicePermissionRequest) -> &'sta
         Request::Clipboard => "Clipboard",
         Request::OpenUrl => "OpenUrl",
         Request::Biometrics => "Biometrics",
-        Request::Alarm => "Alarm",
-        Request::Calendar => "Calendar",
     }
 }
 

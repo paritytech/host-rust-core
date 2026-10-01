@@ -260,19 +260,20 @@ public protocol PocketHostBridge: AnyObject, Sendable {
 /// implementations must be safe to enter concurrently.
 ///
 /// The host holds one reminder per product: a schedule replaces the reminder
-/// the same product already holds. The reminder is kept across app kill and
-/// reboot, rung as an alarm or delivered as a notification when the OS
-/// refuses alarms, and dropped once the game starts.
+/// the same product already holds. The core asks for no per-product consent;
+/// the host asks the OS for what it needs, rings an alarm where the OS allows
+/// one and delivers a notification otherwise, may add the game to the
+/// calendar, keeps the reminder across app kill and reboot, and drops it once
+/// the game starts.
 ///
 /// Both calls throw ``HostRejection`` (or an error conforming to
-/// `LocalizedError`) to decline; the product receives it as a host failure
-/// carrying its reason.
+/// `LocalizedError`) to decline. A failed schedule reaches the product as a
+/// host failure carrying its reason, a failed cancel as its generic error.
 public protocol GameHostBridge: AnyObject, Sendable {
     /// Hold `startsAt` (Unix milliseconds, UTC) as this product's reminder,
-    /// replacing any it holds. `ringAlarm` false: deliver an ordinary
-    /// notification, not an alarm. `addCalendarEvent` says the product holds
-    /// the Calendar grant, so the host may also add the game to the calendar.
-    func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws
+    /// replacing any it holds. Throw when the OS allows neither alarms nor
+    /// notifications.
+    func scheduleReminder(startsAt: UInt64) async throws
 
     /// Drop this product's reminder. Dropping none succeeds.
     func cancelReminder() async throws
@@ -447,14 +448,8 @@ private final class GameCallbackAdapter: NativeGameCallbacks, @unchecked Sendabl
         self.bridge = bridge
     }
 
-    func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
-        try await withHostRejection {
-            try await bridge.scheduleReminder(
-                startsAt: startsAt,
-                ringAlarm: ringAlarm,
-                addCalendarEvent: addCalendarEvent
-            )
-        }
+    func scheduleReminder(startsAt: UInt64) async throws {
+        try await withHostRejection { try await bridge.scheduleReminder(startsAt: startsAt) }
     }
 
     func cancelReminder() async throws {

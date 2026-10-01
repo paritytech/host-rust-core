@@ -2250,7 +2250,7 @@ const GAME_PRODUCT: &str = "dim2.dot";
 /// `failure` when it is set.
 #[derive(Default)]
 struct RecordingGamePlatform {
-    scheduled: Mutex<Vec<(String, u64, bool, bool)>>,
+    scheduled: Mutex<Vec<(String, u64)>>,
     cancelled: Mutex<Vec<String>>,
     failure: Option<&'static str>,
 }
@@ -2272,19 +2272,12 @@ impl crate::platform::GamePlatform for RecordingGamePlatform {
         &self,
         product: &ProductContext,
         starts_at: u64,
-        ring_alarm: bool,
-        add_calendar_event: bool,
     ) -> Result<(), truapi::latest::GenericError> {
         self.check_failure()?;
         self.scheduled
             .lock()
             .expect("scheduled mutex poisoned")
-            .push((
-                product.product_id.clone(),
-                starts_at,
-                ring_alarm,
-                add_calendar_event,
-            ));
+            .push((product.product_id.clone(), starts_at));
         Ok(())
     }
 
@@ -2365,7 +2358,7 @@ fn cancel(
     ))
 }
 
-fn scheduled(game: &RecordingGamePlatform) -> Vec<(String, u64, bool, bool)> {
+fn scheduled(game: &RecordingGamePlatform) -> Vec<(String, u64)> {
     game.scheduled
         .lock()
         .expect("scheduled mutex poisoned")
@@ -2382,10 +2375,9 @@ fn prompts(platform: &StubPlatform) -> Vec<v01::HostDevicePermissionRequest> {
 
 #[test]
 fn game_is_unsupported_without_an_adapter_and_open_to_apps_and_workers_without_a_session() {
-    let platform = stub_platform();
     let no_adapter = game_host(
         crate::platform::ProductExecutionKind::App,
-        platform.clone(),
+        stub_platform(),
         None,
     );
     assert!(matches!(
@@ -2393,19 +2385,13 @@ fn game_is_unsupported_without_an_adapter_and_open_to_apps_and_workers_without_a
         Err(CallError::Unsupported)
     ));
     assert!(matches!(cancel(&no_adapter), Err(CallError::Unsupported)));
-    assert_eq!(
-        prompts(&platform),
-        vec![],
-        "no prompt for a host that cannot remind"
-    );
 
     for kind in [
         crate::platform::ProductExecutionKind::App,
         crate::platform::ProductExecutionKind::Worker,
     ] {
-        let platform = stub_platform();
         let game = Arc::new(RecordingGamePlatform::default());
-        let host = game_host(kind, platform.clone(), Some(game.clone()));
+        let host = game_host(kind, stub_platform(), Some(game.clone()));
         assert_eq!(
             remind(&host, FUTURE_START),
             Ok(HostRemindNextGameResponse::V1),
@@ -2418,83 +2404,16 @@ fn game_is_unsupported_without_an_adapter_and_open_to_apps_and_workers_without_a
         );
         assert_eq!(
             scheduled(&game),
-            vec![(GAME_PRODUCT.to_string(), FUTURE_START, true, true)],
-            "{kind:?}"
-        );
-        assert_eq!(
-            prompts(&platform),
-            vec![
-                v01::HostDevicePermissionRequest::Alarm,
-                v01::HostDevicePermissionRequest::Calendar,
-            ],
+            vec![(GAME_PRODUCT.to_string(), FUTURE_START)],
             "{kind:?}"
         );
     }
 }
 
+/// The game product needs no per-product consent: a remembered denial of any
+/// device capability still lets the reminder reach the host, unprompted.
 #[test]
-fn remind_next_game_rejects_a_past_start_without_prompting_or_calling_the_host() {
-    let platform = stub_platform();
-    let game = Arc::new(RecordingGamePlatform::default());
-    let host = game_host(
-        crate::platform::ProductExecutionKind::Worker,
-        platform.clone(),
-        Some(game.clone()),
-    );
-
-    assert_eq!(
-        (remind(&host, 0), scheduled(&game), prompts(&platform)),
-        (
-            Err(CallError::Domain(HostRemindNextGameError::V1(
-                v01::HostRemindNextGameError::StartsInPast
-            ))),
-            vec![],
-            vec![],
-        )
-    );
-}
-
-/// The user can take longer to answer the prompt than the game takes to start,
-/// and a reminder for a game that has begun brings nobody back.
-#[test]
-fn remind_next_game_rejects_a_start_that_passes_while_the_prompt_is_open() {
-    let platform = Arc::new(StubPlatform {
-        device_permission_decisions: Mutex::new(
-            [crate::platform::PermissionDecision::AllowOnce].into(),
-        ),
-        device_permission_answer_delay: std::time::Duration::from_millis(400),
-        ..Default::default()
-    });
-    let game = Arc::new(RecordingGamePlatform::default());
-    let host = game_host(
-        crate::platform::ProductExecutionKind::Worker,
-        platform.clone(),
-        Some(game.clone()),
-    );
-    let starts_during_prompt = crate::unix_time::current_unix_millis() + 200;
-
-    assert_eq!(
-        (
-            remind(&host, starts_during_prompt),
-            scheduled(&game),
-            prompts(&platform),
-        ),
-        (
-            Err(CallError::Domain(HostRemindNextGameError::V1(
-                v01::HostRemindNextGameError::StartsInPast
-            ))),
-            vec![],
-            vec![
-                v01::HostDevicePermissionRequest::Alarm,
-                v01::HostDevicePermissionRequest::Calendar,
-            ],
-        )
-    );
-}
-
-#[test]
-fn remind_next_game_denial_of_alarm_and_notifications_never_reaches_the_host_and_is_not_asked_again()
-{
+fn remind_next_game_asks_for_no_permission() {
     let platform = Arc::new(StubPlatform {
         device_permission_decisions: Mutex::new(
             [
@@ -2503,41 +2422,6 @@ fn remind_next_game_denial_of_alarm_and_notifications_never_reaches_the_host_and
             ]
             .into(),
         ),
-        ..Default::default()
-    });
-    let game = Arc::new(RecordingGamePlatform::default());
-    let host = game_host(
-        crate::platform::ProductExecutionKind::Worker,
-        platform.clone(),
-        Some(game.clone()),
-    );
-    let denied = Err(CallError::Domain(HostRemindNextGameError::V1(
-        v01::HostRemindNextGameError::PermissionDenied,
-    )));
-
-    assert_eq!(
-        (
-            remind(&host, FUTURE_START),
-            remind(&host, FUTURE_START),
-            scheduled(&game),
-            prompts(&platform),
-        ),
-        (
-            denied.clone(),
-            denied,
-            vec![],
-            vec![
-                v01::HostDevicePermissionRequest::Alarm,
-                v01::HostDevicePermissionRequest::Notifications,
-            ],
-        )
-    );
-}
-
-#[test]
-fn remind_next_game_falls_back_to_a_notification_when_alarm_is_denied() {
-    let platform = Arc::new(StubPlatform {
-        device_permission_decisions: Mutex::new([crate::platform::PermissionDecision::Deny].into()),
         ..Default::default()
     });
     let game = Arc::new(RecordingGamePlatform::default());
@@ -2555,69 +2439,55 @@ fn remind_next_game_falls_back_to_a_notification_when_alarm_is_denied() {
         ),
         (
             Ok(HostRemindNextGameResponse::V1),
-            vec![(GAME_PRODUCT.to_string(), FUTURE_START, false, true)],
-            vec![
-                v01::HostDevicePermissionRequest::Alarm,
-                v01::HostDevicePermissionRequest::Notifications,
-                v01::HostDevicePermissionRequest::Calendar,
-            ],
+            vec![(GAME_PRODUCT.to_string(), FUTURE_START)],
+            vec![],
         )
     );
 }
 
-/// Calendar is optional: denying it still schedules the reminder, without a
-/// calendar event, and the remembered denial is not asked again.
 #[test]
-fn remind_next_game_schedules_without_a_calendar_event_when_calendar_is_denied() {
-    let platform = Arc::new(StubPlatform {
-        device_permission_decisions: Mutex::new(
-            [
-                crate::platform::PermissionDecision::AllowAlways,
-                crate::platform::PermissionDecision::Deny,
-            ]
-            .into(),
-        ),
-        ..Default::default()
-    });
+fn remind_next_game_rejects_a_past_start_without_calling_the_host() {
     let game = Arc::new(RecordingGamePlatform::default());
     let host = game_host(
         crate::platform::ProductExecutionKind::Worker,
-        platform.clone(),
+        stub_platform(),
         Some(game.clone()),
     );
 
     assert_eq!(
+        (remind(&host, 0), scheduled(&game)),
         (
-            remind(&host, FUTURE_START),
-            remind(&host, FUTURE_START + 1),
-            scheduled(&game),
-            prompts(&platform),
-        ),
-        (
-            Ok(HostRemindNextGameResponse::V1),
-            Ok(HostRemindNextGameResponse::V1),
-            vec![
-                (GAME_PRODUCT.to_string(), FUTURE_START, true, false),
-                (GAME_PRODUCT.to_string(), FUTURE_START + 1, true, false),
-            ],
-            vec![
-                v01::HostDevicePermissionRequest::Alarm,
-                v01::HostDevicePermissionRequest::Calendar,
-            ],
+            Err(CallError::Domain(HostRemindNextGameError::V1(
+                v01::HostRemindNextGameError::StartsInPast
+            ))),
+            vec![],
         )
     );
 }
 
 #[test]
-fn cancel_next_game_delegates_without_prompting() {
-    let platform = Arc::new(StubPlatform {
-        device_permission_decisions: Mutex::new([crate::platform::PermissionDecision::Deny].into()),
-        ..Default::default()
-    });
+fn remind_next_game_schedules_nothing_for_a_withdrawn_call() {
     let game = Arc::new(RecordingGamePlatform::default());
     let host = game_host(
         crate::platform::ProductExecutionKind::Worker,
-        platform.clone(),
+        stub_platform(),
+        Some(game.clone()),
+    );
+    let cx = CallContext::default();
+    cx.cancel().cancel();
+
+    assert_eq!(
+        (remind_with(&host, &cx, FUTURE_START), scheduled(&game)),
+        (Err(CallError::Cancelled), vec![])
+    );
+}
+
+#[test]
+fn cancel_next_game_delegates() {
+    let game = Arc::new(RecordingGamePlatform::default());
+    let host = game_host(
+        crate::platform::ProductExecutionKind::Worker,
+        stub_platform(),
         Some(game.clone()),
     );
 
@@ -2628,12 +2498,10 @@ fn cancel_next_game_delegates_without_prompting() {
                 .lock()
                 .expect("cancelled mutex poisoned")
                 .clone(),
-            prompts(&platform),
         ),
         (
             Ok(HostCancelNextGameResponse::V1),
             vec![GAME_PRODUCT.to_string()],
-            vec![],
         )
     );
 }
@@ -2671,12 +2539,11 @@ fn game_host_failures_reach_the_product_with_their_reason() {
 #[test]
 fn game_is_unsupported_for_every_product_but_the_game() {
     for product_id in ["game.dot", "app.dim2.dot", "dim2x.paseo"] {
-        let platform = stub_platform();
         let game = Arc::new(RecordingGamePlatform::default());
         let host = game_host_for(
             product_id,
             crate::platform::ProductExecutionKind::App,
-            platform.clone(),
+            stub_platform(),
             Some(game.clone()),
         );
 
@@ -2688,11 +2555,7 @@ fn game_is_unsupported_for_every_product_but_the_game() {
             matches!(cancel(&host), Err(CallError::Unsupported)),
             "{product_id}"
         );
-        assert_eq!(
-            (scheduled(&game), prompts(&platform)),
-            (vec![], vec![]),
-            "{product_id}"
-        );
+        assert_eq!(scheduled(&game), vec![], "{product_id}");
     }
 
     for product_id in ["dim2.dot", "dim2.paseo", "dim2.testnet"] {
@@ -2709,40 +2572,6 @@ fn game_is_unsupported_for_every_product_but_the_game() {
             "{product_id}"
         );
     }
-}
-
-/// A caller that withdraws while a prompt is open gets no further prompt and no
-/// reminder, though the answer it gave is kept.
-#[test]
-fn remind_next_game_stops_prompting_and_schedules_nothing_once_the_call_is_cancelled() {
-    let platform = Arc::new(StubPlatform {
-        device_permission_answer_delay: std::time::Duration::from_millis(300),
-        ..Default::default()
-    });
-    let game = Arc::new(RecordingGamePlatform::default());
-    let host = game_host(
-        crate::platform::ProductExecutionKind::Worker,
-        platform.clone(),
-        Some(game.clone()),
-    );
-    let cx = CallContext::default();
-    let token = cx.cancel().clone();
-    let canceller = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        token.cancel();
-    });
-
-    let result = remind_with(&host, &cx, FUTURE_START);
-    canceller.join().expect("canceller thread panicked");
-
-    assert_eq!(
-        (result, scheduled(&game), prompts(&platform)),
-        (
-            Err(CallError::Cancelled),
-            vec![],
-            vec![v01::HostDevicePermissionRequest::Alarm],
-        )
-    );
 }
 
 #[test]

@@ -79,8 +79,6 @@ pub struct StubPlatform {
     pub device_permission_decisions:
         Mutex<std::collections::VecDeque<crate::platform::PermissionDecision>>,
     pub device_permission_requests: Mutex<Vec<v01::HostDevicePermissionRequest>>,
-    /// How long the user takes to answer a device permission prompt.
-    pub device_permission_answer_delay: std::time::Duration,
     /// Product passed to each permission prompt, in order.
     pub permission_prompt_products: Mutex<Vec<ProductContext>>,
     pub remote_permission_denied: bool,
@@ -1199,8 +1197,6 @@ impl PlatformPermissions for StubPlatform {
             .lock()
             .expect("device permission list mutex poisoned")
             .push(request);
-        // Simulate the time a user spends answering a permission prompt.
-        std::thread::sleep(self.device_permission_answer_delay);
         Ok(self
             .device_permission_decisions
             .lock()

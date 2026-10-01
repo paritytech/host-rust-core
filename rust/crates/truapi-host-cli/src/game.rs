@@ -15,14 +15,10 @@ impl GamePlatform for CliGameHost {
         &self,
         product: &ProductContext,
         starts_at: u64,
-        ring_alarm: bool,
-        add_calendar_event: bool,
     ) -> Result<(), GenericError> {
         tracing::info!(
             product = %product.product_id,
             starts_at,
-            ring_alarm,
-            add_calendar_event,
             "game reminder accepted"
         );
         Ok(())

@@ -13,11 +13,11 @@ use crate::{wire, wire_trait};
 pub trait Game: Send + Sync {
     /// Remind the user when this product's next game starts.
     ///
-    /// Replaces the reminder this product already holds. When the `Alarm`
-    /// permission is refused, the host asks for `Notifications` and reminds
-    /// the user with an ordinary notification instead. The host may also ask
-    /// for the optional `Calendar` permission to add the game to the user's
-    /// calendar. A host with no way to remind the user answers `Unsupported`.
+    /// Replaces the reminder this product already holds. Served only to the
+    /// game product: any other product, or a host that cannot hold reminders,
+    /// gets `Unsupported`. A `startsAt` that is not in the future fails with
+    /// `StartsInPast`, and a reminder the host cannot hold fails as a host
+    /// failure carrying its reason.
     ///
     /// ```ts
     /// const result = await truapi.game.remindNextGame({

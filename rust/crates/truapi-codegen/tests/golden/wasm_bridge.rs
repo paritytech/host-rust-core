@@ -362,16 +362,12 @@ impl crate::platform::GamePlatform for WasmPlatform {
         &self,
         product: &crate::platform::ProductContext,
         starts_at: u64,
-        ring_alarm: bool,
-        add_calendar_event: bool,
     ) -> Result<(), v01::GenericError> {
         invoke_unit(
             &self.bridge.schedule_game_reminder,
             vec![
                 Uint8Array::from(product.encode().as_slice()).into(),
                 js_sys::BigInt::from(starts_at).into(),
-                JsValue::from_bool(ring_alarm),
-                JsValue::from_bool(add_calendar_event),
             ],
         )
         .await

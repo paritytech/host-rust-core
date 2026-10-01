@@ -242,12 +242,10 @@ function gameRawCallbacks(
   bridge: WorkerCallbackBridge,
 ): Required<Pick<RawCallbacks, "scheduleGameReminder" | "cancelGameReminder">> {
   return {
-    scheduleGameReminder: (product, startsAt, ringAlarm, addCalendarEvent) =>
+    scheduleGameReminder: (product, startsAt) =>
       bridge.callbackRequest("scheduleGameReminder", [
         product,
         startsAt,
-        ringAlarm,
-        addCalendarEvent,
       ]) as ReturnType<Required<RawCallbacks>["scheduleGameReminder"]>,
     cancelGameReminder: (product) =>
       bridge.callbackRequest("cancelGameReminder", [product]) as ReturnType<

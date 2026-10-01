@@ -18,10 +18,6 @@ pub enum HostRemindNextGameError {
     /// `starts_at` is not after the device's current time.
     #[display("the game has already started")]
     StartsInPast,
-    /// The user allowed neither alarms nor notifications, or the OS allows
-    /// neither.
-    #[display("reminders are not authorized")]
-    PermissionDenied,
 }
 
 /// Request to drop this product's reminder.

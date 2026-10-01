@@ -988,21 +988,16 @@ fn native_pocket_removal_outcomes_are_decided_by_the_host() {
 
 #[derive(Default)]
 struct RecordingGameCallbacks {
-    calls: Mutex<Vec<Option<(u64, bool, bool)>>>,
+    calls: Mutex<Vec<Option<u64>>>,
 }
 
 #[async_trait::async_trait]
 impl NativeGameCallbacks for RecordingGameCallbacks {
-    async fn schedule_reminder(
-        &self,
-        starts_at: u64,
-        ring_alarm: bool,
-        add_calendar_event: bool,
-    ) -> Result<(), HostRejection> {
+    async fn schedule_reminder(&self, starts_at: u64) -> Result<(), HostRejection> {
         self.calls
             .lock()
             .expect("game calls mutex poisoned")
-            .push(Some((starts_at, ring_alarm, add_calendar_event)));
+            .push(Some(starts_at));
         Ok(())
     }
 
@@ -1021,10 +1016,10 @@ fn game_callbacks_receive_the_start_time_and_the_cancel() {
     let platform = GameCallbackPlatform {
         game: callbacks.clone(),
     };
-    let product = ProductContext::new("game.dot".to_string()).expect("valid product id");
+    let product = ProductContext::new("dim2.dot".to_string()).expect("valid product id");
 
     futures::executor::block_on(async {
-        crate::platform::GamePlatform::schedule_game_reminder(&platform, &product, 42, false, true)
+        crate::platform::GamePlatform::schedule_game_reminder(&platform, &product, 42)
             .await
             .expect("schedule succeeds");
         crate::platform::GamePlatform::cancel_game_reminder(&platform, &product)
@@ -1034,7 +1029,7 @@ fn game_callbacks_receive_the_start_time_and_the_cancel() {
 
     assert_eq!(
         *callbacks.calls.lock().expect("game calls mutex poisoned"),
-        vec![Some((42, false, true)), None]
+        vec![Some(42), None]
     );
 }
 
@@ -1107,8 +1102,6 @@ fn permission_authorization_request_mirror_round_trips() {
         v01::HostDevicePermissionRequest::Clipboard,
         v01::HostDevicePermissionRequest::OpenUrl,
         v01::HostDevicePermissionRequest::Biometrics,
-        v01::HostDevicePermissionRequest::Alarm,
-        v01::HostDevicePermissionRequest::Calendar,
     ];
     let remote_cases = [
         v01::RemotePermission::Remote {

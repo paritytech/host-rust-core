@@ -1393,27 +1393,24 @@ export interface Features {
  * Optional: a host that omits it leaves Game requests answered `Unsupported`.
  * See `OptionalPlatform`.
  *
- * The core refuses a start that is not in the future and settles the `Alarm`,
- * `Notifications` and optional `Calendar` grants before it calls here. A host
- * keeps one reminder per product: a schedule replaces the reminder the same
- * product already holds and leaves other products' reminders alone. The host
- * keeps each reminder across app kill and device reboot, delivers it as an
- * alarm or an ordinary notification, and drops it once its game has started.
+ * The core serves only the game product and refuses a start that is not in
+ * the future before it calls here; it asks for no per-product consent. The
+ * host asks the OS for what the reminder needs, rings an alarm where the OS
+ * allows one and delivers an ordinary notification otherwise, and may add the
+ * game to the user's calendar. A host keeps one reminder per product: a
+ * schedule replaces the reminder the same product already holds and leaves
+ * other products' reminders alone. The host keeps each reminder across app
+ * kill and device reboot and drops it once its game has started.
  */
 export interface GamePlatform {
   /**
    * Hold `starts_at` (Unix milliseconds, UTC) as the product's reminder,
-   * replacing any it holds.
-   * `ring_alarm` false: deliver an ordinary notification, not an alarm.
-   * `add_calendar_event` says the product holds the `Calendar` grant, so
-   * the host may also add the game to the user's calendar. An error reaches
-   * the product as a host failure.
+   * replacing any it holds. An error, including an OS that allows neither
+   * alarms nor notifications, reaches the product as a host failure.
    */
   scheduleGameReminder(
     product: ProductContext,
     startsAt: bigint,
-    ringAlarm: boolean,
-    addCalendarEvent: boolean,
   ): Promise<void>;
 
   /**

@@ -646,11 +646,9 @@ impl crate::platform::GamePlatform for GameCallbackPlatform {
         &self,
         _product: &ProductContext,
         starts_at: u64,
-        ring_alarm: bool,
-        add_calendar_event: bool,
     ) -> Result<(), v01::GenericError> {
         self.game
-            .schedule_reminder(starts_at, ring_alarm, add_calendar_event)
+            .schedule_reminder(starts_at)
             .await
             .map_err(v01::GenericError::from)
     }

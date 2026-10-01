@@ -289,15 +289,8 @@ pub enum NativePocketRemoval {
 #[async_trait::async_trait]
 pub trait NativeGameCallbacks: Send + Sync {
     /// Hold `starts_at` (Unix milliseconds, UTC) as this product's reminder,
-    /// replacing any it holds. `ring_alarm` false: deliver an ordinary
-    /// notification, not an alarm. `add_calendar_event` says the product holds
-    /// the `Calendar` grant.
-    async fn schedule_reminder(
-        &self,
-        starts_at: u64,
-        ring_alarm: bool,
-        add_calendar_event: bool,
-    ) -> Result<(), HostRejection>;
+    /// replacing any it holds.
+    async fn schedule_reminder(&self, starts_at: u64) -> Result<(), HostRejection>;
 
     /// Drop this product's reminder. Idempotent.
     async fn cancel_reminder(&self) -> Result<(), HostRejection>;

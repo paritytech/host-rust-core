@@ -32,7 +32,7 @@ const SKIPPED_SERVICES = new Map<string, string>([
   ],
   [
     "Game",
-    "dot.li serves no Game surface; the CLI battery and runtime tests cover it",
+    "dot.li serves no Game surface; the truapi runtime tests cover it",
   ],
 ]);
 // Methods that trigger a host permission/signing prompt, so they need the

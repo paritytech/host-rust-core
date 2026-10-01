@@ -137,11 +137,10 @@ takes one out. The host owns the collection: removing an absent card succeeds,
 and a card the host pins is refused with `Privileged`.
 
 `game` holds the host's game reminder. `scheduleGameReminder` replaces the
-product's held reminder, and `cancelGameReminder` drops it. Its `ringAlarm`
-argument is false when `Alarm` is denied and `Notifications` granted, so the
-host delivers an ordinary notification instead of an alarm, and its
-`addCalendarEvent` argument is true when the product also holds the optional
-`Calendar` grant. A host keeps one reminder per product. The core serves
+product's held reminder, and `cancelGameReminder` drops it. The core asks for
+no per-product consent, so the host asks the platform for what the reminder
+needs, and a rejected schedule reaches the product as a host failure. A host
+keeps one reminder per product. The core serves
 `game` to the game product, `dim2`, alone. The mock test host
 (`@parity/truapi-host/testing`) accepts every reminder and cancel without
 holding them once it runs as that product; its default `mock.dot` gets

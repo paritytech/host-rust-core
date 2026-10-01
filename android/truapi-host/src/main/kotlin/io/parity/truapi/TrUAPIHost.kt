@@ -418,9 +418,11 @@ interface PocketHostBridge {
  * hosts without one pass nothing.
  *
  * The host holds one reminder per product: a schedule replaces the reminder
- * the same product already holds. The reminder is kept across app kill and
- * reboot, rung as an alarm or delivered as a notification when the OS refuses
- * alarms, and dropped once the game starts.
+ * the same product already holds. The core asks for no per-product consent;
+ * the host asks the OS for what it needs, rings an alarm where the OS allows
+ * one and delivers a notification otherwise, may add the game to the
+ * calendar, keeps the reminder across app kill and reboot, and drops it once
+ * the game starts.
  *
  * Threading: both calls suspend, so an implementation may switch to its own
  * dispatcher to answer; implementations must be safe to enter concurrently.
@@ -428,12 +430,11 @@ interface PocketHostBridge {
 interface GameHostBridge {
     /**
      * Hold [startsAt] (Unix milliseconds, UTC) as this product's reminder, replacing any it holds.
-     * [ringAlarm] false: deliver an ordinary notification, not an alarm. [addCalendarEvent] says
-     * the product holds the Calendar grant, so the host may also add the game to the calendar. Any
-     * exception reaches the product as a host failure carrying its reason.
+     * Any exception, including an OS that allows neither alarms nor notifications, reaches the
+     * product as a host failure carrying its reason.
      */
     @Throws(HostRejection::class)
-    suspend fun scheduleReminder(startsAt: ULong, ringAlarm: Boolean, addCalendarEvent: Boolean)
+    suspend fun scheduleReminder(startsAt: ULong)
 
     /** Drop this product's reminder. Dropping none succeeds. */
     @Throws(HostRejection::class)
@@ -686,11 +687,7 @@ private class PocketCallbackAdapter(private val bridge: PocketHostBridge) : Nati
  * [NativeGameCallbacks] interface.
  */
 private class GameCallbackAdapter(private val bridge: GameHostBridge) : NativeGameCallbacks {
-    override suspend fun scheduleReminder(
-        startsAt: ULong,
-        ringAlarm: Boolean,
-        addCalendarEvent: Boolean,
-    ) = withHostRejection { bridge.scheduleReminder(startsAt, ringAlarm, addCalendarEvent) }
+    override suspend fun scheduleReminder(startsAt: ULong) = withHostRejection { bridge.scheduleReminder(startsAt) }
 
     override suspend fun cancelReminder() = withHostRejection { bridge.cancelReminder() }
 }

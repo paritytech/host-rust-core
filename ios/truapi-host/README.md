@@ -299,8 +299,8 @@ final class MyGameBridge: GameHostBridge, @unchecked Sendable {
 
     init(reminders: ReminderStore) { self.reminders = reminders }
 
-    func scheduleReminder(startsAt: UInt64, ringAlarm: Bool, addCalendarEvent: Bool) async throws {
-        reminders.hold(startsAt: startsAt, ringAlarm: ringAlarm, addCalendarEvent: addCalendarEvent)
+    func scheduleReminder(startsAt: UInt64) async throws {
+        try await reminders.hold(startsAt: startsAt)
     }
 
     func cancelReminder() async throws {
@@ -316,13 +316,12 @@ let execution = try runtime.openProductExecution(
 ```
 
 The host holds one reminder per product: a `scheduleReminder` replaces the
-reminder the same product already holds. The reminder is kept across app kill
-and device reboot, rung as an alarm or delivered as an ordinary notification
-when the OS refuses alarms, and dropped once the game has started.
-`ringAlarm` is false when Alarm is denied and Notifications granted, so the host
-delivers an ordinary notification instead of an alarm.
-`addCalendarEvent` is true when the product also holds the optional Calendar
-grant, so the host may add the game to the user's calendar.
+reminder the same product already holds. The core asks for no per-product
+consent: the host asks the OS for what it needs, rings an alarm where the OS
+allows one and delivers an ordinary notification otherwise, may add the game to
+the user's calendar, keeps the reminder across app kill and device reboot, and
+drops it once the game has started. A `scheduleReminder` that throws reaches
+the product as a host failure carrying its reason.
 
 ## Architecture
 

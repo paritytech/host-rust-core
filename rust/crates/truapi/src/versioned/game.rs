@@ -16,14 +16,11 @@ mod tests {
     use super::*;
     use parity_scale_codec::Encode;
 
-    // A product tells a past start apart from a refusal by discriminant, so
-    // the order of the domain errors is part of the wire contract.
+    // The domain error's discriminant is part of the wire contract.
     #[test]
     fn remind_errors_keep_their_discriminants() {
         let past = HostRemindNextGameError::V1(v01::HostRemindNextGameError::StartsInPast);
-        let denied = HostRemindNextGameError::V1(v01::HostRemindNextGameError::PermissionDenied);
 
         assert_eq!(hex::encode(past.encode()), "0000");
-        assert_eq!(hex::encode(denied.encode()), "0001");
     }
 }

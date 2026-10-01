@@ -35,11 +35,10 @@ use truapi::latest::{
     HostFeatureSupportedResponse, HostLocalStorageChangeItem, HostLocaleSubscribeItem,
     HostNavigateToError, HostPlatform, HostPocketListSubscribeItem, HostPocketRemoveCardError,
     HostPocketRemoveCardRequest, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
-    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
-    HostWorkerBeginOperationResponse, HostWorkerOperationError, LegacyAccountTxPayload,
-    ProductAccountId, ProductAccountTxPayload, ProductProofContext, RemotePermission,
-    RemotePermissionRequest, RingLocation,
+    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, HostWorkerBeginOperationResponse,
+    HostWorkerOperationError, LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RemotePermission, RemotePermissionRequest, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -272,6 +271,12 @@ impl ProductContext {
             execution_kind,
         })
     }
+
+    /// Whether this is the game product, Jollity, on any dotNS network. A
+    /// subname such as `app.dim2.dot` is a different product.
+    pub fn is_game_product(&self) -> bool {
+        dotns_product_label(&self.product_id) == Some(GAME_PRODUCT_LABEL)
+    }
 }
 
 /// Decoding routes through [`ProductContext::new_with_execution`] so a frame
@@ -315,7 +320,7 @@ pub fn has_dotns_tld(normalized: &str) -> bool {
 pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", GAME_PRODUCT_LABEL, "stash"];
 
 /// The bare label of the game product, Jollity, on every network.
-pub(crate) const GAME_PRODUCT_LABEL: &str = "dim2";
+const GAME_PRODUCT_LABEL: &str = "dim2";
 
 /// Hosts available to every product unless a stored permission decision blocks them.
 pub const BLESSED_REMOTE_DOMAINS: &[&str] = &["fonts.googleapis.com", "fonts.gstatic.com"];
@@ -337,7 +342,7 @@ pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
 /// [`DOTNS_TLDS`], so a `localhost` id never yields a label.
 ///
 /// Expects the [`normalize_product_identifier`] form.
-pub(crate) fn dotns_product_label(product_id: &str) -> Option<&str> {
+fn dotns_product_label(product_id: &str) -> Option<&str> {
     if !has_dotns_tld(product_id) {
         return None;
     }
@@ -3291,26 +3296,23 @@ pub trait PocketPlatform: Send + Sync {
 /// Optional: a host that omits it leaves Game requests answered `Unsupported`.
 /// See [`OptionalPlatform`].
 ///
-/// The core refuses a start that is not in the future and settles the `Alarm`,
-/// `Notifications` and optional `Calendar` grants before it calls here. A host
-/// keeps one reminder per product: a schedule replaces the reminder the same
-/// product already holds and leaves other products' reminders alone. The host
-/// keeps each reminder across app kill and device reboot, delivers it as an
-/// alarm or an ordinary notification, and drops it once its game has started.
+/// The core serves only the game product and refuses a start that is not in
+/// the future before it calls here; it asks for no per-product consent. The
+/// host asks the OS for what the reminder needs, rings an alarm where the OS
+/// allows one and delivers an ordinary notification otherwise, and may add the
+/// game to the user's calendar. A host keeps one reminder per product: a
+/// schedule replaces the reminder the same product already holds and leaves
+/// other products' reminders alone. The host keeps each reminder across app
+/// kill and device reboot and drops it once its game has started.
 #[async_trait]
 pub trait GamePlatform: Send + Sync {
     /// Hold `starts_at` (Unix milliseconds, UTC) as the product's reminder,
-    /// replacing any it holds.
-    /// `ring_alarm` false: deliver an ordinary notification, not an alarm.
-    /// `add_calendar_event` says the product holds the `Calendar` grant, so
-    /// the host may also add the game to the user's calendar. An error reaches
-    /// the product as a host failure.
+    /// replacing any it holds. An error, including an OS that allows neither
+    /// alarms nor notifications, reaches the product as a host failure.
     async fn schedule_game_reminder(
         &self,
         product: &ProductContext,
         starts_at: u64,
-        ring_alarm: bool,
-        add_calendar_event: bool,
     ) -> Result<(), GenericError>;
 
     /// Drop the product's reminder. Idempotent: dropping none succeeds.

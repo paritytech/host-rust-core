@@ -313,9 +313,9 @@ Pocket compatibility matrix.
 runs as another product, so it skips the `Game` service, and so does the
 playground's Diagnosis, since dot.li serves no `Game` surface. Both CLI host
 roles still install an in-memory `CliGameHost` that never rings anything. The
-`truapi` runtime tests cover the product gate, the consent and start-time
-checks, cancellation during a prompt, the `Notifications` fallback when `Alarm`
-is denied, and the optional `Calendar` grant.
+`truapi` runtime tests cover the product gate, the start-time check, a call
+withdrawn before it reaches the host, the absence of any permission prompt, and
+host failures.
 
 To run the playground locally in a plain browser tab, against a signing host on
 your own machine:
