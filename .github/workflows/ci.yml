@@ -622,9 +622,9 @@ jobs:
 
   # An installable APK on every Android change, so a reviewer has something to
   # put on a phone without asking for it. iOS attaches a simulator build to
-  # every pull request already; this is the same thing for Android, and the one
-  # artifact serves a phone and an emulator alike because no provisioning
-  # profile names the device.
+  # every pull request that changes the iOS app; this is the same thing for
+  # Android, and the one artifact serves a phone and an emulator alike because
+  # no provisioning profile names the device.
   #
   # The build lives in its own workflow because the label that also starts it
   # needs the `labeled` event, which has no business rerunning every gate here.
