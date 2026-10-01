@@ -143,7 +143,6 @@ export type MainToWorker =
       productId: string;
       timeoutMs: number | undefined;
     }
-  | { kind: "getProductResourceStatus"; requestId: number; productId: string }
   | {
       kind: "publishChatAction";
       coreId: number;
@@ -288,19 +287,6 @@ export type WorkerToMain =
       error: string;
     }
   | {
-      kind: "productResourceStatusResponse";
-      requestId: number;
-      ok: true;
-      /** The core's JSON document of the product's resource status. */
-      status: string;
-    }
-  | {
-      kind: "productResourceStatusResponse";
-      requestId: number;
-      ok: false;
-      error: string;
-    }
-  | {
       kind: "deviceEncryptionKeyResponse";
       requestId: number;
       ok: true;
@@ -385,10 +371,3 @@ export function isLoopbackWsUrl(url: string): boolean {
     return false;
   }
 }
-
-/**
- * The error message a worker answers `getProductResourceStatus` with when its
- * core build has no `productResourceStatus` export.
- */
-export const PRODUCT_RESOURCE_STATUS_UNSUPPORTED =
-  "this core build has no productResourceStatus export";

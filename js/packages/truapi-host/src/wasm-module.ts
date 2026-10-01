@@ -93,13 +93,6 @@ export interface WorkerSigningHostRuntime extends WorkerPairingHostRuntime {
    */
   /** Only on a core built with `wasm-signing-host`. */
   setGrantAllowancesUnchecked?(granted: boolean): void;
-  /**
-   * What the chains publicly hold for `productId` under the active session,
-   * as a JSON document: its Statement Store allocation, Bulletin
-   * authorization and PGAS balance. Read-only. Optional: a core built before
-   * this entry point existed does not have it.
-   */
-  productResourceStatus?(productId: string): Promise<string>;
   activateLocalSessionWithIdentity?(
     secret: Uint8Array,
     liteUsername?: string | null,
