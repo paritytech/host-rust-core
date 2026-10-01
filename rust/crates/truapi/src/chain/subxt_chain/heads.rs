@@ -2,8 +2,8 @@
 
 use futures::Stream;
 use futures::stream::{self, BoxStream, StreamExt};
-use subxt::config::substrate::DynamicHasher256;
-use subxt::config::{Hasher, Header};
+use sp_crypto_hashing::blake2_256;
+use subxt::config::Header;
 use subxt::utils::H256;
 use subxt_rpcs::Error as RpcError;
 
@@ -28,55 +28,36 @@ impl ChainHeads for SubxtChain {
 
     async fn head_events(&self, genesis: H256) -> Result<HeadEvents, RuntimeFailure> {
         let legacy = self.legacy(genesis).await?;
-        let hasher = chain_hasher(&legacy).await?;
-        let finalized = finalized_heads(&legacy, hasher).await?;
-        let best = best_heads(&legacy, hasher).await?;
+        let finalized = finalized_heads(&legacy).await?;
+        let best = best_heads(&legacy).await?;
         Ok(stream::select(finalized, best).boxed())
     }
 }
 
-/// Blocks are hashed with the chain's hasher, which comes from metadata.
-async fn chain_hasher(legacy: &LegacyConnection) -> Result<DynamicHasher256, RuntimeFailure> {
-    let at = legacy
-        .client
-        .at_current_block()
-        .await
-        .map_err(|error| failure(HEAD_EVENTS, error))?;
-    Ok(*at.hasher())
-}
-
 /// Finalized heads exactly as the node announces them. Filling gaps by height
 /// would ask for hashes a light client cannot give.
-async fn finalized_heads(
-    legacy: &LegacyConnection,
-    hasher: DynamicHasher256,
-) -> Result<HeadEvents, RuntimeFailure> {
+async fn finalized_heads(legacy: &LegacyConnection) -> Result<HeadEvents, RuntimeFailure> {
     let headers = legacy
         .methods
         .chain_subscribe_finalized_heads()
         .await
         .map_err(|error| failure(HEAD_EVENTS, error))?;
-    Ok(announced(headers, hasher, HeadEvent::Finalized))
+    Ok(announced(headers, HeadEvent::Finalized))
 }
 
 /// Best heads as the node announces them.
-async fn best_heads(
-    legacy: &LegacyConnection,
-    hasher: DynamicHasher256,
-) -> Result<HeadEvents, RuntimeFailure> {
+async fn best_heads(legacy: &LegacyConnection) -> Result<HeadEvents, RuntimeFailure> {
     let headers = legacy
         .methods
         .chain_subscribe_new_heads()
         .await
         .map_err(|error| failure(HEAD_EVENTS, error))?;
-    Ok(announced(headers, hasher, HeadEvent::Best))
+    Ok(announced(headers, HeadEvent::Best))
 }
 
-fn announced<Headers, H>(
-    headers: Headers,
-    hasher: DynamicHasher256,
-    event: fn(HashAndNumber) -> HeadEvent,
-) -> HeadEvents
+/// Head events for the announced `headers`, each block hashed with
+/// Blake2-256 like every block of the chains the core talks to.
+fn announced<Headers, H>(headers: Headers, event: fn(HashAndNumber) -> HeadEvent) -> HeadEvents
 where
     Headers: Stream<Item = Result<H, RpcError>> + Send + 'static,
     H: Header,
@@ -85,7 +66,7 @@ where
         .map(move |header| {
             let header = header.map_err(|error| failure(HEAD_EVENTS, error))?;
             Ok(event(HashAndNumber {
-                hash: hasher.hash(&header.encode()),
+                hash: H256(blake2_256(&header.encode())),
                 number: header.number(),
             }))
         })

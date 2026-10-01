@@ -6,7 +6,9 @@ use subxt::utils::H256;
 use super::EncodedExtrinsic;
 use crate::chain_runtime::RuntimeFailure;
 
-/// Progress of a submitted extrinsic. The stream ends after a terminal event.
+/// Progress of a submitted extrinsic. The stream ends after a terminal event,
+/// or without one when the watch closes, for example because the connection
+/// dropped; treat that like [`WatchEvent::Error`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WatchEvent {
     /// Included in the block that is currently best.
@@ -37,8 +39,9 @@ impl WatchEvent {
 #[async_trait::async_trait]
 pub trait TxSubmitter: Send + Sync {
     /// Send `extrinsic` once and watch it. Nothing resubmits it: a dropped or
-    /// invalid extrinsic is reported and left to the caller. An `Err` does not
-    /// prove the node never received it.
+    /// invalid extrinsic is reported and left to the caller. Neither an `Err`
+    /// nor a stream that ends without a terminal event proves the node never
+    /// received it.
     async fn submit_and_watch(
         &self,
         genesis: H256,

@@ -672,3 +672,25 @@ fn submit_and_watch_ends_when_the_node_stops_tracking() {
 
     assert_eq!(events, vec![WatchEvent::Error("scripted error".into())]);
 }
+
+#[test]
+fn head_events_need_no_runtime_metadata() {
+    // Heads are hashed with Blake2-256 like extrinsics, so watching heads
+    // costs no metadata download.
+    let (node, provider, chain) = serve(Node::new(3, 5));
+    let events = block_on(chain.head_events(GENESIS)).unwrap();
+    let received = collect_in_background(events, 1);
+    wait_for_subscriptions(&provider);
+    let best = node.lock().unwrap().headers[5].clone();
+    notification_sender(&provider)
+        .unbounded_send(head_notification(BEST_SUBSCRIPTION, &best))
+        .unwrap();
+
+    let received = received.recv_timeout(TIMEOUT).expect("a head event");
+
+    assert_eq!(
+        received,
+        vec![HeadEvent::Best(node.lock().unwrap().block(5))]
+    );
+    assert_eq!(method_count(&provider, "Metadata_metadata_at_version"), 0);
+}

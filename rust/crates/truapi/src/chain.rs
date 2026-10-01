@@ -11,8 +11,9 @@
 //! `Ok(None)` means the node knows the block, or the extrinsic in it, does
 //! not exist. A read the node cannot serve, such as the body or events of a
 //! block it has pruned, or any read over a closed connection, is an `Err`.
-//! Extrinsics are hashed with Blake2-256, the hasher of every chain the core
-//! talks to.
+//! Blocks and extrinsics are hashed with Blake2-256, the `BlakeTwo256`
+//! hasher of every chain the core talks to; a chain with another hasher needs
+//! a different implementation.
 
 use sp_crypto_hashing::blake2_256;
 use subxt::utils::H256;
