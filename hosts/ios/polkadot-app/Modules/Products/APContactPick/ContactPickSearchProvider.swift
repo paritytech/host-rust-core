@@ -15,6 +15,7 @@ import AsyncExtensions
 final class ContactPickSearchProvider: AccountSearching {
     typealias RecentPayload = ContactSearchPayload
     typealias MatchPayload = ContactSearchPayload
+    typealias Sections = AccountSearchSections<RecentPayload, MatchPayload>
 
     private let localContactSearch: LocalContactSearching
     private let ownAccountId: AccountId
@@ -35,6 +36,27 @@ final class ContactPickSearchProvider: AccountSearching {
 
     func sourcesChanged() -> AnyAsyncSequence<Void> {
         sourcesChangedNotifier.sequence()
+    }
+
+    /// One phase: every section here is read locally, so there is no global
+    /// result to stream in after the first.
+    func searchPhases(
+        query: String?
+    ) -> AsyncThrowingStream<Sections, Error> {
+        let (stream, continuation) = AsyncThrowingStream<Sections, Error>.makeStream()
+
+        let task = Task {
+            do {
+                let sections = try await search(query: query)
+                continuation.yield(sections)
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        continuation.onTermination = { _ in task.cancel() }
+
+        return stream
     }
 
     func search(query: String?) async throws -> AccountSearchSections<RecentPayload, MatchPayload> {

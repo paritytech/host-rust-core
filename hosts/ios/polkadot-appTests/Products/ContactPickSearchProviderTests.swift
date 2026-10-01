@@ -87,6 +87,22 @@ struct ContactPickSearchProviderTests {
 
         #expect(sections.contacts.map(\.username?.value) == ["alice"])
     }
+
+    /// The interactor reads searches as a stream of phases. Everything here is
+    /// local, so the stream carries one result and then ends.
+    @Test("Searching yields one phase and finishes")
+    func searchPhasesYieldsOnce() async throws {
+        let localSearch = MockLocalContactSearch()
+        localSearch.contacts = [makeContact(username: "alice")]
+
+        var phases: [AccountSearchSections<ContactSearchPayload, ContactSearchPayload>] = []
+        for try await phase in makeProvider(localSearch).searchPhases(query: "ali") {
+            phases.append(phase)
+        }
+
+        #expect(phases.count == 1)
+        #expect(phases.first?.contacts.map(\.username?.value) == ["alice"])
+    }
 }
 
 private extension ContactPickSearchProviderTests {
