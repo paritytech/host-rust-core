@@ -34,6 +34,7 @@ enum SettingsKey: String {
     case hostPlacementEnabled
     case coinageRecyclingStrategy
     case tabBarLabelsEnabled
+    case debugPocketCards
     #if TESTNET_FEATURE
         case tipsResetPending
     #endif

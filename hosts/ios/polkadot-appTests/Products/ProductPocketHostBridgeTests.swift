@@ -1,0 +1,210 @@
+import Foundation
+import AsyncExtensions
+import Products
+import Testing
+import TrUAPIHost
+@testable import polkadot_app
+
+/// Serves one product's slice of the collection to the core. Both callbacks are
+/// answered synchronously on the core's own dispatcher thread.
+struct ProductPocketHostBridgeTests {
+    @Test
+    func listsOnlyTheCallingProductsCards() async throws {
+        let bridge = try await makeBridge(stored: [loyalty, otherProductCard])
+
+        #expect(try bridge.listCards().map(\.cardId) == ["loyalty"])
+    }
+
+    @Test
+    func reportsWhetherTheHostPinnedACard() async throws {
+        let bridge = try await makeBridge(productId: humanity.key.productId, pinned: [humanity])
+
+        #expect(try bridge.listCards().first?.privileged == true)
+    }
+
+    /// A privileged card is refused without touching storage, and the refusal
+    /// is a distinct outcome rather than a thrown error.
+    @Test
+    func refusesToRemoveAPinnedCard() async throws {
+        let bridge = try await makeBridge(productId: humanity.key.productId, pinned: [humanity])
+
+        #expect(try bridge.removeCard(cardId: "humanity") == NativePocketRemoval.privileged)
+    }
+
+    @Test
+    func removesACardTheProductOwns() async throws {
+        let collection = InMemoryPocketCardStore()
+        try await collection.add(loyalty, face: .nil)
+        let bridge = try await makeBridge(collection: collection)
+
+        #expect(try bridge.removeCard(cardId: "loyalty") == NativePocketRemoval.removed)
+        #expect(try bridge.listCards().isEmpty)
+    }
+
+    /// Removing a card that is not held is a success the core tells apart from
+    /// one the host performed.
+    @Test
+    func removingAnAbsentCardIsAbsentNotAnError() async throws {
+        let bridge = try await makeBridge()
+
+        #expect(try bridge.removeCard(cardId: "loyalty") == NativePocketRemoval.absent)
+    }
+
+    /// A product cannot reach another product's card through its own bridge,
+    /// even by naming it exactly.
+    @Test
+    func cannotRemoveAnotherProductsCard() async throws {
+        let collection = InMemoryPocketCardStore()
+        try await collection.add(otherProductCard, face: .nil)
+        let bridge = try await makeBridge(collection: collection)
+
+        #expect(try bridge.removeCard(cardId: "trophy") == NativePocketRemoval.absent)
+        #expect(try await collection.cards().count == 1)
+    }
+
+    /// The core is told only when this product's own slice changes. A face
+    /// streaming at frame rate changes the stored collection continuously
+    /// without changing any card the core knows about, and another product's
+    /// card changes nothing here at all.
+    @Test
+    func republishesOnlyWhenItsOwnSliceChanges() async throws {
+        let collection = InMemoryPocketCardStore()
+        let bridge = try await makeBridge(collection: collection)
+        let published = Published()
+        bridge.start { published.record($0) }
+
+        try await collection.add(loyalty, face: .nil)
+        try await settle()
+        try await collection.add(otherProductCard, face: .nil)
+        try await settle()
+
+        // The leading publish is the opening one, of the snapshot as it stood.
+        // The other product's card adds nothing to this product's slice, so
+        // nothing follows it.
+        #expect(published.counts == [0, 1])
+    }
+
+    /// A collection that could not be read is not an empty Pocket. Answering
+    /// from a snapshot nothing ever filled tells a product it publishes no
+    /// cards, which is the one answer it will not ask about again.
+    @Test
+    func raisesRatherThanListingACollectionItCouldNotRead() async throws {
+        let bridge = await makeUnreadableBridge()
+
+        #expect(throws: PocketCollectionUnreadable.self) {
+            try bridge.listCards()
+        }
+    }
+
+    /// Without a snapshot every card looks absent, and a product told its card
+    /// is gone while the Pocket still draws it will not ask again.
+    @Test
+    func raisesRatherThanCallingACardAbsentFromACollectionItCouldNotRead() async throws {
+        let bridge = await makeUnreadableBridge()
+
+        #expect(throws: PocketCollectionUnreadable.self) {
+            try bridge.removeCard(cardId: "loyalty")
+        }
+    }
+
+    /// The opening publish is what the core's list starts from, so a read that
+    /// did not land must publish nothing rather than an empty Pocket.
+    @Test
+    func publishesNothingUntilItHasReadTheCollection() async throws {
+        let bridge = await makeUnreadableBridge()
+        let published = Published()
+
+        bridge.start { published.record($0) }
+
+        #expect(published.counts.isEmpty)
+    }
+
+    /// The snapshot is filled before the worker's script comes up, so every
+    /// change taken into it until the core can be told reached nobody. Waiting
+    /// for the next change instead would wait forever: the slice has already
+    /// moved, so no later refresh finds anything to report.
+    @Test
+    func republishesTheSnapshotItAlreadyHoldsWhenItStarts() async throws {
+        let collection = InMemoryPocketCardStore()
+        try await collection.add(loyalty, face: .nil)
+        let bridge = try await makeBridge(collection: collection)
+
+        let published = Published()
+        bridge.start { published.record($0) }
+
+        #expect(published.counts == [1])
+    }
+}
+
+// MARK: - Fixtures
+
+private let loyalty = PocketCardEntry(
+    key: PocketCardKey(productId: "game.paseo", cardId: PocketCardId(value: "loyalty")),
+    title: "Loyalty",
+    privileged: false
+)
+
+private let otherProductCard = PocketCardEntry(
+    key: PocketCardKey(productId: "shop.paseo", cardId: PocketCardId(value: "trophy")),
+    title: "Trophy",
+    privileged: false
+)
+
+private let humanity = PocketCardEntry(
+    key: PocketCardKey(productId: "peopl.paseo", cardId: PocketCardId(value: "humanity")),
+    title: "Humanity",
+    privileged: true
+)
+
+private func makeBridge(
+    productId: String = "game.paseo",
+    pinned: [PocketCardEntry] = [],
+    stored: [PocketCardEntry] = [],
+    collection: InMemoryPocketCardStore? = nil
+) async throws -> ProductPocketHostBridge {
+    let held = collection ?? InMemoryPocketCardStore(pinned: InMemoryPinnedCards(pinned))
+    for card in stored {
+        try await held.add(card, face: .nil)
+    }
+    let bridge = ProductPocketHostBridge(productId: productId, collection: held)
+    await bridge.begin()
+    return bridge
+}
+
+private func makeUnreadableBridge() async -> ProductPocketHostBridge {
+    let bridge = ProductPocketHostBridge(productId: "game.paseo", collection: UnreadableCollection())
+    await bridge.begin()
+    return bridge
+}
+
+/// Storage the app cannot read: the first read fails and nothing follows it,
+/// which is what leaves the bridge with no snapshot to answer from.
+private struct UnreadableCollection: PocketCollection {
+    struct Unavailable: Error {}
+
+    func cards() async throws -> [PocketCardEntry] { throw Unavailable() }
+
+    func observeCards() -> AnyAsyncSequence<[PocketCardEntry]> {
+        AsyncStream<[PocketCardEntry]> { $0.finish() }.eraseToAnyAsyncSequence()
+    }
+
+    func removeCard(_: PocketCardKey) async throws -> PocketRemoval { throw Unavailable() }
+}
+
+/// The bridge follows the collection in a task, so the assertions wait for it
+/// rather than for a fixed time.
+private func settle() async throws {
+    for _ in 0 ..< 20 {
+        await Task.yield()
+    }
+    try await Task.sleep(for: .milliseconds(20))
+}
+
+/// Records what the bridge asked to republish, without asserting on a mock.
+private final class Published: @unchecked Sendable {
+    private(set) var counts: [Int] = []
+
+    func record(_ cards: [PocketCard]) {
+        counts.append(cards.count)
+    }
+}

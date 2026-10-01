@@ -47,19 +47,23 @@ public enum ProductExecutable: Hashable, Sendable {
         public let entrypoint: String
         public let includesChat: Bool
         public let includesPocket: Bool
+        /// The Pocket cards this worker offers. Empty unless `includesPocket`.
+        public let pocketCards: [PocketCardDefinition]
 
         public init(
             identifier: ProductId,
             appVersion: SemVer,
             entrypoint: String,
             includesChat: Bool,
-            includesPocket: Bool
+            includesPocket: Bool,
+            pocketCards: [PocketCardDefinition] = []
         ) {
             self.identifier = identifier
             self.appVersion = appVersion
             self.entrypoint = entrypoint
             self.includesChat = includesChat
             self.includesPocket = includesPocket
+            self.pocketCards = pocketCards
         }
     }
 }

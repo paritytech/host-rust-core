@@ -5,18 +5,28 @@ final class WalletMainInteractor {
 
     private let collectiblesURLProvider: CollectiblesURLProviding
     private let networkStatusObserver: NetworkStatusObserving
+    private let pocketPrewarmer: PocketPrewarmer
+    private let pocket: PocketService?
     private var resolutionTask: Task<Void, Never>?
+    private var pocketTask: Task<Void, Never>?
+    private var warming: Task<Void, Never>?
 
     init(
         collectiblesURLProvider: CollectiblesURLProviding,
-        networkStatusObserver: NetworkStatusObserving
+        networkStatusObserver: NetworkStatusObserving,
+        pocketPrewarmer: PocketPrewarmer,
+        pocket: PocketService?
     ) {
         self.collectiblesURLProvider = collectiblesURLProvider
         self.networkStatusObserver = networkStatusObserver
+        self.pocketPrewarmer = pocketPrewarmer
+        self.pocket = pocket
     }
 
     deinit {
         resolutionTask?.cancel()
+        pocketTask?.cancel()
+        warming?.cancel()
     }
 }
 
@@ -37,5 +47,59 @@ extension WalletMainInteractor: WalletMainInteractorInputProtocol {
                 await self?.presenter?.didReceiveCollectibles(url: url)
             }
         #endif
+
+        followPocket()
+    }
+
+    /// Removal is the store's, not the tab's: the collection is followed, so
+    /// the card leaves the screen when it leaves storage rather than because
+    /// this said so.
+    func removePocketCard(_ card: PocketCardViewModel) {
+        guard let collection = pocket?.collection else { return }
+
+        Task { _ = try? await collection.removeCard(card.key) }
+    }
+}
+
+private extension WalletMainInteractor {
+    /// The collection is followed from storage, so the tab shows what the host
+    /// holds without waiting on any product's worker, and shows every change
+    /// whoever made it, the core removing a card included.
+    func followPocket() {
+        guard let collection = pocket?.collection else { return }
+
+        pocketTask = Task { [weak self] in
+            do {
+                for try await cards in collection.observeCards() {
+                    guard let self else { return }
+
+                    await show(cards, from: collection)
+                }
+            } catch {
+                Logger.shared.error("[pocket] the wallet tab stopped following the collection: \(error)")
+            }
+        }
+    }
+
+    func show(_ cards: [PocketCardEntry], from store: any PocketCardStore) async {
+        let drawn = await PocketCardsProvider(store: store).cards(cards)
+        let held = Set(drawn.map(\.key))
+
+        await MainActor.run { [pocket] in
+            presenter?.didReceive(pocketCards: drawn)
+            pocket?.cardHosts.keepOnly { held.contains($0) }
+        }
+
+        prewarm(drawn)
+    }
+
+    /// Warming fetches an archive, so it runs beside the collection rather than
+    /// in front of the next change: held here, every change that landed while
+    /// it ran would arrive late, and the tab would sit on a stale collection.
+    func prewarm(_ cards: [PocketCardViewModel]) {
+        warming?.cancel()
+        warming = Task { [pocketPrewarmer] in
+            await pocketPrewarmer.warm(cards)
+        }
     }
 }

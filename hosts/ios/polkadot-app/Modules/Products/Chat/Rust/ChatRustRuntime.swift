@@ -1,18 +1,25 @@
 import Foundation
 import Products
+import StructuredConcurrency
 import TrUAPIHost
 import UIKitExt
 
-/// Rust chat runtime: the TrUAPI core handles product requests over its
-/// localhost ws-bridge. Chat-environment seams route through the core:
-/// user messages and events publish chat actions, widget rendering streams
-/// typed renderer nodes, and the chat surface serves the core's chat callbacks
-/// via the execution's ``RustChatExecutionBridge``.
+/// Rust chat runtime: the chat half of a product's worker.
+///
+/// The worker itself belongs to ``TrUAPIWorkerSupervisor``. The core keeps one
+/// Worker execution per product and the reference ledger decides when it runs,
+/// so a chat session takes one reference for as long as it is open rather than
+/// opening an execution of its own. The same worker also draws the product's
+/// Pocket cards.
+///
+/// Chat-environment seams route through that execution: user messages and
+/// events publish chat actions, widget rendering streams typed renderer nodes,
+/// and the product's chat surface serves the core's chat callbacks.
 ///
 /// An actor so `start`/`dispose` never race on runtime state. Actors are
 /// reentrant, so `dispose()` can interleave while `start` is suspended:
-/// `dispose` flips `disposed` before its first await and `start` re-checks
-/// it after every await, destroying anything it created in the gap.
+/// `dispose` flips `disposed` before its first await and `start` re-checks it
+/// after every await, releasing anything it took in the gap.
 actor ChatRustRuntime: ChatRuntimeProtocol {
     enum ChatSeamError: Error, Equatable {
         case notStarted
@@ -24,45 +31,42 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
         case untypedBody
     }
 
-    private let productUrl: URL
-    /// Opened in `start`, not in `init`: the core's worker registry is keyed by
-    /// product id and evicts the previous entry, so a bot rebuilt before it
-    /// starts would close the execution the live one is about to use.
-    private let makeExecutionModel: @Sendable (any ProductChatMessaging) throws
-        -> RustRuntimeEnvironment.ExecutionModel
-    private var executionModel: RustRuntimeEnvironment.ExecutionModel?
-    /// Bound for as long as the chat surface is alive, like the shared worker's
-    /// native api.
-    private let chatSurface = ProductChatSurface()
-    // Set once in init and only read from the MainActor-isolated `attach`;
-    // all facade mutation happens behind its own @MainActor method.
-    private nonisolated(unsafe) let routers: ProductRoutersFacadeProtocol
-    private let engineFactory: @Sendable () -> JSEngineProtocol
+    private let productId: ProductId
+    private let workers: any TrUAPIWorkerSupervising
+    private let references: @Sendable () throws -> any TrUAPIWorkerReferencing
+    /// The product's own chat surface and routers, which outlive any one worker.
+    private let seams: TrUAPIWorkerSeams
+    private let workerStartupWindow: Duration
     private let renderStartupWindow: Duration
     private let logger: LoggerProtocol
 
-    private var engine: JSEngineProtocol?
-    private var engineMonitor: JSEngineMonitor?
-    private var moduleBridge: JSESModuleBridge?
+    /// How often a cell asks again while the product is still coming up. The
+    /// worker's own refusals are waited out by ``renderWhenConnected``; this
+    /// one covers the window before there is a worker to ask at all.
+    private static let renderRetryInterval = Duration.milliseconds(25)
+
+    /// Held while this session's reference is out, so dispose gives back
+    /// exactly what start took and never more.
+    private var reference: (any TrUAPIWorkerReferencing)?
     private var roomsForwardingTask: Task<Void, Never>?
     private var started = false
     private var disposed = false
 
     init(
-        productUrl: URL,
-        makeExecutionModel: @Sendable @escaping (any ProductChatMessaging) throws
-            -> RustRuntimeEnvironment.ExecutionModel,
-        routers: ProductRoutersFacadeProtocol,
-        engineFactory: @Sendable @escaping () -> JSEngineProtocol,
+        productId: ProductId,
+        workers: any TrUAPIWorkerSupervising,
+        references: @Sendable @escaping () throws -> any TrUAPIWorkerReferencing,
+        workerStartupWindow: Duration = .seconds(30),
         renderStartupWindow: Duration = .seconds(5),
         logger: LoggerProtocol = Logger.shared
     ) {
-        self.productUrl = productUrl
-        self.makeExecutionModel = makeExecutionModel
-        self.routers = routers
-        self.engineFactory = engineFactory
+        self.productId = productId
+        self.workers = workers
+        self.references = references
+        self.workerStartupWindow = workerStartupWindow
         self.renderStartupWindow = renderStartupWindow
         self.logger = logger
+        seams = workers.seams(of: productId)
     }
 
     deinit {
@@ -82,7 +86,7 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
             try await startRuntime(messagingSupport: messagingSupport)
         } catch {
             // Nothing upstream tears us down — `ProductBot` only logs — so a
-            // half-built runtime would keep its engine, socket and pool alive.
+            // half-started session would hold its worker reference forever.
             await dispose()
             throw error
         }
@@ -166,7 +170,7 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
 
     @MainActor
     func attach(presentationView view: ControllerBackedProtocol) {
-        routers.setPresentationView(view)
+        seams.routers.setPresentationView(view)
     }
 
     func dispose() async {
@@ -179,18 +183,16 @@ actor ChatRustRuntime: ChatRuntimeProtocol {
         roomsForwardingTask = nil
 
         // The core keeps the bridge, and the bridge keeps the surface: unbinding
-        // is what releases the chat context.
-        chatSurface.unbind()
+        // is what releases the chat context. Only this runtime's own binding,
+        // because the surface is the product's and another runtime may hold it.
+        seams.chat.unbind(owner: self)
 
-        await destroyEngineResources()
+        // A release, not a close. The product's cards may still hold the same
+        // worker, and the core stops it once the last reference goes.
+        reference?.releaseWorker(productId: productId)
+        reference = nil
 
-        if let executionModel {
-            executionModel.execution.stopWsBridge()
-            executionModel.execution.close()
-            executionModel.chainConnections.closeAll()
-        }
-
-        logger.debug("Rust chat runtime disposed for: \(productUrl)")
+        logger.debug("Rust chat runtime disposed for: \(productId)")
     }
 }
 
@@ -198,76 +200,31 @@ private extension ChatRustRuntime {
     func startRuntime(
         messagingSupport: ProductsNativeApi.MessagingSupport
     ) async throws {
-        // Bound before the bridge starts, so the core can never reach a surface
-        // with no binding.
-        chatSurface.bind(messagingSupport)
+        // Bound before the reference is taken, so the core can never reach a
+        // surface with no binding.
+        seams.chat.bind(messagingSupport, owner: self)
 
-        let model = try makeExecutionModel(chatSurface)
-        executionModel = model
-        startRoomsForwarding(chatMessaging: chatSurface, execution: model.execution)
+        let reference = try references()
+        reference.acquireWorker(productId: productId)
+        self.reference = reference
 
-        let bootstrapScript = try model.startBridge()
-        let scriptsFactory = RustRuntimeScriptsFactory(bootstrapScript: bootstrapScript)
-        let jsEngine = try await bootEngine(
-            scripts: scriptsFactory.makeScripts(),
-            osPermissionAsker: model.osPermissionAsker
-        )
+        try await awaitWorker()
         try checkNotDisposed()
+        startRoomsForwarding()
 
-        let modBridge = JSESModuleBridge(engine: jsEngine)
-        await modBridge.install()
-
-        try checkNotDisposed()
-        moduleBridge = modBridge
-
-        try await modBridge.executeScript(url: productUrl)
-
-        logger.debug("Rust chat runtime started for: \(productUrl)")
+        logger.debug("Rust chat runtime started for: \(productId)")
     }
 
-    func bootEngine(
-        scripts: [JSEngineScript],
-        osPermissionAsker: OSPermissionAsking
-    ) async throws -> JSEngineProtocol {
-        let jsEngine = engineFactory()
-        do {
-            await jsEngine.registerJSDeviceCapabilityHandler(
-                osPermissionAsker.makeDeviceCapabilityHandler()
-            )
-            try checkNotDisposed()
-            try await jsEngine.initialize(with: scripts)
-            guard await jsEngine.getState() == .ready else {
-                throw ScriptExecutorError.engineInitFailed
+    /// `start` returns once the worker is up, because everything the bot does
+    /// next, its welcome message first of all, is published through the
+    /// execution.
+    func awaitWorker() async throws {
+        try await withTimeout(workerStartupWindow) { [workers, productId] in
+            for try await execution in workers.executions(of: productId) where execution != nil {
+                return
             }
-            try checkNotDisposed()
-        } catch {
-            await jsEngine.destroy()
-            throw error
+            throw ChatSeamError.notStarted
         }
-
-        let monitor = JSEngineMonitor(
-            engine: jsEngine,
-            pauseEvent: .willResignActive,
-            resumeEvent: .didBecomeActive
-        )
-        monitor.start()
-        engineMonitor = monitor
-
-        engine = jsEngine
-        return jsEngine
-    }
-
-    func destroyEngineResources() async {
-        engineMonitor?.stop()
-        engineMonitor = nil
-
-        let moduleBridge = moduleBridge
-        self.moduleBridge = nil
-        await moduleBridge?.dispose()
-
-        let engine = engine
-        self.engine = nil
-        await engine?.destroy()
     }
 
     func checkNotDisposed() throws {
@@ -295,49 +252,44 @@ private extension ChatRustRuntime {
         while true {
             try checkNotDisposed()
             do {
-                return try requireExecution().render(request)
-            } catch let error where error.isTransientRenderStartupError {
+                return try await requireExecution().renderWhenConnected(
+                    request,
+                    until: deadline,
+                    retryEvery: Self.renderRetryInterval
+                )
+            } catch let error where (error as? ChatSeamError) == .notStarted {
                 guard ContinuousClock.now < deadline else {
                     logger.error("Custom render gave up waiting for the product: \(messageId)")
                     throw error
                 }
-                try await Task.sleep(for: .milliseconds(25))
+                try await Task.sleep(for: Self.renderRetryInterval)
             }
         }
     }
 
     func requireExecution() throws -> TrUAPIProductExecutionProtocol {
-        guard let executionModel else { throw ChatSeamError.notStarted }
-        return executionModel.execution
+        guard let execution = workers.currentExecution(of: productId) else {
+            throw ChatSeamError.notStarted
+        }
+        return execution
     }
 
     /// Mirror the native room list into the core so product-side
-    /// `chat.listSubscribe` sees native changes as they happen.
-    func startRoomsForwarding(
-        chatMessaging: any ProductChatMessaging,
-        execution: TrUAPIProductExecutionProtocol
-    ) {
-        roomsForwardingTask = Task { [logger] in
+    /// `chat.listSubscribe` sees native changes as they happen. The execution is
+    /// read each time rather than captured, so a worker that restarts under this
+    /// session keeps being told.
+    func startRoomsForwarding() {
+        roomsForwardingTask = Task { [logger, workers, productId, chat = seams.chat] in
             do {
-                for try await rooms in try await chatMessaging.subscribeRooms() {
+                for try await rooms in try await chat.subscribeRooms() {
                     guard !Task.isCancelled else { return }
-                    execution.notifyChatRoomsChanged(rooms: rooms.map { $0.toChatRoom() })
+                    workers.currentExecution(of: productId)?
+                        .notifyChatRoomsChanged(rooms: rooms.map { $0.toChatRoom() })
                 }
             } catch {
                 guard !Task.isCancelled else { return }
                 logger.error("Rust chat runtime rooms forwarding ended: \(error)")
             }
         }
-    }
-}
-
-private extension Error {
-    /// A cell can render before `start` opens the execution (`notStarted`) or before
-    /// the product attaches (`NotConnected`); the retry waits both out. Everything
-    /// else surfaces at once. Only covers synchronous throws — a failure delivered
-    /// inside the node stream never reaches here.
-    var isTransientRenderStartupError: Bool {
-        if (self as? ProductRuntimeError) == .NotConnected { return true }
-        return (self as? ChatRustRuntime.ChatSeamError) == .notStarted
     }
 }

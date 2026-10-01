@@ -26,9 +26,11 @@ struct ProductManifestParser: ProductManifestParsing {
     }
 
     private let logger: SDKLoggerProtocol
+    private let screening: PocketCardScreening
 
-    init(logger: SDKLoggerProtocol) {
+    init(logger: SDKLoggerProtocol, screening: PocketCardScreening) {
         self.logger = logger
+        self.screening = screening
     }
 
     /// An absent record is a legacy product, not a failure.
@@ -167,8 +169,81 @@ private extension ProductManifestParser {
                 appVersion: appVersion,
                 entrypoint: entrypoint,
                 includesChat: includesChat,
-                includesPocket: includesPocket
+                includesPocket: includesPocket,
+                pocketCards: pocketCards(dto.pocket, includesPocket: includesPocket, identifier: identifier)
             )
         )
     }
+
+    /// A stricter Host must not see a different manifest, so cards are read only behind
+    /// `includes.pocket` and screened by the core itself. A defect costs the product
+    /// its cards and nothing more: failing the worker over one would take its chat with it, and chat
+    /// has nothing to do with the cards.
+    func pocketCards(
+        _ dto: PocketDTO?,
+        includesPocket: Bool,
+        identifier: ProductId
+    ) -> [PocketCardDefinition] {
+        let cards: [PocketCardDTO]
+
+        switch dto?.cards ?? .absent {
+        case .absent:
+            return []
+        case .malformed:
+            return noCards("\(identifier): pocket section is not the shape the manifest format describes")
+        case let .declared(declared):
+            cards = declared
+        }
+
+        guard includesPocket else {
+            return noCards("\(identifier): pocket.cards published without includes.pocket")
+        }
+
+        do {
+            let definitions = try cards.map { try definition($0) }
+            var seen = Set<PocketCardId>()
+            guard definitions.allSatisfy({ seen.insert($0.id).inserted }) else {
+                return noCards("\(identifier): pocket.cards ids must be unique")
+            }
+            return definitions
+        } catch {
+            return noCards("\(identifier): publishing no cards, \(error)")
+        }
+    }
+
+    func noCards(_ reason: String) -> [PocketCardDefinition] {
+        reject(reason) ?? []
+    }
+
+    /// The preview is always an archive path: reading it as anything the product spells would let
+    /// any product on chain name an address the Host then fetches.
+    func definition(_ dto: PocketCardDTO) throws -> PocketCardDefinition {
+        guard let rawId = dto.id else { throw PocketCardManifestError.missingField("id") }
+        guard let title = dto.title, !title.trimmed.isEmpty else {
+            throw PocketCardManifestError.missingField("title")
+        }
+        guard let preview = dto.preview, !preview.trimmed.isEmpty else {
+            throw PocketCardManifestError.missingField("preview")
+        }
+
+        return try PocketCardDefinition(
+            id: screening.id(rawId),
+            title: screening.title(title),
+            preview: .archive(path: preview)
+        )
+    }
+}
+
+private enum PocketCardManifestError: Error, CustomStringConvertible {
+    case missingField(String)
+
+    var description: String {
+        switch self {
+        case let .missingField(key): "a pocket card is missing '\(key)'"
+        }
+    }
+}
+
+private extension String {
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }

@@ -228,6 +228,11 @@ extension ServiceCoordinator: ServiceCoordinatorProtocol {
         messageExpansionService.stop()
         durableTransactionEngine.txService.stop()
 
+        // The workers and the product behind an opened card belong to this
+        // session's runtime provider, so they go with the session rather than
+        // waiting for a tap that may come after another user has signed in.
+        Task { @MainActor in PocketService.current?.stop() }
+
         Task {
             await deviceSyncService.throttle()
             await coinageTransferMonitor.throttle()
@@ -315,6 +320,32 @@ extension ServiceCoordinator {
         )
         RootDependencyLocator.setDependency(truapiRuntimeProvider as TrUAPIHostRuntimeProviding)
 
+        let productFileProvider = CompositeProductFileProvider(
+            dotNsContentStorage: DotNsContentStorage(),
+            chatScriptStorage: FileChatScriptStorage(),
+            contentHashCache: ContentHashCache.shared
+        )
+
+        // Built here rather than alongside chat: every modality is served from
+        // one worker per product, and hanging the Pocket off chat's assembly
+        // would let any chat service failing take every live card face with it,
+        // silently.
+        var pocket: PocketService?
+        #if FEATURE_PRODUCTS
+            pocket = MainActor.assumeIsolated {
+                guard let service = PocketService.make() else { return nil }
+
+                RootDependencyLocator.setDependency(service)
+                service.start(
+                    runtimeProvider: truapiRuntimeProvider,
+                    flowState: spaFlowState,
+                    productFileProvider: productFileProvider,
+                    chainRegistry: ChainRegistryFacade.sharedRegistry
+                )
+                return service
+            }
+        #endif
+
         guard
             let signInHostCoordinator = createSignInHostCoordinator(
                 factory: chatCoordinatorFactory,
@@ -372,7 +403,9 @@ extension ServiceCoordinator {
             syncService: syncServiceResult.service,
             personhoodRegistrationService: personhoodServices.registrationService,
             audioSessionManager: audioSessionManager,
-            spaFlowState: spaFlowState
+            spaFlowState: spaFlowState,
+            productFileProvider: productFileProvider,
+            pocket: pocket
         )
         // Registered so the SPA screen, opened outside this assembly, resolves the
         // same facade.
