@@ -1,14 +1,17 @@
 //! [`BlockBackend`] for [`SubxtChain`].
 
 use sp_crypto_hashing::blake2_256;
+use subxt::SubstrateConfig;
 use subxt::backend::Backend;
 use subxt::config::Header;
-use subxt::events::Phase;
+use subxt::events::{Events, Phase};
 use subxt::utils::H256;
 
 use super::{SubxtChain, failure, finalized_block};
 use crate::chain::{BlockBackend, DispatchOutcome, HashAndNumber};
 use crate::chain_runtime::{LegacyConnection, RuntimeFailure};
+
+const DISPATCH_OUTCOME: &str = "dispatch_outcome";
 
 #[async_trait::async_trait]
 impl BlockBackend for SubxtChain {
@@ -67,48 +70,76 @@ impl BlockBackend for SubxtChain {
         at: HashAndNumber,
         extrinsic_hash: H256,
     ) -> Result<Option<DispatchOutcome>, RuntimeFailure> {
-        const METHOD: &str = "dispatch_outcome";
         let legacy = self.legacy(genesis).await?;
-        let Some(body) = body(&legacy, at.hash, METHOD).await? else {
+        let Some(phase) = extrinsic_phase(&legacy, at.hash, extrinsic_hash).await? else {
             return Ok(None);
         };
-        let Some(index) = body
-            .iter()
-            .position(|extrinsic| H256(blake2_256(extrinsic)) == extrinsic_hash)
-        else {
-            return Ok(None);
-        };
-        let phase =
-            Phase::ApplyExtrinsic(u32::try_from(index).map_err(|error| failure(METHOD, error))?);
-        let at_block = legacy
-            .client
-            .at_block_hash_and_number(at.hash, at.number)
-            .await
-            .map_err(|error| failure(METHOD, error))?;
-        let events = at_block
-            .events()
-            .fetch()
-            .await
-            .map_err(|error| failure(METHOD, error))?;
-        for event in events.iter() {
-            let event = event.map_err(|error| failure(METHOD, error))?;
-            if event.phase() != phase || event.pallet_name() != "System" {
-                continue;
-            }
-            match event.event_name() {
-                "ExtrinsicSuccess" => return Ok(Some(DispatchOutcome::Succeeded)),
-                "ExtrinsicFailed" => return Ok(Some(DispatchOutcome::Failed)),
-                _ => {}
-            }
-        }
-        Err(RuntimeFailure::host_failure(
-            METHOD,
-            format!(
-                "no dispatch event for extrinsic {index} of block {:?}",
-                at.hash
-            ),
-        ))
+        let events = block_events(&legacy, at).await?;
+        let outcome = dispatch_event(&events, phase)?.ok_or_else(|| {
+            RuntimeFailure::host_failure(
+                DISPATCH_OUTCOME,
+                format!("no dispatch event for {phase:?} of block {:?}", at.hash),
+            )
+        })?;
+        Ok(Some(outcome))
     }
+}
+
+/// The phase in which the extrinsic with `extrinsic_hash` ran in block `at`,
+/// or `None` when the block is unknown or does not contain it.
+async fn extrinsic_phase(
+    legacy: &LegacyConnection,
+    at: H256,
+    extrinsic_hash: H256,
+) -> Result<Option<Phase>, RuntimeFailure> {
+    let Some(body) = body(legacy, at, DISPATCH_OUTCOME).await? else {
+        return Ok(None);
+    };
+    let Some(index) = body
+        .iter()
+        .position(|extrinsic| H256(blake2_256(extrinsic)) == extrinsic_hash)
+    else {
+        return Ok(None);
+    };
+    let index = u32::try_from(index).map_err(|error| failure(DISPATCH_OUTCOME, error))?;
+    Ok(Some(Phase::ApplyExtrinsic(index)))
+}
+
+/// `System.Events` of block `at`, decoded with the metadata of the runtime
+/// that produced the block.
+async fn block_events(
+    legacy: &LegacyConnection,
+    at: HashAndNumber,
+) -> Result<Events<SubstrateConfig>, RuntimeFailure> {
+    legacy
+        .client
+        .at_block_hash_and_number(at.hash, at.number)
+        .await
+        .map_err(|error| failure(DISPATCH_OUTCOME, error))?
+        .events()
+        .fetch()
+        .await
+        .map_err(|error| failure(DISPATCH_OUTCOME, error))
+}
+
+/// The outcome the `System` dispatch event emitted in `phase` reports, or
+/// `None` when there is no such event.
+fn dispatch_event(
+    events: &Events<SubstrateConfig>,
+    phase: Phase,
+) -> Result<Option<DispatchOutcome>, RuntimeFailure> {
+    for event in events.iter() {
+        let event = event.map_err(|error| failure(DISPATCH_OUTCOME, error))?;
+        if event.phase() != phase || event.pallet_name() != "System" {
+            continue;
+        }
+        match event.event_name() {
+            "ExtrinsicSuccess" => return Ok(Some(DispatchOutcome::Succeeded)),
+            "ExtrinsicFailed" => return Ok(Some(DispatchOutcome::Failed)),
+            _ => {}
+        }
+    }
+    Ok(None)
 }
 
 /// The body of block `at`, or `None` when the node does not know the block.
