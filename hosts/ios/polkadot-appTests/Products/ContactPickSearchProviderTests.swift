@@ -43,7 +43,7 @@ struct ContactPickSearchProviderTests {
 
         let sections = try await makeProvider(localSearch).search(query: query)
 
-        #expect(sections.global.isEmpty)
+        #expect(sections.global.rows.isEmpty)
         #expect(sections.recent.isEmpty)
     }
 

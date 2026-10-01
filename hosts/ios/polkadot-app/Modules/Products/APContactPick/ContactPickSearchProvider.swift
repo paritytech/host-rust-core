@@ -71,7 +71,7 @@ final class ContactPickSearchProvider: AccountSearching {
             query: query,
             recent: [],
             contacts: contacts,
-            global: [],
+            global: .loaded([]),
             excluding: excluded
         )
     }
