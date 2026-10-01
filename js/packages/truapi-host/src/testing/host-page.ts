@@ -35,6 +35,7 @@ import {
 } from "../web/create-mock-host.js";
 import type { ProductRuntimeConfig } from "../runtime.js";
 import {
+  checkDerivationIndex,
   resolveAccount,
   type DevAccount,
   type DevAccountName,
@@ -404,7 +405,10 @@ export async function startTestHost(
       if (!subtree) return undefined;
       const helpers = await deriveHelpers();
       // The index crosses SCALE-encoded, so the chain code stays core-owned.
-      const encoded = DerivationIndex.enc({ tag: "Index", value: index });
+      const encoded = DerivationIndex.enc({
+        tag: "Index",
+        value: checkDerivationIndex(index),
+      });
       return helpers.productAccountAddress(
         helpers.deriveProductAccountPublicKey(subtree, encoded),
       );

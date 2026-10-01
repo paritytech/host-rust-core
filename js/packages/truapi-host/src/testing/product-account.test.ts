@@ -60,3 +60,24 @@ suite("the address a product account will be given", () => {
     expect(second).not.toBe(CONTRACTS);
   });
 });
+
+describe("the index a derivation will accept", () => {
+  // `u32` wraps, so an index the caller never meant encodes to a different
+  // account. A suite meets that as an address it funded which turns out not to
+  // be the one its product signs with -- the shape of failure this guard is
+  // here to stop being silent.
+  it("refuses an index u32 would reshape", async () => {
+    const { checkDerivationIndex } = await import("./dev-accounts.js");
+    expect(() => checkDerivationIndex(-1)).toThrow(/not a u32/);
+    expect(() => checkDerivationIndex(1.5)).toThrow(/not a u32/);
+    expect(() => checkDerivationIndex(2 ** 32)).toThrow(/not a u32/);
+    expect(() => checkDerivationIndex(Number.NaN)).toThrow(/not a u32/);
+  });
+
+  it("accepts the whole u32 range", async () => {
+    const { checkDerivationIndex } = await import("./dev-accounts.js");
+    expect(checkDerivationIndex(0)).toBe(0);
+    expect(checkDerivationIndex(0xff_ff_ff_ff)).toBe(0xff_ff_ff_ff);
+  });
+});
+
