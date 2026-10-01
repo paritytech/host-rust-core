@@ -1023,9 +1023,8 @@ fn connection_adapters_from_js(
         chat_platform,
         contacts_platform,
         permission_status: status_host,
-        // One-use grants are per-connection and start empty, matching the
-        // native adapter and `ConnectionAdapters`' own default.
-        permission_grants: std::sync::Arc::default(),
+        // One-use grants belong to this execution, not the shared host.
+        permission_grants: Arc::default(),
         pocket_platform,
         chat: Arc::new(crate::runtime::ActionChannel::chat()),
         renderer: Arc::new(crate::runtime::ActionChannel::renderer()),
@@ -1436,7 +1435,7 @@ impl WasmSigningHostRuntime {
     }
 
     /// Build one product-scoped runtime from this signing host.
-    /// Optional platform callbacks are execution-local; custody stays on this host.
+    /// Optional platform callbacks are execution-local; shared authority stays here.
     #[wasm_bindgen(js_name = productRuntime)]
     pub fn product_runtime(
         &self,

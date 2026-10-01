@@ -245,9 +245,9 @@ interface RuntimeState {
   disposeNativeChatFiles: () => void;
   /**
    * Open `worker.beginOperation` holds. A non-empty set defers `dispose()`.
-   * Worker-wide rather than per-core, since a `callbackRequest` carries no core
-   * id, so entries are product-scoped: `OperationId` is only unique per product
-   * and two products sharing this worker may be handed the same id.
+   * Worker-wide rather than per-core: operation holds can outlive a product
+   * connection. Entries are product-scoped because `OperationId` is only
+   * unique per product and products sharing this worker may use the same id.
    */
   openOperations: Set<string>;
   /** A dispose() arrived while operations were open; run it once they drain. */
@@ -1862,6 +1862,8 @@ function buildRuntime(
           reject,
         });
         try {
+          if (callbacks)
+            state.coreCallbacks.set(coreId, createWasmRawCallbacks(callbacks));
           state.worker.postMessage({
             kind: "createCore",
             coreId,

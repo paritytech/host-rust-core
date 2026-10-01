@@ -145,7 +145,8 @@ struct TrUAPIHostRuntimeProviderConfigTests {
                 secret: Data([0x01]),
                 liteUsername: nil,
                 networkSuffix: "paseo",
-                coinageInstanceId: 7
+                coinageInstanceId: 7,
+                databaseDirectory: NSTemporaryDirectory()
             )
         }
     }
