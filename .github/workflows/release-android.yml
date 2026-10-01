@@ -50,6 +50,8 @@ jobs:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - uses: ./.github/actions/rust-cache
+        with:
+          save: "false"
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked

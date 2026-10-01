@@ -1756,6 +1756,12 @@ fn build_signing_runtime(
     chat: Option<Arc<chat::CliChatHost>>,
     pocket: Option<Arc<pocket::CliPocketHost>>,
 ) -> Result<(Arc<SigningHostRuntime>, Arc<CliPlatform>)> {
+    std::fs::create_dir_all(&storage_path)
+        .with_context(|| format!("creating state directory {}", storage_path.display()))?;
+    let core_db = futures::executor::block_on(truapi::store::Db::open(
+        truapi::store::core_db_config(&storage_path),
+    ))
+    .with_context(|| format!("opening the core database in {}", storage_path.display()))?;
     let platform = CliPlatform::new(
         network,
         Some(CliStoragePaths::new(storage_path, product_storage_dir)),
@@ -1782,6 +1788,7 @@ fn build_signing_runtime(
     if let Some(pocket) = pocket {
         runtime.set_pocket_platform(pocket);
     }
+    runtime.set_core_db(core_db);
     runtime.start_statement_allowance_renewal();
     Ok((runtime, platform))
 }
@@ -4158,6 +4165,36 @@ fn default_base_path() -> PathBuf {
 mod cli_tests {
     use super::*;
     use parity_scale_codec::Encode;
+
+    #[tokio::test]
+    async fn the_signing_runtime_keeps_its_core_database_in_the_profile_directory() {
+        // Each profile keeps its own durable state, so switching users never
+        // mixes two ledgers.
+        let profile = tempfile::tempdir().unwrap();
+        let (runtime, _platform) = build_signing_runtime(
+            crate::network::Network::PaseoNextV2.config(),
+            profile.path().to_path_buf(),
+            profile.path().join("storage"),
+            ApprovalPolicy::AutoAccept,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let status = runtime.core_database_status().await.unwrap();
+
+        let file = profile
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(truapi::store::CORE_DB_FILE);
+        assert_eq!(
+            status.path,
+            Some(file.to_string_lossy().into_owned()),
+            "the core database lives in the profile directory"
+        );
+    }
 
     #[test]
     fn pairing_deeplink_becomes_a_public_persistable_host_record() {

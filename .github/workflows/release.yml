@@ -235,6 +235,8 @@ jobs:
 
       - if: steps.version.outputs.proceed == 'true'
         uses: ./.github/actions/rust-cache
+        with:
+          save: "false"
 
       - name: Install dependencies
         if: steps.version.outputs.proceed == 'true'
