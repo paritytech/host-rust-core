@@ -112,6 +112,7 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           shared-key: ios-host-release
+          save: "false"
 
       # The truapi runtime declares its generated modules unconditionally and they are
       # gitignored, so the crate does not compile until codegen has run.
