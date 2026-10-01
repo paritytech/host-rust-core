@@ -85,10 +85,14 @@ runs:
         toolchain: stable
         targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
-    - uses: ./.github/actions/rust-cache
+    # rust-cache directly rather than through ./.github/actions/rust-cache. An
+    # action's post step evaluates its inputs again, and two composites deep
+    # they come back empty, so rust-cache reads save-if as false and never
+    # saves. The rule it applies is the same one: only a run on main saves.
+    - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
       with:
         shared-key: host-android-bindings-gate
-        save: ${{ inputs.save_cache }}
+        save-if: ${{ inputs.save_cache == 'true' && github.ref == 'refs/heads/main' }}
 
     # The wrapper jar and its distribution url are both tracked files, and the
     # jobs that call this sign what they build.

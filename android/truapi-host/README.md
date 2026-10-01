@@ -115,6 +115,7 @@ val runtime = TrUAPIHostRuntime(
         bulletinChainGenesisHash = bulletinChainGenesisHash,
         assetHubChainGenesisHash = assetHubChainGenesisHash,
         networkSuffix = "dot",
+        databaseDirectory = context.noBackupFilesDir.resolve("truapi").apply { mkdirs() }.absolutePath,
     ),
 )
 // Chat needs an active session; without one every Chat call answers `Denied`.
@@ -400,6 +401,7 @@ val runtimeConfig = HostRuntimeConfig(
     // `trustedProducts` grant.
     assetHubChainGenesisHash = ByteArray(32) { 1.toByte() },
     networkSuffix = "dot",
+    databaseDirectory = webView.context.noBackupFilesDir.resolve("truapi").apply { mkdirs() }.absolutePath,
     // Optional: activate a local signing session from host-held BIP-39 entropy
     // (no SSO pairing). Omit for the QR pairing flow.
     localSessionSecret = null,

@@ -164,7 +164,8 @@ let runtime = try TrUAPIHostRuntime(
         peopleChainGenesisHash: peopleChainGenesisHash,   // exactly 32 bytes
         bulletinChainGenesisHash: bulletinChainGenesisHash,
         assetHubChainGenesisHash: assetHubChainGenesisHash,
-        networkSuffix: "dot"
+        networkSuffix: "dot",
+        databaseDirectory: databaseDirectory // existing app-private directory, excluded from backups
     )
 )
 // Chat needs an active session; without one every Chat call answers denied.
@@ -533,7 +534,8 @@ let runtimeConfig = HostRuntimeConfig(
     // all-zero is the "no Asset Hub" sentinel and refuses every cross-product
     // `trustedProducts` grant.
     assetHubChainGenesisHash: Data(repeating: 1, count: 32),
-    networkSuffix: "dot"
+    networkSuffix: "dot",
+    databaseDirectory: databaseDirectory // existing app-private directory, excluded from backups
 )
 let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
 try runtime.activateLocalSession(secret: entropyBytes, liteUsername: nil)

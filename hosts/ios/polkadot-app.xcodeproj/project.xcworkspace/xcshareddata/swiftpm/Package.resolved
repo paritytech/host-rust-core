@@ -1,5 +1,5 @@
 {
-  "originHash" : "1927bd9fea18809db3590d6653c29c81a3b4cec530d06c49ff1263753bbc1a69",
+  "originHash" : "976ac0ee4d8ee281295be51442292c6ce492281d3d1b90a46fc566ac1cab06c0",
   "pins" : [
     {
       "identity" : "abseil-cpp-binary",
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/novasamatech/extrinsic-service-ios",
       "state" : {
-        "revision" : "a4adca31422f5627c023616b7b76b520ab186504",
-        "version" : "1.18.0"
+        "revision" : "75bd0da73f1782121cf07770f59eba3ace0b7056",
+        "version" : "1.20.0"
       }
     },
     {
@@ -267,8 +267,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/paritytech/polkadot-app-design-system-ios",
       "state" : {
-        "revision" : "6e5b2da49d753a1b5f137a4c836608f94967eeb0",
-        "version" : "0.0.21"
+        "revision" : "43e152caf88a1959fa0481089561741cdff24440",
+        "version" : "0.0.24"
       }
     },
     {
@@ -348,8 +348,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/novasamatech/substrate-sdk-ios",
       "state" : {
-        "revision" : "46c97f560fc18283484d6a6d9b0e018c558e176b",
-        "version" : "5.15.0"
+        "revision" : "bbc0e4825767a75c6563e37496b0b120c866dbf6",
+        "version" : "5.17.0"
       }
     },
     {

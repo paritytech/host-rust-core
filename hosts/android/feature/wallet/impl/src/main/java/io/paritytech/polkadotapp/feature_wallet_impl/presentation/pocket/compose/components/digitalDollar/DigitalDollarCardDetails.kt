@@ -107,7 +107,7 @@ private fun DigitalDollarCardDetailsContent(
         modifier = Modifier.fillMaxSize()
     ) {
         PolkadotTopBar(
-            title = stringResource(RCommon.string.pocket_digital_dollar_title),
+            title = stringResource(RCommon.string.pocket_digital_dollar_title, LocalPaymentAssetBrand.current.symbol),
             navigationAction = rememberTopBarAction(onBack),
             titleAlignment = TopBarTitleAlignment.Center
         )

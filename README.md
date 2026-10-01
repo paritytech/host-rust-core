@@ -36,6 +36,16 @@ curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scri
 
 Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. `/script` opens a persistent TypeScript project with the Product SDK quickstart, pinned published dependencies, and editor types. Use `/script --run` to rerun it or `/script --edit` to edit without running. Projects survive session cleanup. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup and existing project scripts. Release checks install and typecheck the default SDK template against the public registry.
 
+`truapi-host signing-host --session <name>` opens an interactive session and
+restores or creates its signer. `/session <name>` switches to the saved account
+or resumes an unfinished setup. In `exec` mode, `--session` selects the command's
+session; inspection and clearing commands do not create accounts. A username
+base such as `workbench` selects the most recently created local session with
+that base; `workbench.42` selects that exact session. Creating an account from a
+session name requires at least six lowercase ASCII letters after digits and
+separators are omitted. A new `/session foo` fails immediately as too short;
+existing saved accounts and aliases still restore normally.
+
 The signing host registers its built-in full and lite personhood keys when an
 authorized product first lists `peopl.<network suffix>` (for example,
 `peopl.paseo`). The first listing reads People-chain metadata; later listings
@@ -183,6 +193,12 @@ The [container permission boundary](js/container/README.md) documents the protec
 operations and the built-ins that remain mutable for product compatibility.
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
+Native hosts must create an app-private directory excluded from device backups
+and pass its path as `HostRuntimeConfig.database_directory` (`databaseDirectory`
+in Swift and Kotlin). The shared core opens SQLite once; product executions keep
+their own callbacks and consent scope while sharing that database. The store is
+not compiled into the browser WASM bundles. See the
+[core database contract](rust/crates/truapi/RUNTIME.md#core-database).
 On iOS, a wallet host that manages its own statement-store SSO session can call
 `handleSsoRequest` (routes one decrypted remote message through the core,
 returning a typed outcome: response bytes to post back, a disconnect marker, or
@@ -451,8 +467,15 @@ crates. `SIM_ONLY=1` halves it by skipping
 the device slice, which is enough for Simulator but not for an archive.
 
 Because the app builds against the core in this tree, a core change that breaks
-it fails here rather than at the next version bump. Every pull request touching
-the app, or the crates its bindings come from, runs:
+it fails here rather than at the next version bump. Every push to main runs the
+jobs below, and so does a pull request touching the app, or the crates its
+bindings come from, once it is labelled `ios-simulator-build`. They are macOS
+jobs, so a pull request without the label runs none of them. CI's
+`iOS package (Swift + WebKit)` job still compiles the TrUAPIHost package against
+the core on a pull request touching `ios/` or the core crates, but the app itself
+is compiled before merge only with the label. The first time a pull request
+touches the iOS or Android app, `build-label-hint.yml` comments with the labels
+that build it: `ios-simulator-build`, `ios-device-build` and `android-device-build`.
 
 - `build`, a DevCI compile, failing on any build warning the committed baseline
   does not already have
