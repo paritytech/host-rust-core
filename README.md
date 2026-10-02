@@ -9,14 +9,14 @@ TypeScript client, and hosts and products implement against the same shared type
 > experimental, and may contain bugs, vulnerabilities, or incomplete features. Use at your own risk.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](./LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/paritytech/host-rust-core/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/paritytech/host-rust-core/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-rustdoc-blue?style=flat-square)](https://paritytech.github.io/host-rust-core)
+[![CI](https://img.shields.io/github/actions/workflow/status/paritytech/trinity-user-agents/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/paritytech/trinity-user-agents/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-rustdoc-blue?style=flat-square)](https://paritytech.github.io/trinity-user-agents)
 [![Playground](https://img.shields.io/badge/playground-live-success?style=flat-square)](https://truapi-playground.paseo.li/)
 
 ## Documentation
 
 - [TrUAPI reference](https://docs.polkadot.com/reference/apps/protocol/truapi/)
-- [Rust API reference](https://paritytech.github.io/host-rust-core/)
+- [Rust API reference](https://paritytech.github.io/trinity-user-agents/)
 - [Draft: Host-owned native Chat and main-purse payments](docs/rfcs/native-chat-main-purse.md)
 - [Draft: Profile disclosure audiences and host-rendered contacts](docs/rfcs/profile-disclosure.md)
 
@@ -24,8 +24,7 @@ TypeScript client, and hosts and products implement against the same shared type
 
 ## Try it
 
-Browse the published Rust API docs at
-[paritytech.github.io/host-rust-core](https://paritytech.github.io/host-rust-core).
+Browse the published Rust API docs at [paritytech.github.io/trinity-user-agents](https://paritytech.github.io/trinity-user-agents).
 
 The interactive playground lets you browse every method, edit request payloads, and call or subscribe to them live
 against a connected host. It also drives an end-to-end **Diagnosis** that produces a per-host pass/fail report
@@ -42,7 +41,7 @@ Browser)
 host build:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
+curl -fsSL https://raw.githubusercontent.com/paritytech/trinity-user-agents/main/scripts/truapi-host-installer.sh | bash
 ```
 
 Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps
@@ -276,7 +275,7 @@ outputs; `scripts/rebuild.sh` regenerates them along with the xcframework
 (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 The container publishes the shared client and a temporary MessagePort adapter for
-older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/host-rust-core/issues/881);
+older SDKs. The adapter's removal is tracked in [#881](https://github.com/paritytech/trinity-user-agents/issues/881);
 CLI and iframe MessagePort transports remain supported.
 The [container permission boundary](js/container/README.md) documents the protected
 operations and the built-ins that remain mutable for product compatibility.
@@ -604,12 +603,19 @@ this needs, and is told so rather than handed a build that misleads. Push the br
 
 ### Android builds that reach testers
 
-Two workflows deliver through Firebase App Distribution, which reaches a named tester group rather than anyone holding a
-link. That matters beyond convenience: these builds carry configuration that should not be public, so attaching them to
-a release is not an option.
+Two workflows deliver through Firebase App Distribution, which reaches a named
+tester group. The nightly also attaches its APKs to a public GitHub prerelease,
+so anything built into a nightly is public.
 
 `android-nightly.yml` runs daily at 22:00 UTC, two hours after the iOS
-nightly starts, so the two never overlap. Each announcement lists the pull
+nightly starts, so the two never overlap. It publishes both flavours on a
+GitHub prerelease, `app-gp-nightly.apk` and `app-vanilla-nightly.apk` (without
+Google Play services), and sends the gp one to Firebase App Distribution.
+Every run on `main` also refreshes the `nightly-android` release, so the latest
+build always downloads from the same two links:
+`https://github.com/paritytech/trinity-user-agents/releases/download/nightly-android/app-gp-nightly.apk`
+and the same path ending in `app-vanilla-nightly.apk`.
+Each announcement links both APKs and lists the pull
 requests the build carries, with breaking changes, the titles carrying `!`,
 listed first and marked `Breaking:`. Both nightlies skip a scheduled night
 when `main` has not moved past what their last successful run built. `android-debug-distribution.yml` runs
@@ -736,10 +742,8 @@ different state directory while debugging.
 
 Pushes to `main` build and deploy:
 
-- The playground to the dotNS label [`truapi-playground`](https://truapi-playground.paseo.li/), live as
-  `truapi-playground.paseo`, via [`.github/workflows/deploy-playground.yml`](.github/workflows/deploy-playground.yml).
-- The Rust API docs to [https://paritytech.github.io/host-rust-core](https://paritytech.github.io/host-rust-core) via
-  [`.github/workflows/deploy-docs.yml`](.github/workflows/deploy-docs.yml).
+- The playground to the dotNS label [`truapi-playground`](https://truapi-playground.paseo.li/), live as `truapi-playground.paseo`, via [`.github/workflows/deploy-playground.yml`](.github/workflows/deploy-playground.yml).
+- The Rust API docs to [https://paritytech.github.io/trinity-user-agents](https://paritytech.github.io/trinity-user-agents) via [`.github/workflows/deploy-docs.yml`](.github/workflows/deploy-docs.yml).
 
 ## Release
 
