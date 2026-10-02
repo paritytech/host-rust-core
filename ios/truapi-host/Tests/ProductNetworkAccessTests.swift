@@ -10,17 +10,20 @@ import WebKit
 @Suite(.serialized)
 @MainActor
 struct ProductNetworkAccessTests {
-    @Test(.timeLimit(.minutes(1)))
-    func retainedClientAndFetchRecoverWithoutLifecycleCallbacks() async throws {
+    @Test(.timeLimit(.minutes(1)), arguments: 0..<25)
+    func retainedClientAndFetchRecoverWithoutLifecycleCallbacks(iteration: Int) async throws {
+        print("[native-recovery] fixture.start iteration=\(iteration)")
         let product = try await NetworkTestProduct.open(traceRecovery: true, initialScripts: ["""
             window.__testRecoveryCycle = -1;
             window.__nativeRecoveryTrace = (event, fields = {}, error) => {
               try {
                 window.webkit.messageHandlers.testRecovery.postMessage(JSON.stringify({
-                  event, product: 'network.paseo', cycle: window.__testRecoveryCycle,
+                  event, product: 'network.paseo', iteration: \(iteration), cycle: window.__testRecoveryCycle,
                   ms: performance.now(), ...fields,
                   ...(error === undefined ? {} : window.__testRecoveryError(error)),
-                }));
+                }, (_, value) => typeof value === 'string'
+                  ? value.replace(/\\b(?:https?|wss?):\\/\\/\\S+/g, '<redacted-endpoint>')
+                  : value));
               } catch {}
             };
             window.__testRecoveryError = (error, depth = 0) => ({
