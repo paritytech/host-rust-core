@@ -505,9 +505,8 @@ branch to this repository to get one.
 ### Android builds that reach testers
 
 Two workflows deliver through Firebase App Distribution, which reaches a named
-tester group rather than anyone holding a link. That matters beyond
-convenience: these builds carry configuration that should not be public, so
-attaching them to a release is not an option.
+tester group. The nightly also attaches its APKs to a public GitHub prerelease,
+so anything built into a nightly is public.
 
 `android-nightly.yml` runs daily at 22:00 UTC, two hours after the iOS
 nightly starts, so the two never overlap. It publishes both flavours on a
