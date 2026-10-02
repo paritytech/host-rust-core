@@ -3,10 +3,10 @@
 //!
 //! Each capability is its own trait, and a consumer takes only the ones it
 //! uses as `Arc<dyn …>`. Every method names the chain by its genesis hash, so
-//! one implementation serves every chain. [`SubxtChain`] implements all four
-//! over the runtime's `ChainRuntime`: reads and validation go
-//! through the legacy JSON-RPC methods, which reach any block the node still
-//! keeps, and submission goes through the shared chainHead client.
+//! one implementation serves every chain. The runtime's `ChainRuntime`
+//! implements all four over its per-chain subxt clients: reads and validation
+//! go through the legacy JSON-RPC methods, which reach any block the node
+//! still keeps, and submission goes through the shared chainHead client.
 //!
 //! `Ok(None)` means the node knows the block, or the extrinsic in it, does
 //! not exist. A read the node cannot serve, such as the body or events of a
@@ -26,26 +26,22 @@ mod tx_validator;
 
 pub use block_backend::{BlockBackend, DispatchOutcome};
 pub use heads::{ChainHeads, HeadEvent, Heads};
-pub use subxt_chain::SubxtChain;
 pub use tx_submitter::{TxSubmitter, WatchEvent};
 pub use tx_validator::TxValidator;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-/// An encoded extrinsic, ready to submit, with its Blake2-256 hash as the
-/// chain reports it.
+/// An encoded extrinsic, ready to submit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodedExtrinsic {
     bytes: Vec<u8>,
-    hash: H256,
 }
 
 impl EncodedExtrinsic {
     /// Wrap a fully encoded extrinsic, including its compact length prefix.
     pub fn new(bytes: Vec<u8>) -> Self {
-        let hash = H256(blake2_256(&bytes));
-        Self { bytes, hash }
+        Self { bytes }
     }
 
     /// The encoded extrinsic.
@@ -53,9 +49,10 @@ impl EncodedExtrinsic {
         &self.bytes
     }
 
-    /// The extrinsic hash, as reported in blocks and transaction pools.
+    /// The extrinsic's Blake2-256 hash, as reported in blocks and
+    /// transaction pools.
     pub fn hash(&self) -> H256 {
-        self.hash
+        H256(blake2_256(&self.bytes))
     }
 }
 

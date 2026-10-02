@@ -1,4 +1,4 @@
-//! [`TxSubmitter`] for [`SubxtChain`].
+//! [`TxSubmitter`] for `ChainRuntime`.
 
 use futures::stream::{self, BoxStream, StreamExt};
 use subxt::SubstrateConfig;
@@ -6,14 +6,14 @@ use subxt::client::OnlineClientAtBlockImpl;
 use subxt::tx::{TransactionProgress, TransactionStatus};
 use subxt::utils::H256;
 
-use super::{SubxtChain, failure};
+use super::failure;
 use crate::chain::{EncodedExtrinsic, TxSubmitter, WatchEvent};
-use crate::chain_runtime::RuntimeFailure;
+use crate::chain_runtime::{ChainRuntime, RuntimeFailure};
 
 const SUBMIT_AND_WATCH: &str = "submit_and_watch";
 
 #[async_trait::async_trait]
-impl TxSubmitter for SubxtChain {
+impl TxSubmitter for ChainRuntime {
     async fn submit_and_watch(
         &self,
         genesis: H256,
@@ -24,7 +24,7 @@ impl TxSubmitter for SubxtChain {
     }
 }
 
-impl SubxtChain {
+impl ChainRuntime {
     /// Send `extrinsic` through the shared chainHead client and start
     /// watching it.
     async fn submit(
@@ -35,8 +35,7 @@ impl SubxtChain {
         TransactionProgress<SubstrateConfig, OnlineClientAtBlockImpl<SubstrateConfig>>,
         RuntimeFailure,
     > {
-        self.chains
-            .online_client(genesis.as_bytes())
+        self.online_client(genesis.as_bytes())
             .await?
             .tx()
             .await

@@ -12,7 +12,7 @@ use subxt::utils::H256;
 
 use super::{
     BlockBackend, ChainHeads, DispatchOutcome, EncodedExtrinsic, HashAndNumber, HeadEvent, Heads,
-    SubxtChain, TxSubmitter, TxValidator, WatchEvent,
+    TxSubmitter, TxValidator, WatchEvent,
 };
 use crate::chain_runtime::{ChainRuntime, RuntimeFailureKind};
 use crate::host_internal::extrinsic::tests::{
@@ -276,14 +276,14 @@ fn validation_output(valid: bool) -> Vec<u8> {
 }
 
 /// A scripted node for `node` and the capabilities over it.
-fn serve(node: Node) -> (Arc<Mutex<Node>>, Arc<ScriptedProvider>, SubxtChain) {
+fn serve(node: Node) -> (Arc<Mutex<Node>>, Arc<ScriptedProvider>, ChainRuntime) {
     let node = Arc::new(Mutex::new(node));
     let scripted = node.clone();
     let provider = Arc::new(ScriptedProvider::with_frames(move |request| {
         scripted.lock().unwrap().respond(request)
     }));
-    let chains = ChainRuntime::new(provider.clone(), test_spawner());
-    (node, provider, SubxtChain::new(chains))
+    let chain = ChainRuntime::new(provider.clone(), test_spawner());
+    (node, provider, chain)
 }
 
 fn method_count(provider: &ScriptedProvider, method: &str) -> usize {

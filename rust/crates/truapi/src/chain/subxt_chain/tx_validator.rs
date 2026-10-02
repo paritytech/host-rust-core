@@ -1,14 +1,14 @@
-//! [`TxValidator`] for [`SubxtChain`].
+//! [`TxValidator`] for `ChainRuntime`.
 
 use subxt::tx::ValidationResult;
 use subxt::utils::H256;
 
-use super::{SubxtChain, best_block, failure};
+use super::{best_block, failure};
 use crate::chain::{EncodedExtrinsic, TxValidator};
-use crate::chain_runtime::RuntimeFailure;
+use crate::chain_runtime::{ChainRuntime, RuntimeFailure};
 
 #[async_trait::async_trait]
-impl TxValidator for SubxtChain {
+impl TxValidator for ChainRuntime {
     async fn validate(
         &self,
         genesis: H256,

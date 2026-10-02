@@ -17,8 +17,8 @@ pub enum DispatchOutcome {
 /// Block data at any block the node still keeps.
 #[async_trait::async_trait]
 pub trait BlockBackend: Send + Sync {
-    /// Hash of the block at `number`: canonical up to the finalized height,
-    /// on the current best chain above it, where a reorg can replace it.
+    /// Hash of the block at `number`, canonical up to the finalized height.
+    /// Above it, a reorg can change the hash returned for the same height.
     async fn block_hash(&self, genesis: H256, number: u64) -> Result<Option<H256>, RuntimeFailure>;
 
     /// Number of the block with `hash`.

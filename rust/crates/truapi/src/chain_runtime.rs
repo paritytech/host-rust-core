@@ -66,6 +66,8 @@ use crate::host_rpc_client::HostRpcClient;
 use crate::subscription::Spawner;
 
 const FOLLOW_METHOD: &str = "remote_chain_head_follow";
+/// Method tag for failures building or using the legacy Subxt client.
+const LEGACY_CONNECTION: &str = "legacy_connection";
 
 struct TruapiRpcConfig;
 
@@ -718,7 +720,7 @@ impl ChainRuntime {
         &self,
         genesis_hash: &[u8],
     ) -> Result<LegacyConnection, RuntimeFailure> {
-        self.connection_for("legacy_connection", genesis_hash)
+        self.connection_for(LEGACY_CONNECTION, genesis_hash)
             .await?
             .legacy_connection()
             .await
@@ -1098,16 +1100,15 @@ impl ChainConnection {
     /// request and starts no background task, so concurrent first callers
     /// may each build one; the first one stored is kept.
     async fn legacy_connection(&self) -> Result<LegacyConnection, RuntimeFailure> {
-        const METHOD: &str = "legacy_connection";
         if let Some(existing) = self.legacy_connection.lock().unwrap().clone() {
             return Ok(existing);
         }
-        let config = self.chain_config(METHOD)?;
+        let config = self.chain_config(LEGACY_CONNECTION)?;
         let rpc = RpcClient::new(self.rpc_client.clone());
         let backend = Arc::new(LegacyBackend::builder().build(rpc.clone()));
         let client = OnlineClient::from_backend_with_config(config, backend.clone())
             .await
-            .map_err(|error| RuntimeFailure::host_failure(METHOD, error.to_string()))?;
+            .map_err(|error| RuntimeFailure::host_failure(LEGACY_CONNECTION, error.to_string()))?;
         let built = LegacyConnection {
             client,
             backend,

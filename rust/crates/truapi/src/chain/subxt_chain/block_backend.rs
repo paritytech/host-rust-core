@@ -1,4 +1,4 @@
-//! [`BlockBackend`] for [`SubxtChain`].
+//! [`BlockBackend`] for `ChainRuntime`.
 
 use sp_crypto_hashing::blake2_256;
 use subxt::SubstrateConfig;
@@ -7,14 +7,14 @@ use subxt::config::Header;
 use subxt::events::{Events, Phase};
 use subxt::utils::H256;
 
-use super::{SubxtChain, failure, finalized_block};
+use super::{failure, finalized_block};
 use crate::chain::{BlockBackend, DispatchOutcome, HashAndNumber};
-use crate::chain_runtime::{LegacyConnection, RuntimeFailure};
+use crate::chain_runtime::{ChainRuntime, LegacyConnection, RuntimeFailure};
 
 const DISPATCH_OUTCOME: &str = "dispatch_outcome";
 
 #[async_trait::async_trait]
-impl BlockBackend for SubxtChain {
+impl BlockBackend for ChainRuntime {
     async fn block_hash(&self, genesis: H256, number: u64) -> Result<Option<H256>, RuntimeFailure> {
         const METHOD: &str = "block_hash";
         let legacy = self.legacy(genesis).await?;

@@ -1,5 +1,6 @@
-//! [`SubxtChain`]: the chain capabilities over subxt clients, one file per
-//! capability.
+//! The chain capabilities implemented directly on `ChainRuntime`, over its
+//! per-chain subxt clients: the legacy client for reads and validation, the
+//! shared chainHead client for submission. One file per capability.
 
 use core::error::Error;
 
@@ -16,22 +17,9 @@ mod heads;
 mod tx_submitter;
 mod tx_validator;
 
-/// The chain capabilities over `ChainRuntime`'s per-chain subxt clients:
-/// the legacy client for reads and validation, the shared chainHead client
-/// for submission.
-#[derive(Clone)]
-pub struct SubxtChain {
-    chains: ChainRuntime,
-}
-
-impl SubxtChain {
-    /// Capabilities over the connections `chains` manages.
-    pub fn new(chains: ChainRuntime) -> Self {
-        Self { chains }
-    }
-
+impl ChainRuntime {
     async fn legacy(&self, genesis: H256) -> Result<LegacyConnection, RuntimeFailure> {
-        self.chains.legacy_connection(genesis.as_bytes()).await
+        self.legacy_connection(genesis.as_bytes()).await
     }
 }
 

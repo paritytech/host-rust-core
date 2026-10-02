@@ -1,4 +1,4 @@
-//! [`ChainHeads`] for [`SubxtChain`].
+//! [`ChainHeads`] for `ChainRuntime`.
 
 use futures::Stream;
 use futures::stream::{self, BoxStream, StreamExt};
@@ -7,9 +7,9 @@ use subxt::config::Header;
 use subxt::utils::H256;
 use subxt_rpcs::Error as RpcError;
 
-use super::{SubxtChain, best_block, failure, finalized_block};
+use super::{best_block, failure, finalized_block};
 use crate::chain::{ChainHeads, HashAndNumber, HeadEvent, Heads};
-use crate::chain_runtime::{LegacyConnection, RuntimeFailure};
+use crate::chain_runtime::{ChainRuntime, LegacyConnection, RuntimeFailure};
 
 const HEADS: &str = "chain_heads";
 const HEAD_EVENTS: &str = "chain_head_events";
@@ -17,7 +17,7 @@ const HEAD_EVENTS: &str = "chain_head_events";
 type HeadEvents = BoxStream<'static, Result<HeadEvent, RuntimeFailure>>;
 
 #[async_trait::async_trait]
-impl ChainHeads for SubxtChain {
+impl ChainHeads for ChainRuntime {
     async fn heads(&self, genesis: H256) -> Result<Heads, RuntimeFailure> {
         let legacy = self.legacy(genesis).await?;
         Ok(Heads {
