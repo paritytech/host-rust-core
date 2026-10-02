@@ -120,6 +120,8 @@ export interface WorkerSigningHostRuntime extends WorkerHostRuntime {
     activationId: string,
     productIds: string[],
   ): Promise<WalletAllowanceSnapshot>;
+  /** Only on a core built with `wasm-signing-host`. */
+  setWithheldResources?(tags: string[]): void;
 }
 
 /** Module surface the wasm-pack glue exports. */
