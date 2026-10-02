@@ -7,13 +7,11 @@ android {
     namespace = "io.paritytech.polkadotapp.tools_remoteconfig_impl"
 
     defaultConfig {
-        buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "true")
+        buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "false")
     }
 
     buildTypes {
-        getByName("release") { buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "false") }
-        getByName("nightly") { buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "false") }
-        getByName("safetynet") { buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "false") }
+        getByName("debug") { buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "true") }
     }
 }
 
