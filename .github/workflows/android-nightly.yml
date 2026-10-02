@@ -361,6 +361,58 @@ jobs:
             echo "$ASSET published on $TAG, $size bytes"
           done
 
+      # A link that never changes, for anything that wants tonight's APK
+      # without knowing tonight's tag. `releases/latest` cannot serve it: the
+      # npm releases hold that slot, and it skips prereleases anyway. The tag
+      # does not start with `android-`, so consumers that pick the newest
+      # `android-*` prerelease never see it. Only main updates it, so a build
+      # dispatched from another branch cannot replace what testers download.
+      - name: Refresh the fixed nightly-android release
+        if: github.ref == 'refs/heads/main'
+        working-directory: hosts/android
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POINTER: nightly-android
+          TAG: ${{ steps.release-tag.outputs.tag }}
+          BUILD_ID: ${{ steps.setup.outputs.build_id }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "${POINTER}" >/dev/null 2>&1; then
+            gh release create "${POINTER}" \
+              --title "Android nightly (latest build)" \
+              --notes "Created by the Android nightly." \
+              --prerelease --latest=false
+          fi
+          gh release upload "${POINTER}" app-gp-nightly.apk app-vanilla-nightly.apk --clobber
+          gh release edit "${POINTER}" --prerelease --latest=false --notes "$(cat <<EOF
+          The latest Android nightly, refreshed by every run on main. These links never change:
+
+          - \`app-gp-nightly.apk\`, the Google Play flavour
+          - \`app-vanilla-nightly.apk\`, without Google Play services
+
+          Currently build \`${VERSION_NAME} (${BUILD_ID})\` from \`${GITHUB_SHA}\`, the same APKs as [${TAG}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}).
+          EOF
+          )"
+
+      # Downloading through the fixed URLs is the only proof they serve
+      # tonight's files rather than a stale or half-replaced asset.
+      - name: Confirm the fixed links serve tonight's APKs
+        if: github.ref == 'refs/heads/main'
+        working-directory: hosts/android
+        run: |
+          set -euo pipefail
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/nightly-android"
+          for asset in app-gp-nightly.apk app-vanilla-nightly.apk; do
+            expected="$(wc -c < "${asset}" | tr -d ' ')"
+            served="$(curl -fsSL "${base}/${asset}" | wc -c | tr -d ' ')"
+            if [ "${served}" != "${expected}" ]; then
+              echo "::error::${base}/${asset} serves ${served} bytes, expected ${expected}"
+              exit 1
+            fi
+            echo "${base}/${asset} serves tonight's ${asset}, ${served} bytes"
+          done
+
 
   # Announced the way the iOS nightly is, through the same relay and into the
   # same room.
