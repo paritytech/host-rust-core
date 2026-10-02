@@ -1826,6 +1826,7 @@ mod tests {
     fn local_codec_imports_external_alias_as_runtime_value() {
         let definition = PlatformDefinition {
             traits: Vec::new(),
+            api_type_paths: BTreeMap::new(),
             types: vec![TypeDef {
                 name: "SessionUiInfo".to_string(),
                 module_path: vec!["truapi".to_string(), "platform".to_string()],
@@ -1861,6 +1862,7 @@ mod tests {
                 methods: vec![method],
             }],
             types: Vec::new(),
+            api_type_paths: BTreeMap::new(),
             super_trait: None,
             optional_super_trait: None,
         }
