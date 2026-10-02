@@ -346,25 +346,6 @@ fn deferred_payment_requests_return_dotli_not_implemented_errors() {
             reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
         }),
     );
-
-    let top_up = v01::HostPaymentTopUpRequest {
-        into: None,
-        amount: 1,
-        source: v01::PaymentTopUpSource::ProductAccount {
-            derivation_index: v01::DerivationIndex::Index(0),
-        },
-    };
-    assert_request_returns_domain_error(
-        &core,
-        "p:top-up",
-        "payment_top_up",
-        truapi::versioned::payment::HostPaymentTopUpRequest::V1(top_up).encode(),
-        truapi::versioned::payment::HostPaymentTopUpError::V1(
-            v01::HostPaymentTopUpError::Unknown {
-                reason: PAYMENTS_NOT_IMPLEMENTED.to_string(),
-            },
-        ),
-    );
 }
 
 #[test]
@@ -678,5 +659,32 @@ fn coin_payment_request_reports_unsupported_on_the_wire() {
     assert_eq!(response.payload.message_type, MESSAGE_TYPE_RESPONSE);
     // [Result::Err=0x01][CallError::Unsupported=0x02], and nothing more:
     // `Unsupported` carries no domain payload, so no wrapper tag follows.
+    assert_eq!(response.payload.value, vec![0x01u8, 0x02u8]);
+}
+
+/// A host with no top-up engine answers `Unsupported`, so a product can tell
+/// "this host never tops up" from a top-up that failed.
+#[test]
+fn top_up_reports_unsupported_without_a_host_engine() {
+    let core = make_core();
+    let request = v01::HostPaymentTopUpRequest {
+        into: None,
+        amount: 1,
+        source: v01::PaymentTopUpSource::ProductAccount {
+            derivation_index: v01::DerivationIndex::Index(0),
+        },
+        id: [7; 32],
+    };
+    let ids = request_ids("payment_top_up").expect("known request method");
+    let frame = ProtocolMessage {
+        request_id: "p:top-up".into(),
+        payload: Payload {
+            trait_id: ids.trait_id,
+            method_id: ids.method_id,
+            message_type: MESSAGE_TYPE_REQUEST,
+            value: truapi::versioned::payment::HostPaymentTopUpRequest::V1(request).encode(),
+        },
+    };
+    let response = dispatch(&core, frame);
     assert_eq!(response.payload.value, vec![0x01u8, 0x02u8]);
 }

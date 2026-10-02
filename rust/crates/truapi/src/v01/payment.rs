@@ -58,6 +58,9 @@ pub struct HostPaymentTopUpRequest {
     pub amount: u128,
     /// Funding source for the top-up.
     pub source: PaymentTopUpSource,
+    /// Caller-chosen id the top-up's status is followed by. Reusing one is
+    /// refused with `AlreadyExists`, which makes a retried call safe.
+    pub id: [u8; 32],
 }
 
 /// Request to initiate a payment to another account.
@@ -126,15 +129,12 @@ pub enum HostPaymentBalanceSubscribeError {
 /// [RFC 0006]: https://github.com/paritytech/triangle-js-sdks/pull/94
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum HostPaymentTopUpError {
-    /// The source account does not hold sufficient funds.
-    InsufficientFunds,
-    /// The source account was not found or is invalid.
+    /// The source key is malformed, or the source was not found.
     InvalidSource,
-    /// Some coins were claimed but the total fell short of the requested amount.
-    PartialPayment {
-        /// Amount that was successfully credited.
-        credited: u128,
-    },
+    /// A top-up with this id already exists.
+    AlreadyExists,
+    /// Another top-up from the same source is still running.
+    SourceBusy,
     /// Catch-all.
     Unknown {
         /// Human-readable failure reason.
@@ -181,4 +181,46 @@ pub enum HostPaymentStatusSubscribeError {
 pub struct HostPaymentStatusSubscribeRequest {
     /// Payment identifier to watch.
     pub payment_id: String,
+}
+
+/// Request to follow one top-up.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostPaymentTopUpStatusSubscribeRequest {
+    /// Id the top-up was started with.
+    pub id: [u8; 32],
+}
+
+/// Progress of a top-up. `Claimed { finalized: true }`, `ClaimedPartially` and
+/// `NotClaimed` are terminal, and stay readable after the top-up ends.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum HostPaymentTopUpStatusSubscribeItem {
+    /// Waiting for the source's funds to be seen.
+    Detecting,
+    /// Claiming the funds into the balance.
+    Claiming,
+    /// The full amount was claimed.
+    Claimed {
+        /// Whether the claim is finalized on chain.
+        finalized: bool,
+    },
+    /// Less than the requested amount was claimed, such as when an amount
+    /// below the smallest coin denomination remains.
+    ClaimedPartially {
+        /// Amount actually credited.
+        actual_claimed: u128,
+    },
+    /// Nothing was claimed.
+    NotClaimed,
+}
+
+/// Error from [`crate::api::Payment::top_up_status_subscribe`].
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum HostPaymentTopUpStatusSubscribeError {
+    /// No top-up with this id for the calling product.
+    NotFound,
+    /// Catch-all.
+    Unknown {
+        /// Human-readable failure reason.
+        reason: String,
+    },
 }

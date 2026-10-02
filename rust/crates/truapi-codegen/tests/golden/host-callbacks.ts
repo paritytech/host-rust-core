@@ -39,6 +39,9 @@ import type {
   HostFundingStatusSubscribeItem,
   HostLocalStorageChangeItem,
   HostLocaleSubscribeItem,
+  HostPaymentTopUpRequest,
+  HostPaymentTopUpStatusSubscribeError,
+  HostPaymentTopUpStatusSubscribeItem,
   HostPocketListSubscribeItem,
   HostPocketRemoveCardRequest,
   HostPushNotificationRequest,
@@ -1721,6 +1724,38 @@ export interface ThemeHost {
    * named themes report `ThemeName::Default`.
    */
   subscribeTheme(): AsyncIterable<Result<HostThemeSubscribeItem, GenericError>>;
+}
+
+/**
+ * Host-implemented top-up engine: claims a source's funds into the user's
+ * balance through the host's coinage onboarding. Optional: a host that omits
+ * it leaves top-ups answered `Unsupported`.
+ *
+ * The core validates the source keys before calling. The host owns retries,
+ * partial claims and persistence, and scopes ids to `product`.
+ */
+export interface TopUpPlatform {
+  /**
+   * Start a top-up. Returns once the host has accepted it.
+   */
+  topUp(
+    product: ProductContext,
+    request: HostPaymentTopUpRequest,
+  ): Promise<void>;
+
+  /**
+   * Emit a top-up's current status and every later one, ending after a
+   * terminal status.
+   */
+  subscribeTopUpStatus(
+    product: ProductContext,
+    id: Uint8Array,
+  ): AsyncIterable<
+    Result<
+      HostPaymentTopUpStatusSubscribeItem,
+      HostPaymentTopUpStatusSubscribeError
+    >
+  >;
 }
 
 /**

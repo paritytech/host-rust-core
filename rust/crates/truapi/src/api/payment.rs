@@ -5,7 +5,8 @@ use crate::versioned::payment::{
     HostPaymentBalanceSubscribeRequest, HostPaymentError, HostPaymentRequest, HostPaymentResponse,
     HostPaymentStatusSubscribeError, HostPaymentStatusSubscribeItem,
     HostPaymentStatusSubscribeRequest, HostPaymentTopUpError, HostPaymentTopUpRequest,
-    HostPaymentTopUpResponse,
+    HostPaymentTopUpResponse, HostPaymentTopUpStatusSubscribeError,
+    HostPaymentTopUpStatusSubscribeItem, HostPaymentTopUpStatusSubscribeRequest,
 };
 use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
@@ -99,12 +100,14 @@ pub trait Payment: Send + Sync {
         Subscription::interrupted(CallError::unavailable())
     }
 
-    /// Top up the user's payment balance.
+    /// Top up the user's payment balance, followed by `id` through
+    /// `topUpStatusSubscribe`.
     ///
     /// ```ts
     /// const result = await truapi.payment.topUp({
     ///   amount: 1000n,
     ///   source: { tag: "ProductAccount", value: { derivationIndex: { tag: "Index", value: 0 } } },
+    ///   id: new Uint8Array(32),
     /// });
     /// assert(result.isOk(), "topUp failed:", result);
     /// console.log("balance topped up");
@@ -116,5 +119,33 @@ pub trait Payment: Send + Sync {
         _request: HostPaymentTopUpRequest,
     ) -> Result<HostPaymentTopUpResponse, CallError<HostPaymentTopUpError>> {
         Err(CallError::unavailable())
+    }
+
+    /// Follow one top-up to its end.
+    ///
+    /// Emits the current status first, so a caller that reloads re-attaches.
+    ///
+    /// ```ts
+    /// import { firstValueFrom, from } from "rxjs";
+    ///
+    /// const status = await firstValueFrom(
+    ///   from(
+    ///     truapi.payment.topUpStatusSubscribe({
+    ///       request: { id: new Uint8Array(32) },
+    ///     }),
+    ///   ),
+    /// );
+    /// console.log("top-up status:", status);
+    /// ```
+    #[wire(id = 4)]
+    async fn top_up_status_subscribe(
+        &self,
+        _cx: &CallContext,
+        _request: HostPaymentTopUpStatusSubscribeRequest,
+    ) -> Subscription<
+        HostPaymentTopUpStatusSubscribeItem,
+        CallError<HostPaymentTopUpStatusSubscribeError>,
+    > {
+        Subscription::interrupted(CallError::unavailable())
     }
 }

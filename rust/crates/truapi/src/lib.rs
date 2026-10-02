@@ -83,8 +83,8 @@ pub mod latest {
         HostAccountListRingVrfKeysRequest, HostAccountRegisterRingVrfKeyRequest,
         HostAccountRingVrfSignRequest, HostAccountSignVrfError, HostAccountSignVrfRequest,
         HostPlatform, HostSignPayloadData, HostWorkerOperationError, ImageFit, ImageProps,
-        ImageSource, Modifier, OperationStartedResult, PocketCard, ProductAccountId,
-        ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
+        ImageSource, Modifier, OperationStartedResult, PaymentTopUpSource, PocketCard,
+        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
         RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
         RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
         RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
@@ -193,6 +193,16 @@ pub mod latest {
     /// Failure watching a funding session.
     pub type HostFundingStatusSubscribeError =
         LatestOf<versioned::funding::HostFundingStatusSubscribeError>;
+    /// Payment top-up request.
+    pub type HostPaymentTopUpRequest = LatestOf<versioned::payment::HostPaymentTopUpRequest>;
+    /// Payment top-up failure.
+    pub type HostPaymentTopUpError = LatestOf<versioned::payment::HostPaymentTopUpError>;
+    /// Progress of a payment top-up.
+    pub type HostPaymentTopUpStatusSubscribeItem =
+        LatestOf<versioned::payment::HostPaymentTopUpStatusSubscribeItem>;
+    /// Failure following a payment top-up.
+    pub type HostPaymentTopUpStatusSubscribeError =
+        LatestOf<versioned::payment::HostPaymentTopUpStatusSubscribeError>;
     /// The calling product's Pocket cards.
     pub type HostPocketListSubscribeItem = LatestOf<versioned::pocket::HostPocketListSubscribeItem>;
     /// Pocket card removal request.
