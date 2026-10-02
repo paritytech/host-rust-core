@@ -16,6 +16,7 @@ export function decodeTextMessage(hex) {
 /** Title line the Chat diagnosis worker renders its report under. */
 export const CHAT_DIAGNOSIS_HEADING = "## Truapi Chat Diagnosis";
 
+/** Host gaps the Android launcher accepts: the shared core has no bot registry to register into. */
 export const REGISTER_BOT_GAP = [
   { method: "Chat/register_bot", details: /no bot registry|not supported/ },
 ];
@@ -33,6 +34,7 @@ export function diagnosisFailures(report) {
   return failures;
 }
 
+/** Throws unless every failed row is one of `acceptedFailures`. */
 export function labelChatDiagnosisReport(
   report,
   host,
@@ -69,7 +71,7 @@ export function labelChatDiagnosisReport(
     return labelled;
   }
   const accepted = failures
-    .map((failure) => `${failure.method} — ${failure.details}`)
+    .map((failure) => `${failure.method}: ${failure.details}`)
     .join("; ");
   return `${labelled}\n\n_Accepted host gaps: ${accepted}_`;
 }

@@ -274,12 +274,16 @@ function listAvds() {
   return parseAvdList(result.stdout);
 }
 
+function systemImageAbi() {
+  return process.arch === "arm64" ? "arm64-v8a" : "x86_64";
+}
+
 function startEmulator(avd) {
   const available = listAvds();
   if (!available.includes(avd)) {
     throw new Error(
       `AVD not found: ${avd}. Available: ${available.join(", ") || "none"}.\n` +
-        `Create it with: avdmanager create avd -n ${avd} -k "system-images;android-36;google_apis;arm64-v8a"`,
+        `Create it with: avdmanager create avd -n ${avd} -k "system-images;android-36;google_apis;${systemImageAbi()}"`,
     );
   }
   const child = spawn(

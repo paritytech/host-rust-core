@@ -69,7 +69,7 @@ test("an accepted failure passes and is footnoted", () => {
   assert.match(labelled, /^## Truapi Android Chat Diagnosis/);
   assert.match(
     labelled,
-    /\n\n_Accepted host gaps: Chat\/register_bot — registerBot failed: this host has no bot registry_$/,
+    /\n\n_Accepted host gaps: Chat\/register_bot: registerBot failed: this host has no bot registry_$/,
   );
 });
 

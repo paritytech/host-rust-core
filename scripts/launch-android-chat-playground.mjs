@@ -47,9 +47,7 @@ const DATABASE = "databases/app_v2.db";
 const ACKS = {
   seedIdentityDone: "seed_identity done",
   productRegistered: (id) => `product registered id=${id}`,
-  messageQueued: (id, room) => `message queued product=${id} room=${room}`,
-  messageDelivered: (id, room) =>
-    `message delivered product=${id} room=${room}`,
+  messageSent: (id, room) => `message sent product=${id} room=${room}`,
   customRendererUpdate: (id) => `custom_renderer_update product=${id}`,
 };
 
@@ -120,7 +118,6 @@ const workerUrl = `${productUrl.replace(/\/$/, "")}/worker/index.js`;
 const extensionId = `ProductBot_${productHost}`;
 const chatHex = chatIdHex(extensionId, roomId);
 const productPort = url.port || "80";
-const roomMarker = roomId || "-";
 
 const receiverHint =
   `Nothing in ${packageName} acknowledged ${DEBUG_ACTION} at ${receiverComponent}.\n` +
@@ -134,17 +131,39 @@ if (!existsSync(resolve(productRoot, "package.json"))) {
 let currentStep = "startup";
 let productServer;
 let serial;
+let productBuildChild;
 
 function step(name) {
   currentStep = name;
   console.log(`==> ${name}`);
 }
 
+function cleanup() {
+  productBuildChild?.kill();
+  productServer?.close();
+  if (serial) {
+    removeReversePort(serial, productPort);
+  }
+}
+
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  process.once(signal, () => {
+    cleanup();
+    process.exit(code);
+  });
+}
+
+let failed = false;
+
 try {
-  step("build the chat product");
   const productBuild =
     process.env.TRUAPI_ANDROID_E2E_SKIP_PRODUCT_BUILD !== "1"
-      ? runAsync("yarn", ["build"], { cwd: productRoot })
+      ? runAsync("yarn", ["build"], {
+          cwd: productRoot,
+          onSpawn: (child) => {
+            productBuildChild = child;
+          },
+        })
       : Promise.resolve();
   productBuild.catch(() => {});
 
@@ -156,7 +175,9 @@ try {
   });
   console.log(`    device ${serial}`);
 
+  step("build the chat product");
   await productBuild;
+  productBuildChild = undefined;
   if (!existsSync(worker)) {
     throw new Error(`Chat product worker not found after build: ${worker}`);
   }
@@ -195,22 +216,17 @@ try {
   step("clear logcat");
   clearLogcat(serial);
 
-  step(`debug hooks: seed identity, queue ${JSON.stringify(message)}, register ${productHost}`);
+  step(`debug hooks: seed identity, register ${productHost}`);
   sendDebugHooks([
     ["--ez", "seed_identity", "true"],
     ["--es", "username", username],
     ["--es", "product_id", productHost],
     ["--es", "product_name", productName],
     ["--es", "worker_url", workerUrl],
-    ["--es", "room_id", roomId],
-    ["--es", "message", message],
   ]);
 
   step("wait for seed_identity done");
   await awaitHookAck(ACKS.seedIdentityDone);
-
-  step("wait for message queued");
-  await awaitHookAck(ACKS.messageQueued(productHost, roomMarker));
 
   step("wait for product registered");
   await awaitHookAck(ACKS.productRegistered(productHost));
@@ -223,13 +239,6 @@ try {
 
   const watermark = chatMessageWatermark();
 
-  step(`queue ${JSON.stringify(message)} again in the relaunched process`);
-  sendDebugHooks([
-    ["--es", "product_id", productHost],
-    ["--es", "room_id", roomId],
-    ["--es", "message", message],
-  ]);
-
   step(`wait for ${CORE_MARKER}`);
   await waitForLogcatMessage(serial, {
     tags: [CORE_TAG, E2E_TAG],
@@ -239,13 +248,16 @@ try {
     hint: "The product worker never connected to the shared core.",
   });
 
-  step("wait for the queued message to be delivered");
-  await waitForLogcatMessage(serial, {
-    tags: [E2E_TAG],
-    marker: ACKS.messageDelivered(productHost, roomMarker),
-    timeoutMs: TIMEOUTS.ack,
-    errorTag: E2E_TAG,
-  });
+  step(`wait for the worker to create ${roomId}`);
+  await waitForChatRoom();
+
+  step(`send ${JSON.stringify(message)} into ${roomId} as the user`);
+  sendDebugHooks([
+    ["--es", "product_id", productHost],
+    ["--es", "room_id", roomId],
+    ["--es", "message", message],
+  ]);
+  await awaitHookAck(ACKS.messageSent(productHost, roomId));
 
   step("open the chat deeplink");
   amStart(serial, ["-a", "android.intent.action.VIEW", "-d", `polkadotapp://chat?chatId=${chatHex}`]);
@@ -285,18 +297,17 @@ try {
   mkdirSync(dirname(screenshot), { recursive: true });
   screencap(serial, screenshot);
 } catch (error) {
-  productServer?.close();
-  if (serial) {
-    removeReversePort(serial, productPort);
-  }
+  failed = true;
   console.error(
     `\nAndroid chat e2e FAILED at step: ${currentStep}\n${error instanceof Error ? (error.stack ?? error.message) : error}`,
   );
-  process.exit(1);
+} finally {
+  cleanup();
 }
 
-productServer?.close();
-removeReversePort(serial, productPort);
+if (failed) {
+  process.exit(1);
+}
 
 console.log(
   JSON.stringify({
@@ -356,6 +367,25 @@ function chatMessageWatermark() {
   } catch {
     return 0;
   }
+}
+
+function waitForChatRoom(timeoutMs = TIMEOUTS.chatMessage) {
+  const query = `SELECT COUNT(*) FROM chat_rooms WHERE id = X'${chatHex}'`;
+  return waitFor(
+    () => {
+      try {
+        return Number(runAsSqlite(serial, packageName, DATABASE, query).trim()) > 0;
+      } catch {
+        return false;
+      }
+    },
+    {
+      timeoutMs,
+      intervalMs: 1_000,
+      message: () =>
+        `Timed out after ${timeoutMs}ms waiting for the worker to create room ${chatHex} in ${DATABASE}`,
+    },
+  );
 }
 
 function waitForChatMessage(prefix, after, timeoutMs = TIMEOUTS.chatMessage) {

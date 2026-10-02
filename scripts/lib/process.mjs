@@ -44,8 +44,10 @@ export function run(command, args, options = {}) {
 
 /** Run a command without blocking, so callers can overlap independent steps. */
 export function runAsync(command, args, options = {}) {
+  const { onSpawn, ...spawnOptions } = options;
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", ...options });
+    const child = spawn(command, args, { stdio: "inherit", ...spawnOptions });
+    onSpawn?.(child);
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (code === 0) {

@@ -615,6 +615,8 @@ Prerequisites:
 - a `python` on `PATH`, which the rust-android-gradle linker wrapper shells out to
 - a stub `hosts/android/app/google-services.json`
 - a debug keystore configured in `hosts/android/local.properties`
+- the debug `applicationId` `com.example.polkadot.debug`; a fork that renames it
+  must pass `TRUAPI_ANDROID_E2E_PACKAGE`
 
 The `TRUAPI_ANDROID_E2E_*` environment variables override every default
 (device, APK, product, room, message, username, URL, report path); they
