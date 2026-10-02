@@ -46,6 +46,7 @@ fallback — the features they configure are not part of the current production 
 | `APPLICATION_NAME` | Launcher name of the application. `DEBUG_APPLICATION_NAME`, `NIGHTLY_APPLICATION_NAME` and `SAFETYNET_APPLICATION_NAME` optionally override it per build type; when unset they are derived from this value. |
 | `PRIVACY_POLICY_URL` | Privacy-policy destination shown by the application. |
 | `CURRENCY_SYMBOL` | Symbol of the in-app digital currency shown in the UI — card title, send/get actions, and every formatted amount. |
+| `FIAT_SYMBOL` | Fiat symbol prefixed to formatted amounts. `$` also puts the dollar icon on the chat pay button; any other value shows the neutral cash icon. |
 | `TERMS_OF_USE_URL` | Terms-of-use destination shown by the application. |
 | `LOG_COLLECTION_EMAIL` | Recipient used by the debug log-sharing flow. |
 | `CONTACT_EMAIL` | Recipient of the Contact us action on the Legal & Support screen. |

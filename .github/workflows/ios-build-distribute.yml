@@ -297,28 +297,6 @@ jobs:
           sentry_dsn: ${{ secrets.SENTRY_DSN }}
           meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
 
-      - name: Configure Google services for non-TestFlight build
-        uses: ./hosts/ios/.github/actions/configure-google-services
-        with:
-          google_service_info_base64: ${{ inputs.build_configuration == 'Safetynet' && secrets.GOOGLE_SERVICE_INFO_SAFETY_BASE64 || secrets.GOOGLE_SERVICE_INFO_RELEASE_BASE64 }}
-          expected_bundle_id: ${{ env.IOS_BUNDLE_ID }}
-
-      - name: Configure secrets for non-TestFlight build
-        uses: ./hosts/ios/.github/actions/configure-secrets
-        with:
-          sentry_dsn: ${{ secrets.SENTRY_DSN }}
-          meld_basic_auth_token: ${{ secrets.MELD_BASIC_AUTH_TOKEN }}
-
-      - name: Build without TestFlight distribution
-        env:
-          FASTLANE_CONFIGURATION: ${{ inputs.build_configuration }}
-          BUILD_NUMBER: ${{ needs.prepare_build_metadata.outputs.build_number }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-        working-directory: hosts/ios
-        run: |
-          bundle exec fastlane build_app_ci
-
       - name: Comment on PR with build info
         if: inputs.release_pr_number != ''
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0

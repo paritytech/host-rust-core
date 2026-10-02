@@ -1,5 +1,6 @@
 package io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket
 
+import android.content.Context
 import android.webkit.WebView
 import androidx.lifecycle.viewModelScope
 import io.paritytech.polkadotapp.common.presentation.sharing.SharingManager
@@ -98,6 +99,7 @@ class PocketViewModelTest {
         sharingManager = mock(SharingManager::class.java),
         dispatchers = dispatchers,
         spaHost = spaHost,
+        context = mock(Context::class.java),
     ).also { created += it }
 
     /** The cards the screen holds once everything the view model started has run. */

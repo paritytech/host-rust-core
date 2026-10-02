@@ -578,6 +578,9 @@ runtime_items! {
     #[cfg(not(target_arch = "wasm32"))]
     pub mod native_debug;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub mod store;
+
     pub use truapi_core::TrUApiCore;
     pub use host_core::{
         ChannelId, DebugEvent, DebugSink, FrameDirection, FrameSink, HostAdmin, PairingHostRuntime,
