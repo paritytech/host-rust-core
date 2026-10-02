@@ -288,6 +288,9 @@ impl SigningHost {
     fn withholds(&self, resource: &v01::AllocatableResource) -> bool {
         let tag = match resource {
             v01::AllocatableResource::StatementStoreAllowance => "StatementStoreAllowance",
+            v01::AllocatableResource::ProductStatementStoreAllowance(_) => {
+                "ProductStatementStoreAllowance"
+            }
             v01::AllocatableResource::BulletinAllowance => "BulletinAllowance",
             v01::AllocatableResource::SmartContractAllowance(_) => "SmartContractAllowance",
             v01::AllocatableResource::AutoSigning => "AutoSigning",
