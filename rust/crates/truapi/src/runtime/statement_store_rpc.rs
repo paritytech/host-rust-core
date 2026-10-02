@@ -24,8 +24,13 @@ use crate::host_logic::statement_store::{
 use crate::host_rpc_client::HostRpcClient;
 use crate::subscription::Spawner;
 
-const SSO_NO_ALLOWANCE_RETRY_ATTEMPTS: usize = 5;
-const SSO_NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_secs(1);
+/// Retries after the first `noAllowance` rejection, and the wait between them,
+/// matching the native iOS and Android hosts.
+const NO_ALLOWANCE_RETRIES: usize = 10;
+#[cfg(not(test))]
+const NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_millis(1);
 
 /// Error opening a statement-store RPC client over the host platform.
 #[derive(Debug, Error)]
@@ -94,12 +99,16 @@ impl StatementStoreRpc {
         submit(&rpc_client, statement).await
     }
 
-    /// Submit an SSO statement, tolerating the short propagation window after
-    /// an allowance registration is included but not yet visible to the
+    /// Submit a statement, tolerating the short propagation window after an
+    /// allowance registration is included but not yet visible to the
     /// Statement Store RPC backend.
-    pub async fn submit_sso(&self, statement: Vec<u8>, label: &'static str) -> Result<(), String> {
+    pub async fn submit_retrying_no_allowance(
+        &self,
+        statement: Vec<u8>,
+        label: &'static str,
+    ) -> Result<(), String> {
         let rpc_client = self.client(label).await.map_err(|err| err.to_string())?;
-        submit_sso(&rpc_client, statement, label).await
+        submit_retrying_no_allowance(&rpc_client, statement, label).await
     }
 
     /// Submit a SCALE-encoded statement without waiting for the JSON-RPC ack.
@@ -172,30 +181,26 @@ pub async fn submit(rpc_client: &RpcClient, statement: Vec<u8>) -> Result<(), St
     }
 }
 
-pub async fn submit_sso(
+pub async fn submit_retrying_no_allowance(
     rpc_client: &RpcClient,
     statement: Vec<u8>,
     label: &'static str,
 ) -> Result<(), String> {
-    for attempt in 1..=SSO_NO_ALLOWANCE_RETRY_ATTEMPTS {
+    for retry in 0..=NO_ALLOWANCE_RETRIES {
         match submit(rpc_client, statement.clone()).await {
-            Ok(()) => return Ok(()),
-            Err(reason)
-                if is_no_allowance_rejection(&reason)
-                    && attempt < SSO_NO_ALLOWANCE_RETRY_ATTEMPTS =>
-            {
+            Err(reason) if is_no_allowance_rejection(&reason) && retry < NO_ALLOWANCE_RETRIES => {
                 warn!(
                     label,
-                    attempt,
-                    max_attempts = SSO_NO_ALLOWANCE_RETRY_ATTEMPTS,
-                    "SSO allowance not visible yet; retrying statement submission"
+                    retry = retry + 1,
+                    max_retries = NO_ALLOWANCE_RETRIES,
+                    "allowance not visible yet; retrying statement submission"
                 );
-                futures_timer::Delay::new(SSO_NO_ALLOWANCE_RETRY_DELAY).await;
+                futures_timer::Delay::new(NO_ALLOWANCE_RETRY_DELAY).await;
             }
-            Err(reason) => return Err(reason),
+            result => return result,
         }
     }
-    unreachable!("the bounded SSO submit loop always returns")
+    unreachable!("the bounded submit loop always returns")
 }
 
 /// Whether a [`submit`] failure is a `noAllowance` rejection.

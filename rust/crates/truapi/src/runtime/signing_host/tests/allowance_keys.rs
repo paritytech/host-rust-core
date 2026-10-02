@@ -240,12 +240,25 @@ fn a_key_allocated_under_a_replaced_session_is_not_remembered() {
     );
 }
 
-fn submit_rejected(reason: &str, signer: [u8; 32]) -> Arc<SigningHostRole> {
+/// Every attempt the submit retry makes: the first plus its retries.
+const SUBMIT_ATTEMPTS: usize = 11;
+
+fn rejected(reason: &str) -> String {
+    format!(r#"{{"status":"rejected","reason":"{reason}"}}"#)
+}
+
+fn submit_answered(
+    answers: Vec<String>,
+    signer: [u8; 32],
+) -> (
+    Result<(), CallError<RemoteStatementStoreSubmitError>>,
+    Arc<SigningHostRole>,
+) {
     let platform = Arc::new(StubPlatform {
-        rpc_method_responses: vec![(
-            SUBMIT_STATEMENT_METHOD,
-            format!(r#"{{"status":"rejected","reason":"{reason}"}}"#),
-        )],
+        rpc_method_responses: answers
+            .into_iter()
+            .map(|answer| (SUBMIT_STATEMENT_METHOD, answer))
+            .collect(),
         ..Default::default()
     });
     let (services, signing_host) = signing_runtime_with_platform(platform);
@@ -267,7 +280,13 @@ fn submit_rejected(reason: &str, signer: [u8; 32]) -> Arc<SigningHostRole> {
             topics: Vec::new(),
             data: None,
         }),
-    ));
+    ))
+    .map(|_| ());
+    (submitted, signing_host)
+}
+
+fn submit_rejected(reason: &str, attempts: usize, signer: [u8; 32]) -> Arc<SigningHostRole> {
+    let (submitted, signing_host) = submit_answered(vec![rejected(reason); attempts], signer);
     let Err(CallError::Domain(RemoteStatementStoreSubmitError::V1(error))) = submitted else {
         panic!("the store rejection must surface as a domain error: {submitted:?}");
     };
@@ -280,8 +299,8 @@ fn submit_rejected(reason: &str, signer: [u8; 32]) -> Arc<SigningHostRole> {
 }
 
 #[test]
-fn a_no_allowance_rejection_forgets_the_rejected_key() {
-    let signing_host = submit_rejected("noAllowance", secret_key().public_key);
+fn a_lasting_no_allowance_rejection_forgets_the_rejected_key() {
+    let signing_host = submit_rejected("noAllowance", SUBMIT_ATTEMPTS, secret_key().public_key);
 
     assert_eq!(
         remembered(&signing_host, PRODUCT_ID, PERIOD),
@@ -291,8 +310,22 @@ fn a_no_allowance_rejection_forgets_the_rejected_key() {
 }
 
 #[test]
+fn a_no_allowance_rejection_that_clears_on_retry_keeps_the_key() {
+    let (submitted, signing_host) = submit_answered(
+        vec![rejected("noAllowance"), r#"{"status":"new"}"#.to_string()],
+        secret_key().public_key,
+    );
+
+    assert_eq!(
+        (submitted.is_ok(), remembered(&signing_host, PRODUCT_ID, PERIOD)),
+        (true, Some(SECRET)),
+        "credit that is only late to reach the store must not cost the product its key"
+    );
+}
+
+#[test]
 fn a_no_allowance_rejection_for_another_signer_keeps_the_key() {
-    let signing_host = submit_rejected("noAllowance", [0x11; 32]);
+    let signing_host = submit_rejected("noAllowance", SUBMIT_ATTEMPTS, [0x11; 32]);
 
     assert_eq!(
         remembered(&signing_host, PRODUCT_ID, PERIOD),
@@ -303,7 +336,7 @@ fn a_no_allowance_rejection_for_another_signer_keeps_the_key() {
 
 #[test]
 fn another_rejection_keeps_the_key() {
-    let signing_host = submit_rejected("badProof", secret_key().public_key);
+    let signing_host = submit_rejected("badProof", 1, secret_key().public_key);
 
     assert_eq!(
         remembered(&signing_host, PRODUCT_ID, PERIOD),
