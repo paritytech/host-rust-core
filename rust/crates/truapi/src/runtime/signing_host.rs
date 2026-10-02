@@ -366,9 +366,7 @@ impl SigningHost {
         policy: OnExistingAllowancePolicy,
     ) -> Result<StatementStoreAllowanceKey, sso_responder::AllowanceAllocationError> {
         let (_, activation_generation) = self.require_current_session(session)?;
-        let period =
-            statement_allowance::slot::current_period(sso_responder::current_unix_secs()?);
-        let secret = sso_responder::allocate_statement_store_allowance(
+        let allocation = sso_responder::allocate_statement_store_allowance(
             &self.services,
             self,
             session,
@@ -376,14 +374,14 @@ impl SigningHost {
             policy,
         )
         .await?;
-        let key = StatementStoreAllowanceKey::from_secret_bytes(secret)?;
+        let key = StatementStoreAllowanceKey::from_secret_bytes(allocation.secret)?;
         self.local_grants
             .lock()
             .expect("local AutoSigning grant mutex poisoned")
             .remember_statement_allowance_key(
                 activation_generation,
                 product_id.to_string(),
-                period,
+                allocation.period,
                 key.clone(),
             )?;
         Ok(key)

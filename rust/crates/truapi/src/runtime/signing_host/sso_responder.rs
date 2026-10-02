@@ -933,13 +933,21 @@ fn response_cli_summary(
     summary
 }
 
+/// A product's statement-store allowance key, and the period it holds a slot in.
+pub struct StatementStoreAllocation {
+    /// sr25519 secret of the product's allowance account.
+    pub secret: Vec<u8>,
+    /// Allowance period the slot was found or claimed in.
+    pub period: u32,
+}
+
 pub async fn allocate_statement_store_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
     session: &AuthoritySession,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
+) -> Result<StatementStoreAllocation, AllowanceAllocationError> {
     use super::allowance_renewal::{self, StatementRenewalTarget};
     use crate::runtime::statement_allowance::{
         self, PooledRegistrationParams, allocated_in, find_including_rings,
@@ -956,7 +964,10 @@ pub async fn allocate_statement_store_allowance(
     // signs is accepted by a real statement store.
     #[cfg(feature = "test-host")]
     if signing_host.grants_allowances_unchecked() {
-        return Ok(allowance.secret.to_bytes().to_vec());
+        return Ok(StatementStoreAllocation {
+            secret: allowance.secret.to_bytes().to_vec(),
+            period: statement_allowance::slot::current_period(current_unix_secs()?),
+        });
     }
     let target = allowance.public.to_bytes();
     let candidates = signing_host.reserved_person_collection_candidates(session)?;
@@ -998,7 +1009,10 @@ pub async fn allocate_statement_store_allowance(
             "statement-store allowance already allocated"
         );
         signing_host.require_current_session(session)?;
-        return Ok(allowance.secret.to_bytes().to_vec());
+        return Ok(StatementStoreAllocation {
+            secret: allowance.secret.to_bytes().to_vec(),
+            period,
+        });
     }
 
     // Every ring back to index 0, because a membership that stopped being
@@ -1066,7 +1080,10 @@ pub async fn allocate_statement_store_allowance(
         warn!(%product_id, %reason, "failed to record statement-store renewal target");
     }
     signing_host.require_current_session(session)?;
-    Ok(allowance.secret.to_bytes().to_vec())
+    Ok(StatementStoreAllocation {
+        secret: allowance.secret.to_bytes().to_vec(),
+        period,
+    })
 }
 
 pub async fn allocate_bulletin_allowance(
@@ -1476,7 +1493,7 @@ mod tests {
         // wait on a chain read the stub deliberately does not answer — an
         // unbounded test would hang instead of reporting. The bound is generous
         // because it is catching a hang, not asserting latency.
-        let secret = futures::executor::block_on(async {
+        let allocation = futures::executor::block_on(async {
             let session = signing_host.current_session().unwrap();
             futures::select! {
                 result = allocate_statement_store_allowance(
@@ -1494,7 +1511,7 @@ mod tests {
         })
         .expect("an existing allowance is returned");
 
-        assert_eq!(secret, allowance.secret.to_bytes().to_vec());
+        assert_eq!(allocation.secret, allowance.secret.to_bytes().to_vec());
 
         let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
         let methods: Vec<String> = sent

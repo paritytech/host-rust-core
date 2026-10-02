@@ -158,9 +158,9 @@ fn a_second_proof_in_the_same_session_sends_nothing_to_the_chain() {
     let second = allowance_key(&signing_host);
 
     assert_eq!(
-        (second.public_key, sent_rpc_count(&platform)),
-        (first.public_key, sent_after_first),
-        "a proof after the first went back to the chain"
+        (sent_after_first > 0, second.public_key, sent_rpc_count(&platform)),
+        (true, first.public_key, sent_after_first),
+        "the first proof must reach the chain, and a proof after it must not"
     );
 }
 

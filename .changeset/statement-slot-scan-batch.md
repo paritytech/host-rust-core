@@ -1,4 +1,5 @@
 ---
+"@parity/truapi": patch
 "@parity/truapi-host": patch
 ---
 
