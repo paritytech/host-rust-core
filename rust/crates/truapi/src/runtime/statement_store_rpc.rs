@@ -24,8 +24,12 @@ use crate::host_logic::statement_store::{
 use crate::host_rpc_client::HostRpcClient;
 use crate::subscription::Spawner;
 
-const SSO_NO_ALLOWANCE_RETRY_ATTEMPTS: usize = 5;
-const SSO_NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_secs(1);
+/// One attempt plus ten retries, 2 s apart, matching the native iOS and Android hosts.
+const SSO_NO_ALLOWANCE_RETRY_ATTEMPTS: usize = 11;
+#[cfg(not(test))]
+const SSO_NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const SSO_NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_millis(1);
 
 /// Error opening a statement-store RPC client over the host platform.
 #[derive(Debug, Error)]
@@ -222,6 +226,11 @@ pub async fn submit_sso(
     unreachable!("the bounded SSO submit loop always returns")
 }
 
+/// Whether a [`submit`] failure is a `noAllowance` rejection.
+pub fn is_no_allowance_rejection(reason: &str) -> bool {
+    reason.contains("noAllowance")
+}
+
 /// Statement-store topic filter encoded as JSON-RPC params.
 pub fn filter(kind: TopicFilterKind, topics: &[[u8; 32]]) -> Value {
     let topics = topics.iter().map(hex_topic).collect::<Vec<_>>();
@@ -237,5 +246,20 @@ pub fn rpc_error_message(error: subxt_rpcs::Error) -> String {
     match error {
         subxt_rpcs::Error::User(error) => error.message,
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_no_allowance_rejection;
+
+    #[test]
+    fn identifies_no_allowance_submit_rejections() {
+        assert!(is_no_allowance_rejection(
+            r#"statement_submit not accepted: {"reason":"noAllowance","status":"rejected"}"#
+        ));
+        assert!(!is_no_allowance_rejection(
+            r#"statement_submit not accepted: {"reason":"badProof","status":"rejected"}"#
+        ));
     }
 }

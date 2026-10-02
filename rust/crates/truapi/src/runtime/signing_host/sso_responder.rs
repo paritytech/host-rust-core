@@ -940,13 +940,21 @@ fn response_cli_summary(
     summary
 }
 
+/// A product's statement-store allowance key, and the period it holds a slot in.
+pub struct StatementStoreAllocation {
+    /// sr25519 secret of the product's allowance account.
+    pub secret: Vec<u8>,
+    /// Allowance period the slot was found or claimed in.
+    pub period: u32,
+}
+
 pub async fn allocate_statement_store_allowance(
     services: &RuntimeServices,
     signing_host: &SigningHost,
     session: &AuthoritySession,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
+) -> Result<StatementStoreAllocation, AllowanceAllocationError> {
     #[cfg(any(test, not(target_arch = "wasm32")))]
     use super::allowance_renewal::{self, StatementRenewalTarget};
 
@@ -960,9 +968,12 @@ pub async fn allocate_statement_store_allowance(
     // accepted by a real statement store.
     #[cfg(feature = "test-host")]
     if signing_host.grants_allowances_unchecked() {
-        return Ok(allowance.secret.to_bytes().to_vec());
+        return Ok(StatementStoreAllocation {
+            secret: allowance.secret.to_bytes().to_vec(),
+            period: crate::runtime::statement_allowance::slot::current_period(current_unix_secs()?),
+        });
     }
-    register_statement_store_target(
+    let period = register_statement_store_target(
         services,
         signing_host,
         session,
@@ -983,7 +994,10 @@ pub async fn allocate_statement_store_allowance(
         warn!(%product_id, %reason, "failed to record statement-store renewal target");
     }
     signing_host.require_current_session(session)?;
-    Ok(allowance.secret.to_bytes().to_vec())
+    Ok(StatementStoreAllocation {
+        secret: allowance.secret.to_bytes().to_vec(),
+        period,
+    })
 }
 
 pub(super) async fn allocate_product_statement_store_allowance(
@@ -1008,6 +1022,7 @@ pub(super) async fn allocate_product_statement_store_allowance(
         .to_bytes();
     register_statement_store_target(services, signing_host, session, product_id, target, policy)
         .await
+        .map(|_| ())
 }
 
 async fn register_statement_store_target(
@@ -1017,7 +1032,7 @@ async fn register_statement_store_target(
     product_id: &str,
     target: [u8; 32],
     policy: OnExistingAllowancePolicy,
-) -> Result<(), AllowanceAllocationError> {
+) -> Result<u32, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
         self, PooledRegistrationParams, allocated_in, find_including_rings,
         register_statement_account_pooled, scan_collections,
@@ -1114,7 +1129,7 @@ async fn register_statement_store_target(
         }
     }
     signing_host.require_current_session(session)?;
-    Ok(())
+    Ok(period)
 }
 
 pub async fn allocate_bulletin_allowance(
@@ -1454,7 +1469,10 @@ mod tests {
     fn repeated_implicit_provisioning_reuses_existing_allowance_without_submission() {
         use futures::FutureExt;
 
-        use crate::host_logic::product_account::derive_sr25519_hard_path;
+        use crate::host_logic::product_account::{
+            derive_full_person_ring_vrf_entropy, derive_sr25519_hard_path,
+        };
+        use crate::runtime::statement_allowance::slot;
 
         let product_id = "myapp.dot";
         let allowance =
@@ -1463,6 +1481,12 @@ mod tests {
         // The scan reads slot 0 first; answering it with an entry naming the
         // allowance account is the "already allocated" case.
         let slot_entry = (allowance.public.to_bytes(), 0u32, 0u64).encode();
+        let people_row = slot::testing::slot_row(
+            derive_full_person_ring_vrf_entropy(&ENTROPY, NETWORK_SUFFIX),
+            NETWORK_SUFFIX.as_bytes(),
+            slot::current_period(current_unix_secs().unwrap()),
+            &[Some(format!(r#""0x{}""#, hex::encode(&slot_entry)))],
+        );
 
         // Keyed by method, not by request order: this path decodes ~450 KiB of
         // metadata between two requests, which outruns the ordered script's
@@ -1492,14 +1516,26 @@ mod tests {
                         hex::encode(Ok::<Vec<u8>, ()>(20u32.encode()).encode()),
                     ),
                 ),
+                (
+                    "RuntimeViewFunction_execute_view_function",
+                    format!(
+                        r#""0x{}""#,
+                        hex::encode(Ok::<Vec<u8>, ()>(10u32.encode()).encode()),
+                    ),
+                ),
                 // The network suffix, read once before the scan.
                 (
                     "state_getStorage",
                     format!(r#""0x{}""#, hex::encode(b"paseo".to_vec().encode())),
                 ),
                 (
-                    "state_getStorage",
-                    format!(r#""0x{}""#, hex::encode(&slot_entry)),
+                    "state_queryStorageAt",
+                    people_row,
+                ),
+                // The LitePeople row, read alongside People's, is empty.
+                (
+                    "state_queryStorageAt",
+                    r#"[{"block":"0xb10c","changes":[]}]"#.to_string(),
                 ),
                 (
                     "state_getStorage",
