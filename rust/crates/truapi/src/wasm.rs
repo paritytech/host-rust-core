@@ -1212,6 +1212,22 @@ impl WasmSigningHostRuntime {
         self.runtime.set_grant_allowances_unchecked(granted);
     }
 
+    /// The product's hard-subtree public key, derived from the active session
+    /// root, or `undefined` while no session is active.
+    ///
+    /// Paired with `deriveProductAccountPublicKey` and `productAccountAddress`
+    /// this gives a host the product's address without asking the product.
+    #[wasm_bindgen(js_name = productSubtreePublicKey)]
+    pub fn product_subtree_public_key(
+        &self,
+        product_id: String,
+    ) -> Result<Option<Vec<u8>>, JsValue> {
+        self.runtime
+            .product_subtree_public_key(&product_id)
+            .map(|key| key.map(|key| key.to_vec()))
+            .map_err(generic_error_to_js)
+    }
+
     /// Build a shared signing runtime from host callbacks and host config.
     #[wasm_bindgen(constructor)]
     pub fn new(
@@ -1307,6 +1323,25 @@ impl WasmSigningHostRuntime {
     pub fn release_worker(&self, product_id: String) {
         self.runtime.worker_ledger().release(&product_id);
     }
+}
+
+/// Derive a product's hard-subtree public key from a session's root entropy.
+///
+/// Pure: no runtime and no session, so a test harness can work out the address
+/// a product will be given before it starts a host. The entropy is the same 32
+/// bytes `activateLocalSession` takes.
+#[wasm_bindgen(js_name = deriveProductSubtreePublicKey)]
+pub fn derive_product_subtree_public_key(
+    root_entropy: Vec<u8>,
+    product_id: String,
+) -> Result<Vec<u8>, JsValue> {
+    let root = crate::host_logic::product_account::derive_root_keypair_from_entropy(&root_entropy)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let product_id = crate::platform::normalize_product_identifier(&product_id)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    crate::host_logic::product_account::derive_product_subtree_keypair(&root, &product_id)
+        .map(|keypair| keypair.public.to_bytes().to_vec())
+        .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 /// Soft-derive a product account public key from a product's hard-subtree key

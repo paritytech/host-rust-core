@@ -162,12 +162,6 @@ let dependencyConfigs: [DependencyConfig] = [
         url: "https://github.com/pointfreeco/swift-custom-dump",
         version: .exact("1.4.1"),
         products: ["CustomDump"]
-    ),
-    .init(
-        name: "sentry-cocoa",
-        url: "https://github.com/getsentry/sentry-cocoa",
-        version: .upToNextMajor("8.0.0"),
-        products: ["Sentry"]
     )
 ]
 
