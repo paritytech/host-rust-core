@@ -1212,6 +1212,7 @@ impl LocaleHost for CliPlatform {
         Box::pin(stream::once(async {
             Ok(api::HostLocaleSubscribeItem {
                 language_tag: "en".to_string(),
+                time_zone: None,
             })
         }))
     }

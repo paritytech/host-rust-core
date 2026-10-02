@@ -199,6 +199,10 @@ public protocol HostBridge: NativeChatFilesHost {
     /// tag. Hosts with no in-app language picker report the system language.
     func currentLocale() throws -> HostLocaleSubscribeItem
 
+    /// Format timestamps using the requested language and time zone.
+    func localizeTimestamps(request: HostLocaleLocalizeTimestampsRequest) async throws
+        -> HostLocaleLocalizeTimestampsResponse
+
     /// Answer a feature-support query. Invoked on the dispatcher thread; must
     /// return promptly.
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool
@@ -360,8 +364,50 @@ public extension HostBridge {
     }
     func currentLocale() throws -> HostLocaleSubscribeItem {
         HostLocaleSubscribeItem(
-            languageTag: Locale.current.language.languageCode?.identifier ?? "en"
+            languageTag: Locale.current.identifier(.bcp47),
+            timeZone: TimeZone.current.identifier
         )
+    }
+    func localizeTimestamps(request: HostLocaleLocalizeTimestampsRequest) async throws
+        -> HostLocaleLocalizeTimestampsResponse {
+        guard !request.languageTag.isEmpty,
+              let zone = TimeZone(identifier: request.timeZone),
+              request.timestampsMs.count <= 128,
+              request.timestampsMs.allSatisfy({ $0 <= 253_402_300_799_999 }) else {
+            throw HostRejection.Rejected(reason: "Invalid timestamp localization request")
+        }
+        let locale = Locale(identifier: request.languageTag)
+        let key = DateFormatter()
+        key.locale = Locale(identifier: "en_US_POSIX")
+        key.calendar = Calendar(identifier: .gregorian)
+        key.timeZone = zone
+        key.dateFormat = "yyyy-MM-dd"
+        let time = DateFormatter()
+        time.locale = locale
+        time.timeZone = zone
+        time.timeStyle = .short
+        let date = DateFormatter()
+        date.locale = locale
+        date.timeZone = zone
+        date.dateStyle = .long
+        let detail = DateFormatter()
+        detail.locale = locale
+        detail.timeZone = zone
+        detail.dateStyle = .full
+        detail.timeStyle = .long
+        return try HostLocaleLocalizeTimestampsResponse(timestamps: request.timestampsMs.map {
+            let instant = Date(timeIntervalSince1970: Double($0) / 1_000)
+            let localDate = key.string(from: instant)
+            guard localDate.count == 10 else {
+                throw HostRejection.Rejected(reason: "Local date is outside the four-digit year range")
+            }
+            return HostLocaleLocalizedTimestamp(
+                localDate: localDate,
+                time: time.string(from: instant),
+                date: date.string(from: instant),
+                dateTime: detail.string(from: instant)
+            )
+        })
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func workerDemandChanged(productId: String, transition: WorkerTransition) {}
@@ -729,6 +775,13 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func currentLocale() throws -> HostLocaleSubscribeItem {
         try withHostRejection {
             try bridge.currentLocale()
+        }
+    }
+
+    func localizeTimestamps(request: HostLocaleLocalizeTimestampsRequest) async throws
+        -> HostLocaleLocalizeTimestampsResponse {
+        try await withHostRejection {
+            try await bridge.localizeTimestamps(request: request)
         }
     }
 
@@ -1167,6 +1220,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     private let callbackRetainer: HostCallbacks
     private let chatRetainer: NativeChatCallbacks?
     private let pocketRetainer: NativePocketCallbacks?
+    private let localeObservers: [NSObjectProtocol]
 
     fileprivate init(
         inner: NativeProductExecution,
@@ -1178,9 +1232,19 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         self.callbackRetainer = callbackRetainer
         self.chatRetainer = chatRetainer
         self.pocketRetainer = pocketRetainer
+        localeObservers = [
+            NSLocale.currentLocaleDidChangeNotification,
+            NSNotification.Name.NSSystemTimeZoneDidChange,
+        ].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { _ in
+                guard let locale = try? callbackRetainer.currentLocale() else { return }
+                inner.notifyLocaleChanged(locale: locale)
+            }
+        }
     }
 
     deinit {
+        localeObservers.forEach(NotificationCenter.default.removeObserver)
         inner.shutdown()
     }
 
@@ -1193,6 +1257,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     }
 
     public func close() {
+        localeObservers.forEach(NotificationCenter.default.removeObserver)
         inner.shutdown()
     }
 

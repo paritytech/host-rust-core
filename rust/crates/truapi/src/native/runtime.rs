@@ -802,7 +802,7 @@ impl NativeProductExecution {
     }
 
     /// Push a host locale replacement to this execution's subscriptions.
-    pub fn notify_locale_changed(&self, locale: v01::HostLocaleSubscribeItem) {
+    pub fn notify_locale_changed(&self, locale: crate::latest::HostLocaleSubscribeItem) {
         self.events.notify_locale_changed(locale);
     }
 
