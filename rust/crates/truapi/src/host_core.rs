@@ -294,7 +294,7 @@ impl PairingHostRuntime {
     /// Call whenever a contact is removed or blocked.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.notify_contacts_changed"))]
     pub fn notify_contacts_changed(&self) {
-        self.services.contact_handles.clear();
+        self.services.invalidate_contacts();
         self.services
             .contact_avatars
             .contacts_changed(&self.services.spawner);
@@ -750,7 +750,7 @@ impl SigningHostRuntime {
     /// Call whenever a contact is removed or blocked.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.notify_contacts_changed"))]
     pub fn notify_contacts_changed(&self) {
-        self.services.contact_handles.clear();
+        self.services.invalidate_contacts();
         self.services
             .contact_avatars
             .contacts_changed(&self.services.spawner);
@@ -1648,7 +1648,7 @@ impl ProductRuntime {
     /// Embedders holding the host runtime may notify it instead.
     pub fn notify_contacts_changed(&self) {
         let services = self.admin.product_runtime.services();
-        services.contact_handles.clear();
+        services.invalidate_contacts();
         services.contact_avatars.contacts_changed(&services.spawner);
     }
 
@@ -1923,6 +1923,7 @@ impl ProductRuntime {
         self.admin.product_runtime.release_contact_avatars();
         #[cfg(not(target_arch = "wasm32"))]
         self.admin.product_runtime.close_jam_peer_transport();
+        self.admin.product_runtime.release_contact_labels();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
@@ -3686,9 +3687,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_core_database_is_installed_once_and_reports_when_missing() {
+        use crate::platform::{HostInfo, PlatformInfo, SigningHostConfig};
         use crate::store::{Db, DbConfig, DbError, DbLocation};
         use futures::executor::block_on;
-        use crate::platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
         let config = SigningHostConfig::new(
             HostInfo {
@@ -3721,7 +3722,10 @@ mod tests {
         assert!(runtime.set_core_db(installed));
         assert!(!runtime.set_core_db(other));
 
-        let db = runtime.services.core_db().expect("installed database is served");
+        let db = runtime
+            .services
+            .core_db()
+            .expect("installed database is served");
         let answer: i64 =
             block_on(db.write(|tx| Ok(tx.query_row("SELECT 42", [], |row| row.get(0))?)))
                 .expect("installed database serves writes");

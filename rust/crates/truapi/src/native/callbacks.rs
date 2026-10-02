@@ -8,12 +8,12 @@ use truapi::v01;
 use crate::PairedSsoPeer;
 use crate::host_logic::worker::WorkerTransition;
 
+#[cfg(doc)]
+use super::NativeTrUApiHostRuntime;
 use super::config::ProductExecutionConfig;
 use super::errors::HostRejection;
 #[cfg(doc)]
 use crate::platform::CoreStorageKey;
-#[cfg(doc)]
-use super::NativeTrUApiHostRuntime;
 
 /// Host-private native Coinage response. It may contain bearer memo material.
 #[derive(Clone, uniffi::Record)]
@@ -388,4 +388,18 @@ pub trait NativeContactsCallbacks: Send + Sync {
         &self,
         product_id: String,
     ) -> Result<crate::platform::HostContactPick, HostRejection>;
+
+    /// Edit the complete selected audience in host-owned UI.
+    async fn pick_contacts(
+        &self,
+        product_id: String,
+        selection: crate::platform::ContactSelection,
+    ) -> Result<crate::platform::HostContactsPick, HostRejection>;
+
+    /// Replace the names drawn over a product surface without returning names.
+    async fn place_contact_labels(
+        &self,
+        product_id: String,
+        placed: crate::platform::PlacedContactLabels,
+    ) -> Result<(), crate::latest::HostContactsPlaceLabelsError>;
 }

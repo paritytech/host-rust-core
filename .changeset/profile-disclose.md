@@ -59,3 +59,12 @@ and refresh remembered avatars. App-specific references take precedence over per
 all affected wallet placements.
 Personal revisions also advance the host-rendered freshness timestamp when a newer share arrives through an actor
 whose clock is older, preventing a same-reference update from leaving stale cached profile contents.
+
+Add `contacts.pickMany` with preselected opaque handles and explicit picked, dismissed, and no-contacts outcomes.
+Add `contacts.placeLabels` so Apps can reserve host-rendered contact names without receiving those names or profile
+availability. The core validates bounded placements and wallet-scoped handles, refreshes labels after Contacts changes,
+and releases them when the connection closes. Hosts without a label surface return `Unsupported`; Worker products
+cannot place labels. Clearing a session serializes removal of its remembered contact labels with pending refreshes.
+Host-side interruption returns a Contacts domain error, reserving wire `Cancelled` for a peer's explicit cancellation.
+Failed directory lookups preserve the prior label surface and report a retryable error instead of clearing it as if
+the contacts were missing.

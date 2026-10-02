@@ -344,15 +344,31 @@ A running fixture answers the same address through
 `testHost.getProductAccountAddress(productId?, index?)`, which reads the session
 the host actually holds and so returns `undefined` while it is signed out.
 
-`contacts` needs both callbacks, or the group counts as absent. `pickContact`
-draws the picker and returns the chosen account, or `NoContacts` when there is
-nobody to show. `contacts({ handleKey, handles })` resolves the handles a
-transaction names: one entry per handle, in order, the account or `undefined`.
+The optional `contacts` group resolves handles through `contacts({ handleKey, handles })`:
+one entry per handle, in order, the account or `undefined`. `pickContact` draws a single
+picker and returns the chosen account. `pickContacts(product, { selected })` edits a
+complete selection of at most 256 resolved accounts, returning `Picked { accounts }`,
+`Dismissed`, or `NoContacts`. A confirmed empty array is `Picked`, not dismissal.
+Missing picker callbacks answer `Unsupported`.
 A contact's handle is BLAKE2b-256 keyed with `handleKey` over its 32-byte
 account (`blake2b(account, { key: handleKey, dkLen: 32 })` in `@noble/hashes`).
 The core re-checks every account returned. It caches what it resolves, so call
 `notifyContactsChanged()` whenever a contact is removed or blocked. Omit blocked
 contacts from both. See the contacts RFC (`docs/rfcs/contacts-api.md`).
+
+`placeContactLabels(product, placed)` receives surface dimensions and
+`labels: [{ slot, account, rect, clip }]`. Draw names from the host's contact directory,
+using an account fallback when no username exists. Profile-photo absence must not
+hide a name. Keep this UI host-owned: return no label or per-slot availability.
+Return `true` when the host supports label placement, even when no contact resolves.
+Return `false` when that UI is unsupported; the adapter supplies this answer when
+the callback is omitted. This capability acknowledgment never reports individual
+contact availability. Background Workers are denied label placement.
+Empty placements clear the previous names and cancel queued refreshes. Clear names
+and cancel pending work on frame load, navigation or disconnect. On same-wallet
+directory invalidation, clear stale names and refresh the latest live placement
+without waiting for the product to resend it. The core serializes placements per
+connection and rejects selections from changed sessions.
 
 Browser signing hosts can back this UI with `runtime.getNativeChatContacts()`. It returns
 `{ walletPublicKey, genesisHash, contacts: [{ peerIdentity, username? }] }` to trusted host code only.
