@@ -382,6 +382,7 @@ jobs:
             gh release create "${POINTER}" \
               --title "Android nightly (latest build)" \
               --notes "Created by the Android nightly." \
+              --target "${GITHUB_SHA}" \
               --prerelease --latest=false
           fi
           gh release upload "${POINTER}" app-gp-nightly.apk app-vanilla-nightly.apk --clobber
@@ -404,13 +405,17 @@ jobs:
           set -euo pipefail
           base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/nightly-android"
           for asset in app-gp-nightly.apk app-vanilla-nightly.apk; do
-            expected="$(wc -c < "${asset}" | tr -d ' ')"
-            served="$(curl -fsSL "${base}/${asset}" | wc -c | tr -d ' ')"
-            if [ "${served}" != "${expected}" ]; then
-              echo "::error::${base}/${asset} serves ${served} bytes, expected ${expected}"
+            expected="$(sha256sum "${asset}" | cut -d' ' -f1)"
+            if ! curl -fsSL "${base}/${asset}" -o "${RUNNER_TEMP}/${asset}"; then
+              echo "::error::${base}/${asset} could not be downloaded"
               exit 1
             fi
-            echo "${base}/${asset} serves tonight's ${asset}, ${served} bytes"
+            served="$(sha256sum "${RUNNER_TEMP}/${asset}" | cut -d' ' -f1)"
+            if [ "${served}" != "${expected}" ]; then
+              echo "::error::${base}/${asset} serves ${served}, expected tonight's ${expected}"
+              exit 1
+            fi
+            echo "${base}/${asset} serves tonight's ${asset} (${served})"
           done
 
 
