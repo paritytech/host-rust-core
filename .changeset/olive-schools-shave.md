@@ -10,6 +10,10 @@ the statement-proof and preimage paths ask for without requesting an
 allocation. A changed permission answer reaches the core, and product storage
 is readable under the name `@parity/host-api-test-sdk` gives it.
 
+`ProductStatementStoreAllowance` withholds product-account statement
+allowances at every derivation index without withholding the separate
+`StatementStoreAllowance` resource.
+
 Surface a migrating suite has to match:
 
 - `PermissionLogEntry` carries `decision` and `timestamp` as required fields,
