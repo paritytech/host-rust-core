@@ -7,6 +7,7 @@ import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageId
 import io.paritytech.polkadotapp.feature_products_api.model.JsUiEvent
 import io.paritytech.polkadotapp.feature_products_api.model.JsWidget
+import io.paritytech.polkadotapp.feature_products_api.model.ProductChatIdParameter
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.ProductChatMessaging
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.renderer.toJsWidget
@@ -14,22 +15,26 @@ import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWork
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -41,7 +46,6 @@ import uniffi.truapi.HostRendererActionSubscribeItem
 import uniffi.truapi.ProductRendererRenderRequest
 import uniffi.truapi.RenderContext
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
 
 class TrUAPIChatWorker(
     private val productId: ProductId,
@@ -68,12 +72,13 @@ class TrUAPIChatWorker(
         }
     }
 
-    override suspend fun onUserMessage(roomId: String?, text: String): Result<Unit> {
+    override suspend fun onUserMessage(roomId: ProductChatIdParameter?, text: String): Result<Unit> {
+        if (roomId == null) return roomlessFailure("message")
         val outcome = runCatching {
             val execution = awaitRunningExecution()
             execution.publishChatAction(
                 HostChatActionSubscribeItem(
-                    roomId = roomId.orDefaultChat(),
+                    roomId = roomId.value,
                     peer = NATIVE_PEER,
                     payload = ChatActionPayload.MessagePosted(ChatMessageContent.Text(text)),
                 ),
@@ -85,30 +90,31 @@ class TrUAPIChatWorker(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun renderMessage(
-        roomId: String?,
+        roomId: ProductChatIdParameter?,
         messageId: ChatMessageId,
         messageType: String,
         messageData: DataByteArray,
     ): Flow<Result<JsWidget>> {
+        if (roomId == null) return flowOf(roomlessFailure("render"))
         return channelFlow {
             val outcome = runCatching {
                 workers.executionState(productId)
-                    .map { state ->
-                        if (state is WorkerExecutionState.Failed) throw ExecutionUnavailableException(state.reason)
-                        (state as? WorkerExecutionState.Running)?.execution
-                    }
                     .distinctUntilChanged()
-                    .flatMapLatest { execution ->
-                        if (execution == null) {
-                            emptyFlow()
-                        } else {
-                            reopeningChatRender(
-                                execution,
-                                roomId.orDefaultChat(),
-                                messageId,
-                                messageType,
-                                messageData.value,
-                            )
+                    .flatMapLatest { state ->
+                        when (state) {
+                            // Reported, not thrown: a later execution must still be able to draw.
+                            is WorkerExecutionState.Failed ->
+                                flowOf(Result.failure(ExecutionUnavailableException(state.reason)))
+                            null -> emptyFlow()
+                            is WorkerExecutionState.Running -> {
+                                reopeningChatRender(
+                                    state.execution,
+                                    roomId.value,
+                                    messageId,
+                                    messageType,
+                                    messageData.value,
+                                )
+                            }
                         }
                     }
                     .collect { send(it) }
@@ -117,17 +123,21 @@ class TrUAPIChatWorker(
                 if (failure is CancellationException) throw failure
                 trySend(Result.failure(failure))
             }
-        }.buffer(Channel.UNLIMITED)
+        }.conflate()
     }
 
     override fun dispatchEvent(event: JsUiEvent) {
-        val roomId = event.roomId.orDefaultChat()
+        val roomId = event.roomId
+        if (roomId == null) {
+            Timber.w("TrUAPI chat dispatchEvent for %s/%s dropped: no room id", productId.value, event.messageId)
+            return
+        }
         val execution = workers.currentExecution(productId)
         if (execution == null) {
             Timber.w("TrUAPI chat dispatchEvent for %s/%s dropped: no running execution", productId.value, event.messageId)
             return
         }
-        val context = RenderContext.ChatMessage(roomId = roomId, messageId = event.messageId, messageType = event.messageType)
+        val context = RenderContext.ChatMessage(roomId = roomId.value, messageId = event.messageId, messageType = event.messageType)
         runCatching {
             execution.publishRendererAction(
                 HostRendererActionSubscribeItem(context, event.actionId, event.eventType.toActionPayload()),
@@ -135,7 +145,11 @@ class TrUAPIChatWorker(
         }.logFailure("truapi.renderer.action '${event.actionId}' for ${productId.value}")
     }
 
-    private fun String?.orDefaultChat(): String = this ?: ""
+    private fun <T> roomlessFailure(what: String): Result<T> {
+        val reason = "TrUAPI chat $what for ${productId.value} carries no room id"
+        Timber.w(reason)
+        return Result.failure(IllegalArgumentException(reason))
+    }
 
     private suspend fun runningExecution(): TrUAPIProductExecution =
         when (val state = workers.executionState(productId).filterNotNull().first()) {
@@ -144,9 +158,9 @@ class TrUAPIChatWorker(
         }
 
     private suspend fun awaitRunningExecution(): TrUAPIProductExecution =
-        withTimeoutOrNull(EXECUTION_WAIT_TIMEOUT) { runningExecution() }
+        withTimeoutOrNull(TrUAPIWorkerSupervisor.EXECUTION_WAIT_TIMEOUT) { runningExecution() }
             ?: throw IllegalStateException(
-                "TrUAPI worker for ${productId.value} did not report a running execution within $EXECUTION_WAIT_TIMEOUT",
+                "TrUAPI worker for ${productId.value} did not report a running execution in time",
             )
 
     private fun reopeningChatRender(
@@ -155,51 +169,59 @@ class TrUAPIChatWorker(
         messageId: ChatMessageId,
         messageType: String,
         payload: ByteArray,
-    ): Flow<Result<JsWidget>> = flow {
+    ): Flow<Result<JsWidget>> {
         val context = RenderContext.ChatMessage(roomId = roomId, messageId = messageId, messageType = messageType)
         var everDrew = false
+        var drewThisAttempt = false
         var lastFailure: Throwable? = null
 
-        for (attempt in 0 until RENDER_ATTEMPTS) {
-            var drewThisAttempt = false
-            val outcome = runCatching {
+        // Wrapped, so a retry re-asks the execution for a render instead of re-collecting a spent one.
+        return flow {
+            emitAll(
                 execution.render(ProductRendererRenderRequest(context, payload))
-                    .retryWhileConnecting(CONNECT_ATTEMPTS, CONNECT_RETRY_DELAY)
-                    .collect { node ->
+                    .retryWhileConnecting()
+                    // Above the retry: a conversion failure is a stream failure, not a silent drop.
+                    .map { it.toJsWidget() }
+                    .onStart { drewThisAttempt = false }
+                    .onEach {
                         drewThisAttempt = true
                         everDrew = true
-                        val widget = node.toJsWidget()
-                        runCatching { emit(Result.success(widget)) }.onFailure { throw DownstreamEmitFailure(it) }
                     }
-            }
-
-            val failure = outcome.exceptionOrNull()
-            if (failure is DownstreamEmitFailure) throw failure.original
-            if (failure is CancellationException && !currentCoroutineContext().isActive) throw failure
-            if (failure == null && drewThisAttempt) break
-
-            if (failure != null) {
-                lastFailure = failure
-                Timber.w(failure, "TrUAPI chat render for %s/%s failed (attempt %d); reopening", productId.value, messageId, attempt + 1)
-            } else {
-                Timber.d("TrUAPI chat render for %s/%s ended without drawing (attempt %d); reopening", productId.value, messageId, attempt + 1)
-            }
-            if (attempt < RENDER_ATTEMPTS - 1) delay(REOPEN_DELAY)
-        }
-
-        if (!everDrew) {
-            emit(
-                Result.failure(
-                    IllegalStateException(
-                        "TrUAPI render for ${productId.value} message '$messageId' never drew after $RENDER_ATTEMPTS attempts",
-                        lastFailure,
-                    ),
-                ),
+                    .onCompletion { cause -> if (cause == null && !drewThisAttempt) throw StreamDrewNothing() },
             )
         }
+            .retryWhen { cause, attempt ->
+                if (cause is CancellationException) return@retryWhen false
+                if (cause !is StreamDrewNothing) lastFailure = cause
+                val reopening = attempt < RENDER_ATTEMPTS - 1
+                if (reopening) {
+                    if (cause is StreamDrewNothing) {
+                        Timber.d("TrUAPI chat render for %s/%s drew nothing (attempt %d); reopening", productId.value, messageId, attempt + 1)
+                    } else {
+                        Timber.w(cause, "TrUAPI chat render for %s/%s failed (attempt %d); reopening", productId.value, messageId, attempt + 1)
+                    }
+                    delay(REOPEN_DELAY)
+                }
+                reopening
+            }
+            .map { Result.success(it) }
+            .catch { cause ->
+                // The execution went away, not the render: end quietly and let the replacement draw.
+                if (cause is CancellationException) return@catch
+                if (!everDrew) {
+                    emit(
+                        Result.failure(
+                            IllegalStateException(
+                                "TrUAPI render for ${productId.value} message '$messageId' never drew after $RENDER_ATTEMPTS attempts",
+                                lastFailure ?: cause,
+                            ),
+                        ),
+                    )
+                }
+            }
     }
 
-    private class DownstreamEmitFailure(val original: Throwable) : Exception(original)
+    private class StreamDrewNothing : Exception("the render stream ended without drawing")
 
     private fun JsUiEvent.Type.toActionPayload(): ByteArray = when (this) {
         JsUiEvent.Type.ButtonClick -> ByteArray(0)
@@ -211,12 +233,7 @@ class TrUAPIChatWorker(
     private companion object {
         const val NATIVE_PEER = "native"
 
-        val EXECUTION_WAIT_TIMEOUT = TrUAPIWorkerSupervisor.READY_TIMEOUT + 30.seconds
-
         const val RENDER_ATTEMPTS = 3
         val REOPEN_DELAY = 500.milliseconds
-
-        const val CONNECT_ATTEMPTS = 40L
-        val CONNECT_RETRY_DELAY = 250.milliseconds
     }
 }

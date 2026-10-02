@@ -4,11 +4,12 @@
 
     <application>
 
-        <!-- Debug-only e2e hooks; exported so adb can broadcast to it. -->
+        <!-- Debug-only e2e hooks; exported for adb, DUMP keeps other apps out. -->
         <receiver
             android:name="io.paritytech.polkadotapp.app.debug.e2e.E2EHookReceiver"
             android:enabled="true"
             android:exported="true"
+            android:permission="android.permission.DUMP"
             tools:ignore="ExportedReceiver">
             <intent-filter>
                 <action android:name="io.paritytech.polkadotapp.debug.E2E" />

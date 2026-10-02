@@ -143,7 +143,11 @@ class TrUAPIWorkerSupervisor @Inject constructor(
                 chainDirectory.resolve(),
                 ignoredNavigation(),
                 ProductExecutionKind.WORKER,
-                chat = ProductChatHostBridge(productId, refCounter.get().chatMessaging(productId)),
+                chat = if (script.includesChat) {
+                    ProductChatHostBridge(productId, refCounter.get().chatMessaging(productId))
+                } else {
+                    null
+                },
             ) { bootstrap -> provider.addWebViewSetup(installBootstrap(bootstrap)) }
             .flatMap { execution ->
                 runCatching {
@@ -184,6 +188,9 @@ class TrUAPIWorkerSupervisor @Inject constructor(
     )
 
     companion object {
-        internal val READY_TIMEOUT = 60.seconds
+        // Generous: a cold WebView on a slow device takes a while to report ready.
+        private val READY_TIMEOUT = 60.seconds
+
+        val EXECUTION_WAIT_TIMEOUT = READY_TIMEOUT + 30.seconds
     }
 }

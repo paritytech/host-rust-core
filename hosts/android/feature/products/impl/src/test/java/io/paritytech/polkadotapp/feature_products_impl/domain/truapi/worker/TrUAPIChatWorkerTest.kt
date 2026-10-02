@@ -6,11 +6,12 @@ import io.paritytech.polkadotapp.common.domain.model.DataByteArray
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageId
 import io.paritytech.polkadotapp.feature_products_api.model.JsUiEvent
 import io.paritytech.polkadotapp.feature_products_api.model.JsWidget
+import io.paritytech.polkadotapp.feature_products_api.model.ProductChatIdParameter
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
+import io.paritytech.polkadotapp.feature_products_api.model.RoomParticipation
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.FakeChatMessaging
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.ProductChatMessaging
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatRoom
-import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.ROOM_HOST
 import io.paritytech.polkadotapp.test_shared.any
 import io.paritytech.polkadotapp.test_shared.argThat
 import io.paritytech.polkadotapp.test_shared.whenever
@@ -22,6 +23,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -54,7 +56,7 @@ import kotlin.time.Duration.Companion.milliseconds
 
 class TrUAPIChatWorkerTest {
     private val productId = ProductId.fromStoredValue("chat.dot")
-    private val roomId = "room-1"
+    private val roomId = ProductChatIdParameter("room-1")
     private val messageId: ChatMessageId = "msg-1"
     private val messageType = "custom.widget"
     private val messageData = DataByteArray.empty()
@@ -69,6 +71,7 @@ class TrUAPIChatWorkerTest {
     private fun runningWorkers(execution: TrUAPIProductExecution): TrUAPIWorkerSupervisor {
         val workers: TrUAPIWorkerSupervisor = mock()
         whenever(workers.executionState(productId)).thenReturn(flowOf(WorkerExecutionState.Running(execution)))
+        whenever(workers.currentExecution(productId)).thenReturn(execution)
         return workers
     }
 
@@ -84,7 +87,7 @@ class TrUAPIChatWorkerTest {
         var captured: ProductRendererRenderRequest? = null
         verify(execution, times(1)).render(argThat { captured = it; true })
         assertEquals(
-            RenderContext.ChatMessage(roomId = roomId, messageId = messageId, messageType = messageType),
+            RenderContext.ChatMessage(roomId = roomId.value, messageId = messageId, messageType = messageType),
             requireNotNull(captured).context,
         )
     }
@@ -170,6 +173,23 @@ class TrUAPIChatWorkerTest {
     }
 
     @Test
+    fun `a failure after drawing never becomes a visible error`() = runTest {
+        val execution: TrUAPIProductExecution = mock()
+        whenever(execution.render(any())).thenReturn(
+            flow {
+                emit(RendererNode.Nil)
+                throw IllegalStateException("boom")
+            },
+        )
+        val worker = worker(workers = runningWorkers(execution))
+
+        val results = worker.renderMessage(roomId, messageId, messageType, messageData).toList()
+
+        assertTrue("a node that drew must not be replaced by an error", results.all { it.isSuccess })
+        verify(execution, times(3)).render(any())
+    }
+
+    @Test
     fun `a NotConnected retry does not consume a render attempt`() = runTest {
         val execution: TrUAPIProductExecution = mock()
         var collected = 0
@@ -189,9 +209,43 @@ class TrUAPIChatWorkerTest {
     }
 
     @Test
+    fun `a failed execution reports the failure without ending the cell`() = runTest {
+        val replacement: TrUAPIProductExecution = mock()
+        whenever(replacement.render(any())).thenReturn(flowOf(RendererNode.Nil))
+        val states = MutableStateFlow<WorkerExecutionState?>(
+            WorkerExecutionState.Failed(IllegalStateException("boot failed")),
+        )
+        val workers: TrUAPIWorkerSupervisor = mock()
+        whenever(workers.executionState(productId)).thenReturn(states)
+        val worker = worker(workers = workers, scope = CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        val results = mutableListOf<Result<JsWidget>>()
+        val collector = launch {
+            worker.renderMessage(roomId, messageId, messageType, messageData).collect { results += it }
+        }
+        advanceUntilIdle()
+        assertTrue(results.single().isFailure)
+
+        states.value = WorkerExecutionState.Running(replacement)
+        advanceUntilIdle()
+
+        assertEquals(Result.success(JsWidget.Spacer()), results.last())
+        collector.cancel()
+    }
+
+    @Test
     fun `a disposed worker stops retrying instead of reopening`() = runTest {
         val execution: TrUAPIProductExecution = mock()
-        whenever(execution.render(any())).thenReturn(flow { awaitCancellation() })
+        var renderCancelled = false
+        whenever(execution.render(any())).thenReturn(
+            flow {
+                try {
+                    awaitCancellation()
+                } finally {
+                    renderCancelled = true
+                }
+            },
+        )
         val states = MutableStateFlow<WorkerExecutionState?>(WorkerExecutionState.Running(execution))
         val workers: TrUAPIWorkerSupervisor = mock()
         whenever(workers.executionState(productId)).thenReturn(states)
@@ -207,6 +261,7 @@ class TrUAPIChatWorkerTest {
         states.value = null
         advanceUntilIdle()
 
+        assertTrue("the render must be cancelled when its execution goes away", renderCancelled)
         assertTrue(results.isEmpty())
         verify(execution, times(1)).render(any())
 
@@ -251,10 +306,28 @@ class TrUAPIChatWorkerTest {
         states.value = WorkerExecutionState.Running(replacement)
         advanceUntilIdle()
 
-        assertEquals(Result.success(JsWidget.Spacer()), results.lastOrNull())
+        // The whole list, not lastOrNull(): a failure emitted here is a visible flash in the cell.
+        assertEquals(listOf(Result.success(JsWidget.Spacer())), results)
         verify(replacement, times(1)).render(any())
+        verify(dying, times(1)).render(any())
 
         collector.cancel()
+    }
+
+    @Test
+    fun `an exception from the collector propagates instead of reopening the render`() = runTest {
+        val execution: TrUAPIProductExecution = mock()
+        whenever(execution.render(any())).thenReturn(flowOf(RendererNode.Nil))
+        val worker = worker(workers = runningWorkers(execution))
+        val boom = IllegalStateException("the feed blew up")
+
+        val thrown = runCatching {
+            worker.renderMessage(roomId, messageId, messageType, messageData).collect { throw boom }
+        }.exceptionOrNull()
+
+        // kotlinx copies the exception for stack-trace recovery, so identity is not preserved.
+        assertEquals(boom.message, thrown?.message)
+        verify(execution, times(1)).render(any())
     }
 
     @Test
@@ -315,7 +388,7 @@ class TrUAPIChatWorkerTest {
 
         val captured = mutableListOf<HostRendererActionSubscribeItem>()
         verify(execution, times(2)).publishRendererAction(argThat { captured += it; true })
-        assertEquals(RenderContext.ChatMessage(roomId, messageId, messageType), captured[0].context)
+        assertEquals(RenderContext.ChatMessage(roomId.value, messageId, messageType), captured[0].context)
         assertEquals("onTap", captured[0].actionId)
         assertTrue(captured[0].payload.isEmpty())
         assertEquals("hi", captured[1].payload.toString(Charsets.UTF_8))
@@ -331,23 +404,77 @@ class TrUAPIChatWorkerTest {
         assertTrue(result.isSuccess)
         var captured: HostChatActionSubscribeItem? = null
         verify(execution).publishChatAction(argThat { captured = it; true })
-        val item = requireNotNull(captured)
-        assertEquals(roomId, item.roomId)
-        assertEquals("native", item.peer)
-        assertEquals(ChatActionPayload.MessagePosted(ChatMessageContent.Text("hello")), item.payload)
+        assertEquals(
+            HostChatActionSubscribeItem(roomId.value, "native", ChatActionPayload.MessagePosted(ChatMessageContent.Text("hello"))),
+            captured,
+        )
     }
 
     @Test
-    fun `a null room is the default chat and reaches the core as an empty room id`() = runTest {
+    fun `onUserMessage on a failed execution fails with the boot cause`() = runTest {
+        val cause = IllegalStateException("worker boot failed")
+        val workers: TrUAPIWorkerSupervisor = mock()
+        whenever(workers.executionState(productId)).thenReturn(flowOf(WorkerExecutionState.Failed(cause)))
+        val worker = worker(workers = workers)
+
+        val result = worker.onUserMessage(roomId, "hello")
+
+        assertSame(cause, result.exceptionOrNull()?.cause)
+    }
+
+    @Test
+    fun `onUserMessage gives up when no execution is ever reported`() = runTest {
+        val workers: TrUAPIWorkerSupervisor = mock()
+        whenever(workers.executionState(productId)).thenReturn(MutableStateFlow(null))
+        val worker = worker(workers = workers)
+
+        val result = worker.onUserMessage(roomId, "hello")
+
+        assertTrue(result.exceptionOrNull() is IllegalStateException)
+    }
+
+    @Test
+    fun `a publishChatAction failure is returned, not thrown`() = runTest {
+        val execution: TrUAPIProductExecution = mock()
+        val boom = ProductRuntimeException.Denied()
+        whenever(execution.publishChatAction(any())).thenThrow(boom)
+        val worker = worker(workers = runningWorkers(execution))
+
+        val result = worker.onUserMessage(roomId, "hello")
+
+        assertSame(boom, result.exceptionOrNull())
+    }
+
+    @Test
+    fun `a message with no room id is refused instead of reaching the core`() = runTest {
         val execution: TrUAPIProductExecution = mock()
         val worker = worker(workers = runningWorkers(execution))
 
         val result = worker.onUserMessage(null, "hello")
 
-        assertTrue(result.isSuccess)
-        var captured: HostChatActionSubscribeItem? = null
-        verify(execution).publishChatAction(argThat { captured = it; true })
-        assertEquals("", requireNotNull(captured).roomId)
+        assertTrue(result.exceptionOrNull() is IllegalArgumentException)
+        verify(execution, never()).publishChatAction(any())
+    }
+
+    @Test
+    fun `a render with no room id fails instead of waiting on the core`() = runTest {
+        val execution: TrUAPIProductExecution = mock()
+        val worker = worker(workers = runningWorkers(execution))
+
+        val result = worker.renderMessage(null, messageId, messageType, messageData).first()
+
+        assertTrue(result.exceptionOrNull() is IllegalArgumentException)
+        verify(execution, never()).render(any())
+    }
+
+    @Test
+    fun `an event with no room id is dropped instead of reaching the core`() = runTest {
+        val execution: TrUAPIProductExecution = mock()
+        val worker = worker(workers = runningWorkers(execution))
+
+        worker.dispatchEvent(JsUiEvent(messageId, messageType, "action", JsUiEvent.Type.ButtonClick, roomId = null))
+
+        verify(execution, never()).publishRendererAction(any())
     }
 
     @Test
@@ -384,13 +511,13 @@ class TrUAPIChatWorkerTest {
 
         states.value = WorkerExecutionState.Running(first)
         advanceUntilIdle()
-        rooms.emit(listOf(ProductChatRoom(roomId, ROOM_HOST)))
+        rooms.emit(listOf(ProductChatRoom(roomId.value, RoomParticipation.ROOM_HOST)))
         advanceUntilIdle()
         verify(first, times(1)).notifyChatRoomsChanged(any())
 
         states.value = WorkerExecutionState.Running(replacement)
         advanceUntilIdle()
-        rooms.emit(listOf(ProductChatRoom(roomId, ROOM_HOST)))
+        rooms.emit(listOf(ProductChatRoom(roomId.value, RoomParticipation.ROOM_HOST)))
         advanceUntilIdle()
 
         verify(replacement, times(1)).notifyChatRoomsChanged(any())

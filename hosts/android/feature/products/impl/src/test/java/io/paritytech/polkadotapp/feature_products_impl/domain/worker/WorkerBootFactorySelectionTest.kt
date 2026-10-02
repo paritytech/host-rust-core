@@ -4,9 +4,7 @@ import dagger.Lazy
 import io.parity.truapi.TrUAPIHostRuntime
 import io.paritytech.polkadotapp.feature_products_api.domain.runtime.ProductRuntimeSettings
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.FakeChatMessaging
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.ProductChatMessaging
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.ProductsBotApi
+import io.paritytech.polkadotapp.feature_products_impl.domain.bot.BindableProductsBotApi
 import io.paritytech.polkadotapp.feature_products_impl.domain.scriptExecutor.HostApiProductsScriptExecutor
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.TrUAPIHostRuntimeProvider
 import io.paritytech.polkadotapp.feature_products_impl.domain.truapi.worker.TrUAPIChatWorker
@@ -26,8 +24,7 @@ import org.mockito.Mockito.verifyNoInteractions
 
 class WorkerBootFactorySelectionTest {
     private val productId = ProductId.fromStoredValue("chat.dot")
-    private val botApi: ProductsBotApi = mock()
-    private val chatMessaging: ProductChatMessaging = FakeChatMessaging()
+    private val botApi = BindableProductsBotApi(mock(), mock())
 
     private fun TestScope.factory(
         runtimeSettings: ProductRuntimeSettings,
@@ -55,6 +52,20 @@ class WorkerBootFactorySelectionTest {
     }
 
     @Test
+    fun `a JS boot failure surfaces instead of becoming a silent null`() = runTest {
+        val executor: HostApiProductsScriptExecutor = mock()
+        val scriptExecutorFactory: HostApiProductsScriptExecutor.Factory = mock()
+        whenever(scriptExecutorFactory.create(productId)).thenReturn(executor)
+        val boom = IllegalStateException("no worker script")
+        whenever(executor.initializeBot(botApi, this)).thenReturn(Result.failure(boom))
+        val factory = factory(settingsWith(enabled = false), scriptExecutorFactory = scriptExecutorFactory)
+
+        val failure = runCatching { factory.boot(productId, botApi, this) }.exceptionOrNull()
+
+        assertSame("the JS arm must carry its cause, like the core arm", boom, failure)
+    }
+
+    @Test
     fun `setting off boots the JS worker`() = runTest {
         val runtimeProvider: TrUAPIHostRuntimeProvider = mock()
         val executor: HostApiProductsScriptExecutor = mock()
@@ -65,7 +76,7 @@ class WorkerBootFactorySelectionTest {
             scriptExecutorFactory = scriptExecutorFactory,
         )
 
-        val worker = factory.boot(productId, botApi, chatMessaging, this)
+        val worker = factory.boot(productId, botApi, this)
 
         assertSame("setting off must boot the JS worker unchanged", executor, worker)
         verifyNoInteractions(runtimeProvider)
@@ -87,7 +98,7 @@ class WorkerBootFactorySelectionTest {
         )
         val scope = CoroutineScope(StandardTestDispatcher(testScheduler))
 
-        val worker = factory.boot(productId, botApi, chatMessaging, scope)
+        val worker = factory.boot(productId, botApi, scope)
         advanceUntilIdle()
 
         assertTrue("setting on must boot the core worker", worker is TrUAPIChatWorker)
@@ -95,21 +106,21 @@ class WorkerBootFactorySelectionTest {
     }
 
     @Test
-    fun `a construction failure on the core arm falls back to the JS worker`() = runTest {
+    fun `a construction failure on the core arm surfaces instead of falling back`() = runTest {
         val runtimeProvider: TrUAPIHostRuntimeProvider = mock()
         val runtime: TrUAPIHostRuntime = mock()
         whenever(runtimeProvider.runtime()).thenReturn(Result.success(runtime))
         whenever(runtime.acquireWorker(productId.value)).thenThrow(IllegalStateException("acquireWorker boom"))
-        val executor: HostApiProductsScriptExecutor = mock()
-        val scriptExecutorFactory = jsExecutorFactory(executor, this)
+        val scriptExecutorFactory: HostApiProductsScriptExecutor.Factory = mock()
         val factory = factory(
             settingsWith(enabled = true),
             runtimeProvider = runtimeProvider,
             scriptExecutorFactory = scriptExecutorFactory,
         )
 
-        val worker = factory.boot(productId, botApi, chatMessaging, this)
+        val failure = runCatching { factory.boot(productId, botApi, this) }.exceptionOrNull()
 
-        assertSame("a construction failure on the core arm must fall back to the JS worker", executor, worker)
+        assertTrue("a core boot failure must surface", failure is IllegalStateException)
+        verifyNoInteractions(scriptExecutorFactory)
     }
 }

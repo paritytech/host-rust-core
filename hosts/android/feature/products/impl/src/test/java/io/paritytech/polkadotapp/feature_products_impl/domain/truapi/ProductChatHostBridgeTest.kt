@@ -2,6 +2,7 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.CreateRoomStatus
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
+import io.paritytech.polkadotapp.feature_products_api.model.RoomParticipation
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.FakeChatMessaging
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.CreateProductRoomResult
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatRoom
@@ -76,7 +77,7 @@ class ProductChatHostBridgeTest {
 
     @Test
     fun `listRooms maps the RoomHost and Bot participation strings to the core enum`() = runTest {
-        val rooms = listOf(ProductChatRoom("room-1", ROOM_HOST), ProductChatRoom("room-2", BOT))
+        val rooms = listOf(ProductChatRoom("room-1", RoomParticipation.ROOM_HOST), ProductChatRoom("room-2", RoomParticipation.BOT))
 
         assertEquals(
             listOf(
@@ -85,16 +86,6 @@ class ProductChatHostBridgeTest {
             ),
             bridge(FakeChatMessaging(rooms = flowOf(rooms))).listRooms().map { it.roomId to it.participatingAs },
         )
-    }
-
-    @Test
-    fun `listRooms refuses on an unrecognised participation value`() = runTest {
-        val api = FakeChatMessaging(rooms = flowOf(listOf(ProductChatRoom("room-1", "Ghost"))))
-
-        val thrown = runCatching { bridge(api).listRooms() }.exceptionOrNull()
-
-        assertTrue(thrown is HostRejection)
-        assertTrue(thrown!!.message!!.contains("Ghost"))
     }
 
     @Test

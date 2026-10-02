@@ -7,18 +7,9 @@ object E2EAcks {
 
     fun productRegistered(productId: String) = "product registered id=$productId"
 
-    fun messageQueued(productId: String, roomId: String?) = "message queued ${target(productId, roomId)}"
-
-    fun messageDelivered(productId: String, roomId: String?) = "message delivered ${target(productId, roomId)}"
-
-    fun messageRequeued(productId: String, roomId: String?) =
-        "message requeued ${target(productId, roomId)} (worker restarting)"
+    fun messageSent(productId: String, roomId: String) = "message sent product=$productId room=$roomId"
 
     fun customRendererUpdate(productId: String) = "custom_renderer_update product=$productId"
 
     fun error(hook: String, reason: String) = "error $hook $reason"
-
-    private fun target(productId: String, roomId: String?) = "product=$productId room=${roomId ?: NO_ROOM}"
-
-    private const val NO_ROOM = "-"
 }

@@ -3,6 +3,7 @@ package io.paritytech.polkadotapp.feature_products_impl.presentation
 import io.paritytech.polkadotapp.common.domain.model.toDataByteArray
 import io.paritytech.polkadotapp.feature_products_api.model.JsUiEvent
 import io.paritytech.polkadotapp.feature_products_api.model.Product
+import io.paritytech.polkadotapp.feature_products_api.model.ProductChatIdParameter
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.e2e.E2ERuntimeMarkers
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.message.ProductsMessageContent
@@ -37,7 +38,7 @@ class ProductsMessageViewModelRoomTest {
 
         viewModelFor(worker, MESSAGE_TYPE)
 
-        assertEquals(listOf<String?>(ROOM), worker.renderedRooms)
+        assertEquals(listOf(ProductChatIdParameter(ROOM)), worker.renderedRooms)
     }
 
     @Test

@@ -9,9 +9,12 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import io.paritytech.polkadotapp.feature_account_api.data.repository.AccountRepository
 import io.paritytech.polkadotapp.feature_backup_impl.ManualMnemonicInteractor
+import io.paritytech.polkadotapp.feature_chats_api.domain.ChatMessageSender
+import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatId
+import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessage
 import io.paritytech.polkadotapp.feature_products_api.model.ProductId
+import io.paritytech.polkadotapp.feature_products_api.model.toChatExtensionId
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.e2e.E2EAcks
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.e2e.E2EPendingChatMessages
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.e2e.E2ERuntimeMarkers
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.e2e.E2E_LOG_TAG
 import io.paritytech.polkadotapp.feature_products_impl.domain.productBotManagement.ProductBotManagementInteractor
@@ -32,7 +35,7 @@ class E2EHookReceiver : BroadcastReceiver() {
         fun manualMnemonicInteractor(): ManualMnemonicInteractor
         fun localUsernameStorage(): LocalUsernameStorage
         fun productBotManagementInteractor(): ProductBotManagementInteractor
-        fun pendingE2EMessages(): E2EPendingChatMessages
+        fun chatMessageSender(): ChatMessageSender
         fun e2eRuntimeMarkers(): E2ERuntimeMarkers
     }
 
@@ -59,20 +62,28 @@ class E2EHookReceiver : BroadcastReceiver() {
         val productId = intent.stringExtra(EXTRA_PRODUCT_ID)?.let(ProductId::fromStoredValue)
         val message = intent.stringExtra(EXTRA_MESSAGE)
 
-        if (message != null) {
-            if (productId == null) {
-                logError("message", "message requires $EXTRA_PRODUCT_ID")
-            } else {
-                val roomId = intent.stringExtra(EXTRA_ROOM_ID)
-                hooks.pendingE2EMessages().queue(productId, roomId, message)
-                log(E2EAcks.messageQueued(productId.value, roomId))
-            }
-        }
-
         val workerUrl = intent.stringExtra(EXTRA_WORKER_URL)
         if (productId != null && workerUrl != null) {
             registerProduct(hooks, productId, workerUrl, intent.stringExtra(EXTRA_PRODUCT_NAME) ?: productId.value)
         }
+
+        if (message != null) {
+            val roomId = intent.stringExtra(EXTRA_ROOM_ID)
+            when {
+                productId == null -> logError("message", "message requires $EXTRA_PRODUCT_ID")
+                roomId == null -> logError("message", "message requires $EXTRA_ROOM_ID")
+                else -> sendUserMessage(hooks, productId, roomId, message)
+            }
+        }
+    }
+
+    private suspend fun sendUserMessage(hooks: Hooks, productId: ProductId, roomId: String, text: String) {
+        val chatId = ChatId.forExtensionRoom(productId.toChatExtensionId(), roomId)
+        runCatching { hooks.chatMessageSender().sendUserMessage(chatId = chatId, content = ChatMessage.Content.Text(text)) }
+            .fold(
+                onSuccess = { log(E2EAcks.messageSent(productId.value, roomId)) },
+                onFailure = { logError("message", it) },
+            )
     }
 
     private suspend fun seedIdentity(hooks: Hooks, username: String) {

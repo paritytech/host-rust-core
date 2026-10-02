@@ -1,15 +1,15 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.bot
 
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageId
+import io.paritytech.polkadotapp.feature_products_api.model.ProductChatIdParameter
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.CreateProductRoomRequest
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.CreateProductRoomResult
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatIdParameter
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatRoom
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
 class FakeChatMessaging(
-    var rooms: Flow<List<ProductChatRoom>> = emptyFlow(),
+    private val rooms: Flow<List<ProductChatRoom>> = emptyFlow(),
     private val onCreateRoom: suspend (CreateProductRoomRequest) -> Result<CreateProductRoomResult> = { notStubbed() },
     private val onSendMessage: suspend (ProductChatIdParameter, ProductBotMessage) -> Result<ChatMessageId> =
         { _, _ -> notStubbed() },

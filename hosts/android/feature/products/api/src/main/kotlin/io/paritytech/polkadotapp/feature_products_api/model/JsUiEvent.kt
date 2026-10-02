@@ -7,7 +7,7 @@ class JsUiEvent(
     val messageType: String,
     val actionId: String,
     val eventType: Type,
-    val roomId: String?,
+    val roomId: ProductChatIdParameter?,
 ) {
     sealed interface Type {
         object ButtonClick : Type

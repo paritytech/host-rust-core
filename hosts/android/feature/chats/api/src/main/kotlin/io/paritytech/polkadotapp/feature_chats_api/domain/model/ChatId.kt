@@ -101,5 +101,3 @@ inline fun ChatId.onContact(action: (contactId: ChatVariant.Contact) -> Unit) {
     val contact = contactOrNull() ?: return
     action(contact)
 }
-
-fun ChatId.productRoomId(): String? = extensionOrNull()?.subRoomId?.takeIf { it.isNotEmpty() }
