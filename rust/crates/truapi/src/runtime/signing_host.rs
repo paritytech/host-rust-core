@@ -135,6 +135,13 @@ pub struct SigningHost {
     /// shipping host has no way to set it.
     #[cfg(feature = "test-host")]
     grant_allowances_unchecked: std::sync::atomic::AtomicBool,
+    /// Resource tags answered as refused, whatever the rest of the host would
+    /// say. A suite proving that its product handles a refusal needs one
+    /// resource withheld while the others stay granted, which neither the
+    /// unchecked-grant flag nor a real chain can arrange on its own. Compiled
+    /// only into a build carrying `test-host`.
+    #[cfg(feature = "test-host")]
+    withheld_resources: Mutex<HashSet<String>>,
     /// Root BIP-39 entropy held only while a session is active.
     root_entropy: Mutex<Option<Zeroizing<Vec<u8>>>>,
     /// In-memory grants and the activation generation that owns them. The
@@ -162,6 +169,8 @@ impl SigningHost {
             network_suffix,
             #[cfg(feature = "test-host")]
             grant_allowances_unchecked: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "test-host")]
+            withheld_resources: Mutex::new(HashSet::new()),
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform.clone()),
             ring_resolver,
@@ -186,6 +195,46 @@ impl SigningHost {
     pub fn set_grant_allowances_unchecked(&self, granted: bool) {
         self.grant_allowances_unchecked
             .store(granted, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Answer these resource tags as refused, replacing any earlier set.
+    ///
+    /// The tag is the `AllocatableResource` variant name, so
+    /// `SmartContractAllowance` withholds every derivation index.
+    #[cfg(feature = "test-host")]
+    pub(crate) fn set_withheld_resources(&self, tags: Vec<String>) {
+        *self
+            .withheld_resources
+            .lock()
+            .expect("withheld resource mutex poisoned") = tags.into_iter().collect();
+    }
+
+    /// Whether `resource` is answered as refused.
+    #[cfg(feature = "test-host")]
+    fn withholds(&self, resource: &v01::AllocatableResource) -> bool {
+        let tag = match resource {
+            v01::AllocatableResource::StatementStoreAllowance => "StatementStoreAllowance",
+            v01::AllocatableResource::BulletinAllowance => "BulletinAllowance",
+            v01::AllocatableResource::SmartContractAllowance(_) => "SmartContractAllowance",
+            v01::AllocatableResource::AutoSigning => "AutoSigning",
+        };
+        self.withheld_resources
+            .lock()
+            .expect("withheld resource mutex poisoned")
+            .contains(tag)
+    }
+
+    /// Refuse a withheld resource before any allowance for it is derived.
+    ///
+    /// The allowance-key calls allocate on their own, without a product ever
+    /// asking for an allocation, so a check that lived only in the allocation
+    /// answer would hand the key to the very path the product takes.
+    #[cfg(feature = "test-host")]
+    fn refuse_withheld(&self, resource: &v01::AllocatableResource) -> Result<(), AuthorityError> {
+        if self.withholds(resource) {
+            return Err(AuthorityError::Rejected);
+        }
+        Ok(())
     }
 
     /// The shared services this role was built over, for tests that also need
@@ -228,6 +277,8 @@ impl SigningHost {
             network_suffix: network_suffix.to_string(),
             #[cfg(feature = "test-host")]
             grant_allowances_unchecked: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "test-host")]
+            withheld_resources: Mutex::new(HashSet::new()),
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform.clone()),
             ring_resolver,
@@ -352,6 +403,31 @@ impl SigningHost {
             .expect("local AutoSigning grant mutex poisoned")
             .revoke_product(&product_id);
         Ok(())
+    }
+
+    /// The product's hard-subtree public key, derived from the active session
+    /// root.
+    ///
+    /// A signing host holds the root, so it derives this rather than asking an
+    /// Account Holder for it the way a pairing host must, and answers the
+    /// `ProductAuthority` request of the same name from the same derivation.
+    /// `None` when no session is active: there is no root to derive from.
+    pub fn derive_subtree_public_key(
+        &self,
+        product_id: &str,
+    ) -> Result<Option<[u8; 32]>, AuthorityError> {
+        let product_id = normalize_product_identifier(product_id).map_err(|err| {
+            AuthorityError::Unavailable {
+                reason: err.to_string(),
+            }
+        })?;
+        let Ok(entropy) = self.root_entropy() else {
+            return Ok(None);
+        };
+        let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
+        let subtree =
+            derive_product_subtree_keypair(&root, &product_id).map_err(product_authority_error)?;
+        Ok(Some(subtree.public.to_bytes()))
     }
 
     /// Derive the product-account keypair for `account` from the root entropy.
@@ -1293,15 +1369,35 @@ impl ProductAuthority for SigningHost {
         {
             // Nothing is allocated and no proof is built: a suite in this mode
             // learns that its product handles a grant, not that a host would
-            // have given one.
+            // have given one. A withheld tag is still refused here, so the one
+            // resource a suite wants to prove its product lives without stays
+            // refused while the rest are granted.
             return Ok(v01::HostRequestResourceAllocationResponse {
-                outcomes: vec![v01::AllocationOutcome::Allocated; request.resources.len()],
+                outcomes: request
+                    .resources
+                    .iter()
+                    .map(|resource| {
+                        if self.withholds(resource) {
+                            v01::AllocationOutcome::Rejected
+                        } else {
+                            v01::AllocationOutcome::Allocated
+                        }
+                    })
+                    .collect(),
             });
         }
         let mut outcomes = Vec::with_capacity(request.resources.len());
         for resource in request.resources {
             if let Some(reason) = cx.cancel().reason() {
                 return Err(super::authority_cancellation_error(cx, reason));
+            }
+            // Checked before the work, not after: withholding is the suite
+            // saying this resource is refused, so performing the allocation and
+            // then reporting a refusal would leave the two disagreeing.
+            #[cfg(feature = "test-host")]
+            if self.withholds(&resource) {
+                outcomes.push(v01::AllocationOutcome::Rejected);
+                continue;
             }
             let outcome = match resource {
                 v01::AllocatableResource::StatementStoreAllowance => {
@@ -1361,6 +1457,8 @@ impl ProductAuthority for SigningHost {
         product_id: String,
     ) -> Result<StatementStoreAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
+        #[cfg(feature = "test-host")]
+        self.refuse_withheld(&v01::AllocatableResource::StatementStoreAllowance)?;
         let secret = sso_responder::allocate_statement_store_allowance(
             &self.services,
             self,
@@ -1380,6 +1478,8 @@ impl ProductAuthority for SigningHost {
         product_id: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
+        #[cfg(feature = "test-host")]
+        self.refuse_withheld(&v01::AllocatableResource::BulletinAllowance)?;
         let secret = sso_responder::allocate_bulletin_allowance(
             &self.services,
             self,
@@ -1399,6 +1499,8 @@ impl ProductAuthority for SigningHost {
         product_id: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
+        #[cfg(feature = "test-host")]
+        self.refuse_withheld(&v01::AllocatableResource::BulletinAllowance)?;
         let secret = sso_responder::allocate_bulletin_allowance(
             &self.services,
             self,
@@ -1472,6 +1574,8 @@ mod tests {
     mod auto_signing;
     mod cross_product_account;
     mod raw_signing;
+    #[cfg(feature = "test-host")]
+    mod withheld_resources;
 
     use std::sync::Arc;
 
