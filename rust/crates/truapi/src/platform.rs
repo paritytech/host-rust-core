@@ -33,13 +33,14 @@ use truapi::latest::{
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostFeatureSupportedRequest,
     HostFeatureSupportedResponse, HostFundingStatusSubscribeItem, HostLocalStorageChangeItem,
-    HostLocaleSubscribeItem, HostNavigateToError, HostPlatform, HostPocketListSubscribeItem,
-    HostPocketRemoveCardError, HostPocketRemoveCardRequest, HostPushNotificationRequest,
-    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
-    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem,
-    HostWorkerBeginOperationResponse, HostWorkerOperationError, LegacyAccountTxPayload,
-    ProductAccountId, ProductAccountTxPayload, ProductProofContext, RemotePermission,
-    RemotePermissionRequest, RingLocation,
+    HostLocaleSubscribeItem, HostNavigateToError, HostPaymentTopUpError, HostPaymentTopUpRequest,
+    HostPaymentTopUpStatusSubscribeError, HostPaymentTopUpStatusSubscribeItem, HostPlatform,
+    HostPocketListSubscribeItem, HostPocketRemoveCardError, HostPocketRemoveCardRequest,
+    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, HostWorkerBeginOperationResponse,
+    HostWorkerOperationError, LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RemotePermission, RemotePermissionRequest, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::{Host, Url};
@@ -3254,6 +3255,33 @@ pub trait ChatPlatform: Send + Sync {
         &self,
         product: &ProductContext,
     ) -> BoxStream<'static, Result<HostChatListSubscribeItem, GenericError>>;
+}
+
+/// Host-implemented top-up engine: claims a source's funds into the user's
+/// balance through the host's coinage onboarding. Optional: a host that omits
+/// it leaves top-ups answered `Unsupported`.
+///
+/// The core validates the source keys before calling. The host owns retries,
+/// partial claims and persistence, and scopes ids to `product`.
+#[async_trait]
+pub trait TopUpPlatform: Send + Sync {
+    /// Start a top-up. Returns once the host has accepted it.
+    async fn top_up(
+        &self,
+        product: &ProductContext,
+        request: HostPaymentTopUpRequest,
+    ) -> Result<(), HostPaymentTopUpError>;
+
+    /// Emit a top-up's current status and every later one, ending after a
+    /// terminal status.
+    fn subscribe_top_up_status(
+        &self,
+        product: &ProductContext,
+        id: [u8; 32],
+    ) -> BoxStream<
+        'static,
+        Result<HostPaymentTopUpStatusSubscribeItem, HostPaymentTopUpStatusSubscribeError>,
+    >;
 }
 
 /// A funding session as the host overlay needs it to open on the right screen.

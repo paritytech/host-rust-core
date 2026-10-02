@@ -2496,6 +2496,206 @@ fn a_funding_request_needs_a_host_overlay_then_a_session() {
     );
 }
 
+#[derive(Default)]
+struct RecordingTopUpPlatform {
+    started: Mutex<Vec<(String, truapi::latest::HostPaymentTopUpRequest)>>,
+    followed: Mutex<Vec<(String, [u8; 32])>>,
+}
+
+#[truapi::async_trait]
+impl crate::platform::TopUpPlatform for RecordingTopUpPlatform {
+    async fn top_up(
+        &self,
+        product: &ProductContext,
+        request: truapi::latest::HostPaymentTopUpRequest,
+    ) -> Result<(), truapi::latest::HostPaymentTopUpError> {
+        self.started
+            .lock()
+            .expect("started mutex poisoned")
+            .push((product.product_id.clone(), request));
+        Ok(())
+    }
+
+    fn subscribe_top_up_status(
+        &self,
+        product: &ProductContext,
+        id: [u8; 32],
+    ) -> futures::stream::BoxStream<
+        'static,
+        Result<
+            truapi::latest::HostPaymentTopUpStatusSubscribeItem,
+            truapi::latest::HostPaymentTopUpStatusSubscribeError,
+        >,
+    > {
+        self.followed
+            .lock()
+            .expect("followed mutex poisoned")
+            .push((product.product_id.clone(), id));
+        Box::pin(futures::stream::iter([
+            Ok(v01::HostPaymentTopUpStatusSubscribeItem::Claiming),
+            Ok(v01::HostPaymentTopUpStatusSubscribeItem::Claimed { finalized: true }),
+        ]))
+    }
+}
+
+fn top_up(
+    host: &ProductRuntimeHost,
+    source: v01::PaymentTopUpSource,
+) -> Result<
+    truapi::versioned::payment::HostPaymentTopUpResponse,
+    CallError<truapi::versioned::payment::HostPaymentTopUpError>,
+> {
+    futures::executor::block_on(truapi::api::Payment::top_up(
+        host,
+        &CallContext::default(),
+        truapi::versioned::payment::HostPaymentTopUpRequest::V1(v01::HostPaymentTopUpRequest {
+            into: None,
+            amount: 1_000,
+            source,
+            id: [7; 32],
+        }),
+    ))
+}
+
+fn product_account_source() -> v01::PaymentTopUpSource {
+    v01::PaymentTopUpSource::ProductAccount {
+        derivation_index: v01::DerivationIndex::Index(0),
+    }
+}
+
+#[test]
+fn a_top_up_reaches_the_host_engine_scoped_to_its_product() {
+    let services = funding_services();
+    let engine = Arc::new(RecordingTopUpPlatform::default());
+    assert!(services.install_top_up_platform(engine.clone()));
+
+    top_up(&funding_host(&services, "wallet.dot", true), product_account_source())
+        .expect("top-up accepted");
+
+    assert_eq!(
+        engine.started.lock().expect("started mutex poisoned").as_slice(),
+        [(
+            "wallet.dot".to_string(),
+            v01::HostPaymentTopUpRequest {
+                into: None,
+                amount: 1_000,
+                source: product_account_source(),
+                id: [7; 32],
+            },
+        )]
+    );
+}
+
+// A coin source with no coins can never claim anything, so it is refused in
+// the core rather than handed to the host.
+#[test]
+fn a_top_up_without_coins_is_refused_before_the_host_sees_it() {
+    let services = funding_services();
+    let engine = Arc::new(RecordingTopUpPlatform::default());
+    assert!(services.install_top_up_platform(engine.clone()));
+
+    let refused = top_up(
+        &funding_host(&services, "wallet.dot", true),
+        v01::PaymentTopUpSource::Coins {
+            sr25519_secret_keys: Vec::new(),
+        },
+    );
+
+    assert_eq!(
+        (
+            refused,
+            engine.started.lock().expect("started mutex poisoned").len()
+        ),
+        (
+            Err(CallError::Domain(
+                truapi::versioned::payment::HostPaymentTopUpError::V1(
+                    v01::HostPaymentTopUpError::InvalidSource
+                )
+            )),
+            0
+        )
+    );
+}
+
+#[test]
+fn top_up_status_is_forwarded_from_the_host_engine() {
+    let services = funding_services();
+    let engine = Arc::new(RecordingTopUpPlatform::default());
+    assert!(services.install_top_up_platform(engine.clone()));
+    let host = funding_host(&services, "wallet.dot", true);
+
+    let statuses = futures::executor::block_on(
+        futures::executor::block_on(truapi::api::Payment::top_up_status_subscribe(
+            &host,
+            &CallContext::default(),
+            truapi::versioned::payment::HostPaymentTopUpStatusSubscribeRequest::V1(
+                v01::HostPaymentTopUpStatusSubscribeRequest { id: [7; 32] },
+            ),
+        ))
+        .collect::<Vec<_>>(),
+    );
+
+    assert_eq!(
+        (
+            statuses,
+            engine.followed.lock().expect("followed mutex poisoned").clone()
+        ),
+        (
+            vec![
+                Ok(truapi::versioned::payment::HostPaymentTopUpStatusSubscribeItem::V1(
+                    v01::HostPaymentTopUpStatusSubscribeItem::Claiming
+                )),
+                Ok(truapi::versioned::payment::HostPaymentTopUpStatusSubscribeItem::V1(
+                    v01::HostPaymentTopUpStatusSubscribeItem::Claimed { finalized: true }
+                )),
+            ],
+            vec![("wallet.dot".to_string(), [7; 32])]
+        )
+    );
+}
+
+// The source key is spent by the host, so a key that is not a usable sr25519
+// secret is refused before any claim starts.
+#[test]
+fn a_top_up_with_a_malformed_key_is_refused_before_the_host_sees_it() {
+    let services = funding_services();
+    let engine = Arc::new(RecordingTopUpPlatform::default());
+    assert!(services.install_top_up_platform(engine.clone()));
+
+    let refused = top_up(
+        &funding_host(&services, "wallet.dot", true),
+        v01::PaymentTopUpSource::PrivateKey {
+            sr25519_secret_key: [0xff; 64],
+        },
+    );
+
+    assert_eq!(
+        (
+            refused,
+            engine.started.lock().expect("started mutex poisoned").len()
+        ),
+        (
+            Err(CallError::Domain(
+                truapi::versioned::payment::HostPaymentTopUpError::V1(
+                    v01::HostPaymentTopUpError::InvalidSource
+                )
+            )),
+            0
+        )
+    );
+}
+
+#[test]
+fn a_top_up_needs_a_session() {
+    let services = funding_services();
+    assert!(services.install_top_up_platform(Arc::new(RecordingTopUpPlatform::default())));
+
+    assert_eq!(
+        top_up(&funding_host(&services, "wallet.dot", false), product_account_source()),
+        Err(CallError::Denied)
+    );
+}
+
 #[test]
 fn chain_follow_ids_are_scoped_per_product_core() {
     let (host_config, product) = runtime_config("same.dot");

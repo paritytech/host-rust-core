@@ -67,25 +67,52 @@ Top up the user's payment balance from a product-controlled funding source. This
 ```rust
 fn host_payment_top_up(
     amount: Balance,
-    source: PaymentTopUpSource
+    source: PaymentTopUpSource,
+    id: PaymentTopUpId
 ) -> Result<(), PaymentTopUpErr>
+
+fn host_payment_top_up_status_subscribe(
+    id: PaymentTopUpId
+) -> Subscription<PaymentTopUpStatus, PaymentTopUpStatusErr>
 
 enum PaymentTopUpSource {
     /// Fund from one of the calling product's scoped accounts
     ProductAccount(DerivationIndex),
     /// Fund from a one-time account represented by its private key.
     /// This is a standard account holding public funds -- not a coin key.
-    PrivateKey(Ed25519PrivateKey)
+    PrivateKey(Sr25519SecretKey)
 }
 
+/// Caller-chosen, 32 bytes. Reusing one is refused, which makes a retry safe.
+type PaymentTopUpId = [u8; 32];
+
 enum PaymentTopUpErr {
-    /// The source account does not hold sufficient funds
-    InsufficientFunds,
-    /// The source account was not found or is invalid
+    /// The source key is malformed, or the source was not found
     InvalidSource,
+    /// A top-up with this id already exists
+    AlreadyExists,
+    /// Another top-up from the same source is still running
+    SourceBusy,
+    Unknown(GenericErr)
+}
+
+/// `Claimed { finalized: true }`, `ClaimedPartially` and `NotClaimed` are
+/// terminal and stay readable after the top-up ends.
+enum PaymentTopUpStatus {
+    Detecting,
+    Claiming,
+    Claimed { finalized: bool },
+    ClaimedPartially { actual_claimed: Balance },
+    NotClaimed,
+}
+
+enum PaymentTopUpStatusErr {
+    NotFound,
     Unknown(GenericErr)
 }
 ```
+
+`host_payment_top_up` returns once the host accepts the top-up; the claim runs on, and its outcome arrives through the status subscription.
 
 `PaymentTopUpSource::PrivateKey` refers to a regular account (e.g. holding DOT or pUSD) whose private key the product possesses -- for instance, a one-time deposit account. This is not a coinage coin key.
 

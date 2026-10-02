@@ -403,6 +403,11 @@ AutoSigning without approval. Legacy-account signing still asks the user.
   Balance card opens sessions with `open_funding`. The core owns the sessions,
   persists them, expires them, and answers Funding calls `Unsupported` while no
   overlay is installed.
+- `TopUpPlatform`: claim a top-up source's funds into the user's balance and
+  stream each top-up's status. Installed with `set_top_up_platform`. The core
+  requires a session and checks the source keys; the host owns claiming,
+  retries, partial claims, persistence and scoping ids to the product. Without
+  it, `topUp` and `topUpStatusSubscribe` answer `Unsupported`.
 - `ContactsPlatform`: resolve the handles a transaction names to contacts, and
   render the picker that selects one. `contacts` is the only required method; `pick_contact`
   defaults to `Unsupported`, so a host serving no picker says so rather than
