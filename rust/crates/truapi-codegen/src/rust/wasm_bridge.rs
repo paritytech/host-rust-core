@@ -39,7 +39,7 @@ pub fn generate_wasm_bridge(
         use futures::stream::BoxStream;
         use js_sys::{{Function, Uint8Array}};
         use parity_scale_codec::Encode;
-        use truapi::v01;
+        use truapi::latest;
         use wasm_bindgen::JsValue;
 
         use super::{{
@@ -536,7 +536,7 @@ fn rust_type(ty: &TypeRef, ctx: &BridgeCtx<'_>) -> Result<String> {
         )),
         TypeRef::Named { name, args } if ctx.api_types.contains_key(name.as_str()) => {
             if args.is_empty() {
-                Ok(format!("v01::{name}"))
+                Ok(format!("latest::{name}"))
             } else {
                 bail!("generic API type `{name}` is not supported in wasm bridge")
             }
