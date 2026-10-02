@@ -218,7 +218,13 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Locale the host currently presents its interface in. The native shim
     /// emits this as the current item in its subscription stream.
-    fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection>;
+    fn current_locale(&self) -> Result<crate::latest::HostLocaleSubscribeItem, HostRejection>;
+
+    /// Convert UTC timestamps with the host's calendar and time-zone database.
+    async fn localize_timestamps(
+        &self,
+        request: crate::latest::HostLocaleLocalizeTimestampsRequest,
+    ) -> Result<crate::latest::HostLocaleLocalizeTimestampsResponse, HostRejection>;
 
     /// Answer a feature-support query.
     async fn feature_supported(

@@ -5,7 +5,7 @@
 use super::*;
 
 /// Fingerprint of the generated wire contract.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "a08d82b4593af81a";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "4dda7fbab9d6f435";
 
 /// `account_connection_status_subscribe` method marker.
 pub struct AccountConnectionStatusSubscribe;
@@ -1519,6 +1519,33 @@ impl SubscriptionMethod for LocaleSubscribe {
     const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
 }
 
+/// `locale_localize_timestamps` method marker.
+pub struct LocaleLocalizeTimestamps;
+impl LocaleLocalizeTimestamps {
+    /// Canonical metadata and frame ids for this method.
+    pub const DESCRIPTOR: MethodDescriptor = MethodDescriptor {
+        service: "Locale",
+        method: "localize_timestamps",
+        wire_name: "locale_localize_timestamps",
+        request_type: "truapi::versioned::locale::HostLocaleLocalizeTimestampsRequest",
+        response_type: "truapi::versioned::locale::HostLocaleLocalizeTimestampsResponse",
+        error_type: Some("truapi::versioned::locale::HostLocaleLocalizeTimestampsError"),
+        kind: MethodKind::Request,
+        direction: Direction::ProductToHost,
+        required_execution: None,
+        wire: MethodWire::Request(MethodIds {
+            trait_id: 16,
+            method_id: 1,
+        }),
+    };
+}
+impl RequestMethod for LocaleLocalizeTimestamps {
+    type Request = truapi::versioned::locale::HostLocaleLocalizeTimestampsRequest;
+    type Response = truapi::versioned::locale::HostLocaleLocalizeTimestampsResponse;
+    type Error = truapi::versioned::locale::HostLocaleLocalizeTimestampsError;
+    const DESCRIPTOR: MethodDescriptor = Self::DESCRIPTOR;
+}
+
 /// `notifications_send_push_notification` method marker.
 pub struct NotificationsSendPushNotification;
 impl NotificationsSendPushNotification {
@@ -2768,6 +2795,7 @@ pub const APP_METHODS: &[MethodDescriptor] = &[
     LocalStorageClear::DESCRIPTOR,
     LocalStorageSubscribe::DESCRIPTOR,
     LocaleSubscribe::DESCRIPTOR,
+    LocaleLocalizeTimestamps::DESCRIPTOR,
     NotificationsSendPushNotification::DESCRIPTOR,
     NotificationsCancelPushNotification::DESCRIPTOR,
     PaymentBalanceSubscribe::DESCRIPTOR,
@@ -2861,6 +2889,7 @@ pub const WIDGET_METHODS: &[MethodDescriptor] = &[
     LocalStorageClear::DESCRIPTOR,
     LocalStorageSubscribe::DESCRIPTOR,
     LocaleSubscribe::DESCRIPTOR,
+    LocaleLocalizeTimestamps::DESCRIPTOR,
     NotificationsSendPushNotification::DESCRIPTOR,
     NotificationsCancelPushNotification::DESCRIPTOR,
     PaymentBalanceSubscribe::DESCRIPTOR,
@@ -2959,6 +2988,7 @@ pub const WORKER_METHODS: &[MethodDescriptor] = &[
     LocalStorageClear::DESCRIPTOR,
     LocalStorageSubscribe::DESCRIPTOR,
     LocaleSubscribe::DESCRIPTOR,
+    LocaleLocalizeTimestamps::DESCRIPTOR,
     NotificationsSendPushNotification::DESCRIPTOR,
     NotificationsCancelPushNotification::DESCRIPTOR,
     PaymentBalanceSubscribe::DESCRIPTOR,

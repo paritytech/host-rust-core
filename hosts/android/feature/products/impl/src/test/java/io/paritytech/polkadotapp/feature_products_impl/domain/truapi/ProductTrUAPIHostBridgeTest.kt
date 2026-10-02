@@ -1,5 +1,8 @@
 package io.paritytech.polkadotapp.feature_products_impl.domain.truapi
 
+import android.content.Context
+import io.paritytech.polkadotapp.feature_settings_api.domain.language.AppLanguageProvider
+import kotlinx.coroutines.flow.flowOf
 import uniffi.truapi.ProductExecutionKind
 import io.parity.truapi.TrUAPIHostRuntime
 import io.paritytech.polkadotapp.common.data.storage.preferences.encrypted.EncryptedPreferences
@@ -31,6 +34,10 @@ class ProductTrUAPIHostBridgeTest {
         appLifecycleObserver = mock(AppLifecycleObserver::class.java),
         dotNsTldProvider = mock(DotNsTldProvider::class.java),
         pocketCardStore = mock(PocketCardStore::class.java),
+        context = mock(Context::class.java),
+        appLanguageProvider = object : AppLanguageProvider {
+            override val languageTag = flowOf("en-US")
+        },
         scope = CoroutineScope(StandardTestDispatcher(testScheduler)),
     )
 
