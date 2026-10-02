@@ -92,9 +92,8 @@ jobs:
         id: pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: ./.github/actions/rust-nightly
         with:
-          toolchain: nightly
           components: rustfmt
 
       # codegen.sh is the same work as ci.yml's codegen job, which owns the
@@ -150,7 +149,7 @@ jobs:
           cp -R explorer/dist/. site/
           # GitHub Pages serves the site-root 404.html for every missing path.
           # Serving a copy of the SPA index lets React Router resolve explorer
-          # deep links (e.g. /host-rust-core/v/main/method/foo) on a fresh load.
+          # deep links (e.g. /trinity-user-agents/v/main/method/foo) on a fresh load.
           cp site/index.html site/404.html
           # Playground mounted at /playground/ (its Next.js basePath).
           mkdir -p site/playground
