@@ -15,15 +15,22 @@ struct ProductNetworkAccessTests {
         print("[native-recovery] fixture.start iteration=\(iteration)")
         let product = try await NetworkTestProduct.open(traceRecovery: true, initialScripts: ["""
             window.__testRecoveryCycle = -1;
+            window.__nativeRecoveryEvents = [];
             window.__nativeRecoveryTrace = (event, fields = {}, error) => {
               try {
-                window.webkit.messageHandlers.testRecovery.postMessage(JSON.stringify({
+                window.__nativeRecoveryEvents.push({
                   event, product: 'network.paseo', iteration: \(iteration), cycle: window.__testRecoveryCycle,
                   ms: performance.now(), ...fields,
                   ...(error === undefined ? {} : window.__testRecoveryError(error)),
-                }, (_, value) => typeof value === 'string'
-                  ? value.replace(/\\b(?:https?|wss?):\\/\\/\\S+/g, '<redacted-endpoint>')
-                  : value));
+                });
+                if (event === 'authorization.rpc.Err' || event === 'authorization.throw' ||
+                    event === 'fetch.throw' || event === 'handshake.throw' ||
+                    (event === 'authorization.decision' && fields.allowed === false)) {
+                  window.webkit.messageHandlers.testRecovery.postMessage(JSON.stringify(
+                    window.__nativeRecoveryEvents.splice(0), (_, value) => typeof value === 'string'
+                      ? value.replace(/\\b(?:https?|wss?):\\/\\/\\S+/g, '<redacted-endpoint>')
+                      : value));
+                }
               } catch {}
             };
             window.__testRecoveryError = (error, depth = 0) => ({
@@ -49,14 +56,6 @@ struct ProductNetworkAccessTests {
                 const socket = Reflect.construct(target, args);
                 const id = ++socketId;
                 window.__nativeRecoveryTrace('socket.create', { socket: id });
-                socket.addEventListener('open', () =>
-                  window.__nativeRecoveryTrace('socket.open', { socket: id }));
-                socket.addEventListener('close', event =>
-                  window.__nativeRecoveryTrace('socket.close', {
-                    socket: id, code: event.code, wasClean: event.wasClean,
-                  }));
-                socket.addEventListener('error', () =>
-                  window.__nativeRecoveryTrace('socket.error', { socket: id }));
                 window.__testDisconnectHost = () => {
                   window.__nativeRecoveryTrace('socket.closeRequested', { socket: id });
                   return closeSocket.call(socket);

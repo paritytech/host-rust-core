@@ -319,7 +319,9 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         for candidate in remote_domain_candidates(domain) {
             let key = CoreStorageKey::remote_domain_authorization(self.product_id(), &candidate);
             let stored = peek_stored(self.storage, key.clone()).await;
-            if domain == "127.0.0.1" {
+            if domain == "127.0.0.1"
+                && !matches!(&stored, Ok(Some(StoredAuthorizationStatus::Authorized)))
+            {
                 eprintln!(
                     "[native-recovery] rust.storage product={} domain={domain} candidate={candidate} result={stored:?}",
                     self.product_id()
@@ -336,16 +338,10 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         }
         for key in temporary_keys {
             if self.temporary_permissions.authorize(&key, false) {
-                if domain == "127.0.0.1" {
-                    eprintln!(
-                        "[native-recovery] rust.effective product={} domain={domain} status=Authorized temporary=true",
-                        self.product_id()
-                    );
-                }
                 return Ok((PermissionAuthorizationStatus::Authorized, Some(key)));
             }
         }
-        if domain == "127.0.0.1" {
+        if domain == "127.0.0.1" && fallback != PermissionAuthorizationStatus::Authorized {
             eprintln!(
                 "[native-recovery] rust.effective product={} domain={domain} status={fallback:?} temporary=false",
                 self.product_id()
@@ -561,15 +557,8 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         } else {
             0
         };
-        if trace {
-            eprintln!(
-                "[native-recovery] rust.authorize.start request={request_id} product={} domain=127.0.0.1 trusted={}",
-                self.product_id(),
-                self.trusted_product
-            );
-        }
         let result = self.remote_authorization(request, true).await;
-        if trace {
+        if trace && !matches!(&result, Ok(PermissionAuthorizationStatus::Authorized)) {
             eprintln!(
                 "[native-recovery] rust.authorize.result request={request_id} product={} domain=127.0.0.1 result={result:?}",
                 self.product_id()
