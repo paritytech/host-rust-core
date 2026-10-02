@@ -520,10 +520,10 @@ Each announcement links both APKs and lists the pull
 requests the build carries, with breaking changes, the titles carrying `!`,
 listed first and marked `Breaking:`. Both nightlies skip a scheduled night
 when `main` has not moved past what their last successful run built. `android-debug-distribution.yml` runs
-when a pull request merges to `main`, and answers what `main` does right now.
-It builds the merge commit rather than the pull request's merge preview, which
-is computed while the request is open and would otherwise ship a tree missing
-whatever landed first.
+on every push to `main`, and answers what `main` does right now. It builds the
+pushed commit, the one that landed. A push rather than the pull request's merge
+event, because the Firebase identity is bound to `main`, and a pull request
+event's token never matches that binding.
 
 Both authenticate by federation. The run proves its identity with its OIDC
 token and receives a short lived credential, so no long lived key for that
