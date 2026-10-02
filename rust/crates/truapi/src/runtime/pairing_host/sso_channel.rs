@@ -268,7 +268,7 @@ impl PairingHost {
                 return Err(SsoRemoteResponseError::LocalDisconnected);
             }
             submit_started.store(true, Ordering::Release);
-            statement_store_rpc::submit_retrying_no_allowance(&submit_client, statement, "pairing-host request")
+            statement_store_rpc::submit_sso(&submit_client, statement, "pairing-host request")
                 .await
                 .map_err(|err| {
                     SsoRemoteResponseError::Failure(format!("SSO statement submit failed: {err}"))

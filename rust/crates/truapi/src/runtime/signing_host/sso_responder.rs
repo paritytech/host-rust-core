@@ -429,7 +429,7 @@ pub async fn disconnect_paired_host(
     )?;
     services
         .statement_store
-        .submit_retrying_no_allowance(statement, "sso-responder disconnect")
+        .submit_sso(statement, "sso-responder disconnect")
         .await
 }
 
@@ -705,7 +705,7 @@ async fn read_statements(
                     )?;
                     services
                         .statement_store
-                        .submit_retrying_no_allowance(ack, "sso-responder decode-failed ack")
+                        .submit_sso(ack, "sso-responder decode-failed ack")
                         .await?;
                 }
                 continue;
@@ -821,7 +821,7 @@ async fn serve_request(
         )?;
         let publish_result = services
             .statement_store
-            .submit_retrying_no_allowance(statement, "sso-responder response")
+            .submit_sso(statement, "sso-responder response")
             .await;
         let elapsed_ms = started.elapsed().as_millis();
         match publish_result {
@@ -896,7 +896,7 @@ async fn acknowledge_request(
     )?;
     services
         .statement_store
-        .submit_retrying_no_allowance(ack, "sso-responder ack")
+        .submit_sso(ack, "sso-responder ack")
         .await
 }
 

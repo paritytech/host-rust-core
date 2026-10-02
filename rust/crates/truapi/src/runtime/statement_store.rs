@@ -132,7 +132,7 @@ impl StatementStore for ProductRuntimeHost {
             }))
         })?;
         self.statement_store_rpc()
-            .submit_retrying_no_allowance(encoded, "statement-store")
+            .submit_sso(encoded, "statement-store")
             .await
             .map_err(|reason| {
                 if let latest::StatementProof::Sr25519 { signer, .. } = statement.proof
