@@ -210,7 +210,8 @@ private extension ChatRustRuntime {
         let scriptsFactory = RustRuntimeScriptsFactory(bootstrapScript: bootstrapScript)
         let jsEngine = try await bootEngine(
             scripts: scriptsFactory.makeScripts(),
-            osPermissionAsker: model.osPermissionAsker
+            osPermissionAsker: model.osPermissionAsker,
+            execution: model.execution
         )
         try checkNotDisposed()
 
@@ -227,12 +228,13 @@ private extension ChatRustRuntime {
 
     func bootEngine(
         scripts: [JSEngineScript],
-        osPermissionAsker: OSPermissionAsking
+        osPermissionAsker: OSPermissionAsking,
+        execution: TrUAPIProductExecutionProtocol
     ) async throws -> JSEngineProtocol {
         let jsEngine = engineFactory()
         do {
             await jsEngine.registerJSDeviceCapabilityHandler(
-                osPermissionAsker.makeDeviceCapabilityHandler()
+                osPermissionAsker.makeDeviceCapabilityHandler(execution: execution)
             )
             try checkNotDisposed()
             try await jsEngine.initialize(with: scripts)

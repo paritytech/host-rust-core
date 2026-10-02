@@ -19,6 +19,9 @@ extension OSPermissionAsker: OSPermissionAsking {
             checkCaptureDeviceStatus(.video)
         case .microphone:
             checkCaptureDeviceStatus(.audio)
+        case .motion:
+            // iOS has no OS gate for motion; WebKit's request is the only one.
+            .allowed
         case .bluetooth,
              .nfc,
              .location,
@@ -40,6 +43,8 @@ extension OSPermissionAsker: OSPermissionAsking {
             await askCaptureDevice(.video)
         case .microphone:
             await askCaptureDevice(.audio)
+        case .motion:
+            true
         case .bluetooth,
              .nfc,
              .location,
