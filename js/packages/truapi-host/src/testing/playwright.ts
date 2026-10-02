@@ -30,6 +30,11 @@ import type { StatementInput } from "../web/loopback-statements.js";
 export type { StatementEntry } from "../web/create-mock-host.js";
 export type { StatementInput } from "../web/loopback-statements.js";
 
+// The address a product account will be given, derivable without a host: a
+// suite funding that account does it once, in setup, not per test.
+export { productAccountAddress } from "./product-account.js";
+export type { ProductAccountQuery } from "./product-account.js";
+
 import { PRODUCT_FRAME_ID } from "./host-page.js";
 import { createTestHostServer } from "./server.js";
 import { hostPageUrl } from "./host-page-url.js";
@@ -230,6 +235,25 @@ export interface TestHost {
    * {@link TestHost.getProductStorageValue} answers them decoded as UTF-8.
    */
   findProductStorage(key: string): Promise<Uint8Array | undefined>;
+  /**
+   * The SS58 address of a product account, at the prefix the core mandates.
+   *
+   * A product account is derived from the active session's root, so this
+   * answers `undefined` while the host is signed out and a different address
+   * after `switchAccount`. Read it here rather than out of the product's own
+   * UI: a suite funding that account, or asserting on it, should not depend on
+   * the product rendering it.
+   *
+   * Encoded at the prefix the core mandates, which is not necessarily the one
+   * the product displays: a product rendering at another prefix shows a
+   * different string for the same account. Compare against a product's own
+   * rendering by decoding both, and pass this to a faucet or a transfer as it
+   * stands.
+   */
+  getProductAccountAddress(
+    productId?: string,
+    index?: number,
+  ): Promise<string | undefined>;
   /**
    * The value the product stored under `key`, decoded as UTF-8.
    *
@@ -708,6 +732,8 @@ export function createTestHostFixture(defaults: TestHostFixtureOptions) {
             ]),
           );
         },
+        getProductAccountAddress: (productId?: string, index?: number) =>
+          call("getProductAccountAddress", productId, index),
         findProductStorage: async (key: string) =>
           productStorageEntry(await testHost.getProductStorage(), key),
         getProductStorageValue: async (key: string) =>
