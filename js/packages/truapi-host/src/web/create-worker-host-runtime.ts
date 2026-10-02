@@ -118,6 +118,13 @@ export interface WorkerPairingHostRuntime {
   ): Promise<void>;
   setGrantAllowancesUnchecked(granted: boolean): Promise<void>;
   /**
+   * Answer these resource tags as refused, replacing any earlier set.
+   *
+   * Withholding one resource while the rest stay granted is what lets a suite
+   * prove its product survives a refusal it cannot otherwise arrange.
+   */
+  setWithheldResources(tags: string[]): Promise<void>;
+  /**
    * Drop the active paired session without notifying the peer. Rejects on a
    * disposed runtime, as
    * {@link WorkerPairingHostRuntime.activateStoredSession} does.
@@ -2022,6 +2029,13 @@ function buildRuntime(
         }),
         false,
       );
+    },
+    setWithheldResources(tags: string[]): Promise<void> {
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "setWithheldResources",
+        requestId,
+        tags,
+      }));
     },
     resetSessionState(): Promise<void> {
       return sendSessionActivationRequest(state, (requestId) => ({
