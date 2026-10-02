@@ -177,15 +177,17 @@ fn schema_tables(conn: &Connection) -> Result<BTreeSet<String>, DbError> {
 }
 
 /// The statement an observed query runs. It records the raw values of every
-/// row it reads, so an unchanged result is not emitted again.
-pub struct ObservedStatement<'c> {
+/// row it reads, so an unchanged result is not emitted again. Running it
+/// consumes it: one run per refresh keeps the recorded rows a faithful
+/// image of the result.
+pub struct ObservedStatement<'c, 's> {
     stmt: CachedStatement<'c>,
-    snapshot: Vec<Value>,
+    snapshot: &'s mut Vec<Value>,
 }
 
-impl ObservedStatement<'_> {
+impl ObservedStatement<'_, '_> {
     /// Maps every row with `f`.
-    pub fn query_map<T, P, F>(&mut self, params: P, mut f: F) -> Result<Vec<T>, DbError>
+    pub fn query_map<T, P, F>(mut self, params: P, mut f: F) -> Result<Vec<T>, DbError>
     where
         P: Params,
         F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
@@ -194,14 +196,14 @@ impl ObservedStatement<'_> {
         let mut rows = self.stmt.query(params)?;
         let mut values = Vec::new();
         while let Some(row) = rows.next()? {
-            record(&mut self.snapshot, row, columns)?;
+            record(self.snapshot, row, columns)?;
             values.push(f(row)?);
         }
         Ok(values)
     }
 
     /// Maps the first row with `f`, or returns `None` when there is none.
-    pub fn query_optional<T, P, F>(&mut self, params: P, f: F) -> Result<Option<T>, DbError>
+    pub fn query_optional<T, P, F>(mut self, params: P, f: F) -> Result<Option<T>, DbError>
     where
         P: Params,
         F: FnOnce(&Row<'_>) -> rusqlite::Result<T>,
@@ -210,7 +212,7 @@ impl ObservedStatement<'_> {
         let mut rows = self.stmt.query(params)?;
         match rows.next()? {
             Some(row) => {
-                record(&mut self.snapshot, row, columns)?;
+                record(self.snapshot, row, columns)?;
                 Ok(Some(f(row)?))
             }
             None => Ok(None),
@@ -219,7 +221,7 @@ impl ObservedStatement<'_> {
 
     /// Maps the first row with `f`, failing with `QueryReturnedNoRows` when
     /// there is none.
-    pub fn query_row<T, P, F>(&mut self, params: P, f: F) -> Result<T, DbError>
+    pub fn query_row<T, P, F>(self, params: P, f: F) -> Result<T, DbError>
     where
         P: Params,
         F: FnOnce(&Row<'_>) -> rusqlite::Result<T>,
@@ -259,7 +261,7 @@ impl Db {
     pub fn observe<T, F>(&self, sql: &'static str, query: F) -> BoxStream<'static, Result<T, DbError>>
     where
         T: Send + 'static,
-        F: Fn(&mut ObservedStatement<'_>) -> Result<T, DbError> + Send + Sync + 'static,
+        F: Fn(ObservedStatement<'_, '_>) -> Result<T, DbError> + Send + Sync + 'static,
     {
         let db = self.clone();
         let query = Arc::new(query);
@@ -297,7 +299,7 @@ impl Db {
     ) -> (Option<Result<T, DbError>>, Phase)
     where
         T: Send + 'static,
-        F: Fn(&mut ObservedStatement<'_>) -> Result<T, DbError> + Send + Sync + 'static,
+        F: Fn(ObservedStatement<'_, '_>) -> Result<T, DbError> + Send + Sync + 'static,
     {
         match self.run_observed(sql, query).await {
             Ok((_, snapshot)) if last.as_ref() == Some(&snapshot) => (None, Phase::Running { registration, last }),
@@ -329,15 +331,16 @@ impl Db {
     async fn run_observed<T, F>(&self, sql: &'static str, query: Arc<F>) -> Result<(T, Vec<Value>), DbError>
     where
         T: Send + 'static,
-        F: Fn(&mut ObservedStatement<'_>) -> Result<T, DbError> + Send + Sync + 'static,
+        F: Fn(ObservedStatement<'_, '_>) -> Result<T, DbError> + Send + Sync + 'static,
     {
         self.read(move |conn| {
-            let mut observed = ObservedStatement {
+            let mut snapshot = Vec::new();
+            let statement = ObservedStatement {
                 stmt: conn.prepare_cached(sql)?,
-                snapshot: Vec::new(),
+                snapshot: &mut snapshot,
             };
-            let value = query(&mut observed)?;
-            Ok((value, observed.snapshot))
+            let value = query(statement)?;
+            Ok((value, snapshot))
         })
         .await
     }
