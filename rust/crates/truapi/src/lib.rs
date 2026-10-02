@@ -82,17 +82,16 @@ pub mod latest {
         HostAccountCreateProofRequest, HostAccountGetAliasRequest,
         HostAccountListRingVrfKeysRequest, HostAccountRegisterRingVrfKeyRequest,
         HostAccountRingVrfSignRequest, HostAccountSignVrfError, HostAccountSignVrfRequest,
-        HostFundingStatusSubscribeItem, HostPlatform, HostSignPayloadData,
-        HostWorkerOperationError, ImageFit, ImageProps, ImageSource, Modifier,
-        OperationStartedResult, PocketCard, ProductAccountId, ProductProofContext, RawPayload,
-        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
-        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
-        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RenderContext,
-        RendererNode, RingLocation, RingLocationJunction, RingVrfKeyDisclosure, RowProps,
-        RuntimeApi, RuntimeSpec, RuntimeType, Shape, SignedStatement, Size, Statement,
-        StatementProof, StorageQueryItem, StorageQueryType, StorageResultItem, TextFieldProps,
-        TextProps, ThemeName, ThemeVariant, TxPayloadExtension, TypographyStyle, VerticalAlignment,
-        VrfSignature,
+        HostPlatform, HostSignPayloadData, HostWorkerOperationError, ImageFit, ImageProps,
+        ImageSource, Modifier, OperationStartedResult, PocketCard, ProductAccountId,
+        ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
+        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
+        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
+        RemoteStatementStoreSubscribeRequest, RenderContext, RendererNode, RingLocation,
+        RingLocationJunction, RingVrfKeyDisclosure, RowProps, RuntimeApi, RuntimeSpec, RuntimeType,
+        Shape, SignedStatement, Size, Statement, StatementProof, StorageQueryItem,
+        StorageQueryType, StorageResultItem, TextFieldProps, TextProps, ThemeName, ThemeVariant,
+        TxPayloadExtension, TypographyStyle, VerticalAlignment, VrfSignature,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -179,6 +178,21 @@ pub mod latest {
     pub type HostLocaleSubscribeItem = LatestOf<versioned::locale::HostLocaleSubscribeItem>;
     /// Navigation request error.
     pub type HostNavigateToError = LatestOf<versioned::system::HostNavigateToError>;
+    /// Funding request.
+    pub type HostFundingRequest = LatestOf<versioned::funding::HostFundingRequest>;
+    /// Accepted funding intent.
+    pub type HostFundingResponse = LatestOf<versioned::funding::HostFundingResponse>;
+    /// Funding request failure.
+    pub type HostFundingError = LatestOf<versioned::funding::HostFundingError>;
+    /// Request to watch a funding session.
+    pub type HostFundingStatusSubscribeRequest =
+        LatestOf<versioned::funding::HostFundingStatusSubscribeRequest>;
+    /// Progress of a funding session.
+    pub type HostFundingStatusSubscribeItem =
+        LatestOf<versioned::funding::HostFundingStatusSubscribeItem>;
+    /// Failure watching a funding session.
+    pub type HostFundingStatusSubscribeError =
+        LatestOf<versioned::funding::HostFundingStatusSubscribeError>;
     /// The calling product's Pocket cards.
     pub type HostPocketListSubscribeItem = LatestOf<versioned::pocket::HostPocketListSubscribeItem>;
     /// Pocket card removal request.
