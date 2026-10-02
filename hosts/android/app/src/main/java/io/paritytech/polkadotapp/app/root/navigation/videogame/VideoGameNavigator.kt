@@ -1,11 +1,15 @@
 package io.paritytech.polkadotapp.app.root.navigation.videogame
 
+import dagger.Lazy
 import io.paritytech.polkadotapp.app.R
 import io.paritytech.polkadotapp.app.root.navigation.BaseNavigator
 import io.paritytech.polkadotapp.app.root.navigation.NavigationHolder
 import io.paritytech.polkadotapp.common.utils.toPayloadBundle
 import io.paritytech.polkadotapp.feature_chats_api.domain.middleware.bot.ChatBotData
 import io.paritytech.polkadotapp.feature_chats_api.presentation.model.ChatFeedPayload
+import io.paritytech.polkadotapp.feature_products_api.domain.browser.ProductSessionController
+import io.paritytech.polkadotapp.feature_products_api.model.ProductId
+import io.paritytech.polkadotapp.feature_products_api.presentation.SpaBrowserPayload
 import io.paritytech.polkadotapp.feature_videogame_api.domain.state.model.GameIndex
 import io.paritytech.polkadotapp.feature_videogame_impl.VideoGameRouter
 import io.paritytech.polkadotapp.feature_videogame_impl.presentation.chatWithPlayers.ChatWithPlayersPayload
@@ -14,6 +18,8 @@ import jakarta.inject.Inject
 
 class VideoGameNavigator @Inject constructor(
     navigationHolder: NavigationHolder,
+    // Lazy breaks the cycle through RealProductSessionController's DeepLinkHandler.
+    private val productSessionController: Lazy<ProductSessionController>,
 ) : BaseNavigator(navigationHolder), VideoGameRouter {
     override fun openChatWithPlayers(gameIndex: GameIndex) {
         val payload = ChatWithPlayersPayload(gameIndex.value)
@@ -54,5 +60,16 @@ class VideoGameNavigator @Inject constructor(
             actionId = R.id.action_videoGameVotingFragment_to_gameResultsFragment,
             args = payload.toPayloadBundle()
         )
+    }
+
+    override fun openGameProduct(productId: ProductId) {
+        if (isCurrentDestination(R.id.spaBrowserFragment)) {
+            productSessionController.get().openProduct(productId)
+        } else {
+            performNavigation(
+                actionId = R.id.action_global_to_spaBrowserFragment,
+                args = SpaBrowserPayload.ByProductId(productId.value).toPayloadBundle(SpaBrowserPayload::class.java.name),
+            )
+        }
     }
 }
