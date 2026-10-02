@@ -34,17 +34,32 @@ struct Observer {
     wake: mpsc::Sender<()>,
 }
 
+/// An observer's wake signal. Dropping it is the only way an observer is
+/// unregistered, so a dropped stream releases its channel at once.
+struct Registration {
+    wake: mpsc::Receiver<()>,
+    invalidation: Arc<Invalidation>,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.wake.close();
+        self.invalidation
+            .observers
+            .lock()
+            .retain(|observer| !observer.wake.is_closed());
+    }
+}
+
 impl Observer {
-    /// Wakes the observer if it reads a touched table. Returns whether it is
-    /// still listening.
-    fn notify(&mut self, touched: &BTreeSet<String>) -> bool {
-        if !self.tables.iter().any(|table| touched.contains(table)) {
-            return !self.wake.is_closed();
-        }
-        match self.wake.try_send(()) {
-            Ok(()) => true,
-            Err(error) => error.is_full(),
-        }
+    fn reads_any(&self, touched: &BTreeSet<String>) -> bool {
+        self.tables.iter().any(|table| touched.contains(table))
+    }
+
+    /// Asks the observer to re-query. A full channel already holds a wake,
+    /// and a closed one belongs to a registration that is being dropped.
+    fn notify(&mut self) {
+        let _ = self.wake.try_send(());
     }
 }
 
@@ -61,16 +76,22 @@ impl Invalidation {
         if touched.is_empty() {
             return;
         }
-        self.observers
-            .lock()
-            .retain_mut(|observer| observer.notify(&touched));
+        for observer in self.observers.lock().iter_mut() {
+            if observer.reads_any(&touched) {
+                observer.notify();
+            }
+        }
     }
 
-    /// Registers an observer of `tables` and returns its wake signal.
-    fn register(&self, tables: Arc<[String]>) -> mpsc::Receiver<()> {
+    /// Registers an observer of `tables`. It stays registered until the
+    /// returned registration is dropped.
+    fn register(self: &Arc<Self>, tables: Arc<[String]>) -> Registration {
         let (wake, receiver) = mpsc::channel(0);
         self.observers.lock().push(Observer { tables, wake });
-        receiver
+        Registration {
+            wake: receiver,
+            invalidation: self.clone(),
+        }
     }
 
     /// Forgets the changes of a write that rolled back.
@@ -78,11 +99,11 @@ impl Invalidation {
         self.touched.lock().clear();
     }
 
-    /// Wakes every observer one last time and drops them. Their re-query
-    /// meets the closed database, which ends each stream.
+    /// Wakes every observer. Its re-query meets the closed database, which
+    /// ends the stream and drops its registration.
     pub fn close(&self) {
-        for mut observer in self.observers.lock().drain(..) {
-            let _ = observer.wake.try_send(());
+        for observer in self.observers.lock().iter_mut() {
+            observer.notify();
         }
     }
 }
@@ -91,7 +112,7 @@ impl Invalidation {
 /// still deletes, but row by row: it turns off SQLite's truncate optimisation,
 /// which would otherwise run an unconditional `DELETE FROM t` without calling
 /// `update_hook`.
-pub fn delete_row_by_row(context: AuthContext<'_>) -> Authorization {
+pub fn authorize_for_change_tracking(context: AuthContext<'_>) -> Authorization {
     match context.action {
         AuthAction::Delete { .. } => Authorization::Ignore,
         _ => Authorization::Allow,
@@ -100,7 +121,7 @@ pub fn delete_row_by_row(context: AuthContext<'_>) -> Authorization {
 
 /// Makes the writer report every committed row change to `invalidation`.
 pub fn track_changes(conn: &Connection, invalidation: Arc<Invalidation>) -> rusqlite::Result<()> {
-    conn.authorizer(Some(delete_row_by_row))?;
+    conn.authorizer(Some(authorize_for_change_tracking))?;
     conn.update_hook(Some(move |_, database: &str, table: &str, _| {
         if database == "main" {
             invalidation.touch(table);
@@ -134,27 +155,26 @@ fn names_read_by(conn: &Connection, sql: &str) -> Result<BTreeSet<String>, DbErr
         {
             recorder.lock().insert(table_name.to_ascii_lowercase());
         }
-        delete_row_by_row(context)
+        authorize_for_change_tracking(context)
     }))?;
     // Uncached: a cached statement is not authorized again.
     let prepared = conn.prepare(sql).map(drop);
-    conn.authorizer(Some(delete_row_by_row))?;
+    conn.authorizer(Some(authorize_for_change_tracking))?;
     prepared?;
     Ok(core::mem::take(&mut *reads.lock()))
 }
 
 /// The schema's tables, without SQLite's internal ones.
 fn schema_tables(conn: &Connection) -> Result<BTreeSet<String>, DbError> {
-    let mut stmt = conn.prepare_cached(SCHEMA_TABLES_SQL)?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+    )?;
     let names = stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .map(|name| name.map(|name| name.to_ascii_lowercase()))
         .collect::<Result<_, _>>()?;
     Ok(names)
 }
-
-const SCHEMA_TABLES_SQL: &str =
-    "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'";
 
 /// The statement an observed query runs. It records the raw values of every
 /// row it reads, so an unchanged result is not emitted again.
@@ -219,7 +239,7 @@ fn record(snapshot: &mut Vec<Value>, row: &Row<'_>, columns: usize) -> rusqlite:
 enum Phase {
     Start,
     Running {
-        wake: mpsc::Receiver<()>,
+        registration: Registration,
         /// Raw rows of the last emission. `None` after an error, so the next
         /// success is emitted even when it equals the value before the error.
         last: Option<Vec<Value>>,
@@ -247,19 +267,19 @@ impl Db {
             let db = db.clone();
             let query = query.clone();
             async move {
-                let (wake, last) = match phase {
+                let (registration, last) = match phase {
                     Phase::Done => return None,
                     // Subscribe before the first read, so no commit is missed.
                     Phase::Start => match db.subscribe(sql).await {
-                        Ok(wake) => (wake, None),
+                        Ok(registration) => (registration, None),
                         Err(error) => return Some((Some(Err(error)), Phase::Done)),
                     },
-                    Phase::Running { mut wake, last } => {
-                        wake.next().await?;
-                        (wake, last)
+                    Phase::Running { mut registration, last } => {
+                        registration.wake.next().await?;
+                        (registration, last)
                     }
                 };
-                Some(db.requery(sql, query, wake, last).await)
+                Some(db.requery(sql, query, registration, last).await)
             }
         })
         .filter_map(core::future::ready)
@@ -272,7 +292,7 @@ impl Db {
         &self,
         sql: &'static str,
         query: Arc<F>,
-        wake: mpsc::Receiver<()>,
+        registration: Registration,
         last: Option<Vec<Value>>,
     ) -> (Option<Result<T, DbError>>, Phase)
     where
@@ -280,17 +300,17 @@ impl Db {
         F: Fn(&mut ObservedStatement<'_>) -> Result<T, DbError> + Send + Sync + 'static,
     {
         match self.run_observed(sql, query).await {
-            Ok((_, snapshot)) if last.as_ref() == Some(&snapshot) => (None, Phase::Running { wake, last }),
+            Ok((_, snapshot)) if last.as_ref() == Some(&snapshot) => (None, Phase::Running { registration, last }),
             Ok((value, snapshot)) => {
                 let last = Some(snapshot);
-                (Some(Ok(value)), Phase::Running { wake, last })
+                (Some(Ok(value)), Phase::Running { registration, last })
             }
             Err(DbError::Closed) => (Some(Err(DbError::Closed)), Phase::Done),
-            Err(error) => (Some(Err(error)), Phase::Running { wake, last: None }),
+            Err(error) => (Some(Err(error)), Phase::Running { registration, last: None }),
         }
     }
 
-    async fn subscribe(&self, sql: &'static str) -> Result<mpsc::Receiver<()>, DbError> {
+    async fn subscribe(&self, sql: &'static str) -> Result<Registration, DbError> {
         let tables = self.tables(sql).await?;
         Ok(self.invalidation.register(tables))
     }
@@ -380,8 +400,8 @@ mod tests {
 
     /// Whether a write since the last check woke an observer of `sql`. The
     /// wake is queued before `write` returns, so no waiting is needed.
-    fn woken(wake: &mut mpsc::Receiver<()>) -> bool {
-        wake.try_recv().is_ok()
+    fn woken(registration: &mut Registration) -> bool {
+        registration.wake.try_recv().is_ok()
     }
 
     /// Notes observed by a query that counts its runs and fails every run
@@ -455,11 +475,11 @@ mod tests {
     fn ignores_commits_to_other_tables() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir);
-        let mut wake = block_on(db.subscribe(NOTES_SQL)).unwrap();
+        let mut registration = block_on(db.subscribe(NOTES_SQL)).unwrap();
 
         exec(&db, "INSERT INTO other (id) VALUES (1)");
 
-        assert!(!woken(&mut wake));
+        assert!(!woken(&mut registration));
     }
 
     #[test]
@@ -468,24 +488,24 @@ mod tests {
         // its touched tables must not ride along with the next commit.
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir);
-        let mut wake = block_on(db.subscribe(NOTES_SQL)).unwrap();
+        let mut registration = block_on(db.subscribe(NOTES_SQL)).unwrap();
 
         let result = block_on(db.write(|tx| {
             tx.execute("INSERT INTO ledger (note) VALUES ('orphan')", [])?;
             Err::<(), _>(DbError::Connection("caller gave up".into()))
         }));
         assert!(result.is_err());
-        assert!(!woken(&mut wake));
+        assert!(!woken(&mut registration));
 
         exec(&db, "INSERT INTO other (id) VALUES (1)");
-        assert!(!woken(&mut wake));
+        assert!(!woken(&mut registration));
     }
 
     #[test]
     fn conflates_a_burst_into_the_latest_state() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir);
-        let mut wake = block_on(db.subscribe(NOTES_SQL)).unwrap();
+        let mut registration = block_on(db.subscribe(NOTES_SQL)).unwrap();
         let mut stream = notes(&db);
         assert_eq!(next(&mut stream).unwrap().unwrap(), Vec::<String>::new());
 
@@ -497,8 +517,8 @@ mod tests {
             exec(&db, sql);
         }
 
-        assert!(woken(&mut wake));
-        assert!(!woken(&mut wake), "three commits queue a single wake");
+        assert!(woken(&mut registration));
+        assert!(!woken(&mut registration), "three commits queue a single wake");
         assert_eq!(next(&mut stream).unwrap().unwrap(), vec!["a", "b", "c"]);
     }
 
@@ -569,11 +589,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir);
         exec(&db, "INSERT INTO other (id) VALUES (1), (2)");
-        let mut wake = block_on(db.subscribe("SELECT id FROM other")).unwrap();
+        let mut registration = block_on(db.subscribe("SELECT id FROM other")).unwrap();
 
         exec(&db, "DELETE FROM other");
 
-        assert!(woken(&mut wake));
+        assert!(woken(&mut registration));
     }
 
     #[test]
@@ -585,11 +605,11 @@ mod tests {
             "INSERT INTO ledger (id, note) VALUES (1, 'a');
              INSERT INTO child (id, ledger_id) VALUES (10, 1);",
         );
-        let mut wake = block_on(db.subscribe("SELECT id FROM child")).unwrap();
+        let mut registration = block_on(db.subscribe("SELECT id FROM child")).unwrap();
 
         exec(&db, "DELETE FROM ledger WHERE id = 1");
 
-        assert!(woken(&mut wake));
+        assert!(woken(&mut registration));
     }
 
     #[test]
@@ -697,13 +717,14 @@ mod tests {
 
     #[test]
     fn dropping_the_stream_unregisters_it() {
+        // Without a later write to prune it, a dropped observer would keep its
+        // channel and the waiting task's waker alive.
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir);
         let mut stream = notes(&db);
         next(&mut stream).unwrap().unwrap();
-        drop(stream);
 
-        exec(&db, "INSERT INTO other (id) VALUES (1)");
+        drop(stream);
 
         assert!(db.invalidation.observers.lock().is_empty());
     }

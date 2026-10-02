@@ -15,7 +15,7 @@ use rusqlite::{OpenFlags, TransactionBehavior};
 use rusqlite_migration::Migrations;
 
 pub use observe::ObservedStatement;
-use observe::{Invalidation, delete_row_by_row, track_changes};
+use observe::{Invalidation, authorize_for_change_tracking, track_changes};
 
 /// Where a database lives.
 #[derive(Debug, Clone)]
@@ -159,7 +159,7 @@ impl Db {
                 readers
                     .conn_for_each(|conn| {
                         conn.busy_timeout(BUSY_TIMEOUT)?;
-                        conn.authorizer(Some(delete_row_by_row))
+                        conn.authorizer(Some(authorize_for_change_tracking))
                     })
                     .await
                     .into_iter()
