@@ -431,6 +431,10 @@ pub mod testing {
         let params: serde_json::Value =
             serde_json::from_str(params).expect("batched read params are JSON");
         let keys = params[0].as_array().expect("batched read names its keys");
+        let block = params
+            .get(1)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("0xscripted");
         assert!(
             responses.len() >= keys.len(),
             "unscripted batched read of {} keys",
@@ -444,7 +448,7 @@ pub mod testing {
                 serde_json::json!([key, value])
             })
             .collect();
-        serde_json::json!([{ "block": "0xscripted", "changes": changes }]).to_string()
+        serde_json::json!([{ "block": block, "changes": changes }]).to_string()
     }
 
     fn params_json(params: Option<Box<RawValue>>) -> String {
