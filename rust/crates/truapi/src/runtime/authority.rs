@@ -288,13 +288,57 @@ pub enum CreateTransactionAuthorityRequest {
     IdentityAccount(LegacyAccountTxPayload),
 }
 
-/// Whether blessed `calling_product_id` is using its own account, `owner`.
-pub(crate) fn is_blessed_owner(calling_product_id: &str, owner: &str) -> bool {
-    use crate::platform::{has_trusted_remote_permissions, normalize_product_identifier};
-    normalize_product_identifier(calling_product_id).is_ok_and(|caller| {
-        has_trusted_remote_permissions(&caller)
-            && normalize_product_identifier(owner).is_ok_and(|owner| owner == caller)
-    })
+/// A product asking the authority for something, and whether this host
+/// vouches for its id.
+///
+/// Only a product this host runs has an id the host can vouch for. A paired
+/// host names the product it relays for, and nothing proves that name, so the
+/// trusted-product policy never applies to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Caller {
+    product_id: String,
+    local: bool,
+}
+
+impl Caller {
+    /// A product this host runs, identified by its own `ProductContext`.
+    pub fn local(product_id: impl Into<String>) -> Self {
+        Self {
+            product_id: product_id.into(),
+            local: true,
+        }
+    }
+
+    /// A product a paired host names on its behalf.
+    pub fn relayed(product_id: impl Into<String>) -> Self {
+        Self {
+            product_id: product_id.into(),
+            local: false,
+        }
+    }
+
+    /// The product id, as given.
+    pub fn product_id(&self) -> &str {
+        &self.product_id
+    }
+
+    /// The same caller under its normalized id, or `None` when it names no product.
+    pub fn normalized(&self) -> Option<Self> {
+        let product_id = crate::platform::normalize_product_identifier(&self.product_id).ok()?;
+        Some(Self { product_id, ..*self })
+    }
+
+    /// Whether the trusted-product policy covers this caller.
+    pub fn is_trusted(&self) -> bool {
+        self.local && crate::platform::normalizes_to_trusted_remote_permissions(&self.product_id)
+    }
+
+    /// Whether a trusted caller is using its own account, `owner`.
+    pub fn is_trusted_owner(&self, owner: &str) -> bool {
+        self.is_trusted()
+            && crate::platform::normalize_product_identifier(owner).ok()
+                == self.normalized().map(|caller| caller.product_id)
+    }
 }
 
 /// Whether a product-account call can be signed without a confirmation prompt.

@@ -130,9 +130,9 @@ fn a_granted_signature_is_still_confirmed_by_the_user() {
     );
 }
 
-/// A blessed product skips the confirmation, never the owner's grant.
+/// A trusted product skips the confirmation, never the owner's grant.
 #[test]
-fn a_blessed_product_signs_with_another_products_account_only_when_granted() {
+fn a_trusted_product_signs_with_another_products_account_only_when_granted() {
     for (trusted, expected) in [
         (
             "{}",

@@ -29,6 +29,7 @@ use truapi::{CallContext, CallError, Subscription, latest, v01};
 
 use crate::host_internal::product_manifest::Granted;
 use crate::host_internal::sso_messages::ProductRequest;
+use crate::runtime::authority::Caller;
 use crate::runtime::{
     ProductRuntimeHost, account_access_authorization, account_get_authority_error,
     remote_authority_call, remote_authority_context, ring_vrf_alias_error, ring_vrf_list_error,
@@ -61,7 +62,7 @@ impl Account for ProductRuntimeHost {
         if product_account_id.dot_ns_identifier != product_id {
             match account_access_authorization(
                 self.platform.as_ref(),
-                &product_id,
+                &Caller::local(product_id.as_str()),
                 &product_account_id.dot_ns_identifier,
             )
             .await

@@ -1,4 +1,4 @@
-//! An AutoSigning grant or a blessed caller waives the per-call confirmation on
+//! An AutoSigning grant or a trusted caller waives the per-call confirmation on
 //! the signing role.
 
 use super::*;
@@ -143,8 +143,8 @@ fn a_grant_does_not_cover_the_unwatermarked_raw_signing_api() {
 }
 
 #[test]
-fn a_blessed_product_signs_its_own_account_without_a_grant() {
-    for (product_id, blessed) in [("dim2.paseo", true), ("app.dim2.paseo", false)] {
+fn a_trusted_product_signs_its_own_account_without_a_grant() {
+    for (product_id, trusted) in [("dim2.paseo", true), ("app.dim2.paseo", false)] {
         let platform = granting_platform();
         let (services, activation) = signing_runtime_with_platform(platform.clone());
         futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
@@ -158,7 +158,7 @@ fn a_blessed_product_signs_its_own_account_without_a_grant() {
 
         assert_eq!(
             (signed, platform.sign_raw_reviews.lock().unwrap().len()),
-            (blessed, usize::from(!blessed)),
+            (trusted, usize::from(!trusted)),
             "{product_id}",
         );
     }
@@ -167,7 +167,7 @@ fn a_blessed_product_signs_its_own_account_without_a_grant() {
 /// Only the local runtime vouches for its caller, and only for its own account;
 /// a relayed request can claim any product id.
 #[test]
-fn a_blessed_vrf_signature_skips_the_prompt_only_locally_for_its_own_account() {
+fn a_trusted_vrf_signature_skips_the_prompt_only_locally_for_its_own_account() {
     let platform = granting_platform();
     let (services, activation) = signing_runtime_with_platform(platform.clone());
     futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
@@ -212,7 +212,7 @@ fn a_blessed_vrf_signature_skips_the_prompt_only_locally_for_its_own_account() {
 
 /// Legacy accounts sign with the user's own keys, not a product's.
 #[test]
-fn a_blessed_product_still_confirms_legacy_account_signing() {
+fn a_trusted_product_still_confirms_legacy_account_signing() {
     let platform = granting_platform();
     let (services, activation) = signing_runtime_with_platform(platform.clone());
     futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
@@ -235,5 +235,65 @@ fn a_blessed_product_still_confirms_legacy_account_signing() {
     assert_eq!(
         (signed, platform.sign_raw_reviews.lock().unwrap().len()),
         (false, 1),
+    );
+}
+
+/// A relayed request only claims its caller, so a trusted id there still needs
+/// the user before reading another product's ring-VRF identity.
+#[test]
+fn a_relayed_trusted_claim_still_needs_account_access() {
+    let platform = Arc::new(StubPlatform::default());
+    let authority =
+        SigningHostRole::new_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+    futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+        .expect("activation succeeds");
+    let session = authority.current_session().expect("active session");
+    register_full_person_key(&authority, &session, &full_person_ring_location());
+    let service = SigningHostSsoService::new(authority);
+    let relay = |message| match futures::executor::block_on(service.answer(message)) {
+        Dispatch::Response(answer) => answer.message.data,
+        _ => panic!("expected a response"),
+    };
+
+    let RemoteMessageData::V1(v1::RemoteMessage::GetAccountAliasResponse(alias)) =
+        relay(RemoteMessage::request(
+            "alias".to_string(),
+            ProductRequest {
+                calling_product_id: "dim2.dot".to_string(),
+                payload: HostAccountGetAliasRequest {
+                    key_handle: full_person_key_handle(),
+                    context: v01::ProductProofContext {
+                        product_id: "other.dot".to_string(),
+                        suffix: v01::DerivationIndex::Index(0),
+                    },
+                    ring_location: full_person_ring_location(),
+                },
+            },
+        ))
+    else {
+        panic!("expected an alias response")
+    };
+    let RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysResponse(keys)) =
+        relay(RemoteMessage::request(
+            "keys".to_string(),
+            ProductRequest {
+                calling_product_id: "dim2.dot".to_string(),
+                payload: truapi::latest::HostAccountListRingVrfKeysRequest {
+                    owner: "peopl.dot".to_string(),
+                    disclosure: v01::RingVrfKeyDisclosure::PublicKey,
+                },
+            },
+        ))
+    else {
+        panic!("expected a ring-VRF key list response")
+    };
+
+    assert_eq!(
+        (
+            alias.payload.map(|_| ()),
+            keys.payload.map(|_| ()),
+            platform.account_access_reviews.lock().unwrap().len(),
+        ),
+        (Err(RingVrfError::Rejected), Err(RingVrfError::Rejected), 1),
     );
 }

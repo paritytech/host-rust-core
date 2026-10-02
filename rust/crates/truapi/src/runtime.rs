@@ -603,7 +603,7 @@ impl ProductRuntimeHost {
         product_manifest::grants_scope(
             &self.services,
             &*self.platform,
-            &self.product_id(),
+            &authority::Caller::local(self.product_id()),
             &normalized,
             scope,
         )
@@ -761,7 +761,7 @@ impl ProductRuntimeHost {
         &self,
         review: UserConfirmationReview,
     ) -> Result<bool, v01::GenericError> {
-        if crate::platform::has_trusted_remote_permissions(&self.product_id()) {
+        if authority::Caller::local(self.product_id()).is_trusted() {
             return Ok(true);
         }
         self.platform.confirm_user_action(review).await
@@ -849,12 +849,11 @@ impl ProductRuntimeHost {
 
 async fn account_access_authorization(
     platform: &dyn Platform,
-    requesting_product_id: &str,
+    requester: &authority::Caller,
     target_product_id: &str,
 ) -> Result<PermissionAuthorizationStatus, AccountAccessAuthorizationError> {
-    if requesting_product_id == target_product_id
-        || crate::platform::normalizes_to_trusted_remote_permissions(requesting_product_id)
-    {
+    let requesting_product_id = requester.product_id();
+    if requesting_product_id == target_product_id || requester.is_trusted() {
         return Ok(PermissionAuthorizationStatus::Authorized);
     }
 
