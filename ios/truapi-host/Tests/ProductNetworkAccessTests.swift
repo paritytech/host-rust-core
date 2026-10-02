@@ -12,34 +12,99 @@ import WebKit
 struct ProductNetworkAccessTests {
     @Test(.timeLimit(.minutes(1)))
     func retainedClientAndFetchRecoverWithoutLifecycleCallbacks() async throws {
-        let product = try await NetworkTestProduct.open(initialScripts: ["""
+        let product = try await NetworkTestProduct.open(traceRecovery: true, initialScripts: ["""
+            window.__testRecoveryCycle = -1;
+            window.__nativeRecoveryTrace = (event, fields = {}, error) => {
+              try {
+                window.webkit.messageHandlers.testRecovery.postMessage(JSON.stringify({
+                  event, product: 'network.paseo', cycle: window.__testRecoveryCycle,
+                  ms: performance.now(), ...fields,
+                  ...(error === undefined ? {} : window.__testRecoveryError(error)),
+                }));
+              } catch {}
+            };
+            window.__testRecoveryError = (error, depth = 0) => ({
+              errorClass: error?.constructor?.name,
+              errorName: error?.name,
+              errorMessage: error?.message,
+              errorReason: error?.reason,
+              errorTag: error?.tag,
+              requestId: error?.requestId,
+              ...(depth < 3 && error?.value ? {
+                detail: window.__testRecoveryError(error.value, depth + 1),
+              } : {}),
+              ...(depth < 3 && error?.cause ? {
+                cause: window.__testRecoveryError(error.cause, depth + 1),
+              } : {}),
+            });
+            window.__nativeRecoveryTrace('fixture.documentStart');
             const NativeSocket = WebSocket;
             const closeSocket = NativeSocket.prototype.close;
+            let socketId = 0;
             window.WebSocket = new Proxy(NativeSocket, {
               construct(target, args) {
                 const socket = Reflect.construct(target, args);
-                window.__testDisconnectHost = () => closeSocket.call(socket);
+                const id = ++socketId;
+                window.__nativeRecoveryTrace('socket.create', { socket: id });
+                socket.addEventListener('open', () =>
+                  window.__nativeRecoveryTrace('socket.open', { socket: id }));
+                socket.addEventListener('close', event =>
+                  window.__nativeRecoveryTrace('socket.close', {
+                    socket: id, code: event.code, wasClean: event.wasClean,
+                  }));
+                socket.addEventListener('error', () =>
+                  window.__nativeRecoveryTrace('socket.error', { socket: id }));
+                window.__testDisconnectHost = () => {
+                  window.__nativeRecoveryTrace('socket.closeRequested', { socket: id });
+                  return closeSocket.call(socket);
+                };
                 return socket;
               }
             });
             """])
-        defer { product.close() }
+        defer {
+            print("[native-recovery] fixture.end product=network.paseo allowedCount=\(product.server.requests(path: "/allowed"))")
+            product.close()
+        }
         try product.execution.setPermissionAuthorizationStatus(
             request: .remote(RemotePermissionRequest(permission: .remote(domains: ["127.0.0.1"]))),
             status: .authorized
         )
+        print("[native-recovery] fixture.permissionStored product=network.paseo domain=127.0.0.1 status=authorized")
         let remote = product.server.url(host: "127.0.0.1", path: "/allowed")
         let result = try await withNetworkTestTimeout("retained client recovery") {
             try await product.webView.callAsyncJavaScript("""
+                const trace = window.__nativeRecoveryTrace;
+                const errorFields = window.__testRecoveryError;
+                trace('fixture.evaluate');
                 const host = window.__HOST_API_CLIENT__;
                 const client = host.client;
                 const statuses = [];
-                host.subscribeConnectionStatus(status => statuses.push(status));
-                (await client.system.handshake())._unsafeUnwrap();
+                host.subscribeConnectionStatus(status => {
+                  statuses.push(status);
+                  trace('connection.status', { status });
+                });
+                trace('handshake.start', { phase: 'initial' });
+                try {
+                  const handshake = await client.system.handshake();
+                  trace('handshake.result', {
+                    phase: 'initial', ok: handshake.isOk(),
+                    ...(handshake.isErr() ? errorFields(handshake.error) : {}),
+                  });
+                  handshake._unsafeUnwrap();
+                } catch (error) {
+                  trace('handshake.throw', { phase: 'initial', ...errorFields(error) });
+                  throw error;
+                }
                 const results = [];
                 let interrupted = 0;
                 for (let cycle = 0; cycle < 2; cycle++) {
-                  client.theme.subscribe().subscribe({ error() { interrupted++; } });
+                  window.__testRecoveryCycle = cycle;
+                  trace('cycle.start');
+                  client.theme.subscribe().subscribe({ error(error) {
+                    interrupted++;
+                    trace('subscription.reset', { cycle, interrupted, ...errorFields(error) });
+                  } });
                   const disconnected = new Promise(resolve => {
                     const unsubscribe = host.subscribeConnectionStatus(status => {
                       if (status === 'disconnected') { unsubscribe(); resolve(); }
@@ -47,8 +112,30 @@ struct ProductNetworkAccessTests {
                   });
                   window.__testDisconnectHost();
                   await disconnected;
-                  (await client.system.handshake())._unsafeUnwrap();
-                  results.push(await (await fetch(url)).text());
+                  trace('connection.disconnectedObserved');
+                  trace('handshake.start', { phase: 'reconnect' });
+                  try {
+                    const handshake = await client.system.handshake();
+                    trace('handshake.result', {
+                      phase: 'reconnect', ok: handshake.isOk(),
+                      ...(handshake.isErr() ? errorFields(handshake.error) : {}),
+                    });
+                    handshake._unsafeUnwrap();
+                  } catch (error) {
+                    trace('handshake.throw', { phase: 'reconnect', ...errorFields(error) });
+                    throw error;
+                  }
+                  trace('fetch.start', { domain: '127.0.0.1' });
+                  try {
+                    const response = await fetch(url);
+                    trace('fetch.response', { status: response.status });
+                    const text = await response.text();
+                    results.push(text);
+                    trace('fetch.result', { allowedBody: text === 'allowed' });
+                  } catch (error) {
+                    trace('fetch.throw', errorFields(error));
+                    throw error;
+                  }
                 }
                 return JSON.stringify({
                   sameClient: host.client === client,
@@ -265,6 +352,7 @@ private struct NetworkTestProduct {
 
     static func open(
         bridge: StubHostBridge = StubHostBridge(),
+        traceRecovery: Bool = false,
         initialScripts: [String] = []
     ) async throws -> NetworkTestProduct {
         let server = try await NetworkTestServer.start()
@@ -284,6 +372,9 @@ private struct NetworkTestProduct {
             // Local fixtures must not wait for Safari's Safe Browsing database.
             configuration.preferences.isFraudulentWebsiteWarningEnabled = false
             configuration.userContentController.add(ready, name: "testReady")
+            if traceRecovery {
+                configuration.userContentController.add(NetworkRecoveryTrace(server: server), name: "testRecovery")
+            }
             for source in initialScripts {
                 configuration.userContentController.addUserScript(WKUserScript(
                     source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true
@@ -318,6 +409,18 @@ private struct NetworkTestProduct {
         window.close()
         execution.close()
         server.stop()
+    }
+}
+
+@MainActor
+private final class NetworkRecoveryTrace: NSObject, WKScriptMessageHandler {
+    private let server: NetworkTestServer
+
+    init(server: NetworkTestServer) { self.server = server }
+
+    func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let trace = message.body as? String else { return }
+        print("[native-recovery] \(trace) allowedCountAtReceipt=\(server.requests(path: "/allowed"))")
     }
 }
 

@@ -318,7 +318,14 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         };
         for candidate in remote_domain_candidates(domain) {
             let key = CoreStorageKey::remote_domain_authorization(self.product_id(), &candidate);
-            if let Some(stored) = peek_stored(self.storage, key.clone()).await? {
+            let stored = peek_stored(self.storage, key.clone()).await;
+            if domain == "127.0.0.1" {
+                eprintln!(
+                    "[native-recovery] rust.storage product={} domain={domain} candidate={candidate} result={stored:?}",
+                    self.product_id()
+                );
+            }
+            if let Some(stored) = stored? {
                 fallback = stored.into();
                 break;
             }
@@ -329,8 +336,20 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         }
         for key in temporary_keys {
             if self.temporary_permissions.authorize(&key, false) {
+                if domain == "127.0.0.1" {
+                    eprintln!(
+                        "[native-recovery] rust.effective product={} domain={domain} status=Authorized temporary=true",
+                        self.product_id()
+                    );
+                }
                 return Ok((PermissionAuthorizationStatus::Authorized, Some(key)));
             }
+        }
+        if domain == "127.0.0.1" {
+            eprintln!(
+                "[native-recovery] rust.effective product={} domain={domain} status={fallback:?} temporary=false",
+                self.product_id()
+            );
         }
         Ok((fallback, None))
     }
@@ -533,7 +552,30 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         &self,
         request: RemotePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
-        self.remote_authorization(request, true).await
+        // Temporary loopback-fixture trace. Do not perform extra storage reads.
+        static TRACE_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let trace = requested_domains(&request)
+            .is_some_and(|domains| domains.len() == 1 && domains[0] == "127.0.0.1");
+        let request_id = if trace {
+            TRACE_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+        } else {
+            0
+        };
+        if trace {
+            eprintln!(
+                "[native-recovery] rust.authorize.start request={request_id} product={} domain=127.0.0.1 trusted={}",
+                self.product_id(),
+                self.trusted_product
+            );
+        }
+        let result = self.remote_authorization(request, true).await;
+        if trace {
+            eprintln!(
+                "[native-recovery] rust.authorize.result request={request_id} product={} domain=127.0.0.1 result={result:?}",
+                self.product_id()
+            );
+        }
+        result
     }
 
     async fn remote_authorization(

@@ -57,6 +57,34 @@ export function createHostConnection(
   let status: ConnectionStatus = "disconnected";
   let retries = 0;
   const listeners = new Set<(status: ConnectionStatus) => void>();
+  // Temporary native recovery fixture hook; never log the endpoint or frames.
+  const diagnostic = (
+    globalThis as typeof globalThis & {
+      __nativeRecoveryTrace?: (
+        event: string,
+        fields: object,
+        error?: unknown,
+      ) => void;
+    }
+  ).__nativeRecoveryTrace;
+  function trace(event: string, connection: Connection, error?: unknown): void {
+    if (!diagnostic) return;
+    try {
+      diagnostic(
+        event,
+        {
+          current: current === connection,
+          verified: connection.verified,
+          checking: !!connection.checking,
+          checkedAt: connection.checkedAt,
+          status,
+        },
+        error,
+      );
+    } catch {
+      /* Diagnostics cannot affect recovery. */
+    }
+  }
 
   function setStatus(next: ConnectionStatus): void {
     if (status === next) return;
@@ -72,6 +100,7 @@ export function createHostConnection(
   }
 
   function retire(connection: Connection, cause?: unknown): void {
+    trace("hostConnection.retire", connection, cause);
     if (current !== connection) return;
     current = undefined;
     const oldLegacy = legacy;
@@ -105,6 +134,7 @@ export function createHostConnection(
     }
     const connection = { provider, verified: false, checkedAt: 0 };
     current = connection;
+    trace("hostConnection.open", connection);
     provider.subscribe((frame) => {
       if (current !== connection) return;
       connection.checkedAt = now();
@@ -122,10 +152,18 @@ export function createHostConnection(
   }
 
   function ready(connection: Connection): Promise<void> {
+    trace("hostConnection.ready", connection);
     if (connection.verified && now() - connection.checkedAt < 10_000)
       return Promise.resolve();
     return (connection.checking ??= Promise.resolve(handshake())
       .then((result) => {
+        trace(
+          result.isOk()
+            ? "hostConnection.handshake.Ok"
+            : "hostConnection.handshake.Err",
+          connection,
+          result.isErr() ? result.error : undefined,
+        );
         if (result.isErr()) throw result.error;
         if (current !== connection) throw new ConnectionResetError();
         connection.verified = true;
