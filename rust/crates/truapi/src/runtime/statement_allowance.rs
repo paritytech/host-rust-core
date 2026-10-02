@@ -2242,15 +2242,12 @@ mod tests {
         let candidates = pooled_candidates();
         let target = [0x22; 32];
 
-        let responses = [
-            // People: an undecodable storage value fails this collection's scan.
-            r#""zz""#.to_string(),
-            // LitePeople: the target holds seq 3.
-            "null".to_string(),
-            "null".to_string(),
-            "null".to_string(),
-            occupied(target, 4_000),
-        ];
+        let null = || "null".to_string();
+        // People: an undecodable storage value fails this collection's scan.
+        let people = std::iter::once(r#""zz""#.to_string()).chain(std::iter::repeat_with(null).take(19));
+        // LitePeople: the target holds seq 3.
+        let lite = (0..10).map(|seq| if seq == 3 { occupied(target, 4_000) } else { null() });
+        let responses: Vec<String> = people.chain(lite).collect();
         let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
         let rpc = RpcClient::new(HostRpcClient::new(scripted));
 
@@ -2271,13 +2268,20 @@ mod tests {
         );
     }
 
-    /// Storage reads the scripted transport served.
+    /// Storage keys the scripted transport read, one per key of a batched read.
     fn storage_reads(scripted: &ScriptedRpc) -> usize {
         scripted
             .calls()
             .iter()
-            .filter(|(method, _)| method == "state_getStorage")
-            .count()
+            .map(|(method, params)| match method.as_str() {
+                "state_getStorage" => 1,
+                "state_queryStorageAt" => serde_json::from_str::<serde_json::Value>(params)
+                    .expect("batched read params are JSON")[0]
+                    .as_array()
+                    .map_or(0, Vec::len),
+                _ => 0,
+            })
+            .sum()
     }
 
     /// A full table is no longer a dead end: the oldest slot the runtime allows

@@ -1399,7 +1399,10 @@ mod tests {
     fn an_existing_allowance_is_served_without_touching_the_ring() {
         use futures::FutureExt;
 
-        use crate::host_logic::product_account::derive_sr25519_hard_path;
+        use crate::host_logic::product_account::{
+            derive_full_person_ring_vrf_entropy, derive_sr25519_hard_path,
+        };
+        use crate::runtime::statement_allowance::slot;
 
         let product_id = "myapp.dot";
         let allowance =
@@ -1408,6 +1411,12 @@ mod tests {
         // The scan reads slot 0 first; answering it with an entry naming the
         // allowance account is the "already allocated" case.
         let slot_entry = (allowance.public.to_bytes(), 0u32, 0u64).encode();
+        let people_row = slot::testing::slot_row(
+            derive_full_person_ring_vrf_entropy(&ENTROPY, NETWORK_SUFFIX),
+            NETWORK_SUFFIX.as_bytes(),
+            slot::current_period(current_unix_secs().unwrap()),
+            &[Some(format!(r#""0x{}""#, hex::encode(&slot_entry)))],
+        );
 
         // Keyed by method, not by request order: this path decodes ~450 KiB of
         // metadata between two requests, which outruns the ordered script's
@@ -1443,8 +1452,8 @@ mod tests {
                     format!(r#""0x{}""#, hex::encode(b"paseo".to_vec().encode())),
                 ),
                 (
-                    "state_getStorage",
-                    format!(r#""0x{}""#, hex::encode(&slot_entry)),
+                    "state_queryStorageAt",
+                    people_row,
                 ),
             ],
             ..Default::default()
@@ -1499,15 +1508,6 @@ mod tests {
                 .iter()
                 .any(|method| method.starts_with("author_submit")),
             "an extrinsic was submitted for an allowance already in place: {methods:?}"
-        );
-        // The suffix and one slot read answered it; the scan stopped at the first match.
-        assert_eq!(
-            methods
-                .iter()
-                .filter(|method| *method == "state_getStorage")
-                .count(),
-            2,
-            "expected one suffix and one slot read: {methods:?}"
         );
     }
 

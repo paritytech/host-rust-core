@@ -7,8 +7,11 @@ use truapi::versioned::statement_store::{
     RemoteStatementStoreSubmitError, RemoteStatementStoreSubmitRequest,
 };
 
-use crate::host_logic::product_account::derive_sr25519_hard_path;
+use crate::host_logic::product_account::{
+    derive_full_person_ring_vrf_entropy, derive_sr25519_hard_path,
+};
 use crate::host_logic::statement_store::SUBMIT_STATEMENT_METHOD;
+use crate::runtime::statement_allowance::slot;
 
 const PRODUCT_ID: &str = "myapp.dot";
 const PERIOD: u32 = 7;
@@ -23,6 +26,12 @@ fn chain_with_allocated_slot() -> Arc<StubPlatform> {
         derive_sr25519_hard_path(&ENTROPY, &["allowance", "statement-store", PRODUCT_ID])
             .expect("allowance derivation succeeds");
     let slot_entry = (allowance.public.to_bytes(), 0u32, 0u64).encode();
+    let people_row = slot::testing::slot_row(
+        derive_full_person_ring_vrf_entropy(&ENTROPY, TEST_NETWORK_SUFFIX),
+        TEST_NETWORK_SUFFIX.as_bytes(),
+        slot::current_period(crate::unix_time::current_unix_secs()),
+        &[Some(format!(r#""0x{}""#, hex::encode(&slot_entry)))],
+    );
     Arc::new(StubPlatform {
         rpc_method_responses: vec![
             (
@@ -52,8 +61,8 @@ fn chain_with_allocated_slot() -> Arc<StubPlatform> {
                 format!(r#""0x{}""#, hex::encode(TEST_NETWORK_SUFFIX.encode())),
             ),
             (
-                "state_getStorage",
-                format!(r#""0x{}""#, hex::encode(&slot_entry)),
+                "state_queryStorageAt",
+                people_row,
             ),
         ],
         ..Default::default()
