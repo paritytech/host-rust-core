@@ -1,7 +1,7 @@
 {
   "android": {
     "branch": "main",
-    "ref": "82b09adbf0ca8d4a7ece88f1fab44b454cf98fe1",
+    "ref": "7c239096b65b62b9d1de1b1cdef6ab4f7fba202e",
     "source": "https://github.com/paritytech/polkadot-android-community.git"
   },
   "ios": {
