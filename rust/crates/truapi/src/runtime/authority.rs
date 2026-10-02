@@ -659,6 +659,11 @@ pub trait ProductAuthority: Send + Sync {
         product_id: String,
     ) -> Result<StatementStoreAllowanceKey, AuthorityError>;
 
+    /// Drop the product's cached statement-store allowance key if it is
+    /// `public_key`. Only the local signing host caches that key; the default
+    /// does nothing.
+    fn forget_statement_store_allowance_key(&self, _product_id: &str, _public_key: [u8; 32]) {}
+
     /// Return Bulletin allowance key material for the calling product.
     async fn bulletin_allowance_key(
         &self,

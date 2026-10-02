@@ -593,6 +593,7 @@ macro_rules! runtime_items {
 
 runtime_items! {
     pub mod bootstrap;
+    pub mod chain;
     mod chain_runtime;
     mod truapi_core;
     mod dispatcher;
