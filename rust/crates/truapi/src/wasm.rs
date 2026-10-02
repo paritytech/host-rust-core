@@ -1228,6 +1228,18 @@ impl WasmSigningHostRuntime {
             .map_err(generic_error_to_js)
     }
 
+    /// Answer these resource tags as refused, replacing any earlier set.
+    ///
+    /// A suite proving its product survives a refused resource needs that one
+    /// withheld while the rest stay granted. The tag is the
+    /// `AllocatableResource` variant name, so `SmartContractAllowance`
+    /// withholds every derivation index.
+    #[cfg(feature = "test-host")]
+    #[wasm_bindgen(js_name = setWithheldResources)]
+    pub fn set_withheld_resources(&self, tags: Vec<String>) {
+        self.runtime.set_withheld_resources(tags);
+    }
+
     /// Build a shared signing runtime from host callbacks and host config.
     #[wasm_bindgen(constructor)]
     pub fn new(
