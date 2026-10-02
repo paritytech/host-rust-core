@@ -65,7 +65,7 @@ pub struct HostFundingResponse {
     pub intent: String,
 }
 
-/// Error from `Funding::request`.
+/// Error from [`crate::api::Funding::request`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum HostFundingError {
     /// User is not logged in.
@@ -119,7 +119,7 @@ pub enum HostFundingStatusSubscribeItem {
     },
 }
 
-/// Error from `Funding::status_subscribe`.
+/// Error from [`crate::api::Funding::status_subscribe`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum HostFundingStatusSubscribeError {
     /// No such session, or it does not belong to the caller.
