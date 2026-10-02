@@ -152,6 +152,23 @@ impl crate::platform::ContactsPlatform for ContactsCallbackPlatform {
                 reason: error.to_string(),
             })
     }
+
+    async fn pick_contacts(
+        &self,
+        product: &ProductContext,
+        selection: crate::platform::ContactSelection,
+    ) -> Result<crate::platform::HostContactsPick, v01::GenericError> {
+        self.contacts.pick_contacts(product.product_id.clone(), selection).await
+            .map_err(|error| v01::GenericError { reason: error.to_string() })
+    }
+
+    async fn place_contact_labels(
+        &self,
+        product: &ProductContext,
+        placed: crate::platform::PlacedContactLabels,
+    ) -> Result<bool, crate::latest::HostContactsPlaceLabelsError> {
+        self.contacts.place_contact_labels(product.product_id.clone(), placed).await.map(|()| true)
+    }
 }
 
 /// Every [`crate::platform::Platform`] trait served by one execution's

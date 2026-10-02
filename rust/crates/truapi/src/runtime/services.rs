@@ -65,6 +65,8 @@ pub struct RuntimeServices {
     /// Contact handles already resolved, shared by every product runtime of
     /// this host and emptied when the host says its contacts changed.
     pub contact_handles: Arc<crate::runtime::contacts::ContactHandleCache>,
+    /// Connection-owned label layers, cleared on session change and teardown.
+    pub contact_labels: crate::runtime::contacts::ContactLabelPlacements,
     /// Host observer told when a device finishes pairing with this signing
     /// host. Unset leaves a paired device unannounced.
     device_pairing_observer: OnceLock<Arc<dyn DevicePairingObserver>>,
@@ -164,6 +166,7 @@ impl RuntimeServices {
             identity_backend: OnceLock::new(),
             contacts_platform: OnceLock::new(),
             contact_handles: Default::default(),
+            contact_labels: Default::default(),
             device_pairing_observer: OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             core_db: OnceLock::new(),
@@ -269,6 +272,17 @@ impl RuntimeServices {
     /// The host's contacts adapter, when one is installed.
     pub fn contacts_platform(&self) -> Option<Arc<dyn crate::platform::ContactsPlatform>> {
         self.contacts_platform.get().cloned()
+    }
+
+    /// Invalidate handle resolutions; host label layers refresh their live directory view.
+    pub fn invalidate_contacts(&self) {
+        self.contact_handles.clear();
+    }
+
+    /// Forget handles and labels belonging to the preceding wallet session.
+    pub fn contacts_session_changed(&self) {
+        self.invalidate_contacts();
+        self.contact_labels.session_changed(self.contact_handles.generation(), &self.spawner);
     }
 
     /// Install the host's device-pairing observer.

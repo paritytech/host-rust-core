@@ -294,7 +294,7 @@ impl PairingHostRuntime {
     /// Call whenever a contact is removed or blocked.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.notify_contacts_changed"))]
     pub fn notify_contacts_changed(&self) {
-        self.services.contact_handles.clear();
+        self.services.invalidate_contacts();
         self.services
             .contact_avatars
             .contacts_changed(&self.services.spawner);
@@ -742,7 +742,7 @@ impl SigningHostRuntime {
     /// Call whenever a contact is removed or blocked.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.notify_contacts_changed"))]
     pub fn notify_contacts_changed(&self) {
-        self.services.contact_handles.clear();
+        self.services.invalidate_contacts();
         self.services
             .contact_avatars
             .contacts_changed(&self.services.spawner);
@@ -1640,7 +1640,7 @@ impl ProductRuntime {
     /// Embedders holding the host runtime may notify it instead.
     pub fn notify_contacts_changed(&self) {
         let services = self.admin.product_runtime.services();
-        services.contact_handles.clear();
+        services.invalidate_contacts();
         services.contact_avatars.contacts_changed(&services.spawner);
     }
 
@@ -1912,6 +1912,7 @@ impl ProductRuntime {
         self.admin.product_runtime.detach_renderer();
         self.admin.product_runtime.release_open_operations();
         self.admin.product_runtime.release_contact_avatars();
+        self.admin.product_runtime.release_contact_labels();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
