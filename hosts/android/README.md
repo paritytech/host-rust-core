@@ -84,6 +84,7 @@ TERMS_OF_USE_URL=https://example.com/terms
 LOG_COLLECTION_EMAIL=logs@example.com
 CONTACT_EMAIL=support@example.com
 CURRENCY_SYMBOL=CASH
+FIAT_SYMBOL=$
 
 # Your Google Cloud / Firebase project (docs/DEPLOYMENT.md §4, §5.2)
 GOOGLE_OAUTH_ID=<OAuth 2.0 web client id used for Google Sign-In>

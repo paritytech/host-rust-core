@@ -441,6 +441,7 @@ extension ServiceCoordinator {
             anchorProvider: chainLivenessAnchorProvider,
             appStateStreamFactory: ApplicationStateStreamFactory(),
             statementStoreStatusProvider: statementStoreStatusService,
+            chainRegistry: ChainRegistryFacade.sharedRegistry,
             logger: logger
         )
 

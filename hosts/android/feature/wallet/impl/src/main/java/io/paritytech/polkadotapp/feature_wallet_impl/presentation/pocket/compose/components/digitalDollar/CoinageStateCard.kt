@@ -28,7 +28,7 @@ import io.paritytech.polkadotapp.design.components.text.NovaText
 import io.paritytech.polkadotapp.design.theme.PolkadotTheme
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.LocalTokenAmountFormatter
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.TokenAmountFormatter
-import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.RoundPrecision
+import io.paritytech.polkadotapp.feature_tokens_api.presentation.formatter.formatFiatSigned
 import io.paritytech.polkadotapp.feature_tokens_api.presentation.model.TokenAmountModel
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.components.digitalDollar.holdings.CoinageCompositionBar
 import io.paritytech.polkadotapp.feature_wallet_impl.presentation.pocket.compose.components.digitalDollar.holdings.CoinageHoldingsList
@@ -113,15 +113,15 @@ private fun Headline(total: TokenAmountModel) {
     Row(horizontalArrangement = Arrangement.spacedBy(HoldingGeometry.headlineSpacing)) {
         NovaText(
             modifier = Modifier.alignByBaseline(),
-            text = formatter.formatTokenAmount(total, RoundPrecision.FIAT, withSymbol = false),
+            text = formatter.formatFiatSigned(total),
             maxLines = 1,
             style = PolkadotTheme.typography.headline.large,
             color = PolkadotTheme.colors.fg.primary
         )
         NovaText(
             modifier = Modifier.alignByBaseline(),
-            text = LocalPaymentAssetBrand.current.symbol.withCurrencyTickerStyle(PolkadotTheme.typography.title.large),
-            style = PolkadotTheme.typography.title.large,
+            text = LocalPaymentAssetBrand.current.symbol.withCurrencyTickerStyle(PolkadotTheme.typography.headline.large),
+            style = PolkadotTheme.typography.headline.large,
             color = PolkadotTheme.colors.fg.secondary
         )
     }
@@ -160,7 +160,7 @@ private fun CategoryLegend(
             listOf(state.readyBalance, state.clearingBalance).forEach { amount ->
                 NovaText(
                     modifier = Modifier.weight(1f),
-                    text = formatter.formatTokenAmount(amount, RoundPrecision.FIAT, withSymbol = false),
+                    text = formatter.formatFiatSigned(amount),
                     maxLines = 1,
                     style = PolkadotTheme.typography.title.small,
                     color = PolkadotTheme.colors.fg.primary

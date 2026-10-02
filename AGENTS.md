@@ -83,6 +83,8 @@ scripts/build-cli-runner.ts
 scripts/cli-runner-package.test.ts
                            verifies the installed runner and development container
 .github/consumers.json     maps each released package to the repos notified by a bump issue
+nightly-toolchain          the dated nightly for rustfmt, CI clippy and rustdoc JSON; CI, the
+                           scripts and the Makefile all read it
 .github/registry-drift-exceptions.json
                            documents intentionally unpublished npm package versions
 ```
@@ -180,7 +182,10 @@ scripts/cli-runner-package.test.ts
   maintains one issue; explicit package-version exceptions live in
   `.github/registry-drift-exceptions.json`. Rust jobs cache through
   `.github/actions/rust-cache`, which saves only on main so every ref restores
-  main's entries. See `docs/RELEASE_PROCESS.md` for
+  main's entries; release and publish jobs restore without saving. A composite
+  action that needs a Rust cache calls Swatinem/rust-cache directly with the
+  same main-only `save-if`, because a post step two composites deep loses its
+  inputs and never saves. See `docs/RELEASE_PROCESS.md` for
   label setup and release recovery.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and each product execution retain one.
@@ -326,7 +331,7 @@ belongs to an existing type rather than adding another free-standing export.
 Preserve the local style. Do not add semicolons to `return`, `break` or
 `continue` where the file omits them, do not add braces to match arms or
 `if`/`else` written without them, and do not move operators between the end of
-one line and the start of the next. Format with `cargo +nightly fmt`, and keep
+one line and the start of the next. Format with `cargo +$(cat nightly-toolchain) fmt`, and keep
 it to the lines you touched.
 
 ## Rust style
@@ -401,9 +406,14 @@ After regenerating, rebuild the client and refresh the playground's link copy:
 
 ### Rust
 
+rustfmt and rustdoc JSON run on the dated nightly named in `nightly-toolchain`;
+install it once with `rustup toolchain install "$(cat nightly-toolchain)" --component rustfmt,clippy`.
+Move the date in that one file, and in `truapi.rustNightly` in
+`hosts/android/gradle.properties`, which the Android build checks against it.
+
 ```bash
 cargo build --workspace
-cargo +nightly fmt --check
+cargo +$(cat nightly-toolchain) fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```
