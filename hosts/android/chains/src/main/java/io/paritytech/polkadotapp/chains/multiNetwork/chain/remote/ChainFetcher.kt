@@ -11,7 +11,7 @@ interface ChainFetcher {
     suspend fun getChains(): List<ChainRemote>
 }
 
-internal const val CONFIG_CHAINS_KEY = "chains_v2"
+private const val CONFIG_CHAINS_KEY = "chains_v2"
 private const val CONFIG_CHAINS_KEY_PRODUCTION = "chains"
 
 class RemoteConfigChainFetcher @Inject constructor(
