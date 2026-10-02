@@ -50,7 +50,8 @@ enum MainTabBarViewFactory {
             urlHandlingService: urlHandler,
             deferredLinkHandler: deepLinkHandling,
             mnemonicBackupHelper: mnemonicBackupHelper,
-            browserCoordinator: browserCoordinator
+            browserCoordinator: browserCoordinator,
+            productGamePills: RootDependencyLocator.getDependency()
         )
 
         let qrHandler = WalletQRScanResultHandler(
@@ -87,8 +88,7 @@ enum MainTabBarViewFactory {
             presenter: presenter,
             viewFactory: tabFactory,
             browserCoordinator: browserCoordinator,
-            flowStateProvider: flowStateProvider,
-            productReminders: RootDependencyLocator.getDependency()
+            flowStateProvider: flowStateProvider
         )
 
         presenter.view = view

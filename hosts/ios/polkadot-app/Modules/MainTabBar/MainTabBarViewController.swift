@@ -10,7 +10,6 @@ final class MainTabBarViewController: UIViewController {
     let viewFactory: TabFactoryProtocol
     let browserCoordinator: SPABrowserCoordinating
     let flowStateProvider: any SPAFlowStateProviding
-    let productReminders: ProductReminderHosting?
 
     let chromeController = TabBarBottomChromeController()
 
@@ -31,19 +30,18 @@ final class MainTabBarViewController: UIViewController {
     private var badges: [TabBarItem: TabBarBadge] = [:]
     private var controllerByItem: [TabBarItem: UIViewController] = [:]
     var spaChipViewModels: [SPATabChipViewModel] = []
+    var productGamePill: ProductGamePillViewModel?
 
     init(
         presenter: MainTabBarPresenterProtocol,
         viewFactory: TabFactoryProtocol,
         browserCoordinator: SPABrowserCoordinating,
-        flowStateProvider: any SPAFlowStateProviding,
-        productReminders: ProductReminderHosting?
+        flowStateProvider: any SPAFlowStateProviding
     ) {
         self.presenter = presenter
         self.viewFactory = viewFactory
         self.browserCoordinator = browserCoordinator
         self.flowStateProvider = flowStateProvider
-        self.productReminders = productReminders
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -90,7 +88,6 @@ final class MainTabBarViewController: UIViewController {
         }
 
         presenter.setup()
-        productReminders?.start(widgets: self)
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -373,6 +370,11 @@ extension MainTabBarViewController: MainTabBarViewProtocol {
         statusBarHost.rootView = ChainConnectionStatusBarView(models: models)
         let width = max(1, ChainConnectionStatusBarView.ringsWidth(count: models.count))
         chainStatusAnchorWidth?.update(offset: width)
+    }
+
+    func showProductGamePill(_ viewModel: ProductGamePillViewModel?) {
+        productGamePill = viewModel
+        applyProductGamePill()
     }
 }
 

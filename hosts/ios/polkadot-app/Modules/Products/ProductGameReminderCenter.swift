@@ -1,14 +1,15 @@
-import AlarmKit
-import EventKit
+import AsyncExtensions
 import Foundation
+import FoundationExt
 import Keystore_iOS
 import Products
 import UIKit
 
-/// One game reminder per product, driving its alarm, the countdown pill, the calendar event
-/// and opening the product at the start. A schedule replaces the reminder the same product holds.
+/// One game reminder per product, driving its alarm, the calendar event, the countdown pill it
+/// publishes and opening the product at the start. A schedule replaces the reminder the same
+/// product holds.
 @MainActor
-final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductReminderHosting {
+final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductGamePillProviding {
     struct Slot: Codable, Equatable {
         let productId: ProductId
         let startsAt: Date
@@ -18,23 +19,30 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         var calendarStartsAt: Date?
     }
 
-    static let shared = ProductGameReminderCenter(
-        makeAlarm: makeAlarm,
-        makeNotification: {
-            LocalNotificationGameReminder(
-                localNotificationService: UserNotificationService.shared,
-                settingsManager: SettingsManager.shared,
-                keys: .product($0)
-            )
-        },
-        makeCalendar: { GameCalendarService(eventStore: EKEventStore()) },
-        settingsManager: SettingsManager.shared,
-        applicationState: { UIApplication.shared.applicationState },
-        openProduct: { ProductOpener.open(productId: $0) },
-        now: { Date() }
-    )
+    struct Dependencies {
+        let services: ProductGameReminderServicesMaking
+        let settingsManager: SettingsManagerProtocol
+        let applicationState: ApplicationStateProviding
+        let applicationStateStreams: ApplicationStateStreamFactory
+        let productOpener: ProductOpening
+        let dateProvider: CurrentDateProviding
+    }
 
-    static let pillID = AppWidgetID("productGame")
+    static func makeDefault() -> ProductGameReminderCenter {
+        ProductGameReminderCenter(
+            dependencies: Dependencies(
+                services: ProductGameReminderServicesFactory(
+                    settingsManager: SettingsManager.shared,
+                    localNotificationService: UserNotificationService.shared
+                ),
+                settingsManager: SettingsManager.shared,
+                applicationState: UIApplication.shared,
+                applicationStateStreams: ApplicationStateStreamFactory(),
+                productOpener: ProductOpener(),
+                dateProvider: NowDateProvider()
+            )
+        )
+    }
 
     /// How late after the start a wake-up may run and still open the product.
     private static let openGrace: TimeInterval = 30
@@ -49,47 +57,26 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         let notification: any GameStartReminderServicing
     }
 
-    private let makeAlarm: (ProductId) -> (any GameStartReminderServicing)?
-    private let makeNotification: (ProductId) -> any GameStartReminderServicing
-    /// Builds the calendar at add time, so its store sees the current grant.
-    private let makeCalendar: () -> any GameCalendarServicing
+    private let services: ProductGameReminderServicesMaking
     private let settingsManager: SettingsManagerProtocol
-    private let applicationState: () -> UIApplication.State
-    private let openProduct: (ProductId) -> Void
-    private let now: () -> Date
+    private let applicationState: ApplicationStateProviding
+    private let applicationStateStreams: ApplicationStateStreamFactory
+    private let productOpener: ProductOpening
+    private let dateProvider: CurrentDateProviding
 
     /// One pair per product: AlarmKit serialises its calls per instance.
     private var reminders: [ProductId: Reminders] = [:]
-    private weak var widgets: AppWidgetManaging?
+    private let pillSubject = AsyncCurrentValueSubject<ProductGamePill?>(nil)
     private var wakeUp: Task<Void, Never>?
-    private var activeObserver: NSObjectProtocol?
+    private var becameActive: Task<Void, Never>?
 
-    /// The product whose SPA is mounted; its pill stays hidden.
-    var mountedProductId: ProductId? {
-        didSet {
-            guard mountedProductId != oldValue else {
-                return
-            }
-            refresh()
-        }
-    }
-
-    init(
-        makeAlarm: @escaping (ProductId) -> (any GameStartReminderServicing)?,
-        makeNotification: @escaping (ProductId) -> any GameStartReminderServicing,
-        makeCalendar: @escaping () -> any GameCalendarServicing,
-        settingsManager: SettingsManagerProtocol,
-        applicationState: @escaping () -> UIApplication.State,
-        openProduct: @escaping (ProductId) -> Void,
-        now: @escaping () -> Date
-    ) {
-        self.makeAlarm = makeAlarm
-        self.makeNotification = makeNotification
-        self.makeCalendar = makeCalendar
-        self.settingsManager = settingsManager
-        self.applicationState = applicationState
-        self.openProduct = openProduct
-        self.now = now
+    init(dependencies: Dependencies) {
+        services = dependencies.services
+        settingsManager = dependencies.settingsManager
+        applicationState = dependencies.applicationState
+        applicationStateStreams = dependencies.applicationStateStreams
+        productOpener = dependencies.productOpener
+        dateProvider = dependencies.dateProvider
     }
 
     /// Held reminders, soonest first.
@@ -105,10 +92,17 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         slots.first { $0.productId == productId }
     }
 
-    func start(widgets: AppWidgetManaging) {
-        self.widgets = widgets
+    var pill: ProductGamePill? {
+        pillSubject.value
+    }
+
+    func start() {
         observeBecomingActive()
         refresh()
+    }
+
+    func pillStream() -> AnyAsyncSequence<ProductGamePill?> {
+        pillSubject.eraseToAnyAsyncSequence()
     }
 
     func schedule(
@@ -143,7 +137,7 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         wakeUp?.cancel()
         wakeUp = nil
 
-        let now = now()
+        let now = dateProvider.now
         var pill: Slot?
         var wakeAt: Date?
         var opened = false
@@ -151,7 +145,7 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
         for slot in slots {
             guard now < slot.startsAt else {
                 let isLate = now.timeIntervalSince(slot.startsAt) >= Self.openGrace
-                if applicationState() == .background, !isLate {
+                if applicationState.applicationState == .background, !isLate {
                     // Becoming active within the grace opens the product.
                     wakeAt = earliest(wakeAt, slot.startsAt.addingTimeInterval(Self.openGrace))
                     continue
@@ -159,19 +153,19 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
                 drop(slot.productId)
                 if !isLate, !opened {
                     opened = true
-                    openProduct(slot.productId)
+                    productOpener.open(productId: slot.productId)
                 }
                 continue
             }
 
             let pillAt = slot.startsAt.addingTimeInterval(-GameRoomPillState.Constants.startingPillLeadTime)
-            if pill == nil, now >= pillAt, slot.productId != mountedProductId {
+            if pill == nil, now >= pillAt {
                 pill = slot
             }
             wakeAt = earliest(wakeAt, now < pillAt ? pillAt : slot.startsAt)
         }
 
-        showPill(for: pill)
+        publish(pill)
         if let wakeAt {
             wake(at: wakeAt, from: now)
         }
@@ -179,22 +173,14 @@ final class ProductGameReminderCenter: ProductGameReminderScheduling, ProductRem
 }
 
 private extension ProductGameReminderCenter {
-    static func makeAlarm(for productId: ProductId) -> (any GameStartReminderServicing)? {
-        if #available(iOS 26.1, *) {
-            return AlarmKitGameReminder(
-                alarmManger: .shared,
-                settingsManager: SettingsManager.shared,
-                keys: .product(productId)
-            )
-        }
-        return nil
-    }
-
     func reminders(for productId: ProductId) -> Reminders {
         if let reminders = reminders[productId] {
             return reminders
         }
-        let reminders = Reminders(alarm: makeAlarm(productId), notification: makeNotification(productId))
+        let reminders = Reminders(
+            alarm: services.makeAlarm(for: productId),
+            notification: services.makeNotification(for: productId)
+        )
         self.reminders[productId] = reminders
         return reminders
     }
@@ -219,11 +205,11 @@ private extension ProductGameReminderCenter {
 
     /// Write-only: events are never removed, so a repeat for the same start adds nothing.
     func addCalendarEventIfNeeded(_ slot: Slot) async {
-        guard slot.startsAt.timeIntervalSince(now()) >= Self.calendarLeadTime,
+        guard slot.startsAt.timeIntervalSince(dateProvider.now) >= Self.calendarLeadTime,
               slot.calendarStartsAt != slot.startsAt else {
             return
         }
-        let calendar = makeCalendar()
+        let calendar = services.makeCalendar()
         guard await calendar.requestWriteAccess() else {
             return
         }
@@ -275,32 +261,26 @@ private extension ProductGameReminderCenter {
         current.map { min($0, candidate) } ?? candidate
     }
 
-    func showPill(for slot: Slot?) {
-        guard let slot else {
-            widgets?.detachWidget(for: Self.pillID)
+    func publish(_ slot: Slot?) {
+        let pill = slot.map { ProductGamePill(productId: $0.productId, startsAt: $0.startsAt) }
+        guard pill != pillSubject.value else {
             return
         }
-
-        let configuration = GameRoomPillConfiguration(
-            content: .waiting(gameDate: slot.startsAt)
-        ) { [openProduct = self.openProduct] in
-            openProduct(slot.productId)
-        }
-        widgets?.attachWidget(configuration, for: Self.pillID)
+        pillSubject.send(pill)
     }
 
     /// A wake-up timer can fire while the app is still resuming, so becoming active re-checks the start.
     func observeBecomingActive() {
-        guard activeObserver == nil else {
+        guard becameActive == nil else {
             return
         }
-        activeObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.refresh()
+        let events = applicationStateStreams.stream(for: .didBecomeActive)
+        becameActive = Task { [weak self] in
+            for await _ in events {
+                guard let self else {
+                    return
+                }
+                refresh()
             }
         }
     }

@@ -3,9 +3,20 @@ import Products
 import UIKit
 
 @MainActor
-enum ProductOpener {
+protocol ProductOpening {
+    func open(productId: ProductId)
+}
+
+@MainActor
+struct ProductOpener: ProductOpening {
+    let navigator: ModuleNavigating
+
+    init(navigator: ModuleNavigating = ModuleNavigator()) {
+        self.navigator = navigator
+    }
+
     /// An existing tab keeps its current page; before the tab bar is up the link is deferred.
-    static func open(productId: ProductId) {
+    func open(productId: ProductId) {
         let tabBar = UIApplication.shared.mainTabBarController
         guard tabBar?.mountedProductId != productId else {
             return
@@ -16,9 +27,9 @@ enum ProductOpener {
 
         // Opened directly: the product link is only routed when the products feature is on,
         // and a game product has to open without it.
-        if let tabBar,
+        if tabBar != nil,
            let host = ProductHostFactory(tldProvider: DotNsTldProviderFacade.shared).host(rawString: productId) {
-            tabBar.openProduct(page: ProductPage(host: host))
+            navigator.openProduct(page: ProductPage(host: host))
         } else if let url = URL(string: "\(AppConfig.ProductUniversalLink.scheme)://\(productId)") {
             DeferredLinkHandler.shared.handle(with: url)
         }

@@ -1,4 +1,5 @@
 import Foundation
+import FoundationExt
 import TrUAPIHost
 import Products
 import ChainRegistry
@@ -217,7 +218,7 @@ extension RustProductExecutionBridge: GameHostBridge {
         }
         await dependencies.gameReminders?.schedule(
             productId: dependencies.productId,
-            startsAt: Date(timeIntervalSince1970: TimeInterval(startsAt) / 1_000),
+            startsAt: Date(timeIntervalSince1970: startsAt.millisecondsToSeconds()),
             ringAlarm: ringAlarm,
             addCalendarEvent: true
         )

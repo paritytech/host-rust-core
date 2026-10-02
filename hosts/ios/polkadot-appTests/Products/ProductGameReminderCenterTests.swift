@@ -1,4 +1,5 @@
 import Foundation
+import FoundationExt
 import Testing
 import UIKit
 import Keystore_iOS
@@ -17,17 +18,18 @@ struct ProductGameReminderCenterTests {
         alarmAvailable: Bool = true,
         settings: SettingsManagerProtocol = InMemorySettingsManager()
     ) -> (center: ProductGameReminderCenter, fakes: Fakes) {
-        let fakes = Fakes(now: now)
+        let fakes = Fakes(now: now, alarmAvailable: alarmAvailable)
         let center = ProductGameReminderCenter(
-            makeAlarm: { alarmAvailable ? fakes.alarm(for: $0) : nil },
-            makeNotification: { fakes.notification(for: $0) },
-            makeCalendar: { fakes.calendar },
-            settingsManager: settings,
-            applicationState: { fakes.applicationState },
-            openProduct: { fakes.opened.append($0) },
-            now: { fakes.now }
+            dependencies: .init(
+                services: fakes,
+                settingsManager: settings,
+                applicationState: fakes,
+                applicationStateStreams: ApplicationStateStreamFactory(),
+                productOpener: fakes,
+                dateProvider: fakes
+            )
         )
-        center.start(widgets: fakes.widgets)
+        center.start()
         return (center, fakes)
     }
 
@@ -139,38 +141,24 @@ struct ProductGameReminderCenterTests {
         #expect(fakes.alarm(for: productId).scheduled == [reminderCall(startsAt, productId)])
     }
 
-    @Test("The countdown pill shows only in the last five minutes, for the soonest start")
+    @Test("The countdown pill is published only in the last five minutes, for the soonest start")
     func pillInLastFiveMinutes() async {
         let (center, fakes) = makeSUT(now: startsAt.addingTimeInterval(-6 * 60))
-        let pillID = ProductGameReminderCenter.pillID
+        let later = startsAt.addingTimeInterval(60)
 
-        await center.schedule(productId: other, startsAt: startsAt.addingTimeInterval(60), addCalendarEvent: false)
+        await center.schedule(productId: other, startsAt: later, addCalendarEvent: false)
         await center.schedule(productId: productId, startsAt: startsAt, addCalendarEvent: false)
-        #expect(fakes.widgets.attached.isEmpty)
+        #expect(center.pill == nil)
 
         fakes.now = startsAt.addingTimeInterval(-4 * 60)
         center.refresh()
-        #expect(fakes.widgets.attached[pillID]?.content == .waiting(gameDate: startsAt))
+        #expect(center.pill == ProductGamePill(productId: productId, startsAt: startsAt))
 
         center.cancel(productId: productId)
-        #expect(fakes.widgets.attached[pillID]?.content == .waiting(gameDate: startsAt.addingTimeInterval(60)))
+        #expect(center.pill == ProductGamePill(productId: other, startsAt: later))
 
         center.cancel(productId: other)
-        #expect(fakes.widgets.attached.isEmpty)
-    }
-
-    @Test("The pill is hidden while its product is mounted and shown again after")
-    func pillHiddenWhileMounted() async {
-        let (center, fakes) = makeSUT(now: startsAt.addingTimeInterval(-60))
-        let pillID = ProductGameReminderCenter.pillID
-        await center.schedule(productId: productId, startsAt: startsAt, addCalendarEvent: false)
-        #expect(fakes.widgets.attached[pillID] != nil)
-
-        center.mountedProductId = productId
-        #expect(fakes.widgets.attached.isEmpty)
-
-        center.mountedProductId = other
-        #expect(fakes.widgets.attached[pillID] != nil)
+        #expect(center.pill == nil)
     }
 
     @Test(
@@ -192,7 +180,7 @@ struct ProductGameReminderCenterTests {
 
         #expect(fakes.opened == (opens ? [productId] : []))
         #expect(center.slots.isEmpty)
-        #expect(fakes.widgets.attached.isEmpty)
+        #expect(center.pill == nil)
     }
 
     @Test("A start opens its product and leaves another product's reminder in place")
@@ -220,7 +208,7 @@ struct ProductGameReminderCenterTests {
         center.refresh()
         #expect(fakes.opened.isEmpty)
         #expect(center.slots == [.init(productId: productId, startsAt: startsAt)])
-        #expect(fakes.widgets.attached.isEmpty)
+        #expect(center.pill == nil)
 
         fakes.applicationState = .active
         fakes.now = startsAt.addingTimeInterval(5)
@@ -235,10 +223,10 @@ struct ProductGameReminderCenterTests {
         let (first, _) = makeSUT(now: startsAt.addingTimeInterval(-3_600), settings: settings)
         await first.schedule(productId: productId, startsAt: startsAt, ringAlarm: false, addCalendarEvent: false)
 
-        let (relaunched, fakes) = makeSUT(now: startsAt.addingTimeInterval(-60), settings: settings)
+        let (relaunched, _) = makeSUT(now: startsAt.addingTimeInterval(-60), settings: settings)
 
         #expect(relaunched.slots == [.init(productId: productId, startsAt: startsAt, ringAlarm: false)])
-        #expect(fakes.widgets.attached[ProductGameReminderCenter.pillID] != nil)
+        #expect(relaunched.pill == ProductGamePill(productId: productId, startsAt: startsAt))
     }
 
     @Test("A cancel while calendar access is being asked adds no event")
@@ -266,17 +254,18 @@ private func reminderCall(_ startsAt: Date, _ productId: String) -> RecordingGam
 
 // MARK: - Fakes
 
-private final class Fakes {
+private final class Fakes: @unchecked Sendable {
     var now: Date
     var applicationState: UIApplication.State = .active
     var opened: [String] = []
-    let widgets = RecordingWidgets()
     let calendar = RecordingCalendar()
+    private let alarmAvailable: Bool
     private var alarms: [String: RecordingGameReminder] = [:]
     private var notifications: [String: RecordingGameReminder] = [:]
 
-    init(now: Date) {
+    init(now: Date, alarmAvailable: Bool) {
         self.now = now
+        self.alarmAvailable = alarmAvailable
     }
 
     func alarm(for productId: String) -> RecordingGameReminder {
@@ -300,6 +289,24 @@ private final class Fakes {
     }
 }
 
+extension Fakes: ProductGameReminderServicesMaking, ApplicationStateProviding, ProductOpening, CurrentDateProviding {
+    func makeAlarm(for productId: String) -> (any GameStartReminderServicing)? {
+        alarmAvailable ? alarm(for: productId) : nil
+    }
+
+    func makeNotification(for productId: String) -> any GameStartReminderServicing {
+        notification(for: productId)
+    }
+
+    func makeCalendar() -> any GameCalendarServicing {
+        calendar
+    }
+
+    func open(productId: String) {
+        opened.append(productId)
+    }
+}
+
 private final class RecordingGameReminder: GameStartReminderServicing {
     struct Call: Equatable {
         let gameDate: Date
@@ -316,18 +323,6 @@ private final class RecordingGameReminder: GameStartReminderServicing {
 
     func cancelReminder() {
         cancelCount += 1
-    }
-}
-
-private final class RecordingWidgets: AppWidgetManaging {
-    private(set) var attached: [AppWidgetID: GameRoomPillConfiguration] = [:]
-
-    func attachWidget(_ configuration: any HashableContentConfiguration, for id: AppWidgetID) {
-        attached[id] = configuration as? GameRoomPillConfiguration
-    }
-
-    func detachWidget(for id: AppWidgetID) {
-        attached[id] = nil
     }
 }
 

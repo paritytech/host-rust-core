@@ -19,7 +19,7 @@ struct GameAlarmPlayIntent: LiveActivityIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         if let productId {
-            ProductOpener.open(productId: productId)
+            ProductOpener().open(productId: productId)
         } else {
             await UIApplication.shared.open(AppConfig.DeepLink.game(intendedGameIndex: gameIndex))
         }

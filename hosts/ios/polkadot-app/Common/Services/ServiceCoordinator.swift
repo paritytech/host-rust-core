@@ -316,9 +316,9 @@ extension ServiceCoordinator {
         )
         RootDependencyLocator.setDependency(truapiRuntimeProvider as TrUAPIHostRuntimeProviding)
 
-        let gameReminders = ProductGameReminderCenter.shared
+        let gameReminders = ProductGameReminderCenter.makeDefault()
         RootDependencyLocator.setDependency(gameReminders as ProductGameReminderScheduling)
-        RootDependencyLocator.setDependency(gameReminders as ProductReminderHosting)
+        RootDependencyLocator.setDependency(gameReminders as ProductGamePillProviding)
 
         guard
             let signInHostCoordinator = createSignInHostCoordinator(

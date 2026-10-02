@@ -32,6 +32,8 @@ extension MainTabBarViewController: SPAHosting {
 }
 
 extension MainTabBarViewController {
+    static let productGamePillID = AppWidgetID("productGame")
+
     func mountSPA(for tab: SPATab) {
         guard let controller = browserCoordinator.controller(for: tab) else {
             closeSPA(tabId: tab.id)
@@ -47,7 +49,16 @@ extension MainTabBarViewController {
             DSTabBarChip(id: $0.id, name: $0.name, icon: $0.icon)
         }
         chromeController.setSPATabs(chips, selected: mountedSPATabId)
-        productReminders?.mountedProductId = mountedProductId
+        applyProductGamePill()
+    }
+
+    /// The countdown stays off the screen of the product it counts down to.
+    func applyProductGamePill() {
+        guard let pill = productGamePill, pill.productId != mountedProductId else {
+            detachWidget(for: Self.productGamePillID)
+            return
+        }
+        attachWidget(pill.configuration, for: Self.productGamePillID)
     }
 
     var mountedProductId: ProductId? {
