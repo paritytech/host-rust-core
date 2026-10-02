@@ -1454,6 +1454,10 @@ pub enum CoreStorageKey {
         /// Product whose manifest was cached, normalized.
         product_id: String,
     },
+    /// Funding sessions: every live one plus a bounded tail of settled ones,
+    /// as one SCALE blob.
+    #[codec(index = 13)]
+    FundingSessions,
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1507,6 +1511,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::DeviceEncryptionKey => ("DeviceEncryptionKey", None),
         CoreStorageKey::SsoResponderRequestLedger { .. } => ("SsoResponderRequestLedger", None),
         CoreStorageKey::ProductManifest { product_id } => ("ProductManifest", Some(product_id)),
+        CoreStorageKey::FundingSessions => ("FundingSessions", None),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }

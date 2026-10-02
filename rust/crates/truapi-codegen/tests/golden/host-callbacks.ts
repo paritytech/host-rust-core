@@ -202,7 +202,12 @@ export type CoreStorageKey =
    * core honours it for a bounded lifetime, which is what makes a revoked
    * trust grant eventually take effect.
    */
-  | { tag: "ProductManifest"; value: { productId: string } };
+  | { tag: "ProductManifest"; value: { productId: string } }
+  /**
+   * Funding sessions: every live one plus a bounded tail of settled ones,
+   * as one SCALE blob.
+   */
+  | { tag: "FundingSessions"; value?: undefined };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -757,6 +762,7 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
       ProductManifest: S.Struct({ productId: S.str }) as S.Codec<{
         productId: string;
       }>,
+      FundingSessions: S._void,
     }),
 );
 
