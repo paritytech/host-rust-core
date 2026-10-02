@@ -5,6 +5,14 @@ plugins {
 
 android {
     namespace = "io.paritytech.polkadotapp.tools_remoteconfig_impl"
+
+    defaultConfig {
+        buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "false")
+    }
+
+    buildTypes {
+        getByName("debug") { buildConfigField("boolean", "LOCAL_CONFIG_FALLBACK", "true") }
+    }
 }
 
 dependencies {

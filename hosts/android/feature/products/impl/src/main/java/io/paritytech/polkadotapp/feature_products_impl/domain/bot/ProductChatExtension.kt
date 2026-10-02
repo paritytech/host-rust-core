@@ -2,7 +2,6 @@ package io.paritytech.polkadotapp.feature_products_impl.domain.bot
 
 import android.content.Context
 import io.paritytech.polkadotapp.common.utils.childScope
-import io.paritytech.polkadotapp.common.utils.logFailure
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.ChatExtensionContext
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.CreateRoomRequest
 import io.paritytech.polkadotapp.feature_chats_api.domain.extension.DefaultRoomMetadata
@@ -15,18 +14,20 @@ import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessage
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageId
 import io.paritytech.polkadotapp.feature_chats_api.domain.model.ChatMessageOrigin
 import io.paritytech.polkadotapp.feature_products_api.model.Product
+import io.paritytech.polkadotapp.feature_products_api.model.ProductChatIdParameter
+import io.paritytech.polkadotapp.feature_products_api.model.RoomParticipation
+import io.paritytech.polkadotapp.feature_products_api.model.productRoomId
 import io.paritytech.polkadotapp.feature_products_api.model.toChatExtensionId
+import io.paritytech.polkadotapp.feature_products_api.model.toChatId
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.message.ProductsMessageContent
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.message.ProductsMessageRenderer
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.CreateProductRoomRequest
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.CreateProductRoomResult
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatIdParameter
 import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.ProductChatRoom
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.extractProductChatIdParameter
-import io.paritytech.polkadotapp.feature_products_impl.domain.bot.model.toChatId
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.ProductWorkerRefCounter
 import io.paritytech.polkadotapp.feature_products_impl.domain.worker.WorkerModalityApi
 import io.paritytech.polkadotapp.feature_products_impl.presentation.bot.menu.ProductChatMenuRenderer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
@@ -64,6 +65,8 @@ class ProductChatExtension(
     private val runningWorker = DeferredProductWorker()
     private val messageRenderer = ProductsMessageRenderer(appContext, product, runningWorker)
 
+    internal class Disposed : Exception("the product's chat extension was disposed")
+
     private var botScope: CoroutineScope? = null
 
     // Strong ref to the messaging target bound weakly onto the shared worker; held for our lifetime.
@@ -89,19 +92,26 @@ class ProductChatExtension(
             chatExtensionContext.subscribeNewMessages(NewMessagesRoomFilter.AnyFromExtension(id))
                 .filter { it.origin !is ChatMessageOrigin.Extension }
                 .onEach { message -> routeMessage(message) }
-                .launchIn(chatExtensionContext.scope)
+                .launchIn(scope)
 
-            // Enable chat messaging before the worker's started hook so an initial/welcome message
-            // routes. The reference is released from the finally so a dispose that races boot never
-            // leaks the acquisition.
+            // Bind chat before the worker's started hook, so an initial message routes.
             val reference = workerRefCounter.acquire(product.id, "chat:${product.id.value}")
             try {
                 reference.enableModalityApi(WorkerModalityApi.Chat(messaging))
-                runningWorker.attach(reference.worker())
+                // A boot failure must surface as failed calls, not as a chat that waits forever.
+                runCatching { reference.worker() }.fold(
+                    onSuccess = runningWorker::attach,
+                    onFailure = { error ->
+                        if (error is CancellationException) throw error
+                        Timber.e(error, "No worker to drive the chat of ${product.id.value}")
+                        runningWorker.fail(error)
+                    },
+                )
                 awaitCancellation()
             } finally {
                 withContext(NonCancellable) { reference.release() }
-                runningWorker.attach(null)
+                // A cell still held by a surviving view model must fail, not wait.
+                runningWorker.fail(Disposed())
             }
         }
     }
@@ -124,7 +134,7 @@ class ProductChatExtension(
 
     private suspend fun routeMessage(message: ChatMessage) {
         when (val content = message.content) {
-            is ChatMessage.Content.Text -> runningWorker.onUserMessage(content.text)
+            is ChatMessage.Content.Text -> runningWorker.onUserMessage(message.chatId.productRoomId(id), content.text)
             else -> {}
         }
     }
@@ -148,11 +158,7 @@ class ProductChatExtension(
         override fun subscribeChatRooms(): Flow<List<ProductChatRoom>> {
             return extensionContext.subscribeOwnRooms().map { chatIds ->
                 chatIds.mapNotNull { chatId ->
-                    val param = chatId.extractProductChatIdParameter(id)
-                        .logFailure("Unexpected state: subscribeOwnRooms returned corrupted chatId: ${chatId.value}")
-                        .getOrNull() ?: return@mapNotNull null
-
-                    ProductChatRoom(roomId = param.value, participatingAs = "RoomHost")
+                    chatId.productRoomId(id)?.let { ProductChatRoom(roomId = it.value, participatingAs = RoomParticipation.ROOM_HOST) }
                 }
             }
         }
