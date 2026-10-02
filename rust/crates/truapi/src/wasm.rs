@@ -1399,22 +1399,6 @@ impl WasmSigningHostRuntime {
         self.runtime.set_grant_allowances_unchecked(granted);
     }
 
-    /// The product's hard-subtree public key, derived from the active session
-    /// root, or `undefined` while no session is active.
-    ///
-    /// Paired with `deriveProductAccountPublicKey` and `productAccountAddress`
-    /// this gives a host the product's address without asking the product.
-    #[wasm_bindgen(js_name = productSubtreePublicKey)]
-    pub fn product_subtree_public_key(
-        &self,
-        product_id: String,
-    ) -> Result<Option<Vec<u8>>, JsValue> {
-        self.runtime
-            .product_subtree_public_key(&product_id)
-            .map(|key| key.map(|key| key.to_vec()))
-            .map_err(generic_error_to_js)
-    }
-
     /// Answer these resource tags as refused, replacing any earlier set.
     ///
     /// A suite proving its product survives a refused resource needs that one
