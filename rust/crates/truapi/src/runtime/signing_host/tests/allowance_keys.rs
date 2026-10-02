@@ -57,12 +57,24 @@ fn chain_with_allocated_slot() -> Arc<StubPlatform> {
                 ),
             ),
             (
+                "RuntimeViewFunction_execute_view_function",
+                format!(
+                    r#""0x{}""#,
+                    hex::encode(Ok::<Vec<u8>, ()>(10u32.encode()).encode()),
+                ),
+            ),
+            (
                 "state_getStorage",
                 format!(r#""0x{}""#, hex::encode(TEST_NETWORK_SUFFIX.encode())),
             ),
             (
                 "state_queryStorageAt",
                 people_row,
+            ),
+            // The LitePeople row, read alongside People's, is empty.
+            (
+                "state_queryStorageAt",
+                r#"[{"block":"0xb10c","changes":[]}]"#.to_string(),
             ),
         ],
         ..Default::default()

@@ -1446,6 +1446,13 @@ mod tests {
                         hex::encode(Ok::<Vec<u8>, ()>(20u32.encode()).encode()),
                     ),
                 ),
+                (
+                    "RuntimeViewFunction_execute_view_function",
+                    format!(
+                        r#""0x{}""#,
+                        hex::encode(Ok::<Vec<u8>, ()>(10u32.encode()).encode()),
+                    ),
+                ),
                 // The network suffix, read once before the scan.
                 (
                     "state_getStorage",
@@ -1454,6 +1461,11 @@ mod tests {
                 (
                     "state_queryStorageAt",
                     people_row,
+                ),
+                // The LitePeople row, read alongside People's, is empty.
+                (
+                    "state_queryStorageAt",
+                    r#"[{"block":"0xb10c","changes":[]}]"#.to_string(),
                 ),
             ],
             ..Default::default()

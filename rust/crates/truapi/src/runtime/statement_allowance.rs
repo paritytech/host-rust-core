@@ -798,18 +798,22 @@ pub async fn scan_collections(
     target: &[u8; 32],
     reuse_existing: bool,
 ) -> Result<Vec<CollectionScan>, StatementAllowanceError> {
-    let mut scans = Vec::new();
-    for candidate in candidates {
+    let supported = candidates.iter().filter(|candidate| {
         let collection = candidate.collection;
-        if !collection.is_supported(metadata) {
+        let supported = collection.is_supported(metadata);
+        if !supported {
             debug!(%collection, "chain declares no slot budget for this collection");
-            continue;
         }
+        supported
+    });
+    // Read concurrently, then settled in candidate order, so a lite member does
+    // not wait on the empty People row before its own is read.
+    let selections = futures::future::join_all(supported.map(|candidate| async move {
         let selection = slot::scan_slot_excluding(
             rpc,
             metadata,
             slot::SlotScan {
-                collection,
+                collection: candidate.collection,
                 entropy: candidate.entropy,
                 network_suffix,
                 period,
@@ -819,10 +823,16 @@ pub async fn scan_collections(
             },
         )
         .await;
+        (candidate, selection)
+    }))
+    .await;
+    let mut scans = Vec::new();
+    for (candidate, selection) in selections {
+        let collection = candidate.collection;
         match selection {
             Ok(selection) => {
                 // An allowance already held settles the question, so the
-                // remaining collections are reads nobody needs.
+                // remaining collections' scans are dropped.
                 let settled = matches!(selection, SlotSelection::AlreadyAllocated(_));
                 scans.push(CollectionScan {
                     collection,
