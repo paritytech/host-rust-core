@@ -510,7 +510,10 @@ convenience: these builds carry configuration that should not be public, so
 attaching them to a release is not an option.
 
 `android-nightly.yml` runs daily at 22:00 UTC, two hours after the iOS
-nightly starts, so the two never overlap. Each announcement lists the pull
+nightly starts, so the two never overlap. It publishes both flavours on a
+GitHub prerelease, `app-gp-nightly.apk` and `app-vanilla-nightly.apk` (without
+Google Play services), and sends the gp one to Firebase App Distribution.
+Each announcement links both APKs and lists the pull
 requests the build carries, with breaking changes, the titles carrying `!`,
 listed first and marked `Breaking:`. Both nightlies skip a scheduled night
 when `main` has not moved past what their last successful run built. `android-debug-distribution.yml` runs

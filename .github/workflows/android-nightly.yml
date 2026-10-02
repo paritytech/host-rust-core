@@ -89,7 +89,9 @@ jobs:
     name: Build and publish
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Two flavours of the same build, the second reusing most of what the first
+    # compiled.
+    timeout-minutes: 75
     outputs:
       build_id: ${{ steps.setup.outputs.build_id }}
       version_name: ${{ steps.version.outputs.name }}
@@ -159,10 +161,10 @@ jobs:
           CI_KEYSTORE_PASS: ${{ secrets.CI_KEYSTORE_PASS }}
           CI_KEYSTORE_KEY_ALIAS: ${{ secrets.CI_KEYSTORE_KEY_ALIAS }}
           CI_KEYSTORE_KEY_PASS: ${{ secrets.CI_KEYSTORE_KEY_PASS }}
-        # Only the flavour that is distributed. Building the other one costs
-        # roughly twenty minutes for an artifact nothing consumes; it can be
-        # added back when it has a Firebase application of its own.
-        run: ./gradlew assembleGpNightly --no-daemon
+        # Both flavours, in one Gradle run so the second reuses what the first
+        # compiled. gp goes to App Distribution and the prerelease; vanilla, the
+        # build without Google Play services, goes to the prerelease only.
+        run: ./gradlew assembleGpNightly assembleVanillaNightly --no-daemon
 
       - name: Check the APK is signed by the expected key
         id: package
@@ -182,26 +184,28 @@ jobs:
             exit 1
           fi
 
-          shopt -s nullglob
-          found=("app/build/outputs/apk/gp/nightly"/*.apk)
-          shopt -u nullglob
-          if [ ${#found[@]} -ne 1 ]; then
-            echo "::error::Expected one APK, found ${#found[@]}"
-            exit 1
-          fi
-
-          # verify alone passes for an APK signed by any key, so a rotated or
-          # wrong keystore would ship a build that every tester's device
-          # rejects on install. Compare the certificate instead.
-          signer="$("${apksigner}" verify --print-certs "${found[0]}" \
-            | sed -n 's/.*SHA-256 digest: //p' | head -n1)"
-          if [ "${signer}" != "${EXPECTED_SIGNER}" ]; then
-            echo "::error::APK is signed by ${signer}, expected ${EXPECTED_SIGNER}"
-            exit 1
-          fi
-
           short="${GITHUB_SHA:0:9}"
-          mv "${found[0]}" "polkadot-app-gp-${BUILD_ID}-${short}.apk"
+          for flavour in gp vanilla; do
+            shopt -s nullglob
+            found=("app/build/outputs/apk/${flavour}/nightly"/*.apk)
+            shopt -u nullglob
+            if [ ${#found[@]} -ne 1 ]; then
+              echo "::error::Expected one ${flavour} APK, found ${#found[@]}"
+              exit 1
+            fi
+
+            # verify alone passes for an APK signed by any key, so a rotated or
+            # wrong keystore would ship a build that every tester's device
+            # rejects on install. Compare the certificate instead.
+            signer="$("${apksigner}" verify --print-certs "${found[0]}" \
+              | sed -n 's/.*SHA-256 digest: //p' | head -n1)"
+            if [ "${signer}" != "${EXPECTED_SIGNER}" ]; then
+              echo "::error::${flavour} APK is signed by ${signer}, expected ${EXPECTED_SIGNER}"
+              exit 1
+            fi
+
+            mv "${found[0]}" "polkadot-app-${flavour}-${BUILD_ID}-${short}.apk"
+          done
 
           # Signing is done, so neither the key nor the configuration is
           # reachable by anything that runs later in this job.
@@ -294,8 +298,8 @@ jobs:
             echo "name=Nightly Android ${DATE_NAME} UTC"
           } >> "$GITHUB_OUTPUT"
 
-      # The name polkadot-android-community used, so consumers need no change.
-      - name: Name the asset for consumers
+      # The names polkadot-android-community used, so consumers need no change.
+      - name: Name the assets for consumers
         id: release-asset
         working-directory: hosts/android
         env:
@@ -304,8 +308,10 @@ jobs:
         run: |
           set -euo pipefail
           cp "polkadot-app-gp-${BUILD_ID}-${SHORT}.apk" app-gp-nightly.apk
-          ls -la app-gp-nightly.apk
+          cp "polkadot-app-vanilla-${BUILD_ID}-${SHORT}.apk" app-vanilla-nightly.apk
+          ls -la app-gp-nightly.apk app-vanilla-nightly.apk
           echo "path=hosts/android/app-gp-nightly.apk" >> "$GITHUB_OUTPUT"
+          echo "vanilla_path=hosts/android/app-vanilla-nightly.apk" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -314,40 +320,46 @@ jobs:
           name: ${{ steps.release-tag.outputs.name }}
           generate_release_notes: true
           body: |
-            Google-Play (`gp`) nightly, build `${{ steps.setup.outputs.build_id }}`.
-            Same APK the Firebase release above carries.
+            Nightly build `${{ steps.setup.outputs.build_id }}`, in two flavours:
+
+            - `app-gp-nightly.apk`, the Google Play (`gp`) flavour, the same APK the Firebase release carries.
+            - `app-vanilla-nightly.apk`, the flavour without Google Play services.
           prerelease: true
-          files: ${{ steps.release-asset.outputs.path }}
+          files: |
+            ${{ steps.release-asset.outputs.path }}
+            ${{ steps.release-asset.outputs.vanilla_path }}
       # A release can be created with the upload having quietly failed,
       # leaving a tag that looks published and a consumer that gets a 404.
       # Read the asset back rather than trusting that it uploaded.
-      - name: Confirm the published asset is present and not empty
+      - name: Confirm the published assets are present and not empty
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release-tag.outputs.tag }}
-          ASSET: app-gp-nightly.apk
         run: |
           set -euo pipefail
-          # jq takes the name from the environment rather than from the shell, so a
-          # name needing escaping cannot break the filter. `uploaded` is the state
-          # that matters: an asset stranded mid-upload still reports a size, which
-          # is exactly the case this step exists to catch.
-          # shellcheck disable=SC2016  # $ENV.ASSET is jq, and must not expand here
-          size="$(gh release view "$TAG" --json assets \
-            --jq '[.assets[] | select(.name == $ENV.ASSET and .state == "uploaded") | .size] | first // 0')"
-          case "$size" in
-            ''|*[!0-9]*)
-              echo "::error::Could not read a size for $ASSET on $TAG"
+          for ASSET in app-gp-nightly.apk app-vanilla-nightly.apk; do
+            export ASSET
+            # jq takes the name from the environment rather than from the shell, so a
+            # name needing escaping cannot break the filter. `uploaded` is the state
+            # that matters: an asset stranded mid-upload still reports a size, which
+            # is exactly the case this step exists to catch.
+            # shellcheck disable=SC2016  # $ENV.ASSET is jq, and must not expand here
+            size="$(gh release view "$TAG" --json assets \
+              --jq '[.assets[] | select(.name == $ENV.ASSET and .state == "uploaded") | .size] | first // 0')"
+            case "$size" in
+              ''|*[!0-9]*)
+                echo "::error::Could not read a size for $ASSET on $TAG"
+                exit 1
+                ;;
+            esac
+            if [ "$size" -le 0 ]; then
+              echo "::error::$ASSET is missing, empty or unfinished on $TAG"
+              gh release view "$TAG" --json assets \
+                --jq '.assets[] | "\(.name) \(.size) \(.state)"' || true
               exit 1
-              ;;
-          esac
-          if [ "$size" -le 0 ]; then
-            echo "::error::$ASSET is missing, empty or unfinished on $TAG"
-            gh release view "$TAG" --json assets \
-              --jq '.assets[] | "\(.name) \(.size) \(.state)"' || true
-            exit 1
-          fi
-          echo "$ASSET published on $TAG, $size bytes"
+            fi
+            echo "$ASSET published on $TAG, $size bytes"
+          done
 
 
   # Announced the way the iOS nightly is, through the same relay and into the
@@ -417,6 +429,7 @@ jobs:
           # only the tester app, so it gets a sentence instead of a link.
           download_links: |
             [APK](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ needs.nightly.outputs.tag }}/app-gp-nightly.apk)
+            [Vanilla APK, without Google Play services](${{ github.server_url }}/${{ github.repository }}/releases/download/${{ needs.nightly.outputs.tag }}/app-vanilla-nightly.apk)
             Also distributed to Firebase App Distribution (${{ vars.ANDROID_FIREBASE_GROUP }}).
           bot_url: ${{ secrets.NOTIFICATION_BOT_URL }}
           bot_api_token: ${{ secrets.NOTIFICATION_BOT_TOKEN }}
