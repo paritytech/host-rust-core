@@ -40,11 +40,11 @@ export async function dispatchFrame(
 }
 
 /**
- * Dispose a core, then free it. `dispose()` aborts in-flight dispatch, but
- * wasm-bindgen releases the core's borrow only once the aborted receiveFrame
- * promise settles, so calling free() in the same turn throws "attempted to take
- * ownership of Rust value while it was borrowed" and leaks the core. Await the
- * tracked frames first.
+ * Dispose a core, then free it. `dispose()` withdraws in-flight dispatch and
+ * aborts it after its grace, but wasm-bindgen releases the core's borrow only
+ * once each receiveFrame promise settles, so calling free() in the same turn
+ * throws "attempted to take ownership of Rust value while it was borrowed" and
+ * leaks the core. Await the tracked frames first.
  */
 export async function disposeAwaitingFrames(
   core: DisposableCore,

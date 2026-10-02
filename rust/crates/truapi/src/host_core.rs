@@ -1600,13 +1600,8 @@ impl ProductRuntime {
         };
         let dispatch_id = self.next_dispatch_id.fetch_add(1, Ordering::Relaxed);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        // Same poison recovery as `self.debug`, and for a concrete reason rather than
-        // symmetry: `dispose` below holds THIS guard across its whole drain loop and
-        // calls `AbortHandle::abort()` inside it, which wakes the task's waker - i.e.
-        // arbitrary out-of-repo executor code, under the lock. One panicking waker
-        // would poison this mutex and every later `receive_frame` would then panic
-        // here, which is exactly the production-host-killing shape the debug tap
-        // above was fixed for.
+        // Same poison recovery as `self.debug`: a panic anywhere under this guard
+        // must not turn every later `receive_frame` into a panic.
         //
         // Re-check under the disposal lock so a racing dispatch cannot register
         // after `dispose` has drained the active requests.
@@ -1706,15 +1701,20 @@ impl ProductRuntime {
 
     /// Dispose this host core. Idempotent.
     ///
-    /// Disposal suppresses future outgoing frames, aborts in-flight dispatch
-    /// futures, and cancels active subscriptions.
+    /// Disposal suppresses future outgoing frames, withdraws in-flight calls
+    /// and aborts them after a grace, and cancels active subscriptions. It
+    /// returns before that abort, so a handler that ignores its token can run
+    /// for up to the grace after the product has gone.
+    ///
+    /// Withdrawing first lets a call that is waiting on a paired host tell it
+    /// to stop, which an abort alone would drop before it could.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.dispose"))]
     pub fn dispose(&self) {
-        // Aborting under the lock can wake code that re-enters disposal.
+        // Code that disposal wakes can re-enter it.
         if self.disposed.load(Ordering::Acquire) {
             return;
         }
-        {
+        let in_flight = {
             let mut in_flight = self
                 .in_flight
                 .lock()
@@ -1722,13 +1722,23 @@ impl ProductRuntime {
             if self.disposed.swap(true, Ordering::AcqRel) {
                 return;
             }
-            for (_, handle) in in_flight.drain() {
+            in_flight
+                .drain()
+                .map(|(_, handle)| handle)
+                .collect::<Vec<_>>()
+        };
+        // Closed before any withdrawn call wakes, so a broadcast answered
+        // during teardown is left running rather than stopped.
+        self.admin.product_runtime.release_open_operations();
+        self.core.withdraw_requests();
+        (self.admin.product_runtime.services().spawner)(Box::pin(async move {
+            futures_timer::Delay::new(crate::runtime::AUTHORITY_CANCEL_UNWIND_GRACE).await;
+            for handle in in_flight {
                 handle.abort();
             }
-        }
+        }));
         self.admin.product_runtime.detach_chat();
         self.admin.product_runtime.detach_renderer();
-        self.admin.product_runtime.release_open_operations();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
@@ -3332,6 +3342,193 @@ mod tests {
         );
     }
 
+    /// Closing a product must reach the phone that is prompting for it. An
+    /// abort alone drops the call before it can send the paired host a
+    /// `Cancel`, and approving the stale prompt would still allocate.
+    #[test]
+    fn disposing_mid_sso_call_withdraws_the_request_from_the_paired_host() {
+        let session = crate::test_support::sso_session_info();
+        let answers = |method: &'static str, result: &str| {
+            std::iter::repeat_n((method, result.to_string()), 4)
+        };
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            rpc_method_responses: answers("statement_subscribeStatement", r#""sub""#)
+                .chain(answers("statement_submit", r#"{"status":"new"}"#))
+                .chain(answers("statement_unsubscribeStatement", "true"))
+                .collect(),
+            ..Default::default()
+        });
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = Arc::new(ProductRuntime::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        ));
+        // The boot reconcile clears the session it finds empty, so install
+        // this one only after it has run.
+        wait_until(
+            || {
+                !platform
+                    .auth_states
+                    .lock()
+                    .expect("auth state list mutex poisoned")
+                    .is_empty()
+            },
+            "the boot reconcile did not report the empty session store",
+        );
+        runtime
+            .admin
+            .product_runtime()
+            .test_session_state()
+            .set_session(session.clone());
+        let ids = request_ids("resource_allocation_request").expect("known request method");
+        let frame = ProtocolMessage {
+            request_id: "alloc:1".to_string(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest::V1(
+                    v01::HostRequestResourceAllocationRequest {
+                        resources: vec![v01::AllocatableResource::StatementStoreAllowance],
+                    },
+                )
+                .encode(),
+            },
+        }
+        .encode();
+        let dispatching = {
+            let runtime = runtime.clone();
+            std::thread::spawn(move || {
+                futures::executor::block_on(runtime.receive_frame(frame)).expect("receive frame");
+            })
+        };
+        let published = || crate::test_support::submitted_remote_messages(&platform, &session);
+        wait_until(|| published().len() == 1, "the request was not published");
+        let request = published()[0].message_id.clone();
+
+        runtime.dispose();
+
+        let withdrawn = || {
+            published()
+                .into_iter()
+                .filter_map(|message| match message.data {
+                    crate::host_internal::sso_messages::RemoteMessageData::V1(
+                        crate::host_internal::sso_messages::v1::RemoteMessage::Cancel(withdrawal),
+                    ) => Some(withdrawal.message_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        wait_until(|| !withdrawn().is_empty(), "disposing sent no Cancel");
+        assert_eq!(withdrawn(), vec![request]);
+        dispatching.join().expect("dispatch thread panicked");
+    }
+
+    /// A broadcast answered while dispose is still tearing down must see the
+    /// product as closed. Withdrawing marks it `Cancelled`, and a withdrawn
+    /// broadcast of a product that is still open gets stopped.
+    #[test]
+    fn a_broadcast_answered_during_dispose_keeps_running() {
+        let (release, gate) = futures::channel::oneshot::channel();
+        let platform = Arc::new(StubPlatform {
+            rpc_method_responses: vec![
+                ("transaction_v1_broadcast", r#""REMOTE-OP""#.to_string()),
+                ("transaction_v1_stop", "null".to_string()),
+            ],
+            rpc_method_responses_gate: Arc::new(Mutex::new(Some(gate))),
+            ..Default::default()
+        });
+        let sent_methods = {
+            let platform = platform.clone();
+            move || {
+                platform
+                    .sent_rpc
+                    .lock()
+                    .expect("rpc list mutex poisoned")
+                    .iter()
+                    .map(|request| {
+                        serde_json::from_str::<serde_json::Value>(request).unwrap()["method"]
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        let dispatched = Arc::new(AtomicBool::new(false));
+        // Dispose spawns its abort timer after withdrawing and before it
+        // closes the host, so the broadcast is answered inside that window.
+        let armed = Arc::new(AtomicBool::new(false));
+        let spawner: crate::subscription::Spawner = {
+            let inner = test_spawner();
+            let armed = armed.clone();
+            let release = Mutex::new(Some(release));
+            let dispatched = dispatched.clone();
+            let sent_methods = sent_methods.clone();
+            Arc::new(move |task| {
+                if armed.swap(false, Ordering::AcqRel) {
+                    let release = release.lock().expect("release mutex poisoned").take();
+                    release.expect("gate released once").send(()).unwrap();
+                    wait_until(
+                        || {
+                            dispatched.load(Ordering::Acquire)
+                                || sent_methods().iter().any(|m| m == "transaction_v1_stop")
+                        },
+                        "the broadcast did not finish",
+                    );
+                }
+                inner(task);
+            })
+        };
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = Arc::new(ProductRuntime::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            spawner,
+            Arc::new(RecordingSink::default()),
+        ));
+        let ids = request_ids("chain_broadcast_transaction").expect("known request method");
+        let frame = ProtocolMessage {
+            request_id: "broadcast:1".to_string(),
+            payload: Payload {
+                trait_id: ids.trait_id,
+                method_id: ids.method_id,
+                message_type: crate::frame::MESSAGE_TYPE_REQUEST,
+                value: truapi::versioned::chain::RemoteChainTransactionBroadcastRequest::V1(
+                    v01::RemoteChainTransactionBroadcastRequest {
+                        genesis_hash: vec![0; 32],
+                        transaction: vec![1, 2, 3],
+                    },
+                )
+                .encode(),
+            },
+        }
+        .encode();
+        let dispatching = {
+            let runtime = runtime.clone();
+            let dispatched = dispatched.clone();
+            std::thread::spawn(move || {
+                futures::executor::block_on(runtime.receive_frame(frame)).expect("receive frame");
+                dispatched.store(true, Ordering::Release);
+            })
+        };
+        wait_until(
+            || sent_methods().iter().any(|m| m == "transaction_v1_broadcast"),
+            "the broadcast was not sent",
+        );
+
+        armed.store(true, Ordering::Release);
+        runtime.dispose();
+        dispatching.join().expect("dispatch thread panicked");
+
+        assert_eq!(sent_methods(), vec!["transaction_v1_broadcast"]);
+    }
+
     #[test]
     fn dispose_releases_the_demand_open_operations_hold() {
         let platform = Arc::new(StubPlatform::default());
@@ -3364,6 +3561,46 @@ mod tests {
             host.services().worker_ledger.count("myapp.dot"),
             0,
             "disposing a connection drops the demand its open operations held"
+        );
+    }
+
+    /// Disposal withdraws a `begin_operation` rather than dropping it, so the
+    /// host can still answer it. An operation it answers for a connection
+    /// already gone must be ended, not held open on a worker nobody uses.
+    #[test]
+    fn an_operation_the_host_answers_after_dispose_is_ended_not_held() {
+        let platform = Arc::new(StubPlatform::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            platform.clone(),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+        let host = runtime.admin.product_runtime().clone();
+        runtime.dispose();
+
+        futures::executor::block_on(truapi::api::Worker::begin_operation(
+            host.as_ref(),
+            &truapi::CallContext::default(),
+            truapi::versioned::worker::HostWorkerBeginOperationRequest::V1(
+                truapi::v01::HostWorkerBeginOperationRequest { label: None },
+            ),
+        ))
+        .expect("begin operation");
+
+        let ended = || {
+            platform
+                .ended_operations
+                .lock()
+                .expect("ended operations mutex poisoned")
+                .clone()
+        };
+        wait_until(|| !ended().is_empty(), "the late operation was not ended");
+        assert_eq!(
+            (host.services().worker_ledger.count("myapp.dot"), ended()),
+            (0, vec![("myapp.dot".to_string(), 1)])
         );
     }
 

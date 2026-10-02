@@ -594,7 +594,8 @@ let runtime: WorkerPairingHostRuntime | null = null;
 const cores = new Map<number, WorkerProductRuntime>();
 // Outstanding receiveFrame calls per core. wasm-bindgen holds a borrow of the
 // core for the whole duration of an async method, so `free()` throws while one
-// is in flight. `disposeCore` aborts these then awaits them before freeing.
+// is in flight. `disposeCore` disposes the core, which withdraws these and
+// aborts them after its grace, then awaits them before freeing.
 const inFlightFrames = new Map<number, Set<Promise<void>>>();
 /** Live render subscriptions, keyed by main-thread render id. */
 const renders: RenderSubscriptions = new Map();

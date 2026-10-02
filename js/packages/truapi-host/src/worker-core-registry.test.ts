@@ -20,7 +20,7 @@ class FakeCore {
     });
   }
 
-  // dispose() aborts in-flight dispatch, so the awaited receiveFrame settles.
+  // dispose() ends in-flight dispatch, so the awaited receiveFrame settles.
   dispose(): void {
     this.disposed = true;
     this.settlers.splice(0).forEach((settle) => settle());
