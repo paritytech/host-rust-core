@@ -4211,6 +4211,57 @@ pub enum HostContactPick {
     Unsupported,
 }
 
+/// Host-private initial selection for a multi-contact picker.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct ContactSelection {
+    /// Resolved accounts to preselect, deduplicated and bounded to 256.
+    pub selected: Vec<Bytes32>,
+}
+
+/// The user's complete selection in a host-owned multi-contact picker.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
+pub enum HostContactsPick {
+    /// Confirmed accounts, including an empty selection. Never sent to products.
+    Picked {
+        /// Chosen contact accounts, at most 256.
+        accounts: Vec<Bytes32>,
+    },
+    /// The user cancelled without changing the selection.
+    Dismissed,
+    /// There are no contacts to show.
+    NoContacts,
+    /// This host cannot present a multi-contact picker.
+    Unsupported,
+}
+
+/// One contact name to render in host-owned UI, without any Profile grant.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct PlacedContactLabel {
+    /// Stable, product-chosen placement id.
+    pub slot: u32,
+    /// Resolved contact account, never sent to the product.
+    pub account: Bytes32,
+    /// Name bounds in surface units.
+    pub rect: AvatarRect,
+    /// Visible region in surface units.
+    pub clip: AvatarRect,
+}
+
+/// Complete replacement of names drawn over one product connection.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct PlacedContactLabels {
+    /// Width of the product surface.
+    pub surface_width: u32,
+    /// Height of the product surface.
+    pub surface_height: u32,
+    /// Host-resolved names to draw. Empty clears the placement.
+    pub labels: Vec<PlacedContactLabel>,
+}
+
 /// Host-owned contact picker, drawn from the chat lists the host's chat
 /// extensions hold.
 ///
@@ -4241,11 +4292,7 @@ pub trait ContactsPlatform: Send + Sync {
     /// implements [`Self::contacts`] alone still compiles and its products get
     /// a truthful answer rather than a dismissal they would retry forever.
     ///
-    /// A JS host reaches the same answer by another route: the generated
-    /// surface types this method optional, but a capability group counts as
-    /// served only when every callback in it is present, so omitting this one
-    /// makes the whole group absent and `contacts.pick` answers `Unsupported`
-    /// before any of it is reached.
+    /// JS adapters apply the same unsupported default when the host omits UI.
     ///
     /// The core cannot draw UI, so a selection has to come from the host; the
     /// whole point is that the host renders the names rather than shipping
@@ -4257,6 +4304,32 @@ pub trait ContactsPlatform: Send + Sync {
         _product: &ProductContext,
     ) -> Result<HostContactPick, GenericError> {
         Ok(HostContactPick::Unsupported)
+    }
+
+    /// Edit the complete selection in host-owned UI. Cancellation is not an
+    /// empty confirmed selection. Accounts and names stay host-side.
+    async fn pick_contacts(
+        &self,
+        _product: &ProductContext,
+        _selection: ContactSelection,
+    ) -> Result<HostContactsPick, GenericError> {
+        Ok(HostContactsPick::Unsupported)
+    }
+
+    /// Draw names from the host's contact directory, with an account fallback
+    /// when no username exists. Profile sharing must not affect labels.
+    ///
+    /// Replace the connection's previous placement, and clear it on navigation
+    /// or disconnect. On directory invalidation, clear stale names and refresh
+    /// the live placement from current contacts. No per-contact result is returned.
+    /// Returns whether this host supports label placement, never whether any
+    /// individual contact resolved. JS adapters return false for omitted UI.
+    async fn place_contact_labels(
+        &self,
+        _product: &ProductContext,
+        _placed: PlacedContactLabels,
+    ) -> Result<bool, truapi::latest::HostContactsPlaceLabelsError> {
+        Ok(false)
     }
 }
 

@@ -165,6 +165,24 @@ pub mod latest {
     pub type HostContactsPickResponse = LatestOf<versioned::contacts::HostContactsPickResponse>;
     /// Contact picker failure.
     pub type HostContactsPickError = LatestOf<versioned::contacts::HostContactsPickError>;
+    /// Multi-contact picker request.
+    pub type HostContactsPickManyRequest =
+        LatestOf<versioned::contacts::HostContactsPickManyRequest>;
+    /// Multi-contact picker result.
+    pub type HostContactsPickManyResponse =
+        LatestOf<versioned::contacts::HostContactsPickManyResponse>;
+    /// Multi-contact picker failure.
+    pub type HostContactsPickManyError = LatestOf<versioned::contacts::HostContactsPickManyError>;
+    /// Host-owned contact name placement.
+    pub type HostContactsPlaceLabelsRequest =
+        LatestOf<versioned::contacts::HostContactsPlaceLabelsRequest>;
+    /// Contact label placement acknowledgment.
+    pub type HostContactsPlaceLabelsResponse =
+        LatestOf<versioned::contacts::HostContactsPlaceLabelsResponse>;
+    /// Contact label placement failure.
+    pub type HostContactsPlaceLabelsError =
+        LatestOf<versioned::contacts::HostContactsPlaceLabelsError>;
+    pub use crate::v01::{ContactLabelSlot, ContactPickManyOutcome};
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;
