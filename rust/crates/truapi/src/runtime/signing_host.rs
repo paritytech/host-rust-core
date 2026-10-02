@@ -96,6 +96,7 @@ struct LocalGrantState {
     auto_signing_grants: HashSet<([u8; 32], String)>,
     /// Per product, the period its statement-store allowance was last seen
     /// registered in, and its key.
+    // TODO(#1159): persist in core.sqlite3 allowance_records.
     statement_allowance_keys: HashMap<String, (u32, StatementStoreAllowanceKey)>,
 }
 
@@ -356,6 +357,36 @@ impl SigningHost {
         }
         state.auto_signing_grants.insert((owner, product_id));
         Ok(())
+    }
+
+    async fn allocate_statement_store_allowance_key(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+        policy: OnExistingAllowancePolicy,
+    ) -> Result<StatementStoreAllowanceKey, sso_responder::AllowanceAllocationError> {
+        let (_, activation_generation) = self.require_current_session(session)?;
+        let period =
+            statement_allowance::slot::current_period(sso_responder::current_unix_secs()?);
+        let secret = sso_responder::allocate_statement_store_allowance(
+            &self.services,
+            self,
+            session,
+            product_id,
+            policy,
+        )
+        .await?;
+        let key = StatementStoreAllowanceKey::from_secret_bytes(secret)?;
+        self.local_grants
+            .lock()
+            .expect("local AutoSigning grant mutex poisoned")
+            .remember_statement_allowance_key(
+                activation_generation,
+                product_id.to_string(),
+                period,
+                key.clone(),
+            )?;
+        Ok(key)
     }
 
     fn has_auto_signing_grant(
@@ -1350,17 +1381,14 @@ impl ProductAuthority for SigningHost {
                 return Err(super::authority_cancellation_error(cx, reason));
             }
             let outcome = match resource {
-                v01::AllocatableResource::StatementStoreAllowance => {
-                    sso_responder::allocate_statement_store_allowance(
-                        &self.services,
-                        self,
+                v01::AllocatableResource::StatementStoreAllowance => self
+                    .allocate_statement_store_allowance_key(
                         session,
                         &product_id,
                         OnExistingAllowancePolicy::Increase,
                     )
                     .await
-                    .map(|_| v01::AllocationOutcome::Allocated)
-                }
+                    .map(|_| v01::AllocationOutcome::Allocated),
                 v01::AllocatableResource::BulletinAllowance => {
                     sso_responder::allocate_bulletin_allowance(
                         &self.services,
@@ -1419,26 +1447,13 @@ impl ProductAuthority for SigningHost {
         {
             return Ok(key.clone());
         }
-        let secret = sso_responder::allocate_statement_store_allowance(
-            &self.services,
-            self,
+        self.allocate_statement_store_allowance_key(
             session,
             &product_id,
             OnExistingAllowancePolicy::Ignore,
         )
         .await
-        .map_err(sso_responder::AllowanceAllocationError::into_authority_error)?;
-        let key = StatementStoreAllowanceKey::from_secret_bytes(secret)?;
-        self.local_grants
-            .lock()
-            .expect("local AutoSigning grant mutex poisoned")
-            .remember_statement_allowance_key(
-                activation_generation,
-                product_id,
-                period,
-                key.clone(),
-            )?;
-        Ok(key)
+        .map_err(sso_responder::AllowanceAllocationError::into_authority_error)
     }
 
     fn forget_statement_store_allowance_key(&self, product_id: &str, public_key: [u8; 32]) {
