@@ -614,8 +614,7 @@ impl SigningHostRuntime {
     }
 
     /// Public key of the `number`th funding account of `kind` for
-    /// `source_id`, or `None` while no signing session is active. Number
-    /// accounts with [`Self::next_funding_account_number`].
+    /// `source_id`, or `None` while no signing session is active.
     pub fn funding_account(
         &self,
         kind: crate::host_logic::funding::FundingAccountKind,
@@ -629,15 +628,32 @@ impl SigningHostRuntime {
             })
     }
 
-    /// Reserve the next account number for `source_id`, counting up from 1,
-    /// so no two sessions share an account.
-    pub async fn next_funding_account_number(
+    /// Give the open inbound session `intent` its deposit account for the
+    /// request's source, and watch it until the expected balance arrives on
+    /// Asset Hub, which moves the session to converting. Returns the account
+    /// the provider pays into.
+    pub async fn assign_funding_deposit(
         &self,
-        source_id: &str,
-    ) -> Result<u32, v01::GenericError> {
+        intent: &str,
+        request: crate::host_logic::funding::DepositRequest,
+    ) -> Result<[u8; 32], v01::GenericError> {
+        let source_id = request.source_id.clone();
+        let derive = |number| {
+            self.signing_host
+                .derive_funding_account(
+                    crate::host_logic::funding::FundingAccountKind::Deposit,
+                    &source_id,
+                    number,
+                )
+                .map_err(|err| v01::GenericError {
+                    reason: err.to_string(),
+                })?
+                .ok_or_else(|| v01::GenericError {
+                    reason: "no signing session is active".into(),
+                })
+        };
         self.services
-            .funding()
-            .next_account_number(self.services.platform.as_ref(), source_id)
+            .assign_funding_deposit(intent, request, derive)
             .await
             .map_err(|err| v01::GenericError {
                 reason: err.to_string(),

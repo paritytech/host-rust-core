@@ -39,6 +39,45 @@ pub struct FundingSession {
     pub opened_at_ms: u64,
     /// When the session expires if still open, in Unix milliseconds.
     pub deadline_ms: u64,
+    /// Where an inbound session's provider delivers, once the source is
+    /// known.
+    pub deposit: Option<FundingDeposit>,
+}
+
+/// Asset Hub asset a deposit arrives in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum DepositAsset {
+    /// The relay chain's native token.
+    Native,
+    /// An `Assets` pallet asset.
+    Asset(u32),
+}
+
+/// What an inbound session's provider delivers, once it is chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepositRequest {
+    /// Deposit source, as in the account label, such as `usdt-assethub`.
+    pub source_id: String,
+    /// Asset the provider delivers.
+    pub asset: DepositAsset,
+    /// Balance at which the deposit counts as delivered, in `asset` units.
+    pub expected: u128,
+}
+
+/// The account an inbound session watches and what it waits for.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct FundingDeposit {
+    /// Deposit source, as in the account label.
+    pub source_id: String,
+    /// Account number for `source_id`; the refund account shares it.
+    pub number: u32,
+    /// Asset the provider delivers.
+    pub asset: DepositAsset,
+    /// Public key of the deposit account, kept so the watch needs no signing
+    /// session.
+    pub account: [u8; 32],
+    /// Balance at which the deposit counts as delivered, in `asset` units.
+    pub expected: u128,
 }
 
 /// Stage of a session, as the core persists it.
@@ -46,6 +85,12 @@ pub struct FundingSession {
 pub enum FundingStage {
     /// In flight.
     Open,
+    /// Inbound: the deposit arrived and is being converted.
+    Converting {
+        /// Balance of the deposit account when it was seen, in its asset's
+        /// units.
+        deposited: u128,
+    },
     /// Ended without success.
     Failed {
         /// Why it ended.
@@ -72,6 +117,7 @@ impl FundingSession {
             stage: FundingStage::Open,
             opened_at_ms: now_ms,
             deadline_ms: now_ms.saturating_add(SESSION_WINDOW_MS),
+            deposit: None,
         }
     }
 
@@ -83,7 +129,7 @@ impl FundingSession {
     /// When the session ended, if it has.
     pub fn settled_at_ms(&self) -> Option<u64> {
         match self.stage {
-            FundingStage::Open => None,
+            FundingStage::Open | FundingStage::Converting { .. } => None,
             FundingStage::Failed { settled_at_ms, .. } => Some(settled_at_ms),
         }
     }
@@ -99,6 +145,7 @@ impl FundingSession {
             (FundingStage::Open, FundingDirection::Out) => {
                 HostFundingStatusSubscribeItem::AwaitingRelease
             }
+            (FundingStage::Converting { .. }, _) => HostFundingStatusSubscribeItem::Converting,
             (FundingStage::Failed { reason, .. }, _) => HostFundingStatusSubscribeItem::Failed {
                 reason: reason.clone(),
                 moved: 0,
@@ -119,9 +166,39 @@ impl FundingSession {
         true
     }
 
-    /// Expire the session if it is still open at its deadline. Returns whether
-    /// it expired.
+    /// Whether the expiry sweep ends this session at its deadline: an open
+    /// one with no deposit account. One with an account is ended by the
+    /// deposit watch, after a read that shows its deposit did not arrive.
+    pub fn expires_by_sweep(&self) -> bool {
+        self.stage == FundingStage::Open && self.deposit.is_none()
+    }
+
+    /// Expire the session if the sweep owns it and its deadline passed.
+    /// Returns whether it expired.
     pub fn expire_if_due(&mut self, now_ms: u64) -> bool {
+        self.expires_by_sweep()
+            && now_ms >= self.deadline_ms
+            && self.fail(FundingFailure::Expired, now_ms)
+    }
+
+    /// The deposit an open inbound session is waiting on, if one is assigned.
+    pub fn awaited_deposit(&self) -> Option<&FundingDeposit> {
+        (self.stage == FundingStage::Open)
+            .then_some(self.deposit.as_ref())
+            .flatten()
+    }
+
+    /// Record a finalized reading of the deposit account's balance, taken at
+    /// `now_ms`: converting once it covers the expected amount, expired if it
+    /// does not by the deadline. Returns whether the session changed.
+    pub fn observe_deposit(&mut self, balance: u128, now_ms: u64) -> bool {
+        let Some(deposit) = self.awaited_deposit() else {
+            return false;
+        };
+        if balance >= deposit.expected {
+            self.stage = FundingStage::Converting { deposited: balance };
+            return true;
+        }
         now_ms >= self.deadline_ms && self.fail(FundingFailure::Expired, now_ms)
     }
 }
