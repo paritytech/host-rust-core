@@ -212,7 +212,12 @@ export type CoreStorageKey =
    * Funding sessions: every live one plus a bounded tail of settled ones,
    * as one SCALE blob.
    */
-  | { tag: "FundingSessions"; value?: undefined };
+  | { tag: "FundingSessions"; value?: undefined }
+  /**
+   * Last funding account number handed out per source, as one SCALE blob.
+   * Never reset, so no account is reused.
+   */
+  | { tag: "FundingAccountCounters"; value?: undefined };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -793,6 +798,7 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         productId: string;
       }>,
       FundingSessions: S._void,
+      FundingAccountCounters: S._void,
     }),
 );
 

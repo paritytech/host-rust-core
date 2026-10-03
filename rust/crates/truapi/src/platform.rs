@@ -1460,6 +1460,10 @@ pub enum CoreStorageKey {
     /// as one SCALE blob.
     #[codec(index = 13)]
     FundingSessions,
+    /// Last funding account number handed out per source, as one SCALE blob.
+    /// Never reset, so no account is reused.
+    #[codec(index = 14)]
+    FundingAccountCounters,
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1514,6 +1518,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::SsoResponderRequestLedger { .. } => ("SsoResponderRequestLedger", None),
         CoreStorageKey::ProductManifest { product_id } => ("ProductManifest", Some(product_id)),
         CoreStorageKey::FundingSessions => ("FundingSessions", None),
+        CoreStorageKey::FundingAccountCounters => ("FundingAccountCounters", None),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }

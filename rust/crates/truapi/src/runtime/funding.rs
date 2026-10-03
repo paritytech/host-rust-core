@@ -22,7 +22,8 @@ use truapi::latest::{FundingDirection, GenericError, HostFundingStatusSubscribeI
 
 use super::services::RuntimeServices;
 use crate::host_logic::funding::{
-    FundingSession, FundingSessionError, load_sessions, retained, store_sessions,
+    FundingSession, FundingSessionError, load_sessions, next_account_number, retained,
+    store_sessions,
 };
 use crate::platform::{
     CoreStorage, FundingPlatform, FundingPresentOutcome, FundingPresentation, Platform,
@@ -132,6 +133,17 @@ impl FundingRegistry {
             }
         }
         Ok(result)
+    }
+
+    /// Reserve the next account number for `source_id`, serialised with every
+    /// other funding write.
+    pub async fn next_account_number(
+        &self,
+        storage: &(impl CoreStorage + ?Sized),
+        source_id: &str,
+    ) -> Result<u32, FundingSessionError> {
+        let _writes = self.writes.lock().await;
+        next_account_number(storage, source_id).await
     }
 
     /// Keep one task waiting on the earliest open deadline while any session

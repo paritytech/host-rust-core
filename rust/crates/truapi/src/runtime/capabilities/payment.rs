@@ -184,6 +184,11 @@ impl Payment for ProductRuntimeHost {
         if !source_keys_are_valid(&request.source) {
             return Err(domain(v01::HostPaymentTopUpError::InvalidSource));
         }
+        if matches!(request.source, v01::PaymentTopUpSource::ProductAccount { .. })
+            && crate::runtime::is_funding_product(&self.product_id())
+        {
+            return Err(CallError::Denied);
+        }
         platform
             .top_up(&self.product, request)
             .await

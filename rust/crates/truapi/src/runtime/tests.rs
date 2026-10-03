@@ -2741,6 +2741,35 @@ fn bare_localhost_product_allows_dev_product_accounts() {
     );
 }
 
+/// The funding product's accounts hold deposits in transit, so no product
+/// signs with them: not one that registers the name, and not a development
+/// product that may otherwise reach any account.
+#[test]
+fn no_product_reaches_the_funding_accounts() {
+    let registered = ProductRuntimeHost::new(stub_platform(), runtime_config("fund.dot"), test_spawner());
+    let localhost =
+        ProductRuntimeHost::new(stub_platform(), runtime_config("localhost"), test_spawner());
+    // The user would allow it, so only the guard can refuse.
+    let platform = StubPlatform {
+        account_access_confirmed: true,
+        ..StubPlatform::default()
+    };
+    assert_eq!(
+        (
+            account_target(&registered, "fund.dot"),
+            account_target(&localhost, "fund.dot"),
+            account_target(&localhost, "app.fund.dot"),
+            futures::executor::block_on(crate::runtime::account_access_authorization(
+                &platform,
+                "wallet.dot",
+                "fund.dot",
+            ))
+            .ok(),
+        ),
+        (None, None, None, Some(PermissionAuthorizationStatus::Denied))
+    );
+}
+
 /// A product destination reaches the platform as a `polkadot://` URL, whatever
 /// the product spelled it as. Asserting only that the call succeeded would not
 /// notice it arriving as `https://`.
