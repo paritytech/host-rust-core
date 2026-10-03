@@ -1,7 +1,5 @@
 use truapi::v01;
 
-
-
 /// Native-friendly rejection error returned by callback methods that map onto
 /// [`truapi::v01::GenericError`].
 ///
@@ -57,6 +55,14 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for v01::HostNavigateToError {
             "host callback threw an undeclared error; reporting it as a rejection"
         );
         v01::HostNavigateToError::Unknown { reason: err.reason }
+    }
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for crate::latest::HostContactsPlaceLabelsError {
+    fn from(_: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Unknown {
+            reason: "contact label callback failed".into(),
+        }
     }
 }
 

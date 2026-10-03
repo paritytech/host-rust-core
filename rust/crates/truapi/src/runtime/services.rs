@@ -48,6 +48,14 @@ pub struct RuntimeServices {
     permission_status: OnceLock<Arc<dyn PermissionStatusHost>>,
     /// Host Pocket adapter, installed once at startup by a host with a Pocket
     /// surface. Unset leaves every product Pocket call `Unsupported`.
+    /// Host profile presenter, installed once at startup by a host that can
+    /// render profiles. Unset leaves every product Profile call `Unsupported`.
+    profile_platform: OnceLock<Arc<dyn crate::platform::ProfilePlatform>>,
+    /// Where each live product connection draws contact avatars, so they can
+    /// be redrawn when what a contact shared changes.
+    pub(crate) contact_avatars: crate::runtime::profile::avatars::ContactAvatarPlacements,
+    /// Serializes profile audience updates, relay publication and received grants.
+    pub(crate) profile_state_gate: futures::lock::Mutex<()>,
     /// Optional native authenticated username index; only supplies candidates.
     identity_backend: OnceLock<Arc<dyn crate::platform::IdentityBackendHost>>,
     pocket_platform: OnceLock<Arc<dyn crate::platform::PocketPlatform>>,
@@ -57,6 +65,8 @@ pub struct RuntimeServices {
     /// Contact handles already resolved, shared by every product runtime of
     /// this host and emptied when the host says its contacts changed.
     pub contact_handles: Arc<crate::runtime::contacts::ContactHandleCache>,
+    /// Connection-owned label layers, cleared on session change and teardown.
+    pub contact_labels: crate::runtime::contacts::ContactLabelPlacements,
     /// Host observer told when a device finishes pairing with this signing
     /// host. Unset leaves a paired device unannounced.
     device_pairing_observer: OnceLock<Arc<dyn DevicePairingObserver>>,
@@ -150,9 +160,13 @@ impl RuntimeServices {
             native_wallet,
             permission_status: OnceLock::new(),
             pocket_platform: OnceLock::new(),
+            profile_platform: OnceLock::new(),
+            contact_avatars: Default::default(),
+            profile_state_gate: Default::default(),
             identity_backend: OnceLock::new(),
             contacts_platform: OnceLock::new(),
             contact_handles: Default::default(),
+            contact_labels: Default::default(),
             device_pairing_observer: OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             core_db: OnceLock::new(),
@@ -230,6 +244,22 @@ impl RuntimeServices {
         self.pocket_platform.get().cloned()
     }
 
+    /// Install the host's profile presenter.
+    ///
+    /// Set-once, like every optional capability. Returns whether this call
+    /// installed it.
+    pub(crate) fn install_profile_platform(
+        &self,
+        platform: Arc<dyn crate::platform::ProfilePlatform>,
+    ) -> bool {
+        self.profile_platform.set(platform).is_ok()
+    }
+
+    /// The host's profile presenter, when one is installed.
+    pub(crate) fn profile_platform(&self) -> Option<Arc<dyn crate::platform::ProfilePlatform>> {
+        self.profile_platform.get().cloned()
+    }
+
     /// Install the host's contacts adapter. Answers whether this call was the
     /// one that installed it.
     pub fn install_contacts_platform(
@@ -242,6 +272,18 @@ impl RuntimeServices {
     /// The host's contacts adapter, when one is installed.
     pub fn contacts_platform(&self) -> Option<Arc<dyn crate::platform::ContactsPlatform>> {
         self.contacts_platform.get().cloned()
+    }
+
+    /// Invalidate handle resolutions; host label layers refresh their live directory view.
+    pub fn invalidate_contacts(&self) {
+        self.contact_handles.clear();
+    }
+
+    /// Forget handles and labels belonging to the preceding wallet session.
+    pub fn contacts_session_changed(&self) {
+        self.invalidate_contacts();
+        self.contact_labels
+            .session_changed(self.contact_handles.generation(), &self.spawner);
     }
 
     /// Install the host's device-pairing observer.

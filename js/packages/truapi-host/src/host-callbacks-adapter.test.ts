@@ -30,6 +30,7 @@ import {
   NativeCoinageRequest,
   NativeCoinageResponse,
   PermissionDecision,
+  PresentedContactProfile,
   ProductContext,
   ProductExecutionKind,
   UserConfirmationReview,
@@ -906,6 +907,50 @@ describe("createWasmRawCallbacks", () => {
     expect(received).toEqual([]);
     expect(closes).toBe(1);
     expect(returns).toBe(1);
+  });
+
+  describe("contact profile presentation", () => {
+    const product = ProductContext.enc({
+      productId: "egui-chat.dot",
+      executionKind: "App",
+    });
+    const presented = {
+      shared: {
+        reference: "seity-contacts:v1:ab",
+        sharedAt: 1_700_000_000_500n,
+      },
+      peerIdentity: new Uint8Array(32).fill(0xa1),
+      username: "alice.01",
+    };
+
+    it("preserves shared profiles without fabricating a reference for empty feedback on older hosts", async () => {
+      const references: string[] = [];
+      const legacy = {
+        async presentProfile(
+          _product: unknown,
+          request: { reference: string },
+        ) {
+          references.push(request.reference);
+        },
+        async placeContactAvatars() {},
+      };
+      const raw = createWasmRawCallbacks({
+        ...makeHostCallbacks(),
+        profile: legacy as never,
+      });
+
+      await raw.presentContactProfile!(
+        product,
+        PresentedContactProfile.enc(presented),
+      );
+      await expect(
+        raw.presentContactProfile!(
+          product,
+          PresentedContactProfile.enc({ ...presented, shared: undefined }),
+        ),
+      ).rejects.toThrow("Contact profile feedback is unavailable");
+      expect(references).toEqual([presented.shared.reference]);
+    });
   });
 });
 

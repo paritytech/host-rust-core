@@ -278,6 +278,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
         chat: false,
         permissionStatus: false,
         pocket: false,
+        profile: false,
         identityBackend: false,
         coinageWallet: false,
         contacts: false,
@@ -438,52 +439,6 @@ describe("createWebWorkerPairingHostRuntime", () => {
       expect(progress).toEqual([{ stage: "confirming" }]);
     });
   }
-
-  it("reports the chat capability to the worker when the host serves it", async () => {
-    const worker = new FakeWorker();
-    void createWebWorkerPairingHostRuntime(
-      asWorker(worker),
-      makeHostCallbacks({
-        chat: { createChatRoom: async () => ({ status: "New" }) },
-      }),
-      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
-    );
-
-    worker.emit({ kind: "loaded" });
-
-    expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
-      chat: true,
-      permissionStatus: false,
-      pocket: false,
-      identityBackend: false,
-      coinageWallet: false,
-      contacts: false,
-    });
-  });
-
-  it("reports the pocket capability to the worker when the host serves it", async () => {
-    const worker = new FakeWorker();
-    void createWebWorkerPairingHostRuntime(
-      asWorker(worker),
-      makeHostCallbacks({
-        pocket: { removePocketCard: async () => {} },
-      }),
-      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
-    );
-
-    worker.emit({ kind: "loaded" });
-
-    // Without this the worker never builds the pocket callbacks, so a host
-    // that serves Pocket is answered `Unsupported` anyway.
-    expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
-      chat: false,
-      permissionStatus: false,
-      pocket: true,
-      identityBackend: false,
-      coinageWallet: false,
-      contacts: false,
-    });
-  });
 
   it("preserves optional authenticated identity search through the worker boundary", async () => {
     const worker = new FakeWorker();

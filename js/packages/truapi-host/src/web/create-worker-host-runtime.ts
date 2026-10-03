@@ -1744,6 +1744,7 @@ function createWebWorkerHostRuntime(
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
             pocket: host.pocket !== undefined,
+            profile: host.profile !== undefined,
             identityBackend: host.identityBackend !== undefined,
             coinageWallet: callbacks.nativeCoinage !== undefined,
             contacts: host.contacts !== undefined,
@@ -1883,6 +1884,7 @@ function buildRuntime(
                     contacts: callbacks.contacts !== undefined,
                     permissionStatus: callbacks.permissionStatus !== undefined,
                     pocket: callbacks.pocket !== undefined,
+                    profile: callbacks.profile !== undefined,
                     identityBackend: callbacks.identityBackend !== undefined,
                     coinageWallet:
                       state.rawCallbacks.nativeCoinage !== undefined,
