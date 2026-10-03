@@ -188,7 +188,7 @@ pub struct EventCallbacks {
     pub pocket_cards: Mutex<Vec<v01::PocketCard>>,
     pub pocket_removed: Mutex<Vec<String>>,
     pub theme: Mutex<v01::HostThemeSubscribeItem>,
-    pub locale: Mutex<v01::HostLocaleSubscribeItem>,
+    pub locale: Mutex<crate::latest::HostLocaleSubscribeItem>,
     pub preimages: Mutex<PreimageFixtureEntries>,
     pub auth_states: Mutex<Vec<AuthState>>,
     pub chain_id: Mutex<Option<u32>>,
@@ -240,7 +240,8 @@ impl EventCallbacks {
                 name: v01::ThemeName::Default,
                 variant: v01::ThemeVariant::Light,
             }),
-            locale: Mutex::new(v01::HostLocaleSubscribeItem {
+            locale: Mutex::new(crate::latest::HostLocaleSubscribeItem {
+                time_zone: None,
                 language_tag: "en".to_string(),
             }),
             preimages: Mutex::new(Vec::new()),
@@ -396,8 +397,14 @@ impl HostCallbacks for EventCallbacks {
     fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
         Ok(self.theme.lock().expect("theme mutex poisoned").clone())
     }
-    fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
+    fn current_locale(&self) -> Result<crate::latest::HostLocaleSubscribeItem, HostRejection> {
         Ok(self.locale.lock().expect("locale mutex poisoned").clone())
+    }
+    async fn localize_timestamps(
+        &self,
+        _request: crate::latest::HostLocaleLocalizeTimestampsRequest,
+    ) -> Result<crate::latest::HostLocaleLocalizeTimestampsResponse, HostRejection> {
+        Err(HostRejection::Rejected { reason: "Local time conversion is unavailable".into() })
     }
     async fn feature_supported(
         &self,
@@ -1138,7 +1145,8 @@ fn native_auth_presenter_forwards_states_across_the_ffi_mirror() {
 fn native_locale_subscription_emits_current_then_notified_changes() {
     let (callbacks, events, platform) = event_platform();
     let mut stream = platform.subscribe_locale();
-    let switched = v01::HostLocaleSubscribeItem {
+    let switched = crate::latest::HostLocaleSubscribeItem {
+        time_zone: Some("Asia/Shanghai".to_string()),
         language_tag: "zh-Hans".to_string(),
     };
 
@@ -1149,7 +1157,8 @@ fn native_locale_subscription_emits_current_then_notified_changes() {
 
     assert_eq!(
         first.unwrap(),
-        v01::HostLocaleSubscribeItem {
+        crate::latest::HostLocaleSubscribeItem {
+            time_zone: None,
             language_tag: "en".to_string(),
         }
     );
@@ -2004,10 +2013,17 @@ fn start_ws_bridge_twice_returns_already_running() {
                 variant: v01::ThemeVariant::Light,
             })
         }
-        fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
-            Ok(v01::HostLocaleSubscribeItem {
+        fn current_locale(&self) -> Result<crate::latest::HostLocaleSubscribeItem, HostRejection> {
+            Ok(crate::latest::HostLocaleSubscribeItem {
+                time_zone: None,
                 language_tag: "en".to_string(),
             })
+        }
+        async fn localize_timestamps(
+            &self,
+            _request: crate::latest::HostLocaleLocalizeTimestampsRequest,
+        ) -> Result<crate::latest::HostLocaleLocalizeTimestampsResponse, HostRejection> {
+            Err(HostRejection::Rejected { reason: "Local time conversion is unavailable".into() })
         }
         async fn feature_supported(
             &self,
@@ -2186,10 +2202,17 @@ fn pending_permission_decision_does_not_stall_bridge() {
                 variant: v01::ThemeVariant::Light,
             })
         }
-        fn current_locale(&self) -> Result<v01::HostLocaleSubscribeItem, HostRejection> {
-            Ok(v01::HostLocaleSubscribeItem {
+        fn current_locale(&self) -> Result<crate::latest::HostLocaleSubscribeItem, HostRejection> {
+            Ok(crate::latest::HostLocaleSubscribeItem {
+                time_zone: None,
                 language_tag: "en".to_string(),
             })
+        }
+        async fn localize_timestamps(
+            &self,
+            _request: crate::latest::HostLocaleLocalizeTimestampsRequest,
+        ) -> Result<crate::latest::HostLocaleLocalizeTimestampsResponse, HostRejection> {
+            Err(HostRejection::Rejected { reason: "Local time conversion is unavailable".into() })
         }
         async fn feature_supported(
             &self,

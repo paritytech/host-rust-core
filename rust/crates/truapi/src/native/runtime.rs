@@ -32,15 +32,15 @@ use super::config::{
     ProductExecutionConfig,
 };
 use super::errors::{HostRejection, NativeCoreDatabaseError};
-use super::executor::shared_native_executor;
 use super::events::NativeEventBus;
+use super::executor::shared_native_executor;
+#[cfg(doc)]
+use super::parse_pairing_deeplink;
 use super::platform::{
     CallbackPlatform, ChatCallbackPlatform, ContactsCallbackPlatform, PocketCallbackPlatform,
 };
 #[cfg(doc)]
 use crate::WorkerTransition;
-#[cfg(doc)]
-use super::parse_pairing_deeplink;
 
 /// Process-owned native TrUAPI runtime shared by all executable connections.
 #[derive(uniffi::Object)]
@@ -630,6 +630,7 @@ impl NativeProductExecution {
         crate::host_core::ConnectionAdapters {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
+            contacts_platform: None,
             permission_status: Some(self.permission_status.clone()),
             permission_grants: self.permission_grants.clone(),
             chat: self.chat_connection.clone(),
@@ -779,7 +780,7 @@ impl NativeProductExecution {
     }
 
     /// Push a host locale replacement to this execution's subscriptions.
-    pub fn notify_locale_changed(&self, locale: v01::HostLocaleSubscribeItem) {
+    pub fn notify_locale_changed(&self, locale: crate::latest::HostLocaleSubscribeItem) {
         self.events.notify_locale_changed(locale);
     }
 

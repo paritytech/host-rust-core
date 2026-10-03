@@ -50,6 +50,11 @@ targets:
 make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh
 ```
 
+Synchronization also removes generated Swift sources and FFI headers from the
+former `truapi_server` and `truapi_platform` namespaces. Only the unified `truapi`
+bindings belong in the package and its release tag. The binary asset remains
+`truapi_server.xcframework`, and its Swift FFI module is `truapiFFI`.
+
 CI's `iOS bindings (uniffi)` job runs the same two commands. With nothing
 committed to diff against, what it gates is that bindgen still produces a
 binding for every UniFFI-exposed type. It runs on Linux, so it never compiles
@@ -71,6 +76,8 @@ Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostR
 For local iteration without publishing, set `TRUAPI_USE_LOCAL_BINARY=1` so the root `Package.swift` builds against `Binaries/` directly.
 
 The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, feature support, and the served chain set. UI-decision callbacks are `async` and awaited by the Rust core. `HostCallbackAdapter` translates it to the UniFFI-generated `HostCallbacks` protocol; `TrUAPIHostRuntime` and each product execution retain their own adapter. Conform to `HostBridge` rather than to the generated protocol: its extension defaults the optional callbacks, so a newly added one does not break the build. Storage arrives as the `storage` and `coreStorage` sub-objects, which the adapter flattens.
+
+The default `currentLocale` includes the system BCP 47 language tag and actual time-zone identifier. `localizeTimestamps` uses Foundation to format each instant in the requested language and zone, including historical daylight-saving offsets; grouping keys are always Gregorian `YYYY-MM-DD`. Product executions observe system locale and time-zone changes and remove those observers on close. Hosts with an in-app language picker override `currentLocale` and call `notifyLocaleChanged` when that selection changes, preserving the actual time zone. Direct users of generated callbacks must implement `localizeTimestamps`, either supplying a formatter or throwing `HostRejection.Rejected` when conversion is unavailable.
 
 ## Integrating in an iOS app
 
@@ -159,7 +166,8 @@ let runtime = try TrUAPIHostRuntime(
         peopleChainGenesisHash: peopleChainGenesisHash,   // exactly 32 bytes
         bulletinChainGenesisHash: bulletinChainGenesisHash,
         assetHubChainGenesisHash: assetHubChainGenesisHash,
-        networkSuffix: "dot"
+        networkSuffix: "dot",
+        databaseDirectory: databaseDirectory // existing app-private directory, excluded from backups
     )
 )
 // Chat needs an active session; without one every Chat call answers denied.
@@ -528,7 +536,8 @@ let runtimeConfig = HostRuntimeConfig(
     // all-zero is the "no Asset Hub" sentinel and refuses every cross-product
     // `trustedProducts` grant.
     assetHubChainGenesisHash: Data(repeating: 1, count: 32),
-    networkSuffix: "dot"
+    networkSuffix: "dot",
+    databaseDirectory: databaseDirectory // existing app-private directory, excluded from backups
 )
 let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
 try runtime.activateLocalSession(secret: entropyBytes, liteUsername: nil)
@@ -605,6 +614,8 @@ Build the generated JavaScript SDK before the container: from the repository roo
 ## Build outputs in detail
 
 `./scripts/rebuild.sh` orchestrates everything; the underlying pieces, should you need one in isolation:
+
+Ordinary `cargo build -p truapi` produces only the Rust library. The packaging targets explicitly request a `staticlib` with `cargo rustc -p truapi --lib --crate-type staticlib` for each iOS slice, and a `cdylib` with `cargo rustc -p truapi --lib --crate-type cdylib --profile codegen` for binding generation. Use the Make targets to retain their profiles, target selection and deployment settings.
 
 - **xcframework** — `make xcframework` (repo root) builds `truapi` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
 - **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; `scripts/sync-bindings.sh` copies them into `Sources/TrUAPIHost/truapi.swift` and `Sources/truapiFFI/include/`, renaming the emitted `truapiFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up. `rebuild.sh` calls it, and so does the `iOS package (Swift + WebKit)` job, which is what puts Swift sources into the package before `xcodebuild` runs.

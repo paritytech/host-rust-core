@@ -13,6 +13,8 @@ use truapi::versioned::local_storage::{
 };
 use truapi::versioned::locale::{
     HostLocaleSubscribeError, HostLocaleSubscribeItem, HostLocaleSubscribeRequest,
+    HostLocaleLocalizeTimestampsError, HostLocaleLocalizeTimestampsRequest,
+    HostLocaleLocalizeTimestampsResponse,
 };
 use truapi::versioned::notifications::{
     HostPushNotificationCancelError, HostPushNotificationCancelRequest,
@@ -400,7 +402,7 @@ impl Locale for ProductRuntimeHost {
         _request: HostLocaleSubscribeRequest,
     ) -> Subscription<HostLocaleSubscribeItem, CallError<HostLocaleSubscribeError>> {
         let stream = self.platform.subscribe_locale().map(|item| match item {
-            Ok(item) => Ok(HostLocaleSubscribeItem::V1(item)),
+            Ok(item) => Ok(HostLocaleSubscribeItem::V2(item)),
             Err(error) => {
                 warn!(reason = %error.reason, "locale platform stream failed");
                 Err(CallError::HostFailure {
@@ -409,6 +411,34 @@ impl Locale for ProductRuntimeHost {
             }
         });
         Subscription::new(stream)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "locale.localize_timestamps"))]
+    async fn localize_timestamps(
+        &self,
+        _cx: &CallContext,
+        request: HostLocaleLocalizeTimestampsRequest,
+    ) -> Result<HostLocaleLocalizeTimestampsResponse, CallError<HostLocaleLocalizeTimestampsError>> {
+        let request = request.into_latest();
+        if request.timestamps_ms.len() > 128
+            || request.timestamps_ms.iter().any(|timestamp| *timestamp > 253_402_300_799_999)
+            || request.language_tag.is_empty()
+            || request.time_zone.is_empty()
+        {
+            return Err(CallError::Domain(HostLocaleLocalizeTimestampsError::V1(
+                truapi::latest::GenericError { reason: "Invalid local time conversion request".into() },
+            )));
+        }
+        let count = request.timestamps_ms.len();
+        let response = self.platform.localize_timestamps(request).await.map_err(|error| {
+            CallError::Domain(HostLocaleLocalizeTimestampsError::V1(error))
+        })?;
+        if response.timestamps.len() != count {
+            return Err(CallError::HostFailure {
+                reason: "Host returned an incomplete local time conversion".into(),
+            });
+        }
+        Ok(HostLocaleLocalizeTimestampsResponse::V1(response))
     }
 }
 

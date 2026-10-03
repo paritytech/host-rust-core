@@ -26,6 +26,10 @@
 package io.parity.truapi
 
 import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
@@ -39,6 +43,9 @@ import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostLocaleSubscribeItem
+import uniffi.truapi.HostLocaleLocalizeTimestampsRequest
+import uniffi.truapi.HostLocaleLocalizeTimestampsResponse
+import uniffi.truapi.HostLocaleLocalizedTimestamp
 import uniffi.truapi.PocketCard
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.HostRendererActionSubscribeItem
@@ -88,6 +95,7 @@ import uniffi.truapi.HostContactLookup
 import uniffi.truapi.HostContactMatches
 import uniffi.truapi.HostContactPick
 import uniffi.truapi.NativeContactsCallbacks
+import uniffi.truapi.SsoRequestOutcome
 
 /** Package metadata. */
 object TrUAPIHost {
@@ -270,7 +278,31 @@ interface HostBridge {
      */
     @Throws(HostRejection::class)
     fun currentLocale(): HostLocaleSubscribeItem =
-        HostLocaleSubscribeItem(Locale.getDefault().toLanguageTag())
+        HostLocaleSubscribeItem(Locale.getDefault().toLanguageTag(), ZoneId.systemDefault().id)
+
+    /** Format instants in the requested language and zone, including timestamp-specific DST. */
+    @Throws(HostRejection::class)
+    suspend fun localizeTimestamps(
+        request: HostLocaleLocalizeTimestampsRequest,
+    ): HostLocaleLocalizeTimestampsResponse = withHostRejection {
+        require(request.languageTag.isNotBlank() && request.timeZone.isNotBlank())
+        require(request.timestampsMs.size <= 128 && request.timestampsMs.all { it <= 253_402_300_799_999uL })
+        val locale = Locale.Builder().setLanguageTag(request.languageTag).build()
+        val zone = ZoneId.of(request.timeZone)
+        val time = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale)
+        val date = DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG).withLocale(locale)
+        val detail = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.FULL, FormatStyle.LONG).withLocale(locale)
+        HostLocaleLocalizeTimestampsResponse(request.timestampsMs.map { timestamp ->
+            val instant = Instant.ofEpochMilli(timestamp.toLong()).atZone(zone)
+            require(instant.year in 1..9999)
+            HostLocaleLocalizedTimestamp(
+                localDate = instant.toLocalDate().format(DateTimeFormatter.ISO_LOCAL_DATE),
+                time = instant.format(time),
+                date = instant.format(date),
+                dateTime = instant.format(detail),
+            )
+        })
+    }
 
     /**
      * Answer a feature-support query. Invoked on the dispatcher thread; must
@@ -507,6 +539,11 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override fun currentLocale(): HostLocaleSubscribeItem =
         withHostRejection { bridge.currentLocale() }
+
+    override suspend fun localizeTimestamps(
+        request: HostLocaleLocalizeTimestampsRequest,
+    ): HostLocaleLocalizeTimestampsResponse =
+        withHostRejection { bridge.localizeTimestamps(request) }
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
         withHostRejection { bridge.featureSupported(request) }
@@ -838,6 +875,14 @@ class TrUAPIHostRuntime @Throws(NativeRuntimeConfigException::class) constructor
     fun activateLocalSession(secret: ByteArray, liteUsername: String? = null) {
         inner.activateLocalSession(secret, liteUsername)
     }
+
+    /** Handle a paired session's opaque SSO request, awaiting native user consent. */
+    @Throws(HostRejection::class)
+    suspend fun handleSsoRequest(message: ByteArray): SsoRequestOutcome =
+        inner.handleSsoRequest(message)
+
+    /** Encode the disconnect notification; the caller routes it to the ending session. */
+    fun prepareDisconnectRequest(): ByteArray = inner.prepareDisconnectRequest()
 
     /** Push a JSON-RPC response from a native chain connection into the runtime. */
     fun notifyChainResponse(connectionId: UInt, json: String) {

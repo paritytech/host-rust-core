@@ -69,8 +69,7 @@ pub struct RuntimeServices {
     pub statement_store: StatementStoreRpc,
     /// In-core Bulletin submission over the configured Bulletin chain.
     pub bulletin: BulletinRpc,
-    /// Runtime metadata and chain state shared by the native allowance
-    /// paths, per chain.
+    /// Runtime metadata and chain state shared by allowance paths, per chain.
     pub chain_context: crate::runtime::statement_allowance::ChainContextCache,
     /// Values from confirmed in-core submissions, served to `lookup_subscribe`
     /// until the host's content backend has them. Byte-bounded, oldest-first.

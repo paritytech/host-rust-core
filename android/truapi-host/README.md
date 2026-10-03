@@ -72,6 +72,8 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
 - `PocketHostBridge` - the host's Pocket card collection, implemented by hosts with a Pocket surface and passed as `pocket` to `openProductExecution`. The execution then offers `notifyPocketCardsChanged`. `removeCard` suspends, and decides and removes together, returning `NativePocketRemoval.Removed`, `Absent` or `Privileged`, so a card cannot be pinned between the check and the removal. Like Chat, Pocket is reachable only from a Worker execution with an active session, so without `activateLocalSession` every Pocket call answers `Denied`. Hosts without the bridge pass nothing and Pocket calls answer unsupported.
 
+`HostBridge.currentLocale` includes the system BCP 47 language tag and actual time-zone identifier. Its default `localizeTimestamps` implementation uses `java.time` to format each instant in the requested language and zone, including daylight-saving transitions; grouping keys are Gregorian `YYYY-MM-DD`. The SDK has no application `Context`, so embeddings must observe app-language and `ACTION_TIMEZONE_CHANGED` updates and call `execution.notifyLocaleChanged`, unregistering observers on teardown. The in-repository product host does this for each execution. Custom language selectors must also override `currentLocale`. Direct users of generated callbacks must implement `localizeTimestamps`, either supplying a formatter or throwing `HostRejection.Rejected` when conversion is unavailable.
+
 ## Chat
 
 A host serving the Chat modality implements `ChatHostBridge` (`createRoom`, `registerBot`, `postMessage`, `listRooms`) and opens the execution with `ProductExecutionKind.CHAT`:
@@ -115,6 +117,7 @@ val runtime = TrUAPIHostRuntime(
         bulletinChainGenesisHash = bulletinChainGenesisHash,
         assetHubChainGenesisHash = assetHubChainGenesisHash,
         networkSuffix = "dot",
+        databaseDirectory = context.noBackupFilesDir.resolve("truapi").apply { mkdirs() }.absolutePath,
     ),
 )
 // Chat needs an active session; without one every Chat call answers `Denied`.
@@ -400,6 +403,7 @@ val runtimeConfig = HostRuntimeConfig(
     // `trustedProducts` grant.
     assetHubChainGenesisHash = ByteArray(32) { 1.toByte() },
     networkSuffix = "dot",
+    databaseDirectory = webView.context.noBackupFilesDir.resolve("truapi").apply { mkdirs() }.absolutePath,
     // Optional: activate a local signing session from host-held BIP-39 entropy
     // (no SSO pairing). Omit for the QR pairing flow.
     localSessionSecret = null,
@@ -451,7 +455,7 @@ When iterating on the core from a source checkout instead of the published artif
 make android-jni    # needs cargo-ndk, the NDK, and the three Android rust targets
 ```
 
-or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi` from the host app's own build (polkadot-app-android-v2 does this while it still builds from a checkout).
+Ordinary `cargo build -p truapi` produces only the Rust library. `make android-jni` runs `cargo ndk` with `rustc -p truapi --lib --crate-type cdylib --release` to produce `libtruapi.so` for each ABI. Custom native build integrations must likewise request `cdylib` explicitly rather than relying on `cargo build`. `make uniffi-kotlin` requests a host `cdylib` with the unstripped `codegen` profile for binding generation.
 
 ## Maintainers: cutting a release
 

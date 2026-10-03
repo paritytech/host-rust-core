@@ -75,6 +75,7 @@ pub use signing_host::{
     establish_pairing, notify_pairing_allowance_allocation, notify_pairing_failed,
     respond_to_pairing, resume_pairing,
 };
+pub use signing_host::{LocalIdentity, LocalIdentityContext, WalletAllowanceSnapshot};
 #[cfg(all(target_arch = "wasm32", feature = "test-host"))]
 pub use vrf::ring_vrf_member;
 // `TrackedStatementRenewalTarget` is only read back by the native renewal
@@ -296,6 +297,7 @@ pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     chat_platform: Option<Arc<dyn crate::platform::ChatPlatform>>,
+    contacts_platform: Option<Arc<dyn crate::platform::ContactsPlatform>>,
     /// Live OS permission state for this connection, when the host serves it.
     permission_status: Option<Arc<dyn crate::platform::PermissionStatusHost>>,
     /// Permission requests and consuming operations can arrive on different connections.
@@ -345,6 +347,7 @@ impl ProductRuntimeHost {
             services,
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
+            contacts_platform: adapters.contacts_platform,
             permission_status: adapters.permission_status,
             temporary_permissions: adapters.permission_grants,
             authority,
@@ -474,6 +477,7 @@ impl ProductRuntimeHost {
             services,
             platform,
             chat_platform: None,
+            contacts_platform: None,
             permission_status: None,
             temporary_permissions: Arc::default(),
             authority: pairing_host.clone(),
@@ -1346,8 +1350,9 @@ impl ProductRuntimeHost {
         // A capability the host does not serve is a framework answer; a
         // missing session is one the product handles.
         let platform = self
-            .services
-            .contacts_platform()
+            .contacts_platform
+            .clone()
+            .or_else(|| self.services.contacts_platform())
             .ok_or(CallError::Unsupported)?;
         let session = self
             .authority
