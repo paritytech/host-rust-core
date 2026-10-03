@@ -77,6 +77,8 @@ For local iteration without publishing, set `TRUAPI_USE_LOCAL_BINARY=1` so the r
 
 The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, feature support, and the served chain set. UI-decision callbacks are `async` and awaited by the Rust core. `HostCallbackAdapter` translates it to the UniFFI-generated `HostCallbacks` protocol; `TrUAPIHostRuntime` and each product execution retain their own adapter. Conform to `HostBridge` rather than to the generated protocol: its extension defaults the optional callbacks, so a newly added one does not break the build. Storage arrives as the `storage` and `coreStorage` sub-objects, which the adapter flattens.
 
+The default `currentLocale` includes the system BCP 47 language tag and actual time-zone identifier. `localizeTimestamps` uses Foundation to format each instant in the requested language and zone, including historical daylight-saving offsets; grouping keys are always Gregorian `YYYY-MM-DD`. Product executions observe system locale and time-zone changes and remove those observers on close. Hosts with an in-app language picker override `currentLocale` and call `notifyLocaleChanged` when that selection changes, preserving the actual time zone. Direct users of generated callbacks must implement `localizeTimestamps`, either supplying a formatter or throwing `HostRejection.Rejected` when conversion is unavailable.
+
 ## Integrating in an iOS app
 
 Add the package as an SPM dependency and link the `TrUAPIHost` product into the app target:
