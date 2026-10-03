@@ -403,6 +403,10 @@ AutoSigning without approval. Legacy-account signing still asks the user.
   Balance card opens sessions with `open_funding`. The core owns the sessions,
   persists them, expires them, and answers Funding calls `Unsupported` while no
   overlay is installed.
+  Once a provider is chosen, a signing host calls `assign_funding_deposit` to
+  give an inbound session its deposit account under `fund.<network suffix>`;
+  the core then polls that account at finalized Asset Hub blocks and moves the
+  session to `Converting` once the expected balance is there.
 - `TopUpPlatform`: claim a top-up source's funds into the user's balance and
   stream each top-up's status. Installed with `set_top_up_platform`. The core
   requires a session and checks the source keys; the host owns claiming,

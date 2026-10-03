@@ -17,13 +17,24 @@ use core::time::Duration;
 
 use futures::channel::mpsc;
 use futures::lock::Mutex as AsyncMutex;
+use core::future::Future;
+
+use futures::future::{BoxFuture, FutureExt};
 use futures::stream::{self, BoxStream, StreamExt};
-use truapi::latest::{FundingDirection, GenericError, HostFundingStatusSubscribeItem};
+use truapi::latest::{
+    ChainIdentifier, FundingDirection, GenericError, HostFundingStatusSubscribeItem,
+};
 
 use super::services::RuntimeServices;
+use parity_scale_codec::Decode;
+use sp_crypto_hashing::twox_128;
+
+use super::statement_allowance::blake2_128_concat;
+use super::statement_allowance::rpc::RpcClient;
+use crate::host_logic::features;
 use crate::host_logic::funding::{
-    FundingSession, FundingSessionError, load_sessions, next_account_number, retained,
-    store_sessions,
+    DepositAsset, DepositRequest, FundingDeposit, FundingSession, FundingSessionError, FundingStage,
+    load_sessions, next_account_number, retained, store_sessions,
 };
 use crate::platform::{
     CoreStorage, FundingPlatform, FundingPresentOutcome, FundingPresentation, Platform,
@@ -33,6 +44,13 @@ use crate::unix_time::current_unix_millis;
 
 /// Wait before retrying an expiry sweep whose write failed.
 const SWEEP_RETRY: Duration = Duration::from_secs(30);
+/// Wait between reads of the awaited deposits: two Asset Hub blocks.
+const DEPOSIT_POLL: Duration = Duration::from_secs(12);
+/// Longest a chain read may take before the pass gives up on it.
+const CHAIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// Numbered accounts skipped for already holding funds before assignment
+/// gives up.
+const MAX_USED_ACCOUNTS: usize = 16;
 
 type Subscribers = HashMap<String, Vec<mpsc::UnboundedSender<HostFundingStatusSubscribeItem>>>;
 
@@ -46,6 +64,8 @@ pub struct FundingRegistry {
     writes: AsyncMutex<bool>,
     /// Whether a task is waiting on the next deadline.
     sweeping: AtomicBool,
+    /// Whether a task is polling the awaited deposits.
+    watching: AtomicBool,
     platform: OnceLock<Arc<dyn FundingPlatform>>,
 }
 
@@ -194,9 +214,127 @@ impl FundingRegistry {
     fn next_deadline(&self) -> Option<u64> {
         self.lock_sessions()
             .values()
-            .filter(|session| !session.is_terminal())
+            .filter(|session| session.expires_by_sweep())
             .map(|session| session.deadline_ms)
             .min()
+    }
+
+    /// Give an open inbound session the first numbered account for the
+    /// request's source that holds none of its asset, so a seed restored on a new
+    /// install never reuses an account a provider may still pay into.
+    /// `derive` maps an account number to its public key.
+    pub async fn assign_empty_deposit(
+        &self,
+        storage: &(impl CoreStorage + ?Sized),
+        balances: &dyn DepositBalances,
+        now_ms: u64,
+        intent: &str,
+        request: DepositRequest,
+        derive: impl Fn(u32) -> Result<[u8; 32], GenericError>,
+    ) -> Result<[u8; 32], AssignDepositError> {
+        self.get(intent)
+            .ok_or(AssignDepositError::NotFound)
+            .and_then(|session| assignable(&session))?;
+        for _ in 0..MAX_USED_ACCOUNTS {
+            let number = self
+                .next_account_number(storage, &request.source_id)
+                .await?;
+            let account = derive(number).map_err(AssignDepositError::Derive)?;
+            let held = balances
+                .balance(request.asset, &account)
+                .await
+                .map_err(AssignDepositError::Chain)?;
+            if held > 0 {
+                continue;
+            }
+            let deposit = FundingDeposit {
+                source_id: request.source_id,
+                number,
+                asset: request.asset,
+                account,
+                expected: request.expected,
+            };
+            let intent = intent.to_string();
+            return self
+                .commit(storage, now_ms, move |sessions| {
+                    let assigned = match sessions.get_mut(&intent) {
+                        None => Err(AssignDepositError::NotFound),
+                        Some(session) => assignable(session).map(|()| {
+                            session.deposit = Some(deposit);
+                            account
+                        }),
+                    };
+                    (assigned, Vec::new())
+                })
+                .await?;
+        }
+        Err(AssignDepositError::AccountsInUse)
+    }
+
+    /// Read every awaited deposit once: a session whose deposit arrived
+    /// moves to converting, one past its deadline without it expires. A
+    /// failed read leaves its session for the next pass.
+    pub async fn observe_deposits(
+        &self,
+        storage: &(impl CoreStorage + ?Sized),
+        now_ms: u64,
+        balances: &dyn DepositBalances,
+    ) -> Result<(), FundingSessionError> {
+        let awaited: Vec<_> = self
+            .lock_sessions()
+            .values()
+            .filter_map(|session| {
+                let deposit = session.awaited_deposit()?;
+                Some((session.intent.clone(), deposit.asset, deposit.account))
+            })
+            .collect();
+        let mut readings = Vec::new();
+        for (intent, asset, account) in awaited {
+            match balances.balance(asset, &account).await {
+                Ok(balance) => readings.push((intent, balance)),
+                Err(error) => {
+                    tracing::warn!(%intent, reason = %error.reason, "reading a funding deposit failed")
+                }
+            }
+        }
+        self.commit(storage, now_ms, move |sessions| {
+            let arrived = readings
+                .into_iter()
+                .filter(|(intent, balance)| {
+                    sessions
+                        .get_mut(intent)
+                        .is_some_and(|session| session.observe_deposit(*balance, now_ms))
+                })
+                .map(|(intent, _)| intent)
+                .collect();
+            ((), arrived)
+        })
+        .await
+    }
+
+    /// Whether a polling task should keep going, clearing the watching flag
+    /// once no deposit is awaited.
+    fn still_watching(registry: &Weak<Self>) -> bool {
+        let Some(live) = registry.upgrade() else {
+            return false;
+        };
+        loop {
+            if live.awaits_deposit() {
+                return true;
+            }
+            live.watching.store(false, Ordering::Release);
+            // A deposit assigned after the check would otherwise wait for the
+            // next caller to arm the watch.
+            if !live.awaits_deposit() || live.watching.swap(true, Ordering::AcqRel) {
+                return false;
+            }
+        }
+    }
+
+    fn awaits_deposit(&self) -> bool {
+        self.lock_sessions()
+            .values()
+            .any(|session| session.awaited_deposit().is_some())
     }
 
     /// Tell subscribers and the host about a session's current stage. A
@@ -228,6 +366,156 @@ impl FundingRegistry {
             .lock()
             .expect("funding subscribers mutex poisoned")
     }
+}
+
+/// Reads deposit-account balances on Asset Hub.
+pub trait DepositBalances: Send + Sync {
+    /// `account`'s balance of `asset`; zero when the account does not exist.
+    fn balance<'a>(
+        &'a self,
+        asset: DepositAsset,
+        account: &'a [u8; 32],
+    ) -> BoxFuture<'a, Result<u128, GenericError>>;
+}
+
+/// Asset Hub balances read at one finalized block, so a deposit counts only
+/// once it cannot be reverted.
+struct FinalizedAssetHubBalances {
+    rpc: RpcClient,
+    finalized: String,
+}
+
+impl FinalizedAssetHubBalances {
+    async fn connect(services: &RuntimeServices) -> Result<Self, GenericError> {
+        within_chain_timeout(Self::connect_unbounded(services)).await?
+    }
+
+    async fn connect_unbounded(services: &RuntimeServices) -> Result<Self, GenericError> {
+        let failed = |reason: String| GenericError { reason };
+        let chains = features::supported_chains(services.platform.as_ref()).await?;
+        let genesis = features::genesis_for(&chains, ChainIdentifier::AssetHub)
+            .ok_or_else(|| failed("the host serves no Asset Hub".into()))?;
+        let rpc = RpcClient::new(subxt_rpcs::RpcClient::new(
+            services
+                .chain
+                .rpc_client("funding deposit watch", &genesis)
+                .await
+                .map_err(|err| failed(err.to_string()))?,
+        ));
+        let finalized = rpc
+            .finalized_head()
+            .await
+            .map_err(|err| failed(err.to_string()))?;
+        Ok(Self { rpc, finalized })
+    }
+}
+
+impl DepositBalances for FinalizedAssetHubBalances {
+    fn balance<'a>(
+        &'a self,
+        asset: DepositAsset,
+        account: &'a [u8; 32],
+    ) -> BoxFuture<'a, Result<u128, GenericError>> {
+        Box::pin(async move {
+            let value = within_chain_timeout(
+                self.rpc
+                    .get_storage_at(&balance_key(asset, account), &self.finalized),
+            )
+            .await?
+            .map_err(|err| GenericError {
+                reason: err.to_string(),
+            })?;
+            decode_balance(asset, value.as_deref()).ok_or_else(|| GenericError {
+                reason: "undecodable deposit balance".into(),
+            })
+        })
+    }
+}
+
+/// Run a chain read, giving up after [`CHAIN_TIMEOUT`] so a stalled
+/// connection cannot park the deposit watch.
+async fn within_chain_timeout<T>(read: impl Future<Output = T>) -> Result<T, GenericError> {
+    let read = read.fuse();
+    let timeout = futures_timer::Delay::new(CHAIN_TIMEOUT).fuse();
+    futures::pin_mut!(read, timeout);
+    futures::select! {
+        value = read => Ok(value),
+        () = timeout => Err(GenericError {
+            reason: "Asset Hub read timed out".into(),
+        }),
+    }
+}
+
+/// Asset Hub storage key holding `account`'s balance of `asset`:
+/// `System.Account` for the native token, `Assets.Account` otherwise.
+fn balance_key(asset: DepositAsset, account: &[u8; 32]) -> Vec<u8> {
+    match asset {
+        DepositAsset::Native => [
+            twox_128(b"System").as_slice(),
+            &twox_128(b"Account"),
+            &blake2_128_concat(account),
+        ]
+        .concat(),
+        DepositAsset::Asset(id) => [
+            twox_128(b"Assets").as_slice(),
+            &twox_128(b"Account"),
+            &blake2_128_concat(&id.to_le_bytes()),
+            &blake2_128_concat(account),
+        ]
+        .concat(),
+    }
+}
+
+/// The balance in a value read from [`balance_key`]. An absent value is a
+/// zero balance. The native balance is the free balance after
+/// `AccountInfo`'s four `u32` counters; an asset account leads with it.
+fn decode_balance(asset: DepositAsset, value: Option<&[u8]>) -> Option<u128> {
+    let Some(mut value) = value else {
+        return Some(0);
+    };
+    if asset == DepositAsset::Native {
+        value = value.get(16..)?;
+    }
+    u128::decode(&mut value).ok()
+}
+
+/// Why a deposit account could not be assigned.
+#[derive(Debug, derive_more::Display)]
+pub enum AssignDepositError {
+    /// No such session.
+    #[display("no such funding session")]
+    NotFound,
+    /// The session is not an open inbound one without a deposit.
+    #[display("funding session is not awaiting a deposit account")]
+    NotAwaitingDeposit,
+    /// Every account tried already holds funds.
+    #[display("every funding account tried already holds funds")]
+    AccountsInUse,
+    /// The account could not be derived.
+    #[display("{}", _0.reason)]
+    Derive(GenericError),
+    /// Asset Hub could not be read.
+    #[display("{}", _0.reason)]
+    Chain(GenericError),
+    /// The session could not be stored.
+    #[display("{_0}")]
+    Session(FundingSessionError),
+}
+
+impl From<FundingSessionError> for AssignDepositError {
+    fn from(error: FundingSessionError) -> Self {
+        Self::Session(error)
+    }
+}
+
+/// Whether `session` can take a deposit account.
+fn assignable(session: &FundingSession) -> Result<(), AssignDepositError> {
+    let awaiting = session.direction == FundingDirection::In
+        && session.stage == FundingStage::Open
+        && session.deposit.is_none();
+    awaiting
+        .then_some(())
+        .ok_or(AssignDepositError::NotAwaitingDeposit)
 }
 
 /// Why a session could not be opened.
@@ -269,8 +557,76 @@ impl RuntimeServices {
                 )
                 .await;
             match loaded {
-                Ok(()) => registry.keep_expiring(&services),
+                Ok(()) => {
+                    registry.keep_expiring(&services);
+                    services.watch_funding_deposits();
+                }
                 Err(error) => tracing::warn!(%error, "loading funding sessions failed"),
+            }
+        }));
+    }
+
+    /// Give an open inbound session its deposit account for the request's
+    /// source and watch it until the expected balance arrives. Returns the
+    /// account the provider pays into.
+    pub async fn assign_funding_deposit(
+        self: &Arc<Self>,
+        intent: &str,
+        request: DepositRequest,
+        derive: impl Fn(u32) -> Result<[u8; 32], GenericError>,
+    ) -> Result<[u8; 32], AssignDepositError> {
+        self.funding()
+            .get(intent)
+            .ok_or(AssignDepositError::NotFound)
+            .and_then(|session| assignable(&session))?;
+        let balances = FinalizedAssetHubBalances::connect(self)
+            .await
+            .map_err(AssignDepositError::Chain)?;
+        let account = self
+            .funding()
+            .assign_empty_deposit(
+                self.platform.as_ref(),
+                &balances,
+                current_unix_millis(),
+                intent,
+                request,
+                derive,
+            )
+            .await?;
+        self.watch_funding_deposits();
+        Ok(account)
+    }
+
+    /// Keep one task polling the awaited deposits while any is awaited. The
+    /// task ends once none is, or the services are dropped.
+    pub fn watch_funding_deposits(self: &Arc<Self>) {
+        let registry = self.funding();
+        if registry.watching.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let watched = Arc::downgrade(registry);
+        let services = Arc::downgrade(self);
+        (self.spawner)(Box::pin(async move {
+            while FundingRegistry::still_watching(&watched) {
+                futures_timer::Delay::new(DEPOSIT_POLL).await;
+                let Some(services) = services.upgrade() else {
+                    return;
+                };
+                let observed = match FinalizedAssetHubBalances::connect(&services).await {
+                    Ok(balances) => services
+                        .funding()
+                        .observe_deposits(
+                            services.platform.as_ref(),
+                            current_unix_millis(),
+                            &balances,
+                        )
+                        .await
+                        .map_err(|error| error.to_string()),
+                    Err(error) => Err(error.reason),
+                };
+                if let Err(reason) = observed {
+                    tracing::warn!(%reason, "funding deposit watch failed");
+                }
             }
         }));
     }
@@ -354,6 +710,7 @@ mod tests {
     use super::*;
 
     use futures::executor::block_on;
+    use parity_scale_codec::Encode;
     use truapi::latest::FundingFailure;
 
     use crate::host_logic::funding::FundingStage;
@@ -462,5 +819,256 @@ mod tests {
 
         assert!(failed.is_err());
         assert_eq!(registry.get("fs_1"), Some(session("fs_1", NOW)));
+    }
+
+    const USDT: DepositAsset = DepositAsset::Asset(1984);
+
+    /// Balances keyed by account; any other account is empty.
+    struct Balances(HashMap<[u8; 32], u128>);
+
+    impl DepositBalances for Balances {
+        fn balance<'a>(
+            &'a self,
+            _asset: DepositAsset,
+            account: &'a [u8; 32],
+        ) -> BoxFuture<'a, Result<u128, GenericError>> {
+            Box::pin(async move { Ok(self.0.get(account).copied().unwrap_or(0)) })
+        }
+    }
+
+    fn request(expected: u128) -> DepositRequest {
+        DepositRequest {
+            source_id: "usdt-assethub".to_string(),
+            asset: USDT,
+            expected,
+        }
+    }
+
+    fn account(number: u32) -> [u8; 32] {
+        [u8::try_from(number).expect("small"); 32]
+    }
+
+    fn assign(
+        registry: &FundingRegistry,
+        storage: &dyn CoreStorage,
+        balances: &Balances,
+        intent: &str,
+    ) -> Result<[u8; 32], String> {
+        block_on(registry.assign_empty_deposit(storage, balances, NOW, intent, request(50), |n| {
+            Ok(account(n))
+        }))
+        .map_err(|error| error.to_string())
+    }
+
+    // A restored seed starts its counters again, and a provider may still pay
+    // into an account handed out before, so assignment passes over any
+    // account that already holds the asset.
+    #[test]
+    fn assignment_skips_accounts_that_already_hold_funds() {
+        let storage = stub_platform();
+        let registry = FundingRegistry::default();
+        insert(&registry, storage.as_ref(), session("fs_1", NOW));
+        let balances = Balances(HashMap::from([(account(1), 7), (account(2), 1)]));
+
+        let assigned = assign(&registry, storage.as_ref(), &balances, "fs_1");
+
+        assert_eq!(
+            (
+                assigned,
+                registry.get("fs_1").and_then(|session| session.deposit)
+            ),
+            (
+                Ok(account(3)),
+                Some(FundingDeposit {
+                    source_id: "usdt-assethub".to_string(),
+                    number: 3,
+                    asset: USDT,
+                    account: account(3),
+                    expected: 50,
+                })
+            )
+        );
+    }
+
+    // Numbers are never reused, so one burned on a session that cannot take
+    // an account is gone for good.
+    #[test]
+    fn assignment_refuses_without_spending_a_number() {
+        let storage = stub_platform();
+        let registry = FundingRegistry::default();
+        let outbound = FundingSession {
+            direction: FundingDirection::Out,
+            ..session("fs_out", NOW)
+        };
+        insert(&registry, storage.as_ref(), outbound);
+        insert(&registry, storage.as_ref(), session("fs_in", NOW));
+        let empty = Balances(HashMap::new());
+
+        let refused = [
+            assign(&registry, storage.as_ref(), &empty, "fs_missing"),
+            assign(&registry, storage.as_ref(), &empty, "fs_out"),
+        ];
+        let first = assign(&registry, storage.as_ref(), &empty, "fs_in");
+        let again = assign(&registry, storage.as_ref(), &empty, "fs_in");
+
+        assert_eq!(
+            (refused, first, again),
+            (
+                [
+                    Err("no such funding session".to_string()),
+                    Err("funding session is not awaiting a deposit account".to_string()),
+                ],
+                Ok(account(1)),
+                Err("funding session is not awaiting a deposit account".to_string()),
+            )
+        );
+    }
+
+    // Converting starts only once the whole expected balance is on chain, and
+    // the stage survives a restart, so a deposit is converted exactly once.
+    #[test]
+    fn a_covering_deposit_moves_the_session_to_converting() {
+        let storage = stub_platform();
+        let registry = FundingRegistry::default();
+        insert(&registry, storage.as_ref(), session("fs_1", NOW));
+        assign(
+            &registry,
+            storage.as_ref(),
+            &Balances(HashMap::new()),
+            "fs_1",
+        )
+        .expect("assigned");
+        let stream = registry.subscribe("fs_1").expect("session exists");
+
+        for held in [49, 50] {
+            let balances = Balances(HashMap::from([(account(1), held)]));
+            block_on(registry.observe_deposits(storage.as_ref(), NOW, &balances))
+                .expect("observed");
+        }
+        let restarted = FundingRegistry::default();
+        block_on(restarted.commit(storage.as_ref(), NOW, |_| ((), Vec::new()))).expect("loaded");
+
+        assert_eq!(
+            (
+                block_on(stream.take(2).collect::<Vec<_>>()),
+                restarted.get("fs_1").map(|session| session.stage),
+            ),
+            (
+                vec![
+                    HostFundingStatusSubscribeItem::AwaitingDeposit {
+                        expires_at: Some(NOW + DAY_MS),
+                    },
+                    HostFundingStatusSubscribeItem::Converting,
+                ],
+                Some(FundingStage::Converting { deposited: 50 }),
+            )
+        );
+    }
+
+    // A provider may pay moments before the deadline, and finality and the
+    // poll both lag, so a session with a deposit account ends only on a read
+    // taken after the deadline: converting if the funds made it, expired if
+    // not. The sweep alone never strands a payment.
+    #[test]
+    fn a_deposit_session_expires_only_on_a_read_after_its_deadline() {
+        let storage = stub_platform();
+        let registry = FundingRegistry::default();
+        let empty = Balances(HashMap::new());
+        for intent in ["fs_late", "fs_never"] {
+            insert(&registry, storage.as_ref(), session(intent, NOW));
+            assign(&registry, storage.as_ref(), &empty, intent).expect("assigned");
+        }
+        let past_deadline = NOW + DAY_MS;
+
+        block_on(registry.commit(storage.as_ref(), past_deadline, |_| ((), Vec::new())))
+            .expect("swept");
+        let after_sweep = [registry.get("fs_late"), registry.get("fs_never")]
+            .map(|session| session.map(|session| session.stage));
+        let late_payment = Balances(HashMap::from([(account(1), 50)]));
+        block_on(registry.observe_deposits(storage.as_ref(), past_deadline, &late_payment))
+            .expect("observed");
+
+        assert_eq!(
+            (
+                after_sweep,
+                [registry.get("fs_late"), registry.get("fs_never")]
+                    .map(|session| session.map(|session| session.stage)),
+            ),
+            (
+                [Some(FundingStage::Open), Some(FundingStage::Open)],
+                [
+                    Some(FundingStage::Converting { deposited: 50 }),
+                    Some(FundingStage::Failed {
+                        reason: FundingFailure::Expired,
+                        settled_at_ms: past_deadline,
+                    }),
+                ],
+            )
+        );
+    }
+
+    // The deposit is already on chain, so the deposit window no longer
+    // applies, and the expiry sweep must not wait on a deadline that passed.
+    #[test]
+    fn a_converting_session_does_not_expire() {
+        let storage = stub_platform();
+        let registry = FundingRegistry::default();
+        let converting = FundingSession {
+            stage: FundingStage::Converting { deposited: 50 },
+            ..session("fs_1", NOW - DAY_MS)
+        };
+        insert(&registry, storage.as_ref(), converting.clone());
+
+        block_on(registry.commit(storage.as_ref(), NOW, |_| ((), Vec::new()))).expect("swept");
+
+        assert_eq!(
+            (registry.get("fs_1"), registry.next_deadline()),
+            (Some(converting), None)
+        );
+    }
+
+    // A wrong key reads an empty account forever and no deposit is ever
+    // seen, so the keys are pinned to the pallets' well-known prefixes.
+    #[test]
+    fn balance_keys_address_system_and_assets_accounts() {
+        let account = [7u8; 32];
+        let hashed_account = [sp_crypto_hashing::blake2_128(&account).as_slice(), &account].concat();
+        let hashed_id = [sp_crypto_hashing::blake2_128(&1984u32.to_le_bytes()).as_slice(), &1984u32.to_le_bytes()].concat();
+
+        assert_eq!(
+            (
+                hex::encode(balance_key(DepositAsset::Native, &account)),
+                hex::encode(balance_key(USDT, &account)),
+            ),
+            (
+                format!(
+                    "26aa394eea5630e07c48ae0c9558cef7b99d880ec681799c0cf30e8886371da9{}",
+                    hex::encode(&hashed_account)
+                ),
+                format!(
+                    "682a59d51ab9e48a8c8cc418ff9708d2b99d880ec681799c0cf30e8886371da9{}{}",
+                    hex::encode(hashed_id),
+                    hex::encode(&hashed_account)
+                ),
+            )
+        );
+    }
+
+    // The native balance sits behind `AccountInfo`'s counters, while an asset
+    // account leads with it; reading the wrong offset would see a counter.
+    #[test]
+    fn balances_decode_from_each_account_layout() {
+        let account_info = (1u32, 2u32, 3u32, 4u32, 500u128, 9u128).encode();
+        let asset_account = (70u128, 0u8).encode();
+
+        assert_eq!(
+            [
+                decode_balance(DepositAsset::Native, Some(&account_info)),
+                decode_balance(USDT, Some(&asset_account)),
+                decode_balance(USDT, None),
+                decode_balance(DepositAsset::Native, Some(&account_info[..12])),
+            ],
+            [Some(500), Some(70), Some(0), None]
+        );
     }
 }
