@@ -56,10 +56,12 @@ use crate::host_internal::sso_messages::{OnExistingAllowancePolicy, ProductReque
 use crate::host_internal::transaction::sign_extrinsic_payload;
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::features::genesis_for;
+use crate::host_logic::funding::{FundingAccountKind, funding_account_index};
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
-    derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
-    derive_root_keypair_from_entropy, personhood_product_id,
+    derive_product_keypair, derive_product_public_key, derive_product_subtree_keypair,
+    derive_ring_vrf_entropy, derive_root_keypair_from_entropy, funding_product_id,
+    personhood_product_id,
 };
 use crate::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
@@ -505,6 +507,33 @@ impl SigningHost {
         Ok(Some(subtree.public.to_bytes()))
     }
 
+    /// Public key of the `number`th funding account of `kind` for
+    /// `source_id`, under the reserved funding product. `None` while no
+    /// signing session is active.
+    ///
+    /// The host claims it by calling its top-up engine as the funding product
+    /// with source `ProductAccount { derivation_index: Raw(index) }`, where
+    /// `index` is [`funding_account_index`] for the same arguments.
+    pub fn derive_funding_account(
+        &self,
+        kind: FundingAccountKind,
+        source_id: &str,
+        number: u32,
+    ) -> Result<Option<[u8; 32]>, AuthorityError> {
+        let index = funding_account_index(kind, source_id, number).map_err(|err| {
+            AuthorityError::Unavailable {
+                reason: err.to_string(),
+            }
+        })?;
+        let Some(subtree) = self.derive_subtree_public_key(&funding_product_id(&self.network_suffix))?
+        else {
+            return Ok(None);
+        };
+        derive_product_public_key(subtree, index)
+            .map(Some)
+            .map_err(product_authority_error)
+    }
+
     /// Derive the product-account keypair for `account` from the root entropy.
     ///
     /// The root keypair is recomputed per call (PBKDF2, 2048 rounds, via
@@ -517,12 +546,13 @@ impl SigningHost {
         let entropy = self.root_entropy()?;
         let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
         let owner = root.public.to_bytes();
-        let product_id =
-            normalize_product_identifier(&account.dot_ns_identifier).map_err(|err| {
-                AuthorityError::Unavailable {
-                    reason: err.to_string(),
-                }
+        let product_id = normalize_product_identifier(&account.dot_ns_identifier)
+            .map_err(|err| AuthorityError::Unavailable {
+                reason: err.to_string(),
             })?;
+        if super::is_funding_product(&product_id) {
+            return Err(AuthorityError::Rejected);
+        }
         derive_product_keypair(
             &root,
             &product_id,
@@ -1002,6 +1032,9 @@ impl ProductAuthority for SigningHost {
                 reason: err.to_string(),
             }
         })?;
+        if super::is_funding_product(&product_id) {
+            return Err(AuthorityError::Rejected);
+        }
         let entropy = self.root_entropy()?;
         let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
         derive_product_subtree_keypair(&root, &product_id)
@@ -1676,13 +1709,14 @@ mod tests {
     use super::TEST_NETWORK_SUFFIX;
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver};
     use super::{LocalActivation, RingVrfError, SR25519_SIGNING_CONTEXT};
+    use crate::host_logic::funding::FundingAccountKind;
     use crate::host_internal::extrinsic::tests::split_v4;
     use crate::host_internal::sso_messages::ProductRequest;
     use crate::host_internal::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
     };
     use crate::host_logic::product_account::{
-        derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
+        derivation_index_bytes, derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
         derive_root_keypair_from_entropy, index_bytes,
     };
     use crate::platform::{HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig};
@@ -3226,6 +3260,34 @@ mod tests {
         );
     }
 
+    // The address shown to a provider must be the account the host later
+    // claims with the matching product-account key, under the `fund.` product
+    // the mobile hosts already reserve.
+    #[test]
+    fn a_funding_account_is_the_fund_products_account_at_its_label() {
+        let (_services, authority) = signing_runtime();
+        let before = authority.derive_funding_account(FundingAccountKind::Deposit, "usdt-assethub", 1);
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        let mut label = [0u8; 32];
+        label[..26].copy_from_slice(b"onramp:eph:usdt-assethub:1");
+        let root = derive_root_keypair_from_entropy(&ENTROPY).expect("root derives");
+        let claimable = derive_product_keypair(
+            &root,
+            &format!("fund.{TEST_NETWORK_SUFFIX}"),
+            derivation_index_bytes(&v01::DerivationIndex::Raw(label)),
+        )
+        .expect("deposit key derives");
+        assert_eq!(
+            (
+                before,
+                authority.derive_funding_account(FundingAccountKind::Deposit, "usdt-assethub", 1)
+            ),
+            (Ok(None), Ok(Some(claimable.public.to_bytes())))
+        );
+    }
+
     #[test]
     fn local_activation_exposes_the_uid_dot_identity_account() {
         let (_services, authority) = signing_runtime();
@@ -3950,6 +4012,44 @@ mod tests {
         ))
         .expect_err("stale snapshot rejected");
         assert_eq!(err, AuthorityError::Disconnected);
+    }
+
+    // Every product path, the SSO responder's included, derives keys through
+    // these two calls, so refusing here keeps the funding accounts host-only.
+    #[test]
+    fn no_request_derives_a_funding_key() {
+        let (_services, authority) = signing_runtime();
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let session = authority.current_session().expect("connected");
+        let cx = CallContext::default();
+        let request = v01::HostSignRawRequest {
+            account: v01::ProductAccountId {
+                dot_ns_identifier: "app.fund.dot".to_string(),
+                derivation_index: v01::DerivationIndex::Index(0),
+            },
+            payload: v01::RawPayload::Bytes {
+                bytes: vec![1, 2, 3],
+            },
+        };
+        assert_eq!(
+            (
+                futures::executor::block_on(authority.product_subtree_public_key(
+                    &cx,
+                    &session,
+                    "fund.dot".to_string(),
+                )),
+                futures::executor::block_on(authority.sign_raw(
+                    &cx,
+                    &session,
+                    None,
+                    SignRawAuthorityRequest::Product(request),
+                    true,
+                ))
+                .map(|_| ()),
+            ),
+            (Err(AuthorityError::Rejected), Err(AuthorityError::Rejected))
+        );
     }
 
     #[test]

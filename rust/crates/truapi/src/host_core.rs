@@ -613,6 +613,37 @@ impl SigningHostRuntime {
         self.signing_host.set_grant_allowances_unchecked(granted);
     }
 
+    /// Public key of the `number`th funding account of `kind` for
+    /// `source_id`, or `None` while no signing session is active. Number
+    /// accounts with [`Self::next_funding_account_number`].
+    pub fn funding_account(
+        &self,
+        kind: crate::host_logic::funding::FundingAccountKind,
+        source_id: &str,
+        number: u32,
+    ) -> Result<Option<[u8; 32]>, v01::GenericError> {
+        self.signing_host
+            .derive_funding_account(kind, source_id, number)
+            .map_err(|err| v01::GenericError {
+                reason: err.to_string(),
+            })
+    }
+
+    /// Reserve the next account number for `source_id`, counting up from 1,
+    /// so no two sessions share an account.
+    pub async fn next_funding_account_number(
+        &self,
+        source_id: &str,
+    ) -> Result<u32, v01::GenericError> {
+        self.services
+            .funding()
+            .next_account_number(self.services.platform.as_ref(), source_id)
+            .await
+            .map_err(|err| v01::GenericError {
+                reason: err.to_string(),
+            })
+    }
+
     /// The product's hard-subtree public key, derived from the active session
     /// root, or `None` while no session is active.
     ///

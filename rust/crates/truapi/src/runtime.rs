@@ -123,10 +123,10 @@ use web_time::Instant;
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_internal::bulletin::preimage_key;
 use crate::host_internal::permissions::{PermissionsService, TemporaryPermissions};
-use crate::host_internal::product_manifest::Granted;
+use crate::host_internal::product_manifest::{Granted, bare_product_label};
 use crate::host_internal::sso_messages::RingVrfError;
 use crate::host_logic::product_account::{
-    derivation_index_bytes, derive_product_public_key, public_key_from_address,
+    FUNDING_LABEL, derivation_index_bytes, derive_product_public_key, public_key_from_address,
 };
 use crate::host_logic::session::SessionInfo;
 #[cfg(test)]
@@ -540,7 +540,9 @@ impl ProductRuntimeHost {
         // them. Production hosts must reject localhost products before creating
         // the product runtime.
         if crate::platform::is_localhost_product_identifier(&product_id) {
-            return normalize_product_identifier(dot_ns_identifier).ok();
+            return normalize_product_identifier(dot_ns_identifier)
+                .ok()
+                .filter(|target| !is_funding_product(target));
         }
         // Bounded here rather than left to the lookup: it can reach dotNS on
         // the Asset Hub, and a caller's own deadline is what decides how long
@@ -549,6 +551,7 @@ impl ProductRuntimeHost {
         let cx = remote_authority_context(cx);
         self.bounded_cross_product_scope_target(dot_ns_identifier, Granted::Context, &cx)
             .await
+            .filter(|target| !is_funding_product(target))
     }
 
     /// Resolve the grant under the caller's deadline and cancellation, answering
@@ -854,11 +857,20 @@ impl ProductRuntimeHost {
     }
 }
 
+/// Whether `product_id` is the reserved funding product or a subname of it.
+/// Its accounts hold users' funds in transit, so only the host derives them.
+fn is_funding_product(product_id: &str) -> bool {
+    bare_product_label(product_id) == FUNDING_LABEL
+}
+
 async fn account_access_authorization(
     platform: &dyn Platform,
     requesting_product_id: &str,
     target_product_id: &str,
 ) -> Result<PermissionAuthorizationStatus, AccountAccessAuthorizationError> {
+    if is_funding_product(target_product_id) {
+        return Ok(PermissionAuthorizationStatus::Denied);
+    }
     if requesting_product_id == target_product_id
         || crate::platform::normalizes_to_trusted_remote_permissions(requesting_product_id)
     {

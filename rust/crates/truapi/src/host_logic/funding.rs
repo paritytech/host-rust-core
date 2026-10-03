@@ -7,6 +7,8 @@
 //! `Funding::status_subscribe`. A session always terminates, because the core
 //! expires it on its own clock.
 
+use std::collections::BTreeMap;
+
 use parity_scale_codec::{Decode, Encode};
 use tracing::warn;
 use truapi::latest::{FundingDirection, FundingFailure, HostFundingStatusSubscribeItem};
@@ -124,6 +126,47 @@ impl FundingSession {
     }
 }
 
+/// Which of a session's accounts under the reserved funding product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FundingAccountKind {
+    /// Where an inbound provider delivers.
+    Deposit,
+    /// Where a crypto rail returns funds it could not deliver.
+    Refund,
+    /// Where an outbound session stages funds before paying the provider.
+    Withdrawal,
+}
+
+/// Why a funding account label could not be built.
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
+#[display("funding account label is longer than 32 bytes")]
+pub struct FundingAccountLabelTooLong;
+
+/// Derivation index of the `number`th account of `kind` for `source_id`: the
+/// label `onramp:eph:<source>:<n>`, `onramp:rf:<source>:<n>` or
+/// `wd:eph:<source>:<n>`, zero-padded to 32 bytes.
+///
+/// The labels are the ones getcash uses, and `number` counts up from 1 per
+/// source, so every account can be found again from the seed alone.
+pub fn funding_account_index(
+    kind: FundingAccountKind,
+    source_id: &str,
+    number: u32,
+) -> Result<[u8; 32], FundingAccountLabelTooLong> {
+    let prefix = match kind {
+        FundingAccountKind::Deposit => "onramp:eph",
+        FundingAccountKind::Refund => "onramp:rf",
+        FundingAccountKind::Withdrawal => "wd:eph",
+    };
+    let label = format!("{prefix}:{source_id}:{number}");
+    let mut index = [0u8; 32];
+    index
+        .get_mut(..label.len())
+        .ok_or(FundingAccountLabelTooLong)?
+        .copy_from_slice(label.as_bytes());
+    Ok(index)
+}
+
 /// Why a session operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 pub enum FundingSessionError {
@@ -188,6 +231,41 @@ pub async fn store_sessions(
             .await
     };
     written.map_err(|err| FundingSessionError::Storage { reason: err.reason })
+}
+
+/// Reserve the next account number for `source_id`, counting up from 1.
+///
+/// Counters are never reset, so no two sessions on this device share an
+/// account. A blob that does not decode is an error rather than a reset for
+/// the same reason. Counters are per device: the same seed on a new install
+/// starts from 1 again, so whoever hands an account to a provider must first
+/// check it is empty on chain.
+pub async fn next_account_number(
+    storage: &(impl CoreStorage + ?Sized),
+    source_id: &str,
+) -> Result<u32, FundingSessionError> {
+    let storage_error = |reason: String| FundingSessionError::Storage { reason };
+    let mut counters = match storage
+        .read_core_storage(CoreStorageKey::FundingAccountCounters)
+        .await
+        .map_err(|err| storage_error(err.reason))?
+    {
+        Some(blob) => BTreeMap::<String, u32>::decode(&mut blob.as_slice())
+            .ok()
+            .filter(|counters| counters.encoded_size() == blob.len())
+            .ok_or_else(|| storage_error("funding account counters do not decode".into()))?,
+        None => BTreeMap::new(),
+    };
+    let counter = counters.entry(source_id.to_string()).or_default();
+    *counter = counter
+        .checked_add(1)
+        .ok_or_else(|| storage_error(format!("funding accounts for {source_id} exhausted")))?;
+    let number = *counter;
+    storage
+        .write_core_storage(CoreStorageKey::FundingAccountCounters, counters.encode())
+        .await
+        .map_err(|err| storage_error(err.reason))?;
+    Ok(number)
 }
 
 #[cfg(test)]
@@ -304,6 +382,49 @@ mod tests {
             .expect("written");
 
         assert_eq!(block_on(load_sessions(storage.as_ref())), Ok(Vec::new()));
+    }
+
+    // A reused number hands a second session an account that may still hold
+    // the first one's funds, so counters only ever move up, per source, and a
+    // counter blob that cannot be read stops funding instead of restarting.
+    #[test]
+    fn account_numbers_count_up_per_source_and_never_restart() {
+        let storage = stub_platform();
+        let next = |source: &str| block_on(next_account_number(storage.as_ref(), source));
+        let issued = [next("usdt"), next("usdt"), next("btc"), next("usdt")];
+        block_on(storage.write_core_storage(CoreStorageKey::FundingAccountCounters, vec![0xff]))
+            .expect("written");
+
+        assert_eq!(
+            (issued, next("usdt").is_err()),
+            ([Ok(1), Ok(2), Ok(1), Ok(3)], true)
+        );
+    }
+
+    // Funds sit in these accounts, so an index that drifts between releases
+    // strands them. The bytes are pinned to the labels getcash uses.
+    #[test]
+    fn funding_account_indices_are_the_padded_getcash_labels() {
+        let padded = |label: &str| {
+            let mut index = [0u8; 32];
+            index[..label.len()].copy_from_slice(label.as_bytes());
+            index
+        };
+
+        assert_eq!(
+            [
+                funding_account_index(FundingAccountKind::Deposit, "usdt-assethub", 1),
+                funding_account_index(FundingAccountKind::Refund, "btc", 2),
+                funding_account_index(FundingAccountKind::Withdrawal, "dot-assethub", 3),
+                funding_account_index(FundingAccountKind::Deposit, "x".repeat(40).as_str(), 1),
+            ],
+            [
+                Ok(padded("onramp:eph:usdt-assethub:1")),
+                Ok(padded("onramp:rf:btc:2")),
+                Ok(padded("wd:eph:dot-assethub:3")),
+                Err(FundingAccountLabelTooLong),
+            ]
+        );
     }
 
     #[test]
