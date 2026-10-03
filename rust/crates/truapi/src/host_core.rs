@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::platform::{ChatPlatform, ContactsPlatform, PermissionStatusHost, PocketPlatform};
+use crate::platform::{
+    ChatPlatform, CoinageWalletHost, ContactsPlatform, PermissionStatusHost, PocketPlatform,
+};
 use crate::platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -232,6 +234,7 @@ impl PairingHostRuntime {
             config.asset_hub_chain_genesis_hash,
             spawner.clone(),
             chat_platform,
+            None,
         );
         if let Some(contacts_platform) = contacts_platform {
             services.install_contacts_platform(contacts_platform);
@@ -604,25 +607,32 @@ impl SigningHostRuntime {
     where
         P: Platform + 'static,
     {
-        Self::with_platforms(platform, config, spawner, None, None)
+        Self::with_platforms(platform, config, spawner, None, None, None)
     }
 
     /// Build a signing-host runtime that serves Chat through `chat_platform`.
     ///
-    /// The pairing host has had this since chat reached the core; a signing
-    /// host needs it for the same reason a native host does, and without it no
-    /// runnable host in this repo can serve a chat product at all.
+    /// Native wallet custody is fixed at construction. `None` uses the built-in
+    /// Rust wallet; an injected native service never falls back on failure.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.with_chat_platform"))]
     pub fn with_chat_platform<P>(
         platform: Arc<P>,
         config: SigningHostConfig,
         spawner: Spawner,
         chat_platform: Option<Arc<dyn ChatPlatform>>,
+        native_wallet: Option<Arc<dyn CoinageWalletHost>>,
     ) -> Self
     where
         P: Platform + 'static,
     {
-        Self::with_platforms(platform, config, spawner, chat_platform, None)
+        Self::with_platforms(
+            platform,
+            config,
+            spawner,
+            chat_platform,
+            None,
+            native_wallet,
+        )
     }
 
     /// Build a signing-host runtime serving both optional adapters.
@@ -633,6 +643,7 @@ impl SigningHostRuntime {
         spawner: Spawner,
         chat_platform: Option<Arc<dyn ChatPlatform>>,
         contacts_platform: Option<Arc<dyn ContactsPlatform>>,
+        native_wallet: Option<Arc<dyn CoinageWalletHost>>,
     ) -> Self
     where
         P: Platform + 'static,
@@ -646,6 +657,7 @@ impl SigningHostRuntime {
             config.asset_hub_chain_genesis_hash,
             spawner,
             chat_platform,
+            native_wallet,
         );
         if let Some(contacts_platform) = contacts_platform {
             services.install_contacts_platform(contacts_platform);
@@ -659,7 +671,11 @@ impl SigningHostRuntime {
                  every cross-product grant not already cached is refused"
             );
         }
-        let signing_host = SigningHostRole::new(services.clone(), config.network_suffix);
+        let signing_host = SigningHostRole::new(
+            services.clone(),
+            config.network_suffix,
+            config.coinage_instance_id,
+        );
         Self {
             services,
             signing_host,
@@ -675,6 +691,15 @@ impl SigningHostRuntime {
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_permission_status_host"))]
     pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
         self.services.install_permission_status_host(host)
+    }
+
+    /// Install the trusted host's authenticated username candidate source once,
+    /// before serving products. Chain ownership and Chat keys remain authoritative.
+    pub fn set_identity_backend_host(
+        &self,
+        host: Arc<dyn crate::platform::IdentityBackendHost>,
+    ) -> bool {
+        self.services.install_identity_backend_host(host)
     }
 
     /// Install the host's [`PocketPlatform`], which owns the card collection.
@@ -818,6 +843,7 @@ impl SigningHostRuntime {
     pub async fn clear_product_state(&self, product_id: &str) -> Result<(), v01::GenericError> {
         self.signing_host
             .clear_product_state(product_id)
+            .await
             .map_err(|error| v01::GenericError {
                 reason: error.to_string(),
             })
@@ -1009,6 +1035,13 @@ impl SigningHostRuntime {
         self.signing_host
             .get_wallet_allowance_snapshot(activation_id, product_ids)
             .await
+    }
+
+    /// Read authenticated native Chat contacts for host-owned UI, never products.
+    pub async fn get_native_chat_contacts(
+        &self,
+    ) -> Result<crate::runtime::NativeChatContactsSnapshot, v01::GenericError> {
+        self.signing_host.get_native_chat_contacts().await
     }
 
     /// Answer a pairing host's handshake deeplink and serve the resulting SSO
@@ -1222,6 +1255,7 @@ impl SigningHostRuntime {
 pub struct ConnectionAdapters {
     pub platform: Arc<dyn Platform>,
     pub chat_platform: Option<Arc<dyn ChatPlatform>>,
+    /// Connection-owned picker UI; absence inherits the host's contacts adapter.
     pub contacts_platform: Option<Arc<dyn ContactsPlatform>>,
     /// Live OS permission state for this connection. It travels here rather
     /// than on the host runtime because a native host builds one platform per
@@ -1229,7 +1263,7 @@ pub struct ConnectionAdapters {
     /// same one that presents the prompt.
     pub permission_status: Option<Arc<dyn PermissionStatusHost>>,
     /// SDK and internal network connections must share an execution's one-use grants.
-    pub permission_grants: Arc<crate::host_internal::permissions::TemporaryPermissions>,
+    pub(crate) permission_grants: Arc<crate::host_internal::permissions::TemporaryPermissions>,
     pub chat: Arc<ActionChannel<truapi::versioned::chat::HostChatActionSubscribeItem>>,
     pub renderer: Arc<ActionChannel<truapi::versioned::renderer::HostRendererActionSubscribeItem>>,
     pub pocket_platform: Option<Arc<dyn PocketPlatform>>,
@@ -1241,7 +1275,7 @@ impl ConnectionAdapters {
         Self {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
-            contacts_platform: services.contacts_platform(),
+            contacts_platform: None,
             permission_status: services.permission_status_host(),
             permission_grants: Arc::default(),
             chat: Arc::new(ActionChannel::chat()),
@@ -2270,7 +2304,7 @@ mod tests {
     }
 
     #[test]
-    fn network_access_trusted_products_ignore_recorded_denials() {
+    fn network_access_trusted_products_honor_recorded_denials() {
         futures::executor::block_on(async {
             let platform = Arc::new(StubPlatform::default());
             let (config, _) = runtime_config("peopl.dot");
@@ -2309,7 +2343,7 @@ mod tests {
                         granted: true
                     }),
                     permissions::RemotePermissionResponse::V1(RemotePermissionResponse {
-                        granted: true
+                        granted: false
                     }),
                     vec![],
                 )

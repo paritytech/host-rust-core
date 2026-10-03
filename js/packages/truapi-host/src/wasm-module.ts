@@ -6,6 +6,7 @@
 import type { PermissionAuthorizationRuntime } from "./worker-permission-authorization.js";
 import type { LocalIdentity } from "./worker-protocol.js";
 import type { WalletAllowanceSnapshot } from "./wallet-allowances.js";
+import type { NativeChatContactsSnapshot } from "./runtime.js";
 
 /** Cancellable handle on one live render stream inside the core. */
 export interface WorkerRendererSubscription {
@@ -78,6 +79,7 @@ export interface WorkerHostRuntime extends PermissionAuthorizationRuntime {
 
 /** The long-lived pairing-host runtime product cores are created from. */
 export interface WorkerPairingHostRuntime extends WorkerHostRuntime {
+  getNativeChatContacts(): Promise<NativeChatContactsSnapshot>;
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
   activateStoredSession(): Promise<void>;
@@ -90,8 +92,8 @@ export interface WorkerPairingHostRuntime extends WorkerHostRuntime {
  *
  * A signing host owns the user's keys and establishes sessions from local
  * entropy rather than by pairing with a wallet. It is present only in a core
- * built with `wasm-signing-host`; the production `web` bundle is built without
- * it, which is why the constructor is optional on {@link WasmModuleShape}.
+ * built with `wasm-signing-host` (including `web` built with `--signing-host`),
+ * which is why the constructor is optional on {@link WasmModuleShape}.
  */
 export interface WorkerSigningHostRuntime extends WorkerHostRuntime {
   activateLocalSession(secret: Uint8Array): Promise<void>;
@@ -103,7 +105,7 @@ export interface WorkerSigningHostRuntime extends WorkerHostRuntime {
     secret: Uint8Array,
     liteUsername?: string,
   ): Promise<void>;
-  /** Only on a core built with `wasm-signing-host`. */
+  /** Only on a core built with the non-production `test-host` feature. */
   setGrantAllowancesUnchecked?(granted: boolean): void;
   localIdentityContext(): { activationId: string; identityAccountId: string };
   localIdentityAuthProof(
@@ -120,6 +122,7 @@ export interface WorkerSigningHostRuntime extends WorkerHostRuntime {
     activationId: string,
     productIds: string[],
   ): Promise<WalletAllowanceSnapshot>;
+  getNativeChatContacts(): Promise<NativeChatContactsSnapshot>;
   /** Only on a core built with `wasm-signing-host`. */
   setWithheldResources?(tags: string[]): void;
 }
@@ -131,7 +134,7 @@ export interface WasmModuleShape {
     callbacks: unknown,
     hostConfig: unknown,
   ) => WorkerPairingHostRuntime;
-  /** Only in the `testing` bundle; see {@link WorkerSigningHostRuntime}. */
+  /** Only in bundles built with `wasm-signing-host`. */
   WasmSigningHostRuntime?: new (
     callbacks: unknown,
     hostConfig: unknown,

@@ -38,6 +38,11 @@ If you experience problems with any product or service that was built on or depl
 
 ## Getting started
 
+For the in-tree Host build and Chat product, follow the
+[Mac simulator runbook](../../docs/chat-ios-simulator.md). It covers the CI
+preview install, local builds, matching product versions, and safe coexistence
+testing with built-in Chat.
+
 <details>
 <summary>Prerequisites</summary>
 
@@ -89,6 +94,15 @@ xcodebuild -project polkadot-app.xcodeproj -scheme polkadot-app -configuration D
 xcodebuild test -project polkadot-app.xcodeproj -scheme polkadot-appTests \
   -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
+
+The iOS CI test job runs `RUN_IN_CI=true bundle exec fastlane run_unit_tests`
+from `hosts/ios`. It retains the `.xcresult` bundle, raw xcodebuild log,
+simulator logs, and available crash reports in
+`test-artifacts-<run-id>-<attempt>` for three days, even when tests fail.
+The job log also contains the `xcresulttool` test summary and test list.
+Download the artifact from the workflow run and open its `.xcresult` in Xcode
+to inspect individual failures and diagnostics. `debug:true` adds raw console
+output without changing whether test failures fail the job.
 
 ## How it works
 

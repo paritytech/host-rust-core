@@ -13,6 +13,7 @@ public enum ProductPermission: Equatable, Sendable {
     public static let balanceAccessTypeName = "balance_access"
     public static let statementSubmitAccessTypeName = "statement_submit"
     public static let userIdentityAccessTypeName = "user_identity_access"
+    public static let chatAuthorityTypeName = "chat_authority"
 
     case deviceCapability(DeviceCapabilityType)
     case networkAccess(domain: String)
@@ -23,20 +24,23 @@ public enum ProductPermission: Equatable, Sendable {
     case preimageSubmitAccess
     case statementSubmitAccess
     case userIdentityAccess
+    case chatAuthority
 
     /// Whether this is one of the core's `RemotePermission` cases: a product's
     /// own outbound access.
     ///
     /// The distinction exists because the core grants a first-party product
     /// every remote permission without prompting, and nothing else. Device
-    /// capabilities, account access, balance and identity disclosure always
-    /// prompt, whoever asks, so they must not ride along on that trust.
+    /// capabilities, account access, balance, identity disclosure and Chat
+    /// authority always prompt, whoever asks, so they must not ride along on
+    /// that trust.
     public var isRemoteAccess: Bool {
         switch self {
         case .networkAccess, .webRtcAccess, .chainSubmitAccess, .preimageSubmitAccess,
              .statementSubmitAccess:
             true
-        case .deviceCapability, .accountAccess, .balanceAccess, .userIdentityAccess:
+        case .deviceCapability, .accountAccess, .balanceAccess, .userIdentityAccess,
+             .chatAuthority:
             false
         }
     }
@@ -61,6 +65,8 @@ public enum ProductPermission: Equatable, Sendable {
             Self.statementSubmitAccessTypeName
         case .userIdentityAccess:
             Self.userIdentityAccessTypeName
+        case .chatAuthority:
+            Self.chatAuthorityTypeName
         }
     }
 
@@ -77,7 +83,8 @@ public enum ProductPermission: Equatable, Sendable {
              .chainSubmitAccess,
              .preimageSubmitAccess,
              .statementSubmitAccess,
-             .userIdentityAccess:
+             .userIdentityAccess,
+             .chatAuthority:
             ""
         }
     }
@@ -105,6 +112,8 @@ public enum ProductPermission: Equatable, Sendable {
             return .statementSubmitAccess
         case userIdentityAccessTypeName:
             return .userIdentityAccess
+        case chatAuthorityTypeName:
+            return .chatAuthority
         default:
             return nil
         }
